@@ -176,7 +176,13 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
       - merge source(s),
       - result (`clean` or `conflicts resolved`),
       - resulting `HEAD` short SHA.
-10. Compact context and proceed to execution.
+10. Before implementing, record a blast radius analysis in the workpad `Notes` section:
+    - files and functions to be changed,
+    - all known callers of those functions, using grep/search results where applicable,
+    - existing test coverage for the affected code,
+    - estimated blast radius (`narrow`, `moderate`, or `wide`) with justification.
+    - Do not write the first code edit until this analysis is recorded.
+11. Compact context and proceed to execution.
 
 ## PR feedback sweep protocol (required)
 
@@ -206,6 +212,14 @@ Use this only when completion is blocked by missing required tools or missing au
   - exact human action needed to unblock.
 - Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
 
+## In-execution clarification escape hatch (required behavior)
+
+Use this only when planning reaches a fundamentally unclear specification and the issue description plus comments do not provide unambiguous acceptance criteria.
+
+1. Post a short Linear comment with the specific unanswered questions. This is an exception to the single-workpad rule; do not create a second workpad.
+2. Move the issue to `Backlog`, or to the configured `needs_clarity_state` when that is available.
+3. Stop. Do not guess or implement against a half-spec.
+
 ## Step 2: Execution phase (Todo -> In Progress -> In Review)
 
 1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
@@ -227,9 +241,20 @@ Use this only when completion is blocked by missing required tools or missing au
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
 6.  Re-check all acceptance criteria and close any gaps.
-7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
+7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green.
+    - Run `git diff origin/main` and review the full diff for:
+      - stray debug statements, `console.log`, hardcoded test values, or temporary proof edits,
+      - unintended file changes outside the ticket's scope,
+      - incomplete hunks, half-finished removals, or reverted-only placeholders.
+    - Only commit and push after this review is clean.
+    - Record `diff reviewed — clean` in the workpad before each push.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
+    - Ensure the PR body is reviewer-facing and includes:
+      - **What changed and why**, including the motivation reviewers need to evaluate the approach,
+      - **Testing evidence**, with commands run and output snippets confirming the change works,
+      - **Screenshots or recordings** for any UI-touching changes,
+      - **Known limitations or follow-ups** for anything deferred to Backlog.
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
@@ -241,6 +266,11 @@ Use this only when completion is blocked by missing required tools or missing au
     - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
     - Run the full PR feedback sweep protocol.
     - Confirm PR checks are passing (green) after the latest changes.
+      - If a check fails, fetch the failed log output with `gh run view --log-failed`.
+      - Categorize the failure as flaky/retryable infrastructure or a real code defect.
+      - For real failures, diagnose the root cause, fix it, rerun validation locally, then loop back through the validation, diff-review, commit, and push gates.
+      - Never use `--no-verify`, `--force`, or skipped hooks to bypass failures.
+      - If the failure is in unrelated pre-existing code, document it in the workpad and note it explicitly in the PR description.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
@@ -296,6 +326,11 @@ Use this only when completion is blocked by missing required tools or missing au
   title/description/acceptance criteria, same-project assignment, a `related`
   link to the current issue, and `blockedBy` when the follow-up depends on the
   current issue.
+- If adding, removing, or changing packages/dependencies:
+  - justify the dependency change in the workpad, including why that package is appropriate and why the work should not be implemented inline,
+  - verify the lock file diff includes only changes relevant to the current ticket,
+  - flag any transitive dependency upgrades that were not explicitly intended.
+- If planning cannot derive unambiguous acceptance criteria from the issue description and comments, use the in-execution clarification escape hatch: post the specific Linear questions, move the issue to `Backlog` or the configured `needs_clarity_state`, and stop.
 - Do not move to `In Review` unless the `Completion bar before In Review` is satisfied.
 - In `In Review`, do not make changes; wait and poll.
 - If state is terminal (`Done`), do nothing and shut down.

@@ -196,6 +196,61 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "returns structured error when settings directory cannot be created" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-settings-fail-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-SETTINGS")
+        claude_path = Path.join(workspace, ".claude")
+        File.mkdir_p!(workspace)
+        File.write!(claude_path, "not a directory")
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude"
+        )
+
+        assert {:error, {:claude_settings_write_failed, :mkdir_p, failed_path, _reason}} =
+                 AppServer.start_session(workspace)
+
+        assert String.ends_with?(failed_path, "/RSM-SETTINGS/.claude")
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns structured error when settings file cannot be written" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-settings-write-fail-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-SETTINGS-WRITE")
+        settings_path = Path.join(workspace, ".claude/settings.json")
+        File.mkdir_p!(settings_path)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude"
+        )
+
+        assert {:error, {:claude_settings_write_failed, :write, failed_path, _reason}} =
+                 AppServer.start_session(workspace)
+
+        assert String.ends_with?(failed_path, "/RSM-SETTINGS-WRITE/.claude/settings.json")
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "returns error when workspace path cannot be read due to permissions" do
       test_root =
         Path.join(
@@ -335,6 +390,210 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "runs a successful turn using a command found on PATH" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-path-command-#{System.unique_integer([:positive])}"
+        )
+
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-PATH")
+        fake_claude = Path.join(test_root, "fake-claude-path")
+        File.mkdir_p!(workspace)
+        System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+        File.write!(fake_claude, successful_fake_claude_script("sess-path", 8, 4))
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "fake-claude-path"
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:ok, result} = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert result.input_tokens == 8
+        assert result.output_tokens == 4
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "runs a successful turn using a relative command path" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-relative-command-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-RELATIVE")
+        bin_dir = Path.join(workspace, "bin")
+        fake_claude = Path.join(bin_dir, "fake-claude")
+        File.mkdir_p!(bin_dir)
+
+        File.write!(fake_claude, successful_fake_claude_script("sess-relative", 7, 3))
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "./bin/fake-claude"
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:ok, result} = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert result.input_tokens == 7
+        assert result.output_tokens == 3
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "runs a successful turn when workspace and command paths contain spaces" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony elixir claude code spaced #{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "work spaces")
+        workspace = Path.join(workspace_root, "RSM 1")
+        bin_dir = Path.join(test_root, "bin dir")
+        fake_claude = Path.join(bin_dir, "fake claude")
+        File.mkdir_p!(workspace)
+        File.mkdir_p!(bin_dir)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        capture_next=0
+        for arg in "$@"; do
+          if [ "$capture_next" = "1" ]; then
+            printf '%s' "$arg" > "$PWD/args.trace"
+            capture_next=0
+          fi
+
+          if [ "$arg" = "--print" ]; then
+            capture_next=1
+          fi
+        done
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-spaced","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"sess-spaced","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "'#{fake_claude}'"
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+        prompt = "do the thing from a path with spaces and \"quotes\""
+
+        assert {:ok, result} = AppServer.run_turn(session, prompt, %{}, [])
+        assert result.input_tokens == 10
+        assert File.read!(Path.join(workspace, "args.trace")) == prompt
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns error when agent command is empty" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-empty-command-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-EMPTY")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "   "
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:error, :empty_agent_command} = AppServer.run_turn(session, "do the thing", %{}, [])
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns error when agent command cannot be parsed" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-invalid-command-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-INVALID")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "'unterminated"
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:error, {:invalid_agent_command, _message}} =
+                 AppServer.run_turn(session, "do the thing", %{}, [])
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns error when agent command cannot be found" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-missing-command-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-MISSING")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "missing-claude-command"
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:error, {:agent_command_not_found, "missing-claude-command"}} =
+                 AppServer.run_turn(session, "do the thing", %{}, [])
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "returns error when turn exits with non-zero status" do
       test_root =
         Path.join(
@@ -370,7 +629,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
-    test "forwards turn_failed event on result/error stream line" do
+    test "returns error and forwards turn_failed event on result/error stream line" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -401,10 +660,46 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         test_pid = self()
         on_message = fn msg -> send(test_pid, {:turn_msg, msg}) end
 
-        assert {:ok, _result} =
+        assert {:error, {:turn_failed, "claude api error"}} =
                  AppServer.run_turn(session, "do the thing", %{}, on_message: on_message)
 
         assert_received {:turn_msg, {:turn_failed, "claude api error"}}
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns turn timeout when the cli process stops producing events" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-run-turn-timeout-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-TIMEOUT")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        sleep 1
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_turn_timeout_ms: 20
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:error, :turn_timeout} = AppServer.run_turn(session, "do the thing", %{}, [])
       after
         File.rm_rf(test_root)
       end
@@ -465,11 +760,23 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         workspace_root = Path.join(test_root, "workspaces")
         workspace = Path.join(workspace_root, "RSM-REMOTE")
         fake_ssh = Path.join(test_root, "ssh")
+        trace_file = Path.join(test_root, "ssh-command.trace")
+        previous_trace = System.get_env("SYMPHONY_TEST_SSH_TRACE")
         File.mkdir_p!(workspace)
         System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+        System.put_env("SYMPHONY_TEST_SSH_TRACE", trace_file)
+
+        on_exit(fn ->
+          restore_env("SYMPHONY_TEST_SSH_TRACE", previous_trace)
+        end)
 
         File.write!(fake_ssh, """
         #!/bin/sh
+        last_arg=""
+        for arg in "$@"; do
+          last_arg="$arg"
+        done
+        printf '%s' "$last_arg" > "$SYMPHONY_TEST_SSH_TRACE"
         printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-remote","cwd":"/remote","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
         printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":200,"duration_api_ms":150,"is_error":false,"num_turns":1,"result":"remote done","session_id":"sess-remote","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
         exit 0
@@ -488,6 +795,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert {:ok, result} = AppServer.run_turn(session, "remote task", %{}, [])
         assert result.input_tokens == 5
         assert result.output_tokens == 3
+        traced_command = File.read!(trace_file)
+        assert traced_command =~ "fake-claude-remote"
+        assert traced_command =~ "cat"
+        assert traced_command =~ ".claude_prompt_"
       after
         File.rm_rf(test_root)
       end
@@ -531,5 +842,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         File.rm_rf(test_root)
       end
     end
+  end
+
+  defp successful_fake_claude_script(session_id, input_tokens, output_tokens) do
+    """
+    #!/bin/sh
+    printf '%s\\n' '{"type":"system","subtype":"init","session_id":"#{session_id}","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+    printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"#{session_id}","total_cost_usd":0.001,"usage":{"input_tokens":#{input_tokens},"output_tokens":#{output_tokens},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+    exit 0
+    """
   end
 end

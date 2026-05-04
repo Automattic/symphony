@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety}
+  alias SymphonyElixir.{Config, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
 
@@ -24,8 +24,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host) do
-      write_claude_settings(expanded_workspace)
+    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
+         :ok <- write_claude_settings(expanded_workspace) do
       {:ok, %{workspace: expanded_workspace, metadata: %{}, worker_host: worker_host}}
     end
   end
@@ -35,15 +35,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     on_message = Keyword.get(opts, :on_message, fn _msg -> :ok end)
     settings = Config.settings!()
     command = settings.agent.command
+    turn_timeout_ms = settings.agent.turn_timeout_ms
 
-    with {:ok, prompt_file} <- write_prompt_file(prompt, workspace),
-         {:ok, port} <- start_port(workspace, command, prompt_file, worker_host) do
+    with {:ok, prompt_file} <- write_prompt_file(prompt, workspace) do
       try do
-        result = read_port_output(port, on_message)
-        result
+        with {:ok, port} <- start_port(workspace, command, prompt_file, prompt, worker_host) do
+          try do
+            read_port_output(port, on_message, turn_timeout_ms)
+          after
+            safe_close_port(port)
+          end
+        end
       after
         File.rm(prompt_file)
-        safe_close_port(port)
       end
     end
   end
@@ -162,9 +166,25 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     network_access = settings.agent.network_access
     sandbox_json = build_sandbox_settings(network_access)
     claude_dir = Path.join(workspace, ".claude")
-    File.mkdir_p!(claude_dir)
     settings_path = Path.join(claude_dir, "settings.json")
-    File.write!(settings_path, Jason.encode!(sandbox_json, pretty: true))
+
+    with :ok <- mkdir_claude_dir(claude_dir) do
+      write_settings_file(settings_path, sandbox_json)
+    end
+  end
+
+  defp mkdir_claude_dir(claude_dir) do
+    case File.mkdir_p(claude_dir) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:claude_settings_write_failed, :mkdir_p, claude_dir, reason}}
+    end
+  end
+
+  defp write_settings_file(settings_path, sandbox_json) do
+    case File.write(settings_path, Jason.encode!(sandbox_json, pretty: true)) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:claude_settings_write_failed, :write, settings_path, reason}}
+    end
   end
 
   defp write_prompt_file(prompt, workspace) do
@@ -176,68 +196,121 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp start_port(workspace, command, prompt_file, nil) do
-    full_command =
-      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print \"$(cat #{prompt_file})\""
+  defp start_port(workspace, command, _prompt_file, prompt, nil) do
+    with {:ok, {executable, command_args}} <- local_command(workspace, command) do
+      args = command_args ++ ["--output-format", "stream-json", "--print", prompt]
 
-    port =
-      Port.open(
-        {:spawn_executable, System.find_executable("bash")},
-        [
-          :binary,
-          :exit_status,
-          {:line, @port_line_bytes},
-          {:args, ["-lc", full_command]},
-          {:cd, workspace},
-          :stderr_to_stdout
-        ]
-      )
+      port =
+        Port.open(
+          {:spawn_executable, String.to_charlist(executable)},
+          [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            line: @port_line_bytes,
+            args: Enum.map(args, &String.to_charlist/1),
+            cd: String.to_charlist(workspace),
+            env: agent_runtime_env()
+          ]
+        )
 
-    {:ok, port}
+      {:ok, port}
+    end
   end
 
-  defp start_port(_workspace, command, prompt_file, worker_host) do
-    full_command =
-      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print \"$(cat #{prompt_file})\""
-
-    ssh_command =
-      ~s(ssh -o StrictHostKeyChecking=no #{worker_host} "bash -lc '#{String.replace(full_command, "'", "'\\''")}'" )
-
-    port =
-      Port.open(
-        {:spawn_executable, System.find_executable("bash")},
-        [
-          :binary,
-          :exit_status,
-          {:line, @port_line_bytes},
-          {:args, ["-c", ssh_command]},
-          :stderr_to_stdout
-        ]
-      )
-
-    {:ok, port}
+  defp start_port(_workspace, command, prompt_file, _prompt, worker_host) do
+    with {:ok, command_words} <- command_words(command) do
+      SSH.start_port(worker_host, remote_launch_command(command_words, prompt_file), line: @port_line_bytes)
+    end
   end
 
-  defp read_port_output(port, on_message) do
-    read_loop(port, on_message, %{session_id: nil, input_tokens: 0, output_tokens: 0})
+  defp local_command(workspace, command) do
+    with {:ok, [program | args]} <- command_words(command),
+         {:ok, executable} <- executable_path(workspace, program) do
+      {:ok, {executable, args}}
+    end
   end
 
-  defp read_loop(port, on_message, acc) do
+  defp command_words(command) when is_binary(command) do
+    case String.trim(command) do
+      "" ->
+        {:error, :empty_agent_command}
+
+      trimmed ->
+        try do
+          {:ok, OptionParser.split(trimmed)}
+        rescue
+          exception ->
+            {:error, {:invalid_agent_command, Exception.message(exception)}}
+        end
+    end
+  end
+
+  defp executable_path(workspace, program) do
+    cond do
+      String.contains?(program, "/") ->
+        path =
+          case Path.type(program) do
+            :absolute -> program
+            _relative -> Path.expand(program, workspace)
+          end
+
+        if File.exists?(path), do: {:ok, path}, else: {:error, {:agent_command_not_found, program}}
+
+      executable = System.find_executable(program) ->
+        {:ok, executable}
+
+      true ->
+        {:error, {:agent_command_not_found, program}}
+    end
+  end
+
+  defp remote_launch_command(command_words, prompt_file) do
+    command =
+      command_words
+      |> Enum.map_join(" ", &shell_escape/1)
+
+    "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print \"$(cat #{shell_escape(prompt_file)})\""
+  end
+
+  defp agent_runtime_env do
+    [{String.to_charlist(@agent_runtime_env), String.to_charlist(@agent_runtime_env_value)}]
+  end
+
+  defp shell_escape(value) when is_binary(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp read_port_output(port, on_message, turn_timeout_ms) do
+    acc = %{session_id: nil, input_tokens: 0, output_tokens: 0, turn_failed: nil}
+    read_loop(port, on_message, acc, turn_timeout_ms)
+  end
+
+  defp read_loop(port, on_message, acc, turn_timeout_ms) do
     receive do
       {^port, {:data, {:eol, line}}} ->
         acc = handle_line(line, on_message, acc)
-        read_loop(port, on_message, acc)
+        read_loop(port, on_message, acc, turn_timeout_ms)
 
       {^port, {:data, {:noeol, _partial}}} ->
-        read_loop(port, on_message, acc)
+        read_loop(port, on_message, acc, turn_timeout_ms)
 
       {^port, {:exit_status, 0}} ->
-        {:ok, acc}
+        finalize_read_result(acc)
 
       {^port, {:exit_status, status}} ->
         {:error, {:exit_status, status}}
+    after
+      turn_timeout_ms ->
+        {:error, :turn_timeout}
     end
   end
+
+  defp finalize_read_result(%{turn_failed: reason}) when is_binary(reason) do
+    {:error, {:turn_failed, reason}}
+  end
+
+  defp finalize_read_result(acc), do: {:ok, Map.delete(acc, :turn_failed)}
 
   defp handle_line(line, on_message, acc) do
     case parse_event(line) do
@@ -250,7 +323,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
       {:turn_failed, reason} ->
         on_message.({:turn_failed, reason})
-        acc
+        %{acc | turn_failed: reason}
 
       {:notification, text} ->
         on_message.({:notification, text})

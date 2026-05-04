@@ -86,20 +86,37 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
-    with {:ok, session} <- agent_module().start_session(workspace, worker_host: worker_host) do
+    with {:ok, agent_module} <- agent_module(),
+         {:ok, session} <- agent_module.start_session(workspace, worker_host: worker_host) do
+      run_context = %{
+        workspace: workspace,
+        issue: issue,
+        codex_update_recipient: codex_update_recipient,
+        opts: opts,
+        issue_state_fetcher: issue_state_fetcher
+      }
+
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_codex_turns(agent_module, session, run_context, 1, max_turns)
       after
-        agent_module().stop_session(session)
+        agent_module.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp do_run_codex_turns(agent_module, app_session, run_context, turn_number, max_turns) do
+    %{
+      workspace: workspace,
+      issue: issue,
+      codex_update_recipient: codex_update_recipient,
+      opts: opts,
+      issue_state_fetcher: issue_state_fetcher
+    } = run_context
+
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
-           agent_module().run_turn(
+           agent_module.run_turn(
              app_session,
              prompt,
              issue,
@@ -112,12 +129,9 @@ defmodule SymphonyElixir.AgentRunner do
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
           do_run_codex_turns(
+            agent_module,
             app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
+            %{run_context | issue: refreshed_issue},
             turn_number + 1,
             max_turns
           )
@@ -138,8 +152,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp agent_module do
     case Config.settings!().agent.kind do
-      "codex" -> SymphonyElixir.Codex.AppServer
-      "claude" -> SymphonyElixir.ClaudeCode.AppServer
+      "codex" -> {:ok, SymphonyElixir.Codex.AppServer}
+      "claude" -> {:ok, SymphonyElixir.ClaudeCode.AppServer}
+      kind -> {:error, {:unknown_agent_kind, kind}}
     end
   end
 

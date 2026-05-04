@@ -123,11 +123,11 @@ routing:
       after_create: |
         git clone git@github.com:your-org/php-plugin.git .
 agent:
+  kind: codex
   max_concurrent_agents: 10
   max_turns: 20
   # max_tokens_per_issue: 500000
   # max_tokens_per_day: 5000000
-codex:
   command: codex app-server
   network_access:
     mode: allowlist
@@ -146,13 +146,13 @@ Notes:
 
 - If a value is missing, defaults are used.
 - Safer Codex defaults are used when policy fields are omitted:
-  - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
-  - `codex.thread_sandbox` defaults to `workspace-write`
-  - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
-  - `codex.network_access.mode` defaults to `allowlist`
-- Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
-- Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
-- Supported `codex.network_access.mode` values:
+  - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
+  - `agent.thread_sandbox` defaults to `workspace-write` for Codex.
+  - `agent.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace for Codex.
+  - `agent.network_access.mode` defaults to `allowlist`.
+- Supported `agent.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
+- Supported `agent.thread_sandbox` values for Codex: `read-only`, `workspace-write`, `danger-full-access`.
+- Supported `agent.network_access.mode` values:
   - `allowlist`: enables the Codex sandbox network switch and sends a thread-level
     `config.experimental_network` allow map built from Symphony's built-in dev domains plus
     `allowed_domains` minus `denied_domains`.
@@ -160,9 +160,9 @@ Notes:
     matching the previous broad `networkAccess: true` behavior.
   - `block`: disables the Codex sandbox network switch, matching `networkAccess: false`.
   `denied_domains` always takes precedence over built-in and user-provided `allowed_domains`.
-- `codex.command_timeout_ms` caps a single shell command even when it keeps streaming output.
+- `agent.command_timeout_ms` caps a single shell command even when it keeps streaming output.
   Default: `600000` (10 minutes). Set `0` to disable this command-level guard.
-- When `codex.turn_sandbox_policy` is set explicitly, Symphony forwards the configured map to
+- When `agent.turn_sandbox_policy` is set explicitly for Codex, Symphony forwards the configured map to
   Codex, but for `workspaceWrite` policies it ensures the current issue workspace stays in
   `writableRoots` at runtime when a workspace path is available. Symphony always includes the
   issue workspace `.git` path. For local Git checkouts, Symphony asks Git for the actual
@@ -173,7 +173,7 @@ Notes:
   `writableRoots` already present in the configured policy, and deduplicates the combined list.
   Compatibility for the remaining fields still depends on the targeted Codex app-server version
   rather than local Symphony validation. For known Codex policies with a boolean `networkAccess`
-  field, `codex.network_access` controls that field.
+  field, `agent.network_access` controls that field.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - `agent.max_tokens_per_issue` and `agent.max_tokens_per_day` are optional guardrails. When omitted,
@@ -207,8 +207,9 @@ Notes:
   `LINEAR_ASSIGNEE` when unset or when value is `$LINEAR_ASSIGNEE`.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` and `workspace.repo` resolve `$VAR`
-  before path handling, while `codex.command` stays a shell command string and any `$VAR` expansion
-  there happens in the launched shell.
+  before path handling. For Codex, `agent.command` stays a shell command string and any `$VAR`
+  expansion there happens in the launched shell; Claude Code commands are split into executable
+  arguments before launch.
 
 ```yaml
 tracker:
@@ -220,7 +221,8 @@ workspace:
 hooks:
   after_create: |
     mix deps.get
-codex:
+agent:
+  kind: codex
   command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
 ```
 

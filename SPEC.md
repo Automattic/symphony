@@ -21,7 +21,7 @@ coding agent session for that issue inside the workspace.
 
 The service solves four operational problems:
 
-- It turns issue execution into a repeatable daemon workflow instead of manual scripts.
+- It turns issue execution into a repeatable service workflow instead of manual scripts.
 - It isolates agent execution in per-issue workspaces so agent commands run only inside per-issue
   workspace directories.
 - It keeps the workflow policy in-repo (`WORKFLOW.md`) so teams version the agent prompt and runtime
@@ -358,6 +358,7 @@ Top-level keys:
 - `routing`
 - `agent`
 - `codex`
+- `pr_review`
 
 Unknown keys SHOULD be ignored for forward compatibility.
 
@@ -416,6 +417,21 @@ Fields:
   - Default: `true`.
   - When `strategy == worktree`, fetches `origin` in the primary clone before preparing an issue
     workspace.
+
+#### 5.3.3a `pr_review` (object)
+
+Fields:
+
+- `mode` (`tracker` or `polling`)
+  - Default: `tracker`.
+  - `tracker` preserves the existing tracker-state-driven review loop.
+  - `polling` starts a PR review poller alongside the orchestrator.
+- `cooldown_minutes` (integer)
+  - Polling-mode default: `10`.
+  - Applies only in `polling` mode before moving an issue back to an active state for requested changes.
+- `stale_days` (integer)
+  - Polling-mode default: `7`.
+  - Applies only in `polling` mode before reclaiming idle tracked PR workspaces.
 
 #### 5.3.4 `hooks` (object)
 
@@ -794,6 +810,28 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - Reconciliation runs before dispatch on every tick.
 - Restart recovery is tracker-driven and filesystem-driven (without a durable orchestrator DB).
 - Startup terminal cleanup removes stale workspaces for issues already in terminal states.
+
+### 7.5 PR Review Poller
+
+When `pr_review.mode == "tracker"`, Symphony uses only the tracker-state loop above. When
+`pr_review.mode == "polling"`, the application additionally starts a `PrReviewPoller`
+GenServer.
+
+The poller:
+
+- discovers issues in `In Review` with attached GitHub PR URLs;
+- records each PR URL, issue id, and workspace path in the durable run store;
+- polls GitHub for review decisions and PR closure;
+- waits `pr_review.cooldown_minutes` after requested-change activity before moving the issue
+  back to `In Progress` for orchestrator-owned rework handling;
+- moves the issue back to `In Progress` when GitHub reports approval so the orchestrator starts
+  the merge/landing workflow through the normal run path;
+- removes tracked workspaces and durable review records when PRs close or remain idle beyond
+  `pr_review.stale_days`.
+
+The orchestrator continues to own active-state dispatch, retry, run-store run records, and
+dashboard-visible agent execution. The PR review poller owns only polling-mode GitHub polling,
+state transitions, and tracked PR cleanup.
 
 ## 8. Polling, Scheduling, and Reconciliation
 

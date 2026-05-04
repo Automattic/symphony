@@ -50,13 +50,22 @@ defmodule SymphonyElixir.Application do
     if orchestrator_runtime_disabled?(env) do
       core_children
     else
-      core_children ++
-        [
-          SymphonyElixir.RunStore,
-          SymphonyElixir.Orchestrator,
-          SymphonyElixir.HttpServer,
-          SymphonyElixir.StatusDashboard
-        ]
+      (core_children ++
+         [
+           SymphonyElixir.RunStore,
+           SymphonyElixir.Orchestrator,
+           pr_review_child_spec(),
+           SymphonyElixir.HttpServer,
+           SymphonyElixir.StatusDashboard
+         ])
+      |> Enum.reject(&is_nil/1)
+    end
+  end
+
+  defp pr_review_child_spec do
+    case SymphonyElixir.Config.settings!().pr_review.mode do
+      "polling" -> SymphonyElixir.PrReviewPoller
+      _mode -> nil
     end
   end
 

@@ -1,6 +1,6 @@
-defmodule SymphonyElixir.PrLifecycleManager do
+defmodule SymphonyElixir.PrReviewPoller do
   @moduledoc """
-  Daemon-mode pull request lifecycle manager.
+  Polling-mode pull request review poller.
   """
 
   use GenServer
@@ -24,7 +24,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
   end
 
   @type poll_summary :: %{
-          mode: :daemon | :linear,
+          mode: :polling | :tracker,
           discovered: non_neg_integer(),
           processed: non_neg_integer(),
           actions: [term()]
@@ -47,10 +47,10 @@ defmodule SymphonyElixir.PrLifecycleManager do
   def handle_info(:poll, %State{} = state) do
     case poll_once(state.opts) do
       {:ok, summary} ->
-        Logger.debug("PR lifecycle poll completed: #{inspect(summary)}")
+        Logger.debug("PR review poll completed: #{inspect(summary)}")
 
       {:error, reason} ->
-        Logger.warning("PR lifecycle poll failed: #{inspect(reason)}")
+        Logger.warning("PR review poll failed: #{inspect(reason)}")
     end
 
     {:noreply, schedule_poll(state, state.poll_interval_ms)}
@@ -62,12 +62,12 @@ defmodule SymphonyElixir.PrLifecycleManager do
   @spec poll_once(keyword()) :: {:ok, poll_summary()} | {:error, term()}
   def poll_once(opts \\ []) when is_list(opts) do
     with {:ok, settings} <- poll_settings(opts) do
-      case settings.pr_lifecycle.mode do
-        "daemon" ->
+      case settings.pr_review.mode do
+        "polling" ->
           do_poll_once(settings, opts)
 
         _mode ->
-          {:ok, %{mode: :linear, discovered: 0, processed: 0, actions: []}}
+          {:ok, %{mode: :tracker, discovered: 0, processed: 0, actions: []}}
       end
     end
   end
@@ -84,52 +84,52 @@ defmodule SymphonyElixir.PrLifecycleManager do
     run_store = Keyword.get(opts, :run_store, RunStore)
     tracker = Keyword.get(opts, :tracker, Tracker)
 
-    with {:ok, discovered} <- discover_lifecycles(run_store, tracker, now),
-         {:ok, lifecycles} <- list_pr_lifecycles(run_store) do
+    with {:ok, discovered} <- discover_reviews(run_store, tracker, now),
+         {:ok, reviews} <- list_pr_reviews(run_store) do
       actions =
-        lifecycles
-        |> Enum.map(&process_lifecycle(&1, settings, opts, now))
+        reviews
+        |> Enum.map(&process_review(&1, settings, opts, now))
 
-      {:ok, %{mode: :daemon, discovered: discovered, processed: length(lifecycles), actions: actions}}
+      {:ok, %{mode: :polling, discovered: discovered, processed: length(reviews), actions: actions}}
     end
   end
 
-  defp discover_lifecycles(run_store, tracker, now) do
+  defp discover_reviews(run_store, tracker, now) do
     with {:ok, issues} <- tracker.fetch_issues_by_states([@in_review_state]),
          {:ok, runs} <- list_runs(run_store),
-         {:ok, existing} <- list_pr_lifecycles(run_store) do
+         {:ok, existing} <- list_pr_reviews(run_store) do
       existing_by_issue = Map.new(existing, &{Map.get(&1, :issue_id), &1})
 
       discovered =
         issues
         |> Enum.filter(&match?(%Issue{}, &1))
-        |> Enum.count(&persist_discovered_lifecycle?(&1, runs, existing_by_issue, run_store, now))
+        |> Enum.count(&persist_discovered_review?(&1, runs, existing_by_issue, run_store, now))
 
       {:ok, discovered}
     end
   end
 
-  defp persist_discovered_lifecycle?(%Issue{} = issue, runs, existing_by_issue, run_store, now) do
+  defp persist_discovered_review?(%Issue{} = issue, runs, existing_by_issue, run_store, now) do
     existing = Map.get(existing_by_issue, issue.id)
 
-    case discover_lifecycle_record(issue, runs, existing, now) do
+    case discover_review_record(issue, runs, existing, now) do
       nil ->
         false
 
       record ->
-        case persist_pr_lifecycle(run_store, record) do
+        case persist_pr_review(run_store, record) do
           :ok ->
             true
 
           {:error, reason} ->
-            Logger.warning("Failed to persist discovered PR lifecycle record issue_id=#{issue.id}: #{inspect(reason)}")
+            Logger.warning("Failed to persist discovered PR review record issue_id=#{issue.id}: #{inspect(reason)}")
 
             false
         end
     end
   end
 
-  defp discover_lifecycle_record(%Issue{} = issue, runs, existing, now) when is_list(runs) do
+  defp discover_review_record(%Issue{} = issue, runs, existing, now) when is_list(runs) do
     with pr_url when is_binary(pr_url) <- first_pr_url(issue),
          %{workspace_path: workspace_path} = run when is_binary(workspace_path) <-
            latest_run_for_issue(runs, issue.id) do
@@ -151,19 +151,19 @@ defmodule SymphonyElixir.PrLifecycleManager do
     end
   end
 
-  defp discover_lifecycle_record(_issue, _runs, _existing, _now), do: nil
+  defp discover_review_record(_issue, _runs, _existing, _now), do: nil
 
-  defp process_lifecycle(record, settings, opts, now) when is_map(record) do
+  defp process_review(record, settings, opts, now) when is_map(record) do
     case backoff_active_until(record, now) do
       {:backing_off, next_poll_at} ->
         {:backing_off, Map.get(record, :issue_id), next_poll_at}
 
       :ready ->
-        fetch_and_process_lifecycle(record, settings, opts, now)
+        fetch_and_process_review(record, settings, opts, now)
     end
   end
 
-  defp fetch_and_process_lifecycle(record, settings, opts, now) do
+  defp fetch_and_process_review(record, settings, opts, now) do
     github = Keyword.get(opts, :github, PullRequest)
 
     case github.fetch_activity(Map.get(record, :pr_url), cwd: Map.get(record, :workspace_path)) do
@@ -178,7 +178,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
   defp record_poll_error(record, reason, opts, now) do
     attrs = poll_error_attrs(record, reason, opts, now)
 
-    case update_lifecycle(opts, record, attrs) do
+    case update_review(opts, record, attrs) do
       :ok ->
         {:poll_error, Map.get(record, :issue_id), reason}
 
@@ -188,11 +188,11 @@ defmodule SymphonyElixir.PrLifecycleManager do
   end
 
   defp handle_activity(record, activity, settings, opts, now) do
-    {attrs, latest_activity_at} = lifecycle_activity_attrs(record, activity, now)
+    {attrs, latest_activity_at} = review_activity_attrs(record, activity, now)
 
-    case lifecycle_action(activity, latest_activity_at, settings, now) do
+    case review_action(activity, latest_activity_at, settings, now) do
       :closed ->
-        cleanup_lifecycle(record, opts, now, "closed")
+        cleanup_review(record, opts, now, "closed")
 
       :changes_requested ->
         maybe_transition_rework(record, attrs, settings, opts, now)
@@ -201,14 +201,14 @@ defmodule SymphonyElixir.PrLifecycleManager do
         maybe_transition_merge(record, attrs, opts, now)
 
       :stale ->
-        cleanup_lifecycle(record, opts, now, "stale")
+        cleanup_review(record, opts, now, "stale")
 
       :watching ->
-        complete_lifecycle_update(opts, record, attrs, {:watching, Map.get(record, :issue_id)})
+        complete_review_update(opts, record, attrs, {:watching, Map.get(record, :issue_id)})
     end
   end
 
-  defp lifecycle_activity_attrs(record, activity, now) do
+  defp review_activity_attrs(record, activity, now) do
     latest_activity_at =
       Map.get(activity, :latest_activity_at) ||
         Map.get(record, :last_activity_at) ||
@@ -234,14 +234,14 @@ defmodule SymphonyElixir.PrLifecycleManager do
     {attrs, latest_activity_at}
   end
 
-  defp lifecycle_action(activity, latest_activity_at, settings, now) do
+  defp review_action(activity, latest_activity_at, settings, now) do
     review_decision = normalize_decision(Map.get(activity, :review_decision))
 
     cond do
       closed_pr_state?(Map.get(activity, :state)) -> :closed
       review_decision == @changes_requested -> :changes_requested
       review_decision == @approved -> :approved
-      stale?(latest_activity_at, now, settings.pr_lifecycle.stale_days) -> :stale
+      stale?(latest_activity_at, now, settings.pr_review.stale_days) -> :stale
       true -> :watching
     end
   end
@@ -251,10 +251,10 @@ defmodule SymphonyElixir.PrLifecycleManager do
 
     cond do
       handled_activity?(record, latest_activity_at) ->
-        complete_lifecycle_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), :rework})
+        complete_review_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), :rework})
 
-      !cooldown_elapsed?(latest_activity_at, now, settings.pr_lifecycle.cooldown_minutes) ->
-        complete_lifecycle_update(opts, record, Map.merge(attrs, %{status: "cooling_down"}), {:cooling_down, Map.get(record, :issue_id)})
+      !cooldown_elapsed?(latest_activity_at, now, settings.pr_review.cooldown_minutes) ->
+        complete_review_update(opts, record, Map.merge(attrs, %{status: "cooling_down"}), {:cooling_down, Map.get(record, :issue_id)})
 
       true ->
         transition_issue_for_action(record, attrs, opts, now, "rework")
@@ -265,7 +265,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
     latest_activity_at = action_activity_at(attrs)
 
     if handled_activity?(record, latest_activity_at) do
-      complete_lifecycle_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), :merge})
+      complete_review_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), :merge})
     else
       transition_issue_for_action(record, attrs, opts, now, "merge")
     end
@@ -289,7 +289,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
   end
 
   defp complete_transition_action(record, attrs, opts, now, action) do
-    case update_lifecycle(
+    case update_review(
            opts,
            record,
            Map.merge(attrs, %{
@@ -309,7 +309,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
   end
 
   defp record_transition_error(record, attrs, opts, now, action, reason) do
-    case update_lifecycle(
+    case update_review(
            opts,
            record,
            Map.merge(attrs, %{
@@ -328,19 +328,19 @@ defmodule SymphonyElixir.PrLifecycleManager do
     end
   end
 
-  defp cleanup_lifecycle(record, opts, now, reason) do
+  defp cleanup_review(record, opts, now, reason) do
     workspace = Keyword.get(opts, :workspace, Workspace)
     run_store = Keyword.get(opts, :run_store, RunStore)
 
     if workspace_removed?(record) do
-      delete_lifecycle_after_cleanup(run_store, record, reason)
+      delete_review_after_cleanup(run_store, record, reason)
     else
       case workspace.remove(Map.get(record, :workspace_path), Map.get(record, :worker_host)) do
         {:ok, _removed_paths} ->
           finish_workspace_cleanup(record, opts, now, reason)
 
         {:error, cleanup_reason, output} ->
-          complete_lifecycle_update(
+          complete_review_update(
             opts,
             record,
             %{
@@ -352,7 +352,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
           )
 
         other ->
-          complete_lifecycle_update(
+          complete_review_update(
             opts,
             record,
             %{
@@ -371,7 +371,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
 
     case mark_workspace_removed(record, opts, now) do
       {:ok, updated_record} ->
-        delete_lifecycle_after_cleanup(run_store, updated_record, reason)
+        delete_review_after_cleanup(run_store, updated_record, reason)
 
       {:error, update_reason} ->
         {:cleanup_error, Map.get(record, :issue_id), update_reason}
@@ -388,7 +388,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
       updated_at: now
     }
 
-    case update_lifecycle(opts, record, attrs) do
+    case update_review(opts, record, attrs) do
       :ok ->
         {:ok, Map.merge(record, attrs)}
 
@@ -401,14 +401,14 @@ defmodule SymphonyElixir.PrLifecycleManager do
     issue_id = Map.get(record, :issue_id)
     updated_record = Map.merge(record, attrs)
 
-    Logger.warning("Failed to update PR lifecycle workspace removal issue_id=#{issue_id}; attempting full record write: #{inspect(update_reason)}")
+    Logger.warning("Failed to update PR review workspace removal issue_id=#{issue_id}; attempting full record write: #{inspect(update_reason)}")
 
-    case persist_pr_lifecycle(run_store, updated_record) do
+    case persist_pr_review(run_store, updated_record) do
       :ok ->
         {:ok, updated_record}
 
       {:error, put_reason} ->
-        Logger.warning("Failed to persist PR lifecycle workspace removal issue_id=#{issue_id}: #{inspect(put_reason)}")
+        Logger.warning("Failed to persist PR review workspace removal issue_id=#{issue_id}: #{inspect(put_reason)}")
 
         {:error, {:workspace_removed_update_failed, update_reason, put_reason}}
     end
@@ -419,13 +419,13 @@ defmodule SymphonyElixir.PrLifecycleManager do
       Map.get(record, :status) == "cleanup_pending"
   end
 
-  defp delete_lifecycle_after_cleanup(run_store, record, reason) do
-    case run_store.delete_pr_lifecycle(Map.get(record, :issue_id)) do
+  defp delete_review_after_cleanup(run_store, record, reason) do
+    case run_store.delete_pr_review(Map.get(record, :issue_id)) do
       :ok ->
         {:cleanup, Map.get(record, :issue_id), reason}
 
       {:error, delete_reason} ->
-        Logger.warning("Failed to delete PR lifecycle record issue_id=#{Map.get(record, :issue_id)} after cleanup: #{inspect(delete_reason)}")
+        Logger.warning("Failed to delete PR review record issue_id=#{Map.get(record, :issue_id)} after cleanup: #{inspect(delete_reason)}")
 
         {:cleanup_error, Map.get(record, :issue_id), delete_reason}
     end
@@ -436,11 +436,11 @@ defmodule SymphonyElixir.PrLifecycleManager do
 
   defp latest_run_for_issue(runs, issue_id) when is_list(runs) and is_binary(issue_id) do
     runs
-    |> Enum.filter(&lifecycle_run_for_issue?(&1, issue_id))
+    |> Enum.filter(&review_run_for_issue?(&1, issue_id))
     |> Enum.max_by(&run_started_at_sort_key/1, fn -> nil end)
   end
 
-  defp lifecycle_run_for_issue?(run, issue_id) do
+  defp review_run_for_issue?(run, issue_id) do
     Map.get(run, :issue_id) == issue_id and
       Map.get(run, :status) in ["success", "stopped"] and
       is_binary(Map.get(run, :workspace_path))
@@ -494,59 +494,59 @@ defmodule SymphonyElixir.PrLifecycleManager do
     end
   end
 
-  defp list_pr_lifecycles(run_store) do
-    case run_store.list_pr_lifecycles() do
-      lifecycles when is_list(lifecycles) -> {:ok, lifecycles}
+  defp list_pr_reviews(run_store) do
+    case run_store.list_pr_reviews() do
+      reviews when is_list(reviews) -> {:ok, reviews}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp persist_pr_lifecycle(run_store, record) do
-    case run_store.put_pr_lifecycle(record) do
+  defp persist_pr_review(run_store, record) do
+    case run_store.put_pr_review(record) do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp update_lifecycle(opts, record, attrs) do
+  defp update_review(opts, record, attrs) do
     run_store = Keyword.get(opts, :run_store, RunStore)
     issue_id = Map.get(record, :issue_id)
 
-    case run_store.update_pr_lifecycle(issue_id, attrs) do
+    case run_store.update_pr_review(issue_id, attrs) do
       :ok ->
         :ok
 
-      {:error, :pr_lifecycle_not_found} ->
-        upsert_lifecycle(run_store, record, attrs)
+      {:error, :pr_review_not_found} ->
+        upsert_review(run_store, record, attrs)
 
       {:error, reason} ->
-        log_lifecycle_store_error("update", issue_id, attrs, reason)
-        {:error, {:update_pr_lifecycle_failed, reason}}
+        log_review_store_error("update", issue_id, attrs, reason)
+        {:error, {:update_pr_review_failed, reason}}
     end
   end
 
-  defp upsert_lifecycle(run_store, record, attrs) do
+  defp upsert_review(run_store, record, attrs) do
     issue_id = Map.get(record, :issue_id)
 
-    case run_store.put_pr_lifecycle(Map.merge(record, attrs)) do
+    case run_store.put_pr_review(Map.merge(record, attrs)) do
       :ok ->
         :ok
 
       {:error, reason} ->
-        log_lifecycle_store_error("upsert", issue_id, attrs, reason)
-        {:error, {:put_pr_lifecycle_failed, reason}}
+        log_review_store_error("upsert", issue_id, attrs, reason)
+        {:error, {:put_pr_review_failed, reason}}
     end
   end
 
-  defp complete_lifecycle_update(opts, record, attrs, success_action) do
-    case update_lifecycle(opts, record, attrs) do
+  defp complete_review_update(opts, record, attrs, success_action) do
+    case update_review(opts, record, attrs) do
       :ok -> success_action
       {:error, reason} -> {:update_error, Map.get(record, :issue_id), reason}
     end
   end
 
-  defp log_lifecycle_store_error(operation, issue_id, attrs, reason) do
-    Logger.warning("Failed to #{operation} PR lifecycle record issue_id=#{issue_id} target_status=#{inspect(Map.get(attrs, :status))}: #{inspect(reason)}")
+  defp log_review_store_error(operation, issue_id, attrs, reason) do
+    Logger.warning("Failed to #{operation} PR review record issue_id=#{issue_id} target_status=#{inspect(Map.get(attrs, :status))}: #{inspect(reason)}")
   end
 
   defp backoff_active_until(record, now) do

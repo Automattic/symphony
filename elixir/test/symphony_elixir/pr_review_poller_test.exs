@@ -1,15 +1,15 @@
-defmodule SymphonyElixir.PrLifecycleManagerTest do
+defmodule SymphonyElixir.PrReviewPollerTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Linear.Issue
-  alias SymphonyElixir.PrLifecycleManager
+  alias SymphonyElixir.PrReviewPoller
 
   defmodule FakeTracker do
     alias SymphonyElixir.Linear.Issue
 
     @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
     def fetch_issues_by_states(_states) do
-      {:ok, Application.get_env(:symphony_elixir, :pr_lifecycle_test_issues, [])}
+      {:ok, Application.get_env(:symphony_elixir, :pr_review_test_issues, [])}
     end
 
     @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]}
@@ -18,7 +18,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
 
       issues =
         :symphony_elixir
-        |> Application.get_env(:pr_lifecycle_test_issues, [])
+        |> Application.get_env(:pr_review_test_issues, [])
         |> Enum.filter(fn %Issue{id: id} -> MapSet.member?(wanted, id) end)
 
       {:ok, issues}
@@ -26,10 +26,10 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
 
     @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
     def update_issue_state(issue_id, state_name) do
-      if take_failure(:pr_lifecycle_test_state_update_failures, issue_id) do
+      if take_failure(:pr_review_test_state_update_failures, issue_id) do
         {:error, :linear_unavailable}
       else
-        recipient = Application.fetch_env!(:symphony_elixir, :pr_lifecycle_test_recipient)
+        recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
         send(recipient, {:issue_state_update, issue_id, state_name})
         :ok
       end
@@ -50,76 +50,76 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
   defmodule FakeGitHub do
     @spec fetch_activity(String.t(), keyword()) :: {:ok, map()}
     def fetch_activity(_pr_url, _opts) do
-      {:ok, Application.fetch_env!(:symphony_elixir, :pr_lifecycle_test_activity)}
+      {:ok, Application.fetch_env!(:symphony_elixir, :pr_review_test_activity)}
     end
   end
 
   defmodule FailingGitHub do
     @spec fetch_activity(String.t(), keyword()) :: {:error, term()}
     def fetch_activity(pr_url, _opts) do
-      recipient = Application.fetch_env!(:symphony_elixir, :pr_lifecycle_test_recipient)
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
       send(recipient, {:github_fetch, pr_url})
 
-      {:error, Application.get_env(:symphony_elixir, :pr_lifecycle_test_github_error, :rate_limited)}
+      {:error, Application.get_env(:symphony_elixir, :pr_review_test_github_error, :rate_limited)}
     end
   end
 
   defmodule StatefulRunStore do
     @spec list_runs(:all) :: [map()]
-    def list_runs(:all), do: Application.get_env(:symphony_elixir, :pr_lifecycle_test_runs, [])
+    def list_runs(:all), do: Application.get_env(:symphony_elixir, :pr_review_test_runs, [])
 
-    @spec list_pr_lifecycles() :: [map()]
-    def list_pr_lifecycles do
+    @spec list_pr_reviews() :: [map()]
+    def list_pr_reviews do
       :symphony_elixir
-      |> Application.get_env(:pr_lifecycle_test_lifecycle_records, %{})
+      |> Application.get_env(:pr_review_test_review_records, %{})
       |> Map.values()
     end
 
-    @spec put_pr_lifecycle(map()) :: :ok | {:error, term()}
-    def put_pr_lifecycle(%{issue_id: issue_id} = record) do
-      if take_failure(:pr_lifecycle_test_put_failures, issue_id) do
+    @spec put_pr_review(map()) :: :ok | {:error, term()}
+    def put_pr_review(%{issue_id: issue_id} = record) do
+      if take_failure(:pr_review_test_put_failures, issue_id) do
         {:error, :disk_full}
       else
-        records = Application.get_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, %{})
-        Application.put_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, Map.put(records, issue_id, record))
-        recipient = Application.fetch_env!(:symphony_elixir, :pr_lifecycle_test_recipient)
-        send(recipient, {:put_lifecycle, issue_id})
+        records = Application.get_env(:symphony_elixir, :pr_review_test_review_records, %{})
+        Application.put_env(:symphony_elixir, :pr_review_test_review_records, Map.put(records, issue_id, record))
+        recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+        send(recipient, {:put_review, issue_id})
         :ok
       end
     end
 
-    @spec update_pr_lifecycle(String.t(), map()) :: :ok | {:error, term()}
-    def update_pr_lifecycle(issue_id, attrs) do
-      if take_failure(:pr_lifecycle_test_update_status_failures, Map.get(attrs, :status)) do
+    @spec update_pr_review(String.t(), map()) :: :ok | {:error, term()}
+    def update_pr_review(issue_id, attrs) do
+      if take_failure(:pr_review_test_update_status_failures, Map.get(attrs, :status)) do
         {:error, :disk_full}
       else
-        records = Application.get_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, %{})
+        records = Application.get_env(:symphony_elixir, :pr_review_test_review_records, %{})
 
         case Map.fetch(records, issue_id) do
           {:ok, record} ->
             Application.put_env(
               :symphony_elixir,
-              :pr_lifecycle_test_lifecycle_records,
+              :pr_review_test_review_records,
               Map.put(records, issue_id, Map.merge(record, attrs))
             )
 
-            recipient = Application.fetch_env!(:symphony_elixir, :pr_lifecycle_test_recipient)
-            send(recipient, {:update_lifecycle, issue_id, attrs})
+            recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+            send(recipient, {:update_review, issue_id, attrs})
             :ok
 
           :error ->
-            {:error, :pr_lifecycle_not_found}
+            {:error, :pr_review_not_found}
         end
       end
     end
 
-    @spec delete_pr_lifecycle(String.t()) :: :ok | {:error, term()}
-    def delete_pr_lifecycle(issue_id) do
-      if take_failure(:pr_lifecycle_test_delete_failures, issue_id) do
+    @spec delete_pr_review(String.t()) :: :ok | {:error, term()}
+    def delete_pr_review(issue_id) do
+      if take_failure(:pr_review_test_delete_failures, issue_id) do
         {:error, :disk_full}
       else
-        records = Application.get_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, %{})
-        Application.put_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, Map.delete(records, issue_id))
+        records = Application.get_env(:symphony_elixir, :pr_review_test_review_records, %{})
+        Application.put_env(:symphony_elixir, :pr_review_test_review_records, Map.delete(records, issue_id))
         :ok
       end
     end
@@ -139,7 +139,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
   defmodule FakeWorkspace do
     @spec remove(String.t(), String.t() | nil) :: {:ok, [String.t()]}
     def remove(workspace_path, worker_host) do
-      recipient = Application.fetch_env!(:symphony_elixir, :pr_lifecycle_test_recipient)
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
       send(recipient, {:remove_workspace, workspace_path, worker_host})
 
       {:ok, [workspace_path]}
@@ -148,34 +148,34 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
 
   setup do
     on_exit(fn ->
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_issues)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_activity)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_recipient)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_runs)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_put_failures)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_update_status_failures)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_state_update_failures)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_delete_failures)
-      Application.delete_env(:symphony_elixir, :pr_lifecycle_test_github_error)
+      Application.delete_env(:symphony_elixir, :pr_review_test_issues)
+      Application.delete_env(:symphony_elixir, :pr_review_test_activity)
+      Application.delete_env(:symphony_elixir, :pr_review_test_recipient)
+      Application.delete_env(:symphony_elixir, :pr_review_test_runs)
+      Application.delete_env(:symphony_elixir, :pr_review_test_review_records)
+      Application.delete_env(:symphony_elixir, :pr_review_test_put_failures)
+      Application.delete_env(:symphony_elixir, :pr_review_test_update_status_failures)
+      Application.delete_env(:symphony_elixir, :pr_review_test_state_update_failures)
+      Application.delete_env(:symphony_elixir, :pr_review_test_delete_failures)
+      Application.delete_env(:symphony_elixir, :pr_review_test_github_error)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
-      pr_lifecycle_mode: "daemon",
-      pr_lifecycle_cooldown_minutes: 30,
-      pr_lifecycle_stale_days: 7
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7
     )
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_recipient, self())
+    Application.put_env(:symphony_elixir, :pr_review_test_recipient, self())
     :ok
   end
 
   test "discovers in-review PRs and persists workspace tracking metadata" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [issue])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now))
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now))
 
     assert :ok =
              RunStore.put_run(%{
@@ -190,7 +190,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
              })
 
     assert {:ok, %{discovered: 1, processed: 1}} =
-             PrLifecycleManager.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
 
     assert [
              %{
@@ -200,23 +200,23 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
                workspace_path: "/tmp/workspaces/RSM-1780",
                status: "watching"
              }
-           ] = RunStore.list_pr_lifecycles()
+           ] = RunStore.list_pr_reviews()
   end
 
   test "discovers workspace from newest completed run regardless of store order" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [issue])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now))
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now))
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_runs, [
-      lifecycle_run(issue, "/tmp/workspaces/old", DateTime.add(now, -2, :hour)),
-      lifecycle_run(issue, "/tmp/workspaces/new", DateTime.add(now, -5, :minute)),
-      lifecycle_run(issue, "/tmp/workspaces/running", now, %{status: "running"})
+    Application.put_env(:symphony_elixir, :pr_review_test_runs, [
+      review_run(issue, "/tmp/workspaces/old", DateTime.add(now, -2, :hour)),
+      review_run(issue, "/tmp/workspaces/new", DateTime.add(now, -5, :minute)),
+      review_run(issue, "/tmp/workspaces/running", now, %{status: "running"})
     ])
 
     assert {:ok, %{discovered: 1, processed: 1, actions: [{:watching, "issue-1780"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FakeGitHub,
@@ -224,20 +224,20 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
              )
 
     assert [%{workspace_path: "/tmp/workspaces/new"}] =
-             StatefulRunStore.list_pr_lifecycles()
+             StatefulRunStore.list_pr_reviews()
   end
 
   test "waits for cooldown before moving a rework issue back to an active state" do
     now = ~U[2026-05-01 09:00:00Z]
     latest_review_at = DateTime.add(now, -10, :minute)
     issue = in_review_issue(updated_at: now)
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
 
-    :ok = put_lifecycle(now)
+    :ok = put_review(now)
 
     Application.put_env(
       :symphony_elixir,
-      :pr_lifecycle_test_activity,
+      :pr_review_test_activity,
       open_activity(latest_review_at,
         review_decision: "CHANGES_REQUESTED",
         comments: [%{kind: "inline_comment", author: "reviewer", body: "Please split this.", url: "https://github.com/example/repo/pull/1780#discussion_r1"}]
@@ -245,7 +245,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     )
 
     assert {:ok, %{actions: [{:cooling_down, "issue-1780"}]}} =
-             PrLifecycleManager.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
 
     refute_receive {:issue_state_update, _, _}
 
@@ -253,7 +253,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
 
     Application.put_env(
       :symphony_elixir,
-      :pr_lifecycle_test_activity,
+      :pr_review_test_activity,
       open_activity(latest_review_at,
         review_decision: "CHANGES_REQUESTED",
         comments: [%{kind: "inline_comment", author: "reviewer", body: "Please split this.", url: "https://github.com/example/repo/pull/1780#discussion_r1"}]
@@ -261,7 +261,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     )
 
     assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
                now: now
@@ -270,18 +270,18 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     assert_receive {:issue_state_update, "issue-1780", "In Progress"}
 
     assert [%{status: "rework_requested", target_issue_state: "In Progress", last_action: "rework"}] =
-             RunStore.list_pr_lifecycles()
+             RunStore.list_pr_reviews()
   end
 
   test "moves an approved issue back to an active state for orchestrator-owned merge handling" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [issue])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now, review_decision: "APPROVED"))
-    :ok = put_lifecycle(now)
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, review_decision: "APPROVED"))
+    :ok = put_review(now)
 
     assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :merge, "In Progress"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
                now: now
@@ -290,25 +290,25 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     assert_receive {:issue_state_update, "issue-1780", "In Progress"}
 
     assert [%{status: "merge_requested", target_issue_state: "In Progress", last_action: "merge"}] =
-             RunStore.list_pr_lifecycles()
+             RunStore.list_pr_reviews()
   end
 
   test "approval wins over stale cleanup" do
     now = ~U[2026-05-01 09:00:00Z]
     old_activity_at = DateTime.add(now, -8, :day)
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
 
     Application.put_env(
       :symphony_elixir,
-      :pr_lifecycle_test_activity,
+      :pr_review_test_activity,
       open_activity(old_activity_at, review_decision: "APPROVED")
     )
 
-    :ok = put_lifecycle(now)
+    :ok = put_review(now)
 
     assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :merge, "In Progress"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
                workspace: FakeWorkspace,
@@ -325,10 +325,10 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     latest_pr_activity_at = DateTime.add(now, -10, :minute)
     last_action_at = DateTime.add(review_activity_at, 30, :minute)
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
 
     :ok =
-      put_lifecycle(now, %{
+      put_review(now, %{
         status: "rework_requested",
         last_action: "rework",
         last_action_at: last_action_at,
@@ -338,7 +338,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
 
     Application.put_env(
       :symphony_elixir,
-      :pr_lifecycle_test_activity,
+      :pr_review_test_activity,
       open_activity(latest_pr_activity_at,
         latest_review_activity_at: review_activity_at,
         review_decision: "CHANGES_REQUESTED",
@@ -347,7 +347,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     )
 
     assert {:ok, %{actions: [{:already_handled, "issue-1780", :rework}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
                now: now
@@ -361,43 +361,43 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
                last_activity_at: ^latest_pr_activity_at,
                last_review_activity_at: ^review_activity_at
              }
-           ] = RunStore.list_pr_lifecycles()
+           ] = RunStore.list_pr_reviews()
   end
 
   test "records issue state transition errors without crashing the poll" do
     now = ~U[2026-05-01 09:00:00Z]
     latest_review_at = DateTime.add(now, -31, :minute)
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
 
     Application.put_env(
       :symphony_elixir,
-      :pr_lifecycle_test_activity,
+      :pr_review_test_activity,
       open_activity(latest_review_at, review_decision: "APPROVED")
     )
 
-    :ok = put_lifecycle(now)
+    :ok = put_review(now)
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_state_update_failures, ["issue-1780"])
+    Application.put_env(:symphony_elixir, :pr_review_test_state_update_failures, ["issue-1780"])
 
     assert {:ok, %{actions: [{:state_transition_error, "issue-1780", :merge, :linear_unavailable}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
                now: now
              )
 
     assert [%{status: "state_transition_error", error: ":linear_unavailable", last_action: "merge"}] =
-             RunStore.list_pr_lifecycles()
+             RunStore.list_pr_reviews()
   end
 
   test "cleans up workspace and tracking when PR is closed or stale" do
     now = ~U[2026-05-01 09:00:00Z]
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [in_review_issue(updated_at: now)])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now, state: "MERGED"))
-    :ok = put_lifecycle(now)
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
+    :ok = put_review(now)
 
     assert {:ok, %{actions: [{:cleanup, "issue-1780", "closed"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
                workspace: FakeWorkspace,
@@ -405,14 +405,14 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
              )
 
     assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
-    assert [] = RunStore.list_pr_lifecycles()
+    assert [] = RunStore.list_pr_reviews()
 
     stale_activity_at = DateTime.add(now, -8, :day)
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(stale_activity_at))
-    :ok = put_lifecycle(now)
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(stale_activity_at))
+    :ok = put_review(now)
 
     assert {:ok, %{actions: [{:cleanup, "issue-1780", "stale"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
                workspace: FakeWorkspace,
@@ -420,21 +420,21 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
              )
 
     assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
-    assert [] = RunStore.list_pr_lifecycles()
+    assert [] = RunStore.list_pr_reviews()
   end
 
-  test "does not remove workspace again when lifecycle delete fails after cleanup" do
+  test "does not remove workspace again when review delete fails after cleanup" do
     now = ~U[2026-05-01 09:00:00Z]
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [in_review_issue(updated_at: now)])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now, state: "MERGED"))
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_delete_failures, ["issue-1780"])
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
+    Application.put_env(:symphony_elixir, :pr_review_test_delete_failures, ["issue-1780"])
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, %{
-      "issue-1780" => lifecycle_record(now)
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      "issue-1780" => review_record(now)
     })
 
     assert {:ok, %{actions: [{:cleanup_error, "issue-1780", :disk_full}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FakeGitHub,
@@ -445,10 +445,10 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
 
     assert [%{status: "cleanup_pending", workspace_removed_at: ^now}] =
-             StatefulRunStore.list_pr_lifecycles()
+             StatefulRunStore.list_pr_reviews()
 
     assert {:ok, %{actions: [{:cleanup, "issue-1780", "closed"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FakeGitHub,
@@ -457,22 +457,22 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
              )
 
     refute_receive {:remove_workspace, _, _}, 50
-    assert [] = StatefulRunStore.list_pr_lifecycles()
+    assert [] = StatefulRunStore.list_pr_reviews()
   end
 
   test "does not remove workspace again when cleanup mark update fails before delete failure" do
     now = ~U[2026-05-01 09:00:00Z]
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [in_review_issue(updated_at: now)])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now, state: "MERGED"))
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_update_status_failures, ["cleanup_pending"])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_delete_failures, ["issue-1780"])
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
+    Application.put_env(:symphony_elixir, :pr_review_test_update_status_failures, ["cleanup_pending"])
+    Application.put_env(:symphony_elixir, :pr_review_test_delete_failures, ["issue-1780"])
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, %{
-      "issue-1780" => lifecycle_record(now)
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      "issue-1780" => review_record(now)
     })
 
     assert {:ok, %{actions: [{:cleanup_error, "issue-1780", :disk_full}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FakeGitHub,
@@ -481,13 +481,13 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
              )
 
     assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
-    assert_receive {:put_lifecycle, "issue-1780"}
+    assert_receive {:put_review, "issue-1780"}
 
     assert [%{status: "cleanup_pending", workspace_removed_at: ^now}] =
-             StatefulRunStore.list_pr_lifecycles()
+             StatefulRunStore.list_pr_reviews()
 
     assert {:ok, %{actions: [{:cleanup, "issue-1780", "closed"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FakeGitHub,
@@ -496,10 +496,10 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
              )
 
     refute_receive {:remove_workspace, _, _}, 50
-    assert [] = StatefulRunStore.list_pr_lifecycles()
+    assert [] = StatefulRunStore.list_pr_reviews()
   end
 
-  test "continues lifecycle discovery when one record fails to persist" do
+  test "continues review discovery when one record fails to persist" do
     now = ~U[2026-05-01 09:00:00Z]
 
     failing_issue =
@@ -518,40 +518,40 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
         updated_at: now
       )
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [failing_issue, ok_issue])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now))
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_put_failures, ["issue-fail"])
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [failing_issue, ok_issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now))
+    Application.put_env(:symphony_elixir, :pr_review_test_put_failures, ["issue-fail"])
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_runs, [
-      lifecycle_run(failing_issue, "/tmp/workspaces/RSM-FAIL", now),
-      lifecycle_run(ok_issue, "/tmp/workspaces/RSM-OK", now)
+    Application.put_env(:symphony_elixir, :pr_review_test_runs, [
+      review_run(failing_issue, "/tmp/workspaces/RSM-FAIL", now),
+      review_run(ok_issue, "/tmp/workspaces/RSM-OK", now)
     ])
 
     assert {:ok, %{discovered: 1, processed: 1}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FakeGitHub,
                now: now
              )
 
-    assert_receive {:put_lifecycle, "issue-ok"}
+    assert_receive {:put_review, "issue-ok"}
 
     assert [%{issue_id: "issue-ok", workspace_path: "/tmp/workspaces/RSM-OK"}] =
-             StatefulRunStore.list_pr_lifecycles()
+             StatefulRunStore.list_pr_reviews()
   end
 
   test "backs off GitHub polling after repeated fetch failures" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, %{
-      issue.id => lifecycle_record(now, %{consecutive_errors: 2})
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      issue.id => review_record(now, %{consecutive_errors: 2})
     })
 
     assert {:ok, %{actions: [{:poll_error, "issue-1780", :rate_limited}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FailingGitHub,
@@ -562,12 +562,12 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     assert_receive {:github_fetch, "https://github.com/example/repo/pull/1780"}
 
     assert [%{consecutive_errors: 3, next_poll_at: next_poll_at}] =
-             StatefulRunStore.list_pr_lifecycles()
+             StatefulRunStore.list_pr_reviews()
 
     assert DateTime.diff(next_poll_at, now, :millisecond) == 5_000
 
     assert {:ok, %{actions: [{:backing_off, "issue-1780", ^next_poll_at}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FailingGitHub,
@@ -579,12 +579,12 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
   end
 
   test "poll callback uses cached interval when workflow config becomes invalid" do
-    {:ok, state} = PrLifecycleManager.init(poll_interval_ms: 123)
+    {:ok, state} = PrReviewPoller.init(poll_interval_ms: 123)
     Process.cancel_timer(state.timer_ref)
 
-    File.write!(Workflow.workflow_file_path(), "---\npr_lifecycle:\n  mode: [broken]\n---\n")
+    File.write!(Workflow.workflow_file_path(), "---\npr_review:\n  mode: [broken]\n---\n")
 
-    assert {:noreply, next_state} = PrLifecycleManager.handle_info(:poll, state)
+    assert {:noreply, next_state} = PrReviewPoller.handle_info(:poll, state)
     assert next_state.poll_interval_ms == 123
     assert Keyword.fetch!(next_state.opts, :poll_interval_ms) == 123
     assert is_reference(next_state.timer_ref)
@@ -592,25 +592,25 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     Process.cancel_timer(next_state.timer_ref)
   end
 
-  test "does not report state transition success when final lifecycle update fails" do
+  test "does not report state transition success when final review update fails" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [issue])
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now, review_decision: "APPROVED"))
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, review_decision: "APPROVED"))
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, %{
-      issue.id => lifecycle_record(now)
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      issue.id => review_record(now)
     })
 
-    Application.put_env(:symphony_elixir, :pr_lifecycle_test_update_status_failures, ["merge_requested"])
+    Application.put_env(:symphony_elixir, :pr_review_test_update_status_failures, ["merge_requested"])
 
     assert {:ok,
             %{
               actions: [
-                {:state_transition_update_error, "issue-1780", :merge, {:update_pr_lifecycle_failed, :disk_full}}
+                {:state_transition_update_error, "issue-1780", :merge, {:update_pr_review_failed, :disk_full}}
               ]
             }} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FakeGitHub,
@@ -623,10 +623,10 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
              %{
                status: "watching"
              }
-           ] = StatefulRunStore.list_pr_lifecycles()
+           ] = StatefulRunStore.list_pr_reviews()
 
     assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :merge, "In Progress"}]}} =
-             PrLifecycleManager.poll_once(
+             PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
                github: FakeGitHub,
@@ -636,13 +636,13 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     assert_receive {:issue_state_update, "issue-1780", "In Progress"}
   end
 
-  defp put_lifecycle(now, attrs \\ %{}) do
+  defp put_review(now, attrs \\ %{}) do
     now
-    |> lifecycle_record(attrs)
-    |> RunStore.put_pr_lifecycle()
+    |> review_record(attrs)
+    |> RunStore.put_pr_review()
   end
 
-  defp lifecycle_record(now, attrs \\ %{}) do
+  defp review_record(now, attrs \\ %{}) do
     %{
       issue_id: "issue-1780",
       issue_identifier: "RSM-1780",
@@ -666,7 +666,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     %Issue{
       id: id,
       identifier: identifier,
-      title: "Lifecycle manager",
+      title: "Review manager",
       description: "Poll PR state",
       state: "In Review",
       url: "https://linear.app/a8c/issue/#{identifier}",
@@ -675,7 +675,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     }
   end
 
-  defp lifecycle_run(%Issue{} = issue, workspace_path, now, attrs \\ %{}) do
+  defp review_run(%Issue{} = issue, workspace_path, now, attrs \\ %{}) do
     %{
       run_id: "run-#{issue.id}",
       issue_id: issue.id,

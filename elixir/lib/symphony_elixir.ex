@@ -54,7 +54,7 @@ defmodule SymphonyElixir.Application do
          [
            SymphonyElixir.RunStore,
            SymphonyElixir.Orchestrator,
-           pr_lifecycle_child_spec(),
+           pr_review_child_spec(),
            SymphonyElixir.HttpServer,
            SymphonyElixir.StatusDashboard
          ])
@@ -62,9 +62,9 @@ defmodule SymphonyElixir.Application do
     end
   end
 
-  defp pr_lifecycle_child_spec do
-    case SymphonyElixir.Config.settings!().pr_lifecycle.mode do
-      "daemon" -> SymphonyElixir.PrLifecycleManager
+  defp pr_review_child_spec do
+    case SymphonyElixir.Config.settings!().pr_review.mode do
+      "polling" -> SymphonyElixir.PrReviewPoller
       _mode -> nil
     end
   end

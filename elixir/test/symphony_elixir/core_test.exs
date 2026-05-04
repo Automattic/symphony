@@ -17,9 +17,9 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
-    assert config.pr_lifecycle.mode == "linear"
-    assert config.pr_lifecycle.cooldown_minutes == nil
-    assert config.pr_lifecycle.stale_days == nil
+    assert config.pr_review.mode == "tracker"
+    assert config.pr_review.cooldown_minutes == nil
+    assert config.pr_review.stale_days == nil
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -92,49 +92,49 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
-      pr_lifecycle_mode: "daemon",
-      pr_lifecycle_cooldown_minutes: 15,
-      pr_lifecycle_stale_days: 3
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 15,
+      pr_review_stale_days: 3
     )
 
     config = Config.settings!()
-    assert config.pr_lifecycle.mode == "daemon"
-    assert config.pr_lifecycle.cooldown_minutes == 15
-    assert config.pr_lifecycle.stale_days == 3
+    assert config.pr_review.mode == "polling"
+    assert config.pr_review.cooldown_minutes == 15
+    assert config.pr_review.stale_days == 3
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
-      pr_lifecycle_mode: "daemon"
+      pr_review_mode: "polling"
     )
 
     config = Config.settings!()
-    assert config.pr_lifecycle.mode == "daemon"
-    assert config.pr_lifecycle.cooldown_minutes == 10
-    assert config.pr_lifecycle.stale_days == 7
+    assert config.pr_review.mode == "polling"
+    assert config.pr_review.cooldown_minutes == 10
+    assert config.pr_review.stale_days == 7
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      pr_lifecycle_mode: "linear",
-      pr_lifecycle_cooldown_minutes: "invalid",
-      pr_lifecycle_stale_days: -1
+      pr_review_mode: "tracker",
+      pr_review_cooldown_minutes: "invalid",
+      pr_review_stale_days: -1
     )
 
     config = Config.settings!()
-    assert config.pr_lifecycle.mode == "linear"
-    assert config.pr_lifecycle.cooldown_minutes == nil
-    assert config.pr_lifecycle.stale_days == nil
+    assert config.pr_review.mode == "tracker"
+    assert config.pr_review.cooldown_minutes == nil
+    assert config.pr_review.stale_days == nil
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
-      pr_lifecycle_mode: "daemon",
-      pr_lifecycle_cooldown_minutes: 0
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 0
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "pr_lifecycle.cooldown_minutes"
+    assert message =~ "pr_review.cooldown_minutes"
 
-    write_workflow_file!(Workflow.workflow_file_path(), pr_lifecycle_mode: "invalid")
+    write_workflow_file!(Workflow.workflow_file_path(), pr_review_mode: "invalid")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "pr_lifecycle.mode"
+    assert message =~ "pr_review.mode"
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -307,21 +307,21 @@ defmodule SymphonyElixir.CoreTest do
     assert SymphonyElixir.Orchestrator in test_children
   end
 
-  test "application starts PR lifecycle manager only in daemon mode" do
-    write_workflow_file!(Workflow.workflow_file_path(), pr_lifecycle_mode: "linear")
-    linear_children = SymphonyElixir.Application.child_specs_for_runtime(%{})
+  test "application starts PR review poller only in polling mode" do
+    write_workflow_file!(Workflow.workflow_file_path(), pr_review_mode: "tracker")
+    tracker_children = SymphonyElixir.Application.child_specs_for_runtime(%{})
 
-    refute SymphonyElixir.PrLifecycleManager in linear_children
+    refute SymphonyElixir.PrReviewPoller in tracker_children
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
-      pr_lifecycle_mode: "daemon"
+      pr_review_mode: "polling"
     )
 
-    daemon_children = SymphonyElixir.Application.child_specs_for_runtime(%{})
+    polling_children = SymphonyElixir.Application.child_specs_for_runtime(%{})
 
-    assert SymphonyElixir.Orchestrator in daemon_children
-    assert SymphonyElixir.PrLifecycleManager in daemon_children
+    assert SymphonyElixir.Orchestrator in polling_children
+    assert SymphonyElixir.PrReviewPoller in polling_children
   end
 
   test "linear issue state reconciliation fetch with no running issues is a no-op" do
@@ -927,7 +927,7 @@ defmodule SymphonyElixir.CoreTest do
 
     issue = %Issue{
       identifier: "MT-702",
-      title: "Append daemon context",
+      title: "Append review context",
       description: "Prompt builder should append injected context",
       state: "In Review",
       url: "https://example.org/issues/MT-702",

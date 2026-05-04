@@ -43,8 +43,8 @@ section with its current Linear state, last-run age, and Linear URL.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
-   - By default, `pr_lifecycle.mode: linear` expects the Linear workflow to drive review loops with
-     states such as "Rework" and "Merging". Set `pr_lifecycle.mode: daemon` to let Symphony poll
+   - By default, `pr_review.mode: tracker` expects the Linear workflow to drive review loops with
+     states such as "Rework" and "Merging". Set `pr_review.mode: polling` to let Symphony poll
      GitHub while Linear stays on the standard Todo → In Progress → In Review → Done path.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
@@ -91,14 +91,14 @@ totals so retry backoff and observability data survive process restarts.
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
 
-PR lifecycle mode is controlled by the optional `pr_lifecycle` block. `linear` is the default and
-preserves the existing human-driven review loop. In `daemon` mode, Symphony starts a
-`PrLifecycleManager` process that discovers in-review issues with attached GitHub PRs, records their
+PR review mode is controlled by the optional `pr_review` block. `tracker` is the default and
+preserves the existing human-driven review loop. In `polling` mode, Symphony starts a
+`PrReviewPoller` process that discovers in-review issues with attached GitHub PRs, records their
 PR URL and workspace path in the durable run store, waits `cooldown_minutes` before responding to
 requested changes, moves approved or change-requested issues back to `In Progress` for the
 orchestrator to dispatch through the normal run path, and removes tracked workspaces when PRs close
-or stay idle beyond `stale_days`. `cooldown_minutes` and `stale_days` are daemon-only settings;
-daemon mode defaults them to 10 minutes and 7 days when omitted.
+or stay idle beyond `stale_days`. `cooldown_minutes` and `stale_days` are polling-only settings;
+polling mode defaults them to 10 minutes and 7 days when omitted.
 
 Minimal example:
 
@@ -133,8 +133,8 @@ codex:
     mode: allowlist
     allowed_domains: []
     denied_domains: []
-pr_lifecycle:
-  mode: linear
+pr_review:
+  mode: tracker
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.

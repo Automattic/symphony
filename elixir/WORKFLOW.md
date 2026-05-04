@@ -16,8 +16,8 @@ tracker:
     - Done
 polling:
   interval_ms: 5000
-pr_lifecycle:
-  mode: linear
+pr_review:
+  mode: tracker
 observability:
   transcript_buffer_size: 200
 workspace:

@@ -19,7 +19,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
-          SymphonyElixir.PrLifecycleManager,
+          SymphonyElixir.PrReviewPoller,
           SymphonyElixir.RunStore,
           SymphonyElixir.AgentRunner,
           SymphonyElixir.CLI,

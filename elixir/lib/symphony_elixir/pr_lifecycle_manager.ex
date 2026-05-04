@@ -337,8 +337,7 @@ defmodule SymphonyElixir.PrLifecycleManager do
     else
       case workspace.remove(Map.get(record, :workspace_path), Map.get(record, :worker_host)) do
         {:ok, _removed_paths} ->
-          updated_record = mark_workspace_removed(record, opts, now)
-          delete_lifecycle_after_cleanup(run_store, updated_record, reason)
+          finish_workspace_cleanup(record, opts, now, reason)
 
         {:error, cleanup_reason, output} ->
           complete_lifecycle_update(
@@ -367,7 +366,21 @@ defmodule SymphonyElixir.PrLifecycleManager do
     end
   end
 
+  defp finish_workspace_cleanup(record, opts, now, reason) do
+    run_store = Keyword.get(opts, :run_store, RunStore)
+
+    case mark_workspace_removed(record, opts, now) do
+      {:ok, updated_record} ->
+        delete_lifecycle_after_cleanup(run_store, updated_record, reason)
+
+      {:error, update_reason} ->
+        {:cleanup_error, Map.get(record, :issue_id), update_reason}
+    end
+  end
+
   defp mark_workspace_removed(record, opts, now) do
+    run_store = Keyword.get(opts, :run_store, RunStore)
+
     attrs = %{
       status: "cleanup_pending",
       error: nil,
@@ -377,11 +390,27 @@ defmodule SymphonyElixir.PrLifecycleManager do
 
     case update_lifecycle(opts, record, attrs) do
       :ok ->
-        Map.merge(record, attrs)
+        {:ok, Map.merge(record, attrs)}
 
       {:error, reason} ->
-        Logger.warning("Failed to mark PR lifecycle workspace removed issue_id=#{Map.get(record, :issue_id)}: #{inspect(reason)}")
-        record
+        persist_workspace_removed_after_update_error(run_store, record, attrs, reason)
+    end
+  end
+
+  defp persist_workspace_removed_after_update_error(run_store, record, attrs, update_reason) do
+    issue_id = Map.get(record, :issue_id)
+    updated_record = Map.merge(record, attrs)
+
+    Logger.warning("Failed to update PR lifecycle workspace removal issue_id=#{issue_id}; attempting full record write: #{inspect(update_reason)}")
+
+    case persist_pr_lifecycle(run_store, updated_record) do
+      :ok ->
+        {:ok, updated_record}
+
+      {:error, put_reason} ->
+        Logger.warning("Failed to persist PR lifecycle workspace removal issue_id=#{issue_id}: #{inspect(put_reason)}")
+
+        {:error, {:workspace_removed_update_failed, update_reason, put_reason}}
     end
   end
 
@@ -406,11 +435,22 @@ defmodule SymphonyElixir.PrLifecycleManager do
   defp first_pr_url(_issue), do: nil
 
   defp latest_run_for_issue(runs, issue_id) when is_list(runs) and is_binary(issue_id) do
-    Enum.find(runs, fn run ->
-      Map.get(run, :issue_id) == issue_id and
-        Map.get(run, :status) in ["success", "stopped"] and
-        is_binary(Map.get(run, :workspace_path))
-    end)
+    runs
+    |> Enum.filter(&lifecycle_run_for_issue?(&1, issue_id))
+    |> Enum.max_by(&run_started_at_sort_key/1, fn -> nil end)
+  end
+
+  defp lifecycle_run_for_issue?(run, issue_id) do
+    Map.get(run, :issue_id) == issue_id and
+      Map.get(run, :status) in ["success", "stopped"] and
+      is_binary(Map.get(run, :workspace_path))
+  end
+
+  defp run_started_at_sort_key(run) do
+    case Map.get(run, :started_at) do
+      %DateTime{} = started_at -> DateTime.to_unix(started_at, :microsecond)
+      _started_at -> 0
+    end
   end
 
   defp handled_activity?(record, latest_activity_at) do

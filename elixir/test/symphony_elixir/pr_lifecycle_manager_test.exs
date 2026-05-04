@@ -203,6 +203,30 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
            ] = RunStore.list_pr_lifecycles()
   end
 
+  test "discovers workspace from newest completed run regardless of store order" do
+    now = ~U[2026-05-01 09:00:00Z]
+    issue = in_review_issue(updated_at: now)
+    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now))
+
+    Application.put_env(:symphony_elixir, :pr_lifecycle_test_runs, [
+      lifecycle_run(issue, "/tmp/workspaces/old", DateTime.add(now, -2, :hour)),
+      lifecycle_run(issue, "/tmp/workspaces/new", DateTime.add(now, -5, :minute)),
+      lifecycle_run(issue, "/tmp/workspaces/running", now, %{status: "running"})
+    ])
+
+    assert {:ok, %{discovered: 1, processed: 1, actions: [{:watching, "issue-1780"}]}} =
+             PrLifecycleManager.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               now: now
+             )
+
+    assert [%{workspace_path: "/tmp/workspaces/new"}] =
+             StatefulRunStore.list_pr_lifecycles()
+  end
+
   test "waits for cooldown before moving a rework issue back to an active state" do
     now = ~U[2026-05-01 09:00:00Z]
     latest_review_at = DateTime.add(now, -10, :minute)
@@ -436,6 +460,45 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     assert [] = StatefulRunStore.list_pr_lifecycles()
   end
 
+  test "does not remove workspace again when cleanup mark update fails before delete failure" do
+    now = ~U[2026-05-01 09:00:00Z]
+    Application.put_env(:symphony_elixir, :pr_lifecycle_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_lifecycle_test_activity, open_activity(now, state: "MERGED"))
+    Application.put_env(:symphony_elixir, :pr_lifecycle_test_update_status_failures, ["cleanup_pending"])
+    Application.put_env(:symphony_elixir, :pr_lifecycle_test_delete_failures, ["issue-1780"])
+
+    Application.put_env(:symphony_elixir, :pr_lifecycle_test_lifecycle_records, %{
+      "issue-1780" => lifecycle_record(now)
+    })
+
+    assert {:ok, %{actions: [{:cleanup_error, "issue-1780", :disk_full}]}} =
+             PrLifecycleManager.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               workspace: FakeWorkspace,
+               now: now
+             )
+
+    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert_receive {:put_lifecycle, "issue-1780"}
+
+    assert [%{status: "cleanup_pending", workspace_removed_at: ^now}] =
+             StatefulRunStore.list_pr_lifecycles()
+
+    assert {:ok, %{actions: [{:cleanup, "issue-1780", "closed"}]}} =
+             PrLifecycleManager.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               workspace: FakeWorkspace,
+               now: DateTime.add(now, 5, :second)
+             )
+
+    refute_receive {:remove_workspace, _, _}, 50
+    assert [] = StatefulRunStore.list_pr_lifecycles()
+  end
+
   test "continues lifecycle discovery when one record fails to persist" do
     now = ~U[2026-05-01 09:00:00Z]
 
@@ -612,7 +675,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
     }
   end
 
-  defp lifecycle_run(%Issue{} = issue, workspace_path, now) do
+  defp lifecycle_run(%Issue{} = issue, workspace_path, now, attrs \\ %{}) do
     %{
       run_id: "run-#{issue.id}",
       issue_id: issue.id,
@@ -623,6 +686,7 @@ defmodule SymphonyElixir.PrLifecycleManagerTest do
       started_at: DateTime.add(now, -120, :second),
       ended_at: DateTime.add(now, -60, :second)
     }
+    |> Map.merge(attrs)
   end
 
   defp open_activity(latest_activity_at, opts \\ []) do

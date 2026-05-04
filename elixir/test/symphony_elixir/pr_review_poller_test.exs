@@ -64,6 +64,14 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     end
   end
 
+  defmodule RaisingRunStore do
+    @spec list_runs(:all) :: no_return()
+    def list_runs(:all), do: raise("poll exploded")
+
+    @spec list_pr_reviews() :: [map()]
+    def list_pr_reviews, do: []
+  end
+
   defmodule StatefulRunStore do
     @spec list_runs(:all) :: [map()]
     def list_runs(:all), do: Application.get_env(:symphony_elixir, :pr_review_test_runs, [])
@@ -499,6 +507,45 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [] = StatefulRunStore.list_pr_reviews()
   end
 
+  test "reports cleanup error when workspace removal update and fallback put both fail" do
+    now = ~U[2026-05-01 09:00:00Z]
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
+    Application.put_env(:symphony_elixir, :pr_review_test_update_status_failures, ["cleanup_pending"])
+    Application.put_env(:symphony_elixir, :pr_review_test_put_failures, ["issue-1780"])
+
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      "issue-1780" => review_record(now)
+    })
+
+    expected_reason =
+      {:workspace_removed_update_failed, {:update_pr_review_failed, :disk_full}, :disk_full}
+
+    log =
+      capture_log([level: :warning], fn ->
+        assert {:ok,
+                %{
+                  actions: [
+                    {:cleanup_error, "issue-1780", ^expected_reason}
+                  ]
+                }} =
+                 PrReviewPoller.poll_once(
+                   tracker: FakeTracker,
+                   run_store: StatefulRunStore,
+                   github: FakeGitHub,
+                   workspace: FakeWorkspace,
+                   now: now
+                 )
+      end)
+
+    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert log =~ "Failed to update PR review workspace removal issue_id=issue-1780"
+    assert log =~ "Failed to persist PR review workspace removal issue_id=issue-1780"
+
+    assert [%{status: "watching"} = record] = StatefulRunStore.list_pr_reviews()
+    refute Map.has_key?(record, :workspace_removed_at)
+  end
+
   test "continues review discovery when one record fails to persist" do
     now = ~U[2026-05-01 09:00:00Z]
 
@@ -590,6 +637,65 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert is_reference(next_state.timer_ref)
 
     Process.cancel_timer(next_state.timer_ref)
+  end
+
+  test "poll callback logs exceptions and keeps scheduling" do
+    now = ~U[2026-05-01 09:00:00Z]
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    {:ok, state} =
+      PrReviewPoller.init(
+        tracker: FakeTracker,
+        run_store: RaisingRunStore,
+        poll_interval_ms: 123,
+        now: now
+      )
+
+    Process.cancel_timer(state.timer_ref)
+
+    log =
+      capture_log([level: :error], fn ->
+        assert {:noreply, next_state} = PrReviewPoller.handle_info(:poll, state)
+        assert next_state.poll_interval_ms == 123
+        assert Keyword.fetch!(next_state.opts, :poll_interval_ms) == 123
+        assert is_reference(next_state.timer_ref)
+        Process.cancel_timer(next_state.timer_ref)
+      end)
+
+    assert log =~ "PR review poll raised"
+    assert log =~ "poll exploded"
+  end
+
+  test "poll callback logs warning-level signals for review action errors" do
+    now = ~U[2026-05-01 09:00:00Z]
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, review_decision: "APPROVED"))
+    Application.put_env(:symphony_elixir, :pr_review_test_update_status_failures, ["merge_requested"])
+
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      "issue-1780" => review_record(now)
+    })
+
+    {:ok, state} =
+      PrReviewPoller.init(
+        tracker: FakeTracker,
+        run_store: StatefulRunStore,
+        github: FakeGitHub,
+        poll_interval_ms: 123,
+        now: now
+      )
+
+    Process.cancel_timer(state.timer_ref)
+
+    log =
+      capture_log([level: :warning], fn ->
+        assert {:noreply, next_state} = PrReviewPoller.handle_info(:poll, state)
+        Process.cancel_timer(next_state.timer_ref)
+      end)
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+    assert log =~ "PR review transition update error issue_id=issue-1780 action=merge"
+    assert log =~ "update_pr_review_failed"
   end
 
   test "does not report state transition success when final review update fails" do

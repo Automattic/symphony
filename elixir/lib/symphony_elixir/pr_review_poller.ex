@@ -45,12 +45,21 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   @impl true
   def handle_info(:poll, %State{} = state) do
-    case poll_once(state.opts) do
-      {:ok, summary} ->
-        Logger.debug("PR review poll completed: #{inspect(summary)}")
+    try do
+      case poll_once(state.opts) do
+        {:ok, summary} ->
+          Logger.debug("PR review poll completed: #{inspect(summary)}")
+          log_poll_action_warnings(summary)
 
-      {:error, reason} ->
-        Logger.warning("PR review poll failed: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("PR review poll failed: #{inspect(reason)}")
+      end
+    rescue
+      exception ->
+        Logger.error("PR review poll raised: #{Exception.format(:error, exception, __STACKTRACE__)}")
+    catch
+      kind, reason ->
+        Logger.error("PR review poll failed with #{kind}: #{Exception.format(kind, reason, __STACKTRACE__)}")
     end
 
     {:noreply, schedule_poll(state, state.poll_interval_ms)}
@@ -147,11 +156,50 @@ defmodule SymphonyElixir.PrReviewPoller do
 
       Map.merge(existing || %{}, base)
     else
-      _ -> nil
+      nil ->
+        nil
+
+      other ->
+        Logger.debug("discover_review_record skipped issue_id=#{issue.id}: #{inspect(other)}")
+        nil
     end
   end
 
   defp discover_review_record(_issue, _runs, _existing, _now), do: nil
+
+  defp log_poll_action_warnings(%{actions: actions}) when is_list(actions) do
+    Enum.each(actions, &log_poll_action_warning/1)
+  end
+
+  defp log_poll_action_warning({:cleanup_error, issue_id, reason}) do
+    Logger.warning("PR review cleanup error issue_id=#{issue_id}: #{inspect(reason)}")
+  end
+
+  defp log_poll_action_warning({:poll_error, issue_id, reason}) do
+    Logger.warning("PR review poll error issue_id=#{issue_id}: #{inspect(reason)}")
+  end
+
+  defp log_poll_action_warning({:poll_error_update_failed, issue_id, reason, update_reason}) do
+    Logger.warning("PR review poll error update failed issue_id=#{issue_id} reason=#{inspect(reason)}: #{inspect(update_reason)}")
+  end
+
+  defp log_poll_action_warning({:state_transition_error, issue_id, action, reason}) do
+    Logger.warning("PR review transition error issue_id=#{issue_id} action=#{action}: #{inspect(reason)}")
+  end
+
+  defp log_poll_action_warning({:state_transition_update_error, issue_id, action, reason}) do
+    Logger.warning("PR review transition update error issue_id=#{issue_id} action=#{action}: #{inspect(reason)}")
+  end
+
+  defp log_poll_action_warning({:state_transition_error_update_failed, issue_id, action, reason, update_reason}) do
+    Logger.warning("PR review transition error update failed issue_id=#{issue_id} action=#{action} reason=#{inspect(reason)}: #{inspect(update_reason)}")
+  end
+
+  defp log_poll_action_warning({:update_error, issue_id, reason}) do
+    Logger.warning("PR review update error issue_id=#{issue_id}: #{inspect(reason)}")
+  end
+
+  defp log_poll_action_warning(_action), do: :ok
 
   defp process_review(record, settings, opts, now) when is_map(record) do
     case backoff_active_until(record, now) do

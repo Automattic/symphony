@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   require Logger
   alias SymphonyElixir.{Config, PathSafety}
+  alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
 
   @agent_runtime_env "SYMPHONY_AGENT_RUNTIME"
@@ -158,7 +159,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp write_claude_settings(workspace) do
     settings = Config.settings!()
-    network_access = settings.agent.network_access || %Agent.NetworkAccess{}
+    network_access = settings.agent.network_access
     sandbox_json = build_sandbox_settings(network_access)
     claude_dir = Path.join(workspace, ".claude")
     File.mkdir_p!(claude_dir)
@@ -271,7 +272,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
        }) do
     denied_set = MapSet.new(denied)
 
-    (SymphonyElixir.Config.Schema.codex_built_in_network_allowed_domains() ++ extra)
+    (Schema.codex_built_in_network_allowed_domains() ++ extra)
     |> Enum.reject(&MapSet.member?(denied_set, &1))
     |> Enum.uniq()
   end

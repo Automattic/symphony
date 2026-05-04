@@ -133,6 +133,17 @@ defmodule SymphonyElixir.Config do
       settings.agent.kind not in ["codex", "claude"] ->
         {:error, {:unsupported_agent_kind, settings.agent.kind}}
 
+      true ->
+        with :ok <- validate_tracker_semantics(settings),
+             :ok <- validate_workspace_semantics(settings) do
+          warn_if_budget_token_reporting_unavailable(settings)
+          :ok
+        end
+    end
+  end
+
+  defp validate_tracker_semantics(settings) do
+    cond do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
 
@@ -146,10 +157,7 @@ defmodule SymphonyElixir.Config do
         {:error, :missing_linear_project_slug}
 
       true ->
-        with :ok <- validate_workspace_semantics(settings) do
-          warn_if_budget_token_reporting_unavailable(settings)
-          :ok
-        end
+        :ok
     end
   end
 

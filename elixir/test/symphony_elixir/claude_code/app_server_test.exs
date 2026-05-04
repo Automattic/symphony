@@ -68,13 +68,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
   describe "parse_event/1" do
     test "parses system event and returns session_started tuple" do
-      line = ~s({"type":"system","subtype":"init","session_id":"sess-abc123","cwd":"/tmp/workspace","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"})
+      line =
+        ~s({"type":"system","subtype":"init","session_id":"sess-abc123","cwd":"/tmp/workspace","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"})
 
       assert {:session_started, "sess-abc123"} = AppServer.parse_event(line)
     end
 
     test "parses result/success event and returns turn_completed with token counts" do
-      line = ~s({"type":"result","subtype":"success","duration_ms":1500,"duration_api_ms":1200,"is_error":false,"num_turns":1,"result":"done","session_id":"sess-abc","total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}})
+      line =
+        ~s({"type":"result","subtype":"success","duration_ms":1500,"duration_api_ms":1200,"is_error":false,"num_turns":1,"result":"done","session_id":"sess-abc","total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}})
 
       assert {:turn_completed, result} = AppServer.parse_event(line)
       assert result.input_tokens == 100
@@ -106,7 +108,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     end
 
     test "parses assistant event and returns notification" do
-      line = ~s({"type":"assistant","message":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"I will help you."}],"model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-1"})
+      line =
+        ~s({"type":"assistant","message":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"I will help you."}],"model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-1"})
 
       assert {:notification, text} = AppServer.parse_event(line)
       assert text =~ "I will help you."
@@ -116,6 +119,20 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       line = ~s({"type":"tool_use","name":"bash","id":"tool-1","input":{"command":"ls"}})
 
       assert {:notification, "tool: bash"} = AppServer.parse_event(line)
+    end
+
+    test "parses assistant event with no text content items and returns generic notification" do
+      line =
+        ~s({"type":"assistant","message":{"id":"msg-2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2"})
+
+      assert {:notification, "assistant message"} = AppServer.parse_event(line)
+    end
+
+    test "parses assistant event with non-list content and returns generic notification" do
+      line =
+        ~s({"type":"assistant","message":{"id":"msg-3","type":"message","role":"assistant","content":"text response","model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":2}},"session_id":"sess-3"})
+
+      assert {:notification, "assistant message"} = AppServer.parse_event(line)
     end
   end
 
@@ -174,6 +191,342 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         assert {:error, {:invalid_workspace_cwd, :outside_workspace_root, _, _}} =
                  AppServer.start_session(outside_workspace)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns error when workspace path cannot be read due to permissions" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-unreadable-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        locked_dir = Path.join(workspace_root, "locked")
+        workspace = Path.join(locked_dir, "RSM-99")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude"
+        )
+
+        # Remove read/execute permission on parent dir so lstat on workspace fails
+        File.chmod!(locked_dir, 0o000)
+
+        assert {:error, {:invalid_workspace_cwd, :path_unreadable, _, _}} =
+                 AppServer.start_session(workspace)
+      after
+        locked_dir = Path.join(Path.join(test_root, "workspaces"), "locked")
+
+        if File.exists?(locked_dir) or not is_nil(File.stat(locked_dir)) do
+          File.chmod(locked_dir, 0o755)
+        end
+
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns error when workspace path equals the workspace root" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-workspace-root-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        File.mkdir_p!(workspace_root)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude"
+        )
+
+        assert {:error, {:invalid_workspace_cwd, :workspace_root, _}} =
+                 AppServer.start_session(workspace_root)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "accepts remote worker host without validating against workspace root" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-session-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        File.mkdir_p!(test_root)
+
+        assert {:ok, session} =
+                 AppServer.start_session(test_root, worker_host: "worker-01")
+
+        assert session.workspace == test_root
+        assert session.worker_host == "worker-01"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "rejects empty workspace path for remote workers" do
+      assert {:error, {:invalid_workspace_cwd, :empty_remote_workspace, _}} =
+               AppServer.start_session("   ", worker_host: "worker-01")
+    end
+
+    test "rejects workspace path with newline for remote workers" do
+      assert {:error, {:invalid_workspace_cwd, :invalid_remote_workspace, _, _}} =
+               AppServer.start_session("/remote/work\nspace", worker_host: "worker-01")
+    end
+  end
+
+  describe "stop_session/1" do
+    test "always returns :ok" do
+      assert :ok = AppServer.stop_session(%{workspace: "/tmp/ws", metadata: %{}, worker_host: nil})
+    end
+  end
+
+  describe "run_turn/4" do
+    test "runs a successful turn and returns token usage" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-run-turn-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-1")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-run-1","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"assistant","message":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}],"model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-run-1"}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"sess-run-1","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+        test_pid = self()
+        on_message = fn msg -> send(test_pid, {:turn_msg, msg}) end
+
+        assert {:ok, result} = AppServer.run_turn(session, "do the thing", %{}, on_message: on_message)
+        assert result.input_tokens == 10
+        assert result.output_tokens == 5
+
+        assert_received {:turn_msg, {:notification, _}}
+        assert_received {:turn_msg, {:turn_completed, _}}
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns error when turn exits with non-zero status" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-run-turn-exit-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-2")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' 'some error output'
+        exit 1
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:error, {:exit_status, 1}} = AppServer.run_turn(session, "do the thing", %{}, [])
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "forwards turn_failed event on result/error stream line" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-run-turn-failed-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-3")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"result","subtype":"error","error":"claude api error","session_id":"sess-run-3"}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+        test_pid = self()
+        on_message = fn msg -> send(test_pid, {:turn_msg, msg}) end
+
+        assert {:ok, _result} =
+                 AppServer.run_turn(session, "do the thing", %{}, on_message: on_message)
+
+        assert_received {:turn_msg, {:turn_failed, "claude api error"}}
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns error when prompt file cannot be written" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-prompt-fail-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-PF")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "fake-claude"
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        # Make the workspace read-only so the prompt file cannot be written
+        File.chmod!(workspace, 0o555)
+
+        result = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert {:error, {:prompt_file_write_failed, _}} = result
+      after
+        File.chmod!(
+          Path.join(
+            Path.join(test_root, "workspaces"),
+            "RSM-PF"
+          ),
+          0o755
+        )
+
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "runs a turn over ssh for remote workers" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-run-#{System.unique_integer([:positive])}"
+        )
+
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-REMOTE")
+        fake_ssh = Path.join(test_root, "ssh")
+        File.mkdir_p!(workspace)
+        System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+        File.write!(fake_ssh, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-remote","cwd":"/remote","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":200,"duration_api_ms":150,"is_error":false,"num_turns":1,"result":"remote done","session_id":"sess-remote","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_ssh, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "fake-claude-remote"
+        )
+
+        {:ok, session} = AppServer.start_session(workspace, worker_host: "worker-01")
+
+        assert {:ok, result} = AppServer.run_turn(session, "remote task", %{}, [])
+        assert result.input_tokens == 5
+        assert result.output_tokens == 3
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "skips noeol partial lines without crashing" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-run-turn-noeol-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-4")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        padding = String.duplicate("a", 1_100_000)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '#{padding}\\n'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":100,"duration_api_ms":80,"is_error":false,"num_turns":1,"result":"ok","session_id":"sess-run-4","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:ok, result} = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert result.input_tokens == 1
       after
         File.rm_rf(test_root)
       end

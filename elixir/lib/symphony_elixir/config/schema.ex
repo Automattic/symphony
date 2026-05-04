@@ -173,6 +173,8 @@ defmodule SymphonyElixir.Config.Schema do
       use Ecto.Schema
       import Ecto.Changeset
 
+      @type t :: %__MODULE__{}
+
       @primary_key false
       @modes ["allowlist", "open", "block"]
 

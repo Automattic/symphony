@@ -49,12 +49,18 @@ defmodule SymphonyElixir.AgentRunner do
   defp enrich_issue_for_dispatch(issue, opts) do
     issue_enricher = Keyword.get(opts, :issue_enricher, &Tracker.enrich_issue/1)
 
-    case issue_enricher.(issue) do
-      {:ok, enriched_issue} ->
-        enriched_issue
+    try do
+      case issue_enricher.(issue) do
+        {:ok, enriched_issue} ->
+          enriched_issue
 
-      {:error, reason} ->
-        Logger.warning("issue_enrichment_failed #{issue_context(issue)} reason=#{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("issue_enrichment_failed #{issue_context(issue)} reason=#{inspect(reason)}")
+          issue
+      end
+    rescue
+      exception ->
+        Logger.warning("issue_enrichment_failed #{issue_context(issue)} reason=#{inspect(exception)}")
         issue
     end
   end

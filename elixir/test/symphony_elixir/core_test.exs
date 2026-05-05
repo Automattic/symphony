@@ -892,9 +892,9 @@ defmodule SymphonyElixir.CoreTest do
              "comments" => %{
                "nodes" => [
                  %{
-                   "body" => "Latest human note",
-                   "createdAt" => "2026-05-05T03:00:00Z",
-                   "user" => %{"name" => "Alex"}
+                   "body" => "Third recent note",
+                   "createdAt" => "2026-05-05T01:00:00Z",
+                   "user" => %{"name" => "Sam"}
                  },
                  %{
                    "body" => "## Codex Workpad\n" <> long_body,
@@ -903,12 +903,12 @@ defmodule SymphonyElixir.CoreTest do
                  },
                  %{
                    "body" => "Second recent note",
-                   "createdAt" => "2026-05-05T01:00:00Z",
-                   "user" => %{"name" => "Sam"}
+                   "createdAt" => "2026-05-05T03:00:00Z",
+                   "user" => %{"name" => "Alex"}
                  },
                  %{
-                   "body" => "Fourth note outside the budget",
-                   "createdAt" => "2026-05-05T00:00:00Z",
+                   "body" => "Latest human note",
+                   "createdAt" => "2026-05-05T04:00:00Z",
                    "user" => %{"name" => "Taylor"}
                  }
                ]
@@ -948,18 +948,18 @@ defmodule SymphonyElixir.CoreTest do
 
     assert {:ok, enriched_issue} = Client.fetch_issue_enrichment_for_test(issue, graphql_fun)
 
-    assert_receive {:enrichment_query, query, %{id: "issue-1", commentFirst: comment_first, relationFirst: relation_first}}
+    assert_receive {:enrichment_query, query, %{id: "issue-1", commentLast: comment_last, relationFirst: relation_first}}
 
     assert query =~ "SymphonyLinearIssueEnrichment"
-    assert query =~ "comments(first: $commentFirst, orderBy: createdAt)"
+    assert query =~ "comments(last: $commentLast, orderBy: createdAt)"
     assert query =~ "relations(first: $relationFirst)"
-    assert comment_first == 20
+    assert comment_last == 20
     assert relation_first == 50
 
     assert [
-             %{author: "Codex", body: workpad_body, created_at: "2026-05-05T02:00:00Z"},
-             %{author: "Alex", body: "Latest human note", created_at: "2026-05-05T03:00:00Z"},
-             %{author: "Sam", body: "Second recent note", created_at: "2026-05-05T01:00:00Z"}
+             %{author: "Codex", body: workpad_body, created_at: ~U[2026-05-05 02:00:00Z]},
+             %{author: "Taylor", body: "Latest human note", created_at: ~U[2026-05-05 04:00:00Z]},
+             %{author: "Alex", body: "Second recent note", created_at: ~U[2026-05-05 03:00:00Z]}
            ] = enriched_issue.comments
 
     assert String.starts_with?(workpad_body, "## Codex Workpad\n")
@@ -1226,7 +1226,7 @@ defmodule SymphonyElixir.CoreTest do
     enriched_issue = %{
       issue
       | comments: [
-          %{author: "Codex", body: "## Codex Workpad\nExisting plan", created_at: "2026-05-05T02:00:00Z"}
+          %{author: "Codex", body: "## Codex Workpad\nExisting plan", created_at: ~U[2026-05-05 02:00:00Z]}
         ],
         linked_issues: [
           %{relation: "related", identifier: "MT-617", title: "Design decision", state: "Todo"}
@@ -1260,7 +1260,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt == "Retry #2"
   end
 
-  test "agent runner keeps workspace after successful codex run" do
+  test "agent runner falls back when issue enrichment raises and keeps workspace after successful codex run" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1324,7 +1324,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       before = MapSet.new(File.ls!(workspace_root))
-      assert :ok = AgentRunner.run(issue, nil, issue_enricher: fn _issue -> {:error, :boom} end)
+      assert :ok = AgentRunner.run(issue, nil, issue_enricher: fn _issue -> raise "boom" end)
       entries_after = MapSet.new(File.ls!(workspace_root))
 
       created =
@@ -1611,7 +1611,7 @@ defmodule SymphonyElixir.CoreTest do
         {:ok,
          %{
            issue
-           | comments: [%{author: "Codex", body: "Prior workpad", created_at: "2026-05-05T02:00:00Z"}],
+           | comments: [%{author: "Codex", body: "Prior workpad", created_at: ~U[2026-05-05 02:00:00Z]}],
              linked_issues: [%{relation: "related", identifier: "MT-248", title: "Related", state: "Todo"}]
          }}
       end

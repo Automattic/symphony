@@ -35,7 +35,7 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
-  @spec enrich_issue(term()) :: {:ok, term()} | {:error, term()}
+  @spec enrich_issue(Issue.t()) :: {:ok, Issue.t()} | {:error, term()}
   def enrich_issue(issue), do: {:ok, issue}
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}

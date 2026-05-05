@@ -28,7 +28,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     def fetch_issue_enrichment(issue) do
       send(self(), {:fetch_issue_enrichment_called, issue})
-      {:ok, %{issue | comments: [%{author: "Reviewer", body: "Existing context", created_at: "2026-05-05T01:00:00Z"}]}}
+      {:ok, %{issue | comments: [%{author: "Reviewer", body: "Existing context", created_at: ~U[2026-05-05 01:00:00Z]}]}}
     end
 
     def graphql(query, variables) do
@@ -226,7 +226,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     issue = %Issue{id: "issue-1", identifier: "MT-1"}
     assert {:ok, enriched_issue} = Adapter.enrich_issue(issue)
-    assert enriched_issue.comments == [%{author: "Reviewer", body: "Existing context", created_at: "2026-05-05T01:00:00Z"}]
+    assert enriched_issue.comments == [%{author: "Reviewer", body: "Existing context", created_at: ~U[2026-05-05 01:00:00Z]}]
     assert_receive {:fetch_issue_enrichment_called, ^issue}
 
     Process.put(

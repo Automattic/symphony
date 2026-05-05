@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   @issue_page_size 50
   @attachment_page_size 20
-  @enrichment_comment_first 20
+  @enrichment_comment_last 20
   @enrichment_relation_first 50
   @enrichment_comment_limit 3
   @enrichment_comment_body_limit 800
@@ -124,9 +124,9 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @enrichment_query """
-  query SymphonyLinearIssueEnrichment($id: String!, $commentFirst: Int!, $relationFirst: Int!) {
+  query SymphonyLinearIssueEnrichment($id: String!, $commentLast: Int!, $relationFirst: Int!) {
     issue(id: $id) {
-      comments(first: $commentFirst, orderBy: createdAt) {
+      comments(last: $commentLast, orderBy: createdAt) {
         nodes {
           body
           createdAt
@@ -435,7 +435,7 @@ defmodule SymphonyElixir.Linear.Client do
         with {:ok, body} <-
                graphql_fun.(@enrichment_query, %{
                  id: id,
-                 commentFirst: @enrichment_comment_first,
+                 commentLast: @enrichment_comment_last,
                  relationFirst: @enrichment_relation_first
                }),
              {:ok, enrichment} <- decode_issue_enrichment_response(body) do
@@ -813,6 +813,7 @@ defmodule SymphonyElixir.Linear.Client do
           normalized -> [normalized]
         end
       end)
+      |> Enum.reverse()
 
     workpad_comment = Enum.find(normalized_comments, & &1.contains_workpad_marker)
 
@@ -834,7 +835,7 @@ defmodule SymphonyElixir.Linear.Client do
         author: comment_author(comment),
         body: truncate_comment_body(body),
         contains_workpad_marker: String.contains?(body, @workpad_marker),
-        created_at: comment["createdAt"]
+        created_at: parse_datetime(comment["createdAt"])
       }
     end
   end

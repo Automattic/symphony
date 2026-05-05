@@ -512,7 +512,7 @@ pre,
 .quality-filter-form {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
-  gap: 0.8rem;
+  gap: 1.2rem;
   align-items: end;
   margin-top: 1rem;
 }
@@ -546,6 +546,10 @@ pre,
   min-height: 2.45rem;
   border-radius: 6px;
   padding: 0.45rem 0.9rem;
+  background: var(--card);
+  border-color: var(--line-strong);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
 }
 
 .quality-table {

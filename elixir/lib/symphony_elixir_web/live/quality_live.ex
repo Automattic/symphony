@@ -7,14 +7,21 @@ defmodule SymphonyElixirWeb.QualityLive do
 
   alias SymphonyElixir.Quality
 
+  @default_date_from_days 30
+
   @impl true
-  def mount(params, _session, socket) do
-    {:ok, assign(socket, :payload, Quality.dashboard_payload(params))}
+  def mount(_params, _session, socket) do
+    {:ok, socket}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
+    params = Map.put_new(params, "date_from", default_date_from())
     {:noreply, assign(socket, :payload, Quality.dashboard_payload(params))}
+  end
+
+  defp default_date_from do
+    Date.utc_today() |> Date.add(-@default_date_from_days) |> Date.to_iso8601()
   end
 
   @impl true

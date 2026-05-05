@@ -1241,7 +1241,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.agent.max_tokens_per_day == nil
     assert config.agent.command == "codex app-server"
 
-    assert config.agent.approval_policy == "never"
+    assert config.agent.approval_policy == %{
+             "reject" => %{
+               "sandbox_approval" => true,
+               "rules" => true,
+               "mcp_elicitations" => true
+             }
+           }
 
     assert config.agent.thread_sandbox == "workspace-write"
     assert config.agent.network_access.mode == "allowlist"

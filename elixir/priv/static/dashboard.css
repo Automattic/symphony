@@ -505,6 +505,11 @@ pre,
   min-height: 2rem;
 }
 
+.hero-copy + .action-pill {
+  margin-top: 0.75rem;
+  display: inline-flex;
+}
+
 .quality-metrics {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }

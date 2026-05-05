@@ -177,6 +177,14 @@ defmodule SymphonyElixir.Config.Schema do
 
     alias SymphonyElixir.Config.Schema
 
+    @codex_default_approval_policy %{
+      "reject" => %{
+        "sandbox_approval" => true,
+        "rules" => true,
+        "mcp_elicitations" => true
+      }
+    }
+
     defmodule NetworkAccess do
       @moduledoc false
       use Ecto.Schema
@@ -213,7 +221,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_tokens_per_day, :integer)
       field(:command, :string)
 
-      field(:approval_policy, StringOrMap, default: "never")
+      field(:approval_policy, StringOrMap, default: @codex_default_approval_policy)
 
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
@@ -226,6 +234,8 @@ defmodule SymphonyElixir.Config.Schema do
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
+      approval_policy_configured? = approval_policy_configured?(attrs)
+
       schema
       |> cast(
         attrs,
@@ -259,9 +269,23 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:command_timeout_ms, greater_than_or_equal_to: 0)
+      |> default_approval_policy_for_kind(approval_policy_configured?)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
       |> cast_embed(:network_access, with: &NetworkAccess.changeset/2)
+    end
+
+    defp approval_policy_configured?(attrs) do
+      Map.has_key?(attrs, "approval_policy") or Map.has_key?(attrs, :approval_policy)
+    end
+
+    defp default_approval_policy_for_kind(changeset, true), do: changeset
+
+    defp default_approval_policy_for_kind(changeset, false) do
+      case get_field(changeset, :kind) do
+        "claude" -> put_change(changeset, :approval_policy, "never")
+        _kind -> changeset
+      end
     end
   end
 

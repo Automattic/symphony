@@ -105,6 +105,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Move status only when the matching quality bar is met.
 - Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
+- Use the in-execution clarification escape hatch when planning cannot derive unambiguous acceptance criteria from the issue description and comments; halting is required, not optional, in that case.
 
 ## Related skills
 
@@ -116,7 +117,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Status map
 
-- `Backlog` -> out of scope for this workflow; do not modify.
+- `Backlog` -> out of scope for this workflow; do not modify, except when the in-execution clarification escape hatch returns the issue to `Backlog` for human input.
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `In Review`).
 - `In Progress` -> implementation actively underway.
@@ -200,6 +201,16 @@ When a ticket has an attached PR, run this protocol before moving to `In Review`
 5. Re-run validation after feedback-driven changes and push updates.
 6. Repeat this sweep until there are no outstanding actionable comments.
 
+## CI failure triage protocol (required when checks are red)
+
+Use this whenever pushed checks come back failing, at any push gate (including the §7 push gate and the §11 pre-`In Review` loop).
+
+1. Fetch the failed log output with `gh run view --log-failed`.
+2. Categorize the failure as flaky/retryable infrastructure or a real code defect.
+3. For real failures, diagnose the root cause, fix it, rerun validation locally, then loop back through the validation, diff-review, commit, and push gates.
+4. Never use `--no-verify`, `--force`, or skipped hooks to bypass failures.
+5. If the failure is in unrelated pre-existing code, document it in the workpad and note it explicitly in the PR description.
+
 ## Blocked-access escape hatch (required behavior)
 
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
@@ -217,8 +228,9 @@ Use this only when completion is blocked by missing required tools or missing au
 Use this only when planning reaches a fundamentally unclear specification and the issue description plus comments do not provide unambiguous acceptance criteria.
 
 1. Post a short Linear comment with the specific unanswered questions. This is an exception to the single-workpad rule; do not create a second workpad.
-2. Move the issue to `Backlog`, or to the configured `needs_clarity_state` when that is available.
-3. Stop. Do not guess or implement against a half-spec.
+2. Record in the workpad: the unanswered questions, the reason planning could not proceed, and the URL of the Linear comment posted in step 1. The next human picking up the ticket must be able to reconstruct the blocker without re-deriving it.
+3. Move the issue to `Backlog`. This is the documented exception to the status map's `do not modify` rule for `Backlog`.
+4. Stop. Do not guess or implement against a half-spec.
 
 ## Step 2: Execution phase (Todo -> In Progress -> In Review)
 
@@ -242,11 +254,12 @@ Use this only when planning reaches a fundamentally unclear specification and th
     - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green.
-    - Run `git diff origin/main` and review the full diff for:
+    - If a prior push's CI checks are still failing, follow the `CI failure triage protocol` before re-pushing.
+    - After staging/committing changes and before pushing, run `git diff origin/main..HEAD` to review committed-only diff for:
       - stray debug statements, `console.log`, hardcoded test values, or temporary proof edits,
       - unintended file changes outside the ticket's scope,
       - incomplete hunks, half-finished removals, or reverted-only placeholders.
-    - Only commit and push after this review is clean.
+    - Only push after this review is clean.
     - Record `diff reviewed — clean` in the workpad before each push.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
@@ -265,12 +278,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
 11. Before moving to `In Review`, poll PR feedback and checks:
     - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
     - Run the full PR feedback sweep protocol.
-    - Confirm PR checks are passing (green) after the latest changes.
-      - If a check fails, fetch the failed log output with `gh run view --log-failed`.
-      - Categorize the failure as flaky/retryable infrastructure or a real code defect.
-      - For real failures, diagnose the root cause, fix it, rerun validation locally, then loop back through the validation, diff-review, commit, and push gates.
-      - Never use `--no-verify`, `--force`, or skipped hooks to bypass failures.
-      - If the failure is in unrelated pre-existing code, document it in the workpad and note it explicitly in the PR description.
+    - Confirm PR checks are passing (green) after the latest changes; if any are red, follow the `CI failure triage protocol`.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
@@ -329,8 +337,9 @@ Use this only when planning reaches a fundamentally unclear specification and th
 - If adding, removing, or changing packages/dependencies:
   - justify the dependency change in the workpad, including why that package is appropriate and why the work should not be implemented inline,
   - verify the lock file diff includes only changes relevant to the current ticket,
+  - if the lock file contains irrelevant changes, restore it from `origin/main`, re-run only the required install command, and re-verify before pushing,
   - flag any transitive dependency upgrades that were not explicitly intended.
-- If planning cannot derive unambiguous acceptance criteria from the issue description and comments, use the in-execution clarification escape hatch: post the specific Linear questions, move the issue to `Backlog` or the configured `needs_clarity_state`, and stop.
+- If planning cannot derive unambiguous acceptance criteria from the issue description and comments, use the in-execution clarification escape hatch: post the specific Linear questions, record the workpad bookkeeping required by that section, move the issue to `Backlog`, and stop.
 - Do not move to `In Review` unless the `Completion bar before In Review` is satisfied.
 - In `In Review`, do not make changes; wait and poll.
 - If state is terminal (`Done`), do nothing and shut down.

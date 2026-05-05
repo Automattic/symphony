@@ -13,14 +13,11 @@ defmodule SymphonyElixir.Config.Schema do
 
   @type t :: %__MODULE__{}
 
-  @codex_built_in_network_allowed_domains [
+  @shared_built_in_network_allowed_domains [
     "api.github.com",
     "api.linear.app",
-    "api.openai.com",
-    "auth.openai.com",
     "bitbucket.org",
     "codeload.github.com",
-    "chatgpt.com",
     "crates.io",
     "files.pythonhosted.org",
     "github-cloud.githubusercontent.com",
@@ -48,6 +45,18 @@ defmodule SymphonyElixir.Config.Schema do
     "static.crates.io",
     "sum.golang.org"
   ]
+
+  @codex_built_in_network_allowed_domains @shared_built_in_network_allowed_domains ++
+                                            [
+                                              "api.openai.com",
+                                              "auth.openai.com",
+                                              "chatgpt.com"
+                                            ]
+
+  @claude_built_in_network_allowed_domains @shared_built_in_network_allowed_domains ++
+                                             [
+                                               "api.anthropic.com"
+                                             ]
 
   defmodule StringOrMap do
     @moduledoc false
@@ -204,15 +213,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_tokens_per_day, :integer)
       field(:command, :string)
 
-      field(:approval_policy, StringOrMap,
-        default: %{
-          "reject" => %{
-            "sandbox_approval" => true,
-            "rules" => true,
-            "mcp_elicitations" => true
-          }
-        }
-      )
+      field(:approval_policy, StringOrMap, default: "never")
 
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
@@ -557,6 +558,12 @@ defmodule SymphonyElixir.Config.Schema do
   @spec codex_built_in_network_allowed_domains() :: [String.t()]
   def codex_built_in_network_allowed_domains do
     @codex_built_in_network_allowed_domains
+  end
+
+  @doc false
+  @spec claude_built_in_network_allowed_domains() :: [String.t()]
+  def claude_built_in_network_allowed_domains do
+    @claude_built_in_network_allowed_domains
   end
 
   @doc false

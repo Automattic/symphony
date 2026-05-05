@@ -36,18 +36,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     settings = Config.settings!()
     command = settings.agent.command
     turn_timeout_ms = settings.agent.turn_timeout_ms
+    command_timeout_ms = settings.agent.command_timeout_ms
 
-    with {:ok, prompt_file} <- write_prompt_file(prompt, workspace) do
+    with {:ok, port} <- start_port(workspace, command, prompt, worker_host) do
       try do
-        with {:ok, port} <- start_port(workspace, command, prompt_file, prompt, worker_host) do
-          try do
-            read_port_output(port, on_message, turn_timeout_ms)
-          after
-            safe_close_port(port)
-          end
-        end
+        read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms)
       after
-        File.rm(prompt_file)
+        safe_close_port(port)
       end
     end
   end
@@ -87,6 +82,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @doc false
   @spec parse_event(String.t()) ::
           {:session_started, String.t()}
+          | {:tool_use, String.t()}
           | {:notification, String.t()}
           | {:turn_completed, map()}
           | {:turn_failed, String.t()}
@@ -100,7 +96,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         {:notification, summarize_assistant_message(message)}
 
       {:ok, %{"type" => "tool_use", "name" => name}} ->
-        {:notification, "tool: #{name}"}
+        {:tool_use, name}
 
       {:ok, %{"type" => "result", "subtype" => "success"} = event} ->
         {:turn_completed, extract_turn_result(event)}
@@ -181,22 +177,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp write_settings_file(settings_path, sandbox_json) do
-    case File.write(settings_path, Jason.encode!(sandbox_json, pretty: true)) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:claude_settings_write_failed, :write, settings_path, reason}}
+    case Jason.encode(sandbox_json, pretty: true) do
+      {:ok, json} ->
+        case File.write(settings_path, json) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:claude_settings_write_failed, :write, settings_path, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:claude_settings_encode_failed, reason}}
     end
   end
 
-  defp write_prompt_file(prompt, workspace) do
-    tmp_path = Path.join(workspace, ".claude_prompt_#{System.unique_integer([:positive])}.txt")
-
-    case File.write(tmp_path, prompt) do
-      :ok -> {:ok, tmp_path}
-      {:error, reason} -> {:error, {:prompt_file_write_failed, reason}}
-    end
-  end
-
-  defp start_port(workspace, command, _prompt_file, prompt, nil) do
+  defp start_port(workspace, command, prompt, nil) do
     with {:ok, {executable, command_args}} <- local_command(workspace, command) do
       args = command_args ++ ["--output-format", "stream-json", "--print", prompt]
 
@@ -218,9 +211,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp start_port(_workspace, command, prompt_file, _prompt, worker_host) do
+  defp start_port(_workspace, command, prompt, worker_host) do
     with {:ok, command_words} <- command_words(command) do
-      SSH.start_port(worker_host, remote_launch_command(command_words, prompt_file), line: @port_line_bytes)
+      SSH.start_port(worker_host, remote_launch_command(command_words, prompt), line: @port_line_bytes)
     end
   end
 
@@ -265,12 +258,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp remote_launch_command(command_words, prompt_file) do
-    command =
-      command_words
-      |> Enum.map_join(" ", &shell_escape/1)
-
-    "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print \"$(cat #{shell_escape(prompt_file)})\""
+  defp remote_launch_command(command_words, prompt) do
+    command = command_words |> Enum.map_join(" ", &shell_escape/1)
+    "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print #{shell_escape(prompt)}"
   end
 
   defp agent_runtime_env do
@@ -281,19 +271,42 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
-  defp read_port_output(port, on_message, turn_timeout_ms) do
-    acc = %{session_id: nil, input_tokens: 0, output_tokens: 0, turn_failed: nil}
-    read_loop(port, on_message, acc, turn_timeout_ms)
+  defp read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms) do
+    now = System.monotonic_time(:millisecond)
+    turn_deadline = now + turn_timeout_ms
+    acc = %{session_id: nil, input_tokens: 0, output_tokens: 0, turn_failed: nil, turn_completed: false}
+    read_loop(port, on_message, acc, turn_deadline, nil, command_timeout_ms, "")
   end
 
-  defp read_loop(port, on_message, acc, turn_timeout_ms) do
+  defp read_loop(port, on_message, acc, turn_deadline, command_deadline, command_timeout_ms, pending_line) do
+    now = System.monotonic_time(:millisecond)
+    turn_remaining = max(1, turn_deadline - now)
+
+    timeout =
+      case command_deadline do
+        nil -> turn_remaining
+        cd -> min(turn_remaining, max(1, cd - now))
+      end
+
     receive do
       {^port, {:data, {:eol, line}}} ->
-        acc = handle_line(line, on_message, acc)
-        read_loop(port, on_message, acc, turn_timeout_ms)
+        full_line = pending_line <> line
+        event = parse_event(full_line)
 
-      {^port, {:data, {:noeol, _partial}}} ->
-        read_loop(port, on_message, acc, turn_timeout_ms)
+        new_command_deadline =
+          case event do
+            {:tool_use, _} when command_timeout_ms > 0 ->
+              System.monotonic_time(:millisecond) + command_timeout_ms
+
+            _ ->
+              command_deadline
+          end
+
+        acc = apply_event(event, on_message, acc)
+        read_loop(port, on_message, acc, turn_deadline, new_command_deadline, command_timeout_ms, "")
+
+      {^port, {:data, {:noeol, partial}}} ->
+        read_loop(port, on_message, acc, turn_deadline, command_deadline, command_timeout_ms, pending_line <> partial)
 
       {^port, {:exit_status, 0}} ->
         finalize_read_result(acc)
@@ -301,8 +314,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       {^port, {:exit_status, status}} ->
         {:error, {:exit_status, status}}
     after
-      turn_timeout_ms ->
-        {:error, :turn_timeout}
+      timeout ->
+        if System.monotonic_time(:millisecond) >= turn_deadline do
+          {:error, :turn_timeout}
+        else
+          {:error, :command_timeout}
+        end
     end
   end
 
@@ -310,20 +327,31 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     {:error, {:turn_failed, reason}}
   end
 
-  defp finalize_read_result(acc), do: {:ok, Map.delete(acc, :turn_failed)}
+  defp finalize_read_result(%{turn_completed: false}) do
+    {:error, :no_result_event}
+  end
 
-  defp handle_line(line, on_message, acc) do
-    case parse_event(line) do
+  defp finalize_read_result(acc) do
+    {:ok, acc |> Map.delete(:turn_failed) |> Map.delete(:turn_completed)}
+  end
+
+  defp apply_event(event, on_message, acc) do
+    case event do
       {:session_started, session_id} ->
+        on_message.({:session_started, session_id})
         %{acc | session_id: session_id}
 
       {:turn_completed, result} ->
         on_message.({:turn_completed, result})
-        Map.merge(acc, result)
+        acc |> Map.merge(result) |> Map.put(:turn_completed, true)
 
       {:turn_failed, reason} ->
         on_message.({:turn_failed, reason})
         %{acc | turn_failed: reason}
+
+      {:tool_use, name} ->
+        on_message.({:notification, "tool: #{name}"})
+        acc
 
       {:notification, text} ->
         on_message.({:notification, text})
@@ -345,7 +373,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
        }) do
     denied_set = MapSet.new(denied)
 
-    (Schema.codex_built_in_network_allowed_domains() ++ extra)
+    (Schema.claude_built_in_network_allowed_domains() ++ extra)
     |> Enum.reject(&MapSet.member?(denied_set, &1))
     |> Enum.uniq()
   end

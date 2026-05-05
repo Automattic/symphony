@@ -321,6 +321,7 @@ defmodule SymphonyElixir.StatusDashboard do
              running: running,
              watching: Map.get(snapshot, :watching, []),
              retrying: retrying,
+             skipped: Map.get(snapshot, :skipped, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -340,6 +341,7 @@ defmodule SymphonyElixir.StatusDashboard do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         watching = Map.get(snapshot, :watching, [])
+        skipped = Map.get(snapshot, :skipped, [])
         rate_limits = Map.get(snapshot, :rate_limits)
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
@@ -356,6 +358,8 @@ defmodule SymphonyElixir.StatusDashboard do
         watching_rows = format_watching_rows(watching, watching_url_width)
         watching_to_backoff_spacer = if(watching == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        backoff_to_skipped_spacer = if(retrying == [], do: [], else: ["│"])
+        skipped_rows = format_skipped_rows(skipped)
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -387,6 +391,9 @@ defmodule SymphonyElixir.StatusDashboard do
            watching_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           backoff_to_skipped_spacer ++
+           [colorize("├─ Skipped (quality gate)", @ansi_bold), "│"] ++
+           skipped_rows ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -837,6 +844,49 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_error(_), do: ""
+
+  defp format_skipped_rows(skipped) when is_list(skipped) do
+    if skipped == [] do
+      ["│  " <> colorize("No issues skipped this session", @ansi_gray)]
+    else
+      skipped
+      |> Enum.sort_by(&skipped_sort_key/1)
+      |> Enum.map(&format_skipped_row/1)
+    end
+  end
+
+  defp format_skipped_rows(_skipped), do: format_skipped_rows([])
+
+  defp skipped_sort_key(%{identifier: identifier}) when is_binary(identifier), do: identifier
+  defp skipped_sort_key(%{issue_id: issue_id}), do: issue_id || ""
+  defp skipped_sort_key(_entry), do: ""
+
+  defp format_skipped_row(entry) do
+    label = entry.identifier || entry.issue_id || "unknown"
+    score_part = format_skipped_score(entry)
+    reason_part = format_skipped_reason(entry)
+
+    "│  #{colorize("✗", @ansi_red)} " <>
+      colorize(label, @ansi_red) <>
+      score_part <>
+      reason_part
+  end
+
+  defp format_skipped_score(%{score: score}) when is_integer(score) do
+    " " <> colorize("score=#{score}", @ansi_yellow)
+  end
+
+  defp format_skipped_score(%{error: error}) when not is_nil(error) do
+    " " <> colorize("error", @ansi_red)
+  end
+
+  defp format_skipped_score(_entry), do: ""
+
+  defp format_skipped_reason(%{reason: reason}) when is_binary(reason) and reason != "" do
+    " " <> colorize(truncate(reason, 96), @ansi_dim)
+  end
+
+  defp format_skipped_reason(_entry), do: ""
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)

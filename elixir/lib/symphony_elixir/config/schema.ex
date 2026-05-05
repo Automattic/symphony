@@ -443,6 +443,47 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule QualityGate do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @type t :: %__MODULE__{}
+
+    @primary_key false
+    @providers ["anthropic", "openai"]
+    @on_error_modes ["pass", "skip"]
+
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:provider, :string)
+      field(:model, :string)
+      field(:min_score, :integer, default: 6)
+      field(:on_error, :string, default: "pass")
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled, :provider, :model, :min_score, :on_error], empty_values: [])
+      |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
+      |> validate_inclusion(:on_error, @on_error_modes, message: "must be one of: #{Enum.join(@on_error_modes, ", ")}")
+      |> validate_number(:min_score, greater_than_or_equal_to: 1, less_than_or_equal_to: 10)
+      |> validate_required_when_enabled()
+    end
+
+    defp validate_required_when_enabled(changeset) do
+      if get_field(changeset, :enabled) do
+        changeset
+        |> validate_required([:provider, :model],
+          message: "is required when quality_gate.enabled is true"
+        )
+      else
+        changeset
+      end
+    end
+  end
+
   embedded_schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
@@ -454,6 +495,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:pr_review, PrReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
   end
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
@@ -624,6 +666,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:pr_review, with: &PrReview.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
+    |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
   end
 
   defp finalize_settings(settings) do

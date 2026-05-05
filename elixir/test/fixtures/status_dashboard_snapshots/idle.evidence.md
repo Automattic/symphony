@@ -22,5 +22,8 @@
 ├─ Backoff queue
 │
 │  No queued retries
+├─ Skipped (quality gate)
+│
+│  No issues skipped this session
 ╰─
 ```

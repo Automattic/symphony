@@ -7,7 +7,17 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, RunStore, StatusDashboard, Tracker, URLUtils, Workspace}
+  alias SymphonyElixir.{
+    AgentRunner,
+    Config,
+    QualityGate,
+    RunStore,
+    StatusDashboard,
+    Tracker,
+    URLUtils,
+    Workspace
+  }
+
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixirWeb.ObservabilityPubSub
 
@@ -46,7 +56,9 @@ defmodule SymphonyElixir.Orchestrator do
       budget_day_started_on: nil,
       budget_daily_used: 0,
       budget_daily_paused_logged: false,
-      budget_exhausted: MapSet.new()
+      budget_exhausted: MapSet.new(),
+      quality_gate_cache: %{},
+      quality_gate_skipped: %{}
     ]
   end
 
@@ -262,7 +274,8 @@ defmodule SymphonyElixir.Orchestrator do
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+      {gated_issues, state} = apply_quality_gate(issues, state)
+      choose_issues(gated_issues, state)
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -646,6 +659,72 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminate_task(_pid), do: :ok
+
+  defp apply_quality_gate(issues, %State{} = state) do
+    config = Config.settings!().quality_gate
+
+    case config do
+      %SymphonyElixir.Config.Schema.QualityGate{enabled: true} = gate_config ->
+        %{passed: passed, skipped: skipped, cache: cache} =
+          QualityGate.evaluate(issues, gate_config, state.quality_gate_cache)
+
+        {cache, skipped_with_status} = post_quality_gate_skip_comments(skipped, gate_config, cache)
+        skipped_index = index_skipped_entries(skipped_with_status)
+
+        state = %{state | quality_gate_cache: cache, quality_gate_skipped: skipped_index}
+        {passed, state}
+
+      _disabled ->
+        state = %{state | quality_gate_skipped: %{}}
+        {issues, state}
+    end
+  end
+
+  defp post_quality_gate_skip_comments(skipped, gate_config, cache) do
+    Enum.reduce(skipped, {cache, []}, fn entry, {cache_acc, entries} ->
+      case post_quality_gate_comment_if_needed(entry, gate_config, cache_acc) do
+        {:posted, updated_cache} ->
+          {updated_cache, [%{entry | comment_posted?: true} | entries]}
+
+        {:skipped_post, ^cache_acc} ->
+          {cache_acc, [entry | entries]}
+      end
+    end)
+    |> then(fn {cache_acc, entries_rev} -> {cache_acc, Enum.reverse(entries_rev)} end)
+  end
+
+  defp post_quality_gate_comment_if_needed(%{comment_posted?: true}, _config, cache),
+    do: {:skipped_post, cache}
+
+  defp post_quality_gate_comment_if_needed(entry, gate_config, cache) do
+    body = QualityGate.skip_comment_body(entry, gate_config)
+
+    case Tracker.create_comment(entry.issue_id, body) do
+      :ok ->
+        {:posted, QualityGate.mark_comment_posted(cache, entry)}
+
+      {:error, reason} ->
+        Logger.warning("QualityGate skip-comment post failed issue=#{entry.identifier || entry.issue_id} reason=#{inspect(reason)}")
+
+        {:skipped_post, cache}
+    end
+  end
+
+  defp index_skipped_entries(entries) do
+    Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
+  end
+
+  defp snapshot_skipped_entry(entry) do
+    %{
+      issue_id: entry.issue_id,
+      identifier: entry.identifier,
+      url: URLUtils.present_url(entry.url),
+      score: Map.get(entry, :score),
+      reason: Map.get(entry, :reason),
+      error: Map.get(entry, :error),
+      updated_at: entry.updated_at
+    }
+  end
 
   defp choose_issues(issues, state) do
     state = reset_daily_budget_if_needed(state)
@@ -1702,11 +1781,17 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    skipped =
+      state.quality_gate_skipped
+      |> Map.values()
+      |> Enum.map(&snapshot_skipped_entry/1)
+
     {:reply,
      %{
        running: running,
        watching: watching,
        retrying: retrying,
+       skipped: skipped,
        run_history: persisted_run_history(),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),

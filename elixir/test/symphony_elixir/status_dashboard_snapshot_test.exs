@@ -165,6 +165,64 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("watching_issues", render_snapshot(snapshot_data, 0.0))
   end
 
+  test "skipped section renders quality-gate skips with score and reason" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         skipped: [
+           %{
+             issue_id: "issue-skip-1",
+             identifier: "MT-SKIP",
+             url: "https://example.org/MT-SKIP",
+             score: 3,
+             reason: "vague description",
+             error: nil,
+             updated_at: ~U[2026-05-05 03:00:00Z]
+           },
+           %{
+             issue_id: "issue-skip-2",
+             identifier: "MT-ERR",
+             url: nil,
+             score: nil,
+             reason: "LLM call failed: :boom",
+             error: :boom,
+             updated_at: ~U[2026-05-05 03:00:00Z]
+           }
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "Skipped (quality gate)"
+    assert rendered =~ "MT-SKIP"
+    assert rendered =~ "score=3"
+    assert rendered =~ "vague description"
+    assert rendered =~ "MT-ERR"
+    assert rendered =~ "error"
+    assert rendered =~ "LLM call failed"
+  end
+
+  test "skipped section shows empty state when no issues are skipped" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         skipped: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "Skipped (quality gate)"
+    assert rendered =~ "No issues skipped this session"
+  end
+
   test "backoff queue row escapes escaped newline sequences" do
     snapshot_data =
       {:ok,

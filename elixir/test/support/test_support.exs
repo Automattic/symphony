@@ -139,6 +139,7 @@ defmodule SymphonyElixir.TestSupport do
           pr_review_stale_days: nil,
           server_port: nil,
           server_host: nil,
+          quality_gate: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -189,6 +190,7 @@ defmodule SymphonyElixir.TestSupport do
     pr_review_stale_days = Keyword.get(config, :pr_review_stale_days)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    quality_gate = Keyword.get(config, :quality_gate)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -237,6 +239,7 @@ defmodule SymphonyElixir.TestSupport do
         ),
         pr_review_yaml(pr_review_mode, pr_review_cooldown_minutes, pr_review_stale_days),
         server_yaml(server_port, server_host),
+        quality_gate_yaml(quality_gate),
         "---",
         prompt
       ]
@@ -333,6 +336,31 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
+
+  defp quality_gate_yaml(nil), do: nil
+
+  defp quality_gate_yaml(opts) when is_list(opts) or is_map(opts) do
+    fields =
+      [
+        kv("enabled", Map.get(map_from(opts), :enabled)),
+        kv("provider", Map.get(map_from(opts), :provider)),
+        kv("model", Map.get(map_from(opts), :model)),
+        kv("min_score", Map.get(map_from(opts), :min_score)),
+        kv("on_error", Map.get(map_from(opts), :on_error))
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case fields do
+      [] -> nil
+      lines -> Enum.join(["quality_gate:" | lines], "\n")
+    end
+  end
+
+  defp map_from(opts) when is_list(opts), do: Enum.into(opts, %{})
+  defp map_from(opts) when is_map(opts), do: opts
+
+  defp kv(_name, nil), do: nil
+  defp kv(name, value), do: "  #{name}: #{yaml_value(value)}"
 
   defp hook_entry(_name, nil), do: nil
 

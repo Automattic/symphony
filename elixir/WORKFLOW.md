@@ -47,6 +47,16 @@ agent:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+# Optional: score each candidate issue for agent-readiness with an LLM before
+# queuing it. Issues scoring below `min_score` are skipped, surfaced on the
+# dashboard's Skipped section, and a Linear comment is posted explaining why.
+# Provider API keys are read from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+# quality_gate:
+#   enabled: true
+#   provider: anthropic        # or: openai
+#   model: claude-haiku-4-5-20251001
+#   min_score: 6               # 1-10; issues scoring below this are skipped
+#   on_error: pass             # or: skip — behavior when the LLM call fails
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

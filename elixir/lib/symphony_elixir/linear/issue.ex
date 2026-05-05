@@ -16,6 +16,8 @@ defmodule SymphonyElixir.Linear.Issue do
     :assignee_id,
     pr_urls: [],
     blocked_by: [],
+    comments: [],
+    linked_issues: [],
     labels: [],
     assigned_to_worker: true,
     created_at: nil,
@@ -34,6 +36,10 @@ defmodule SymphonyElixir.Linear.Issue do
           pull_request_url: String.t() | nil,
           assignee_id: String.t() | nil,
           pr_urls: [String.t()],
+          comments: [%{author: String.t(), body: String.t(), created_at: String.t() | nil}],
+          linked_issues: [
+            %{relation: String.t(), identifier: String.t(), title: String.t() | nil, state: String.t() | nil}
+          ],
           labels: [String.t()],
           assigned_to_worker: boolean(),
           created_at: DateTime.t() | nil,

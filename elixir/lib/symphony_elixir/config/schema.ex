@@ -213,7 +213,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_tokens_per_day, :integer)
       field(:command, :string)
 
-      field(:approval_policy, StringOrMap, default: "never")
+      field(:approval_policy, StringOrMap)
 
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
@@ -691,7 +691,10 @@ defmodule SymphonyElixir.Config.Schema do
 
     agent = %{
       settings.agent
-      | approval_policy: normalize_keys(settings.agent.approval_policy),
+      | approval_policy:
+          settings.agent
+          |> default_agent_approval_policy()
+          |> normalize_keys(),
         turn_sandbox_policy: normalize_optional_map(settings.agent.turn_sandbox_policy),
         network_access: normalize_network_access(settings.agent.network_access)
     }
@@ -709,6 +712,20 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp codex_network_access(%Agent.NetworkAccess{} = network_access), do: network_access
   defp codex_network_access(nil), do: %Agent.NetworkAccess{}
+
+  defp default_agent_approval_policy(%Agent{approval_policy: nil, kind: "claude"}), do: "never"
+
+  defp default_agent_approval_policy(%Agent{approval_policy: nil}) do
+    %{
+      "reject" => %{
+        "sandbox_approval" => true,
+        "rules" => true,
+        "mcp_elicitations" => true
+      }
+    }
+  end
+
+  defp default_agent_approval_policy(%Agent{approval_policy: approval_policy}), do: approval_policy
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

@@ -15,7 +15,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @type session :: %{
           workspace: Path.t(),
           metadata: map(),
-          worker_host: String.t() | nil
+          worker_host: String.t() | nil,
+          settings_path: Path.t()
         }
 
   # --- AgentBehaviour callbacks ---
@@ -25,8 +26,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     worker_host = Keyword.get(opts, :worker_host)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         :ok <- write_claude_settings(expanded_workspace) do
-      {:ok, %{workspace: expanded_workspace, metadata: %{}, worker_host: worker_host}}
+         {:ok, settings_path} <- write_claude_settings(expanded_workspace, worker_host) do
+      {:ok, %{workspace: expanded_workspace, metadata: %{}, worker_host: worker_host, settings_path: settings_path}}
     end
   end
 
@@ -48,6 +49,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   @spec stop_session(session()) :: :ok
+  def stop_session(%{settings_path: settings_path, worker_host: nil}) when is_binary(settings_path) do
+    remove_local_settings(settings_path)
+  end
+
+  def stop_session(%{settings_path: settings_path, worker_host: worker_host})
+      when is_binary(settings_path) and is_binary(worker_host) do
+    remove_remote_settings(worker_host, settings_path)
+  end
+
   def stop_session(_session), do: :ok
 
   # --- Sandbox settings ---
@@ -157,15 +167,46 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_claude_settings(workspace) do
+  defp write_claude_settings(workspace, worker_host) do
     settings = Config.settings!()
     network_access = settings.agent.network_access
     sandbox_json = build_sandbox_settings(network_access)
     claude_dir = Path.join(workspace, ".claude")
     settings_path = Path.join(claude_dir, "settings.json")
 
+    with {:ok, json} <- encode_settings_json(sandbox_json),
+         :ok <- write_settings_file(claude_dir, settings_path, json, worker_host) do
+      {:ok, settings_path}
+    end
+  end
+
+  defp encode_settings_json(sandbox_json) do
+    encoder = Application.get_env(:symphony_elixir, :claude_settings_json_encoder, &Jason.encode/2)
+
+    case encoder.(sandbox_json, pretty: true) do
+      {:ok, json} -> {:ok, json}
+      {:error, reason} -> {:error, {:claude_settings_encode_failed, reason}}
+    end
+  end
+
+  defp write_settings_file(claude_dir, settings_path, json, nil) do
     with :ok <- mkdir_claude_dir(claude_dir) do
-      write_settings_file(settings_path, sandbox_json)
+      write_local_settings_file(settings_path, json)
+    end
+  end
+
+  defp write_settings_file(claude_dir, settings_path, json, worker_host) when is_binary(worker_host) do
+    command = remote_write_settings_command(claude_dir, settings_path, json)
+
+    case SSH.run(worker_host, command, stderr_to_stdout: true) do
+      {:ok, {_output, 0}} ->
+        :ok
+
+      {:ok, {output, status}} ->
+        {:error, {:claude_settings_write_failed, :remote, worker_host, status, output}}
+
+      {:error, reason} ->
+        {:error, {:claude_settings_write_failed, :remote, worker_host, reason}}
     end
   end
 
@@ -176,16 +217,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_settings_file(settings_path, sandbox_json) do
-    case Jason.encode(sandbox_json, pretty: true) do
-      {:ok, json} ->
-        case File.write(settings_path, json) do
-          :ok -> :ok
-          {:error, reason} -> {:error, {:claude_settings_write_failed, :write, settings_path, reason}}
-        end
-
-      {:error, reason} ->
-        {:error, {:claude_settings_encode_failed, reason}}
+  defp write_local_settings_file(settings_path, json) do
+    case File.write(settings_path, json) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:claude_settings_write_failed, :write, settings_path, reason}}
     end
   end
 
@@ -211,9 +246,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp start_port(_workspace, command, prompt, worker_host) do
+  defp start_port(workspace, command, prompt, worker_host) do
     with {:ok, command_words} <- command_words(command) do
-      SSH.start_port(worker_host, remote_launch_command(command_words, prompt), line: @port_line_bytes)
+      SSH.start_port(worker_host, remote_launch_command(workspace, command_words, prompt), line: @port_line_bytes)
     end
   end
 
@@ -258,13 +293,62 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp remote_launch_command(command_words, prompt) do
+  defp remote_write_settings_command(claude_dir, settings_path, json) do
+    [
+      "mkdir -p #{shell_escape(claude_dir)}",
+      "printf %s #{shell_escape(json)} > #{shell_escape(settings_path)}"
+    ]
+    |> Enum.join(" && ")
+  end
+
+  defp remote_remove_settings_command(settings_path) do
+    claude_dir = Path.dirname(settings_path)
+
+    [
+      "rm -f #{shell_escape(settings_path)}",
+      "rmdir #{shell_escape(claude_dir)} 2>/dev/null || true"
+    ]
+    |> Enum.join(" && ")
+  end
+
+  defp remote_launch_command(workspace, command_words, prompt) do
     command = command_words |> Enum.map_join(" ", &shell_escape/1)
-    "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print #{shell_escape(prompt)}"
+
+    [
+      "cd #{shell_escape(workspace)}",
+      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print #{shell_escape(prompt)}"
+    ]
+    |> Enum.join(" && ")
   end
 
   defp agent_runtime_env do
     [{String.to_charlist(@agent_runtime_env), String.to_charlist(@agent_runtime_env_value)}]
+  end
+
+  defp remove_local_settings(settings_path) do
+    case File.rm(settings_path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> Logger.warning("Claude settings cleanup failed path=#{settings_path} reason=#{inspect(reason)}")
+    end
+
+    _ = File.rmdir(Path.dirname(settings_path))
+    :ok
+  end
+
+  defp remove_remote_settings(worker_host, settings_path) do
+    case SSH.run(worker_host, remote_remove_settings_command(settings_path), stderr_to_stdout: true) do
+      {:ok, {_output, 0}} ->
+        :ok
+
+      {:ok, {output, status}} ->
+        Logger.warning("Claude settings cleanup failed worker_host=#{worker_host} path=#{settings_path} status=#{status} output=#{inspect(output)}")
+
+      {:error, reason} ->
+        Logger.warning("Claude settings cleanup failed worker_host=#{worker_host} path=#{settings_path} reason=#{inspect(reason)}")
+    end
+
+    :ok
   end
 
   defp shell_escape(value) when is_binary(value) do

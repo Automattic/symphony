@@ -166,6 +166,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         {:ok, contents} = Jason.decode(File.read!(settings_path))
         assert get_in(contents, ["sandbox", "enabled"]) == true
+        assert :ok = AppServer.stop_session(session)
+        refute File.exists?(settings_path)
       after
         File.rm_rf(test_root)
       end
@@ -251,6 +253,36 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "returns structured error when settings JSON cannot be encoded" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-settings-encode-fail-#{System.unique_integer([:positive])}"
+        )
+
+      Application.put_env(:symphony_elixir, :claude_settings_json_encoder, fn _value, _opts ->
+        {:error, :bad_json}
+      end)
+
+      on_exit(fn -> Application.delete_env(:symphony_elixir, :claude_settings_json_encoder) end)
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-SETTINGS-ENCODE")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude"
+        )
+
+        assert {:error, {:claude_settings_encode_failed, :bad_json}} =
+                 AppServer.start_session(workspace)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "returns error when workspace path cannot be read due to permissions" do
       test_root =
         Path.join(
@@ -315,14 +347,32 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
           "symphony-elixir-claude-code-remote-session-#{System.unique_integer([:positive])}"
         )
 
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
       try do
+        fake_ssh = Path.join(test_root, "ssh")
+        trace_file = Path.join(test_root, "remote-settings.trace")
         File.mkdir_p!(test_root)
+        System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+        File.write!(fake_ssh, trace_only_ssh_script(trace_file))
+        File.chmod!(fake_ssh, 0o755)
 
         assert {:ok, session} =
                  AppServer.start_session(test_root, worker_host: "worker-01")
 
         assert session.workspace == test_root
         assert session.worker_host == "worker-01"
+        assert session.settings_path == Path.join(test_root, ".claude/settings.json")
+        refute File.exists?(session.settings_path)
+
+        traced_command = File.read!(trace_file)
+        assert traced_command =~ "mkdir -p"
+        assert traced_command =~ ".claude/settings.json"
       after
         File.rm_rf(test_root)
       end
@@ -337,11 +387,244 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:error, {:invalid_workspace_cwd, :invalid_remote_workspace, _, _}} =
                AppServer.start_session("/remote/work\nspace", worker_host: "worker-01")
     end
+
+    test "returns structured error when remote settings write exits non-zero" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-settings-fail-#{System.unique_integer([:positive])}"
+        )
+
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
+      try do
+        fake_ssh = Path.join(test_root, "ssh")
+        File.mkdir_p!(test_root)
+        System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+        File.write!(fake_ssh, failing_ssh_script(42))
+        File.chmod!(fake_ssh, 0o755)
+
+        assert {:error, {:claude_settings_write_failed, :remote, "worker-01", 42, output}} =
+                 AppServer.start_session(test_root, worker_host: "worker-01")
+
+        assert output =~ "ssh failed"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns structured error when ssh is unavailable for remote settings write" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-settings-no-ssh-#{System.unique_integer([:positive])}"
+        )
+
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
+      try do
+        File.mkdir_p!(test_root)
+        System.put_env("PATH", test_root)
+
+        assert {:error, {:claude_settings_write_failed, :remote, "worker-01", :ssh_not_found}} =
+                 AppServer.start_session(test_root, worker_host: "worker-01")
+      after
+        File.rm_rf(test_root)
+      end
+    end
   end
 
   describe "stop_session/1" do
     test "always returns :ok" do
       assert :ok = AppServer.stop_session(%{workspace: "/tmp/ws", metadata: %{}, worker_host: nil})
+    end
+
+    test "returns ok when local Claude settings file is already gone" do
+      missing_path = Path.join(System.tmp_dir!(), "missing-claude-settings-#{System.unique_integer([:positive])}.json")
+
+      assert :ok =
+               AppServer.stop_session(%{
+                 workspace: "/tmp/ws",
+                 metadata: %{},
+                 worker_host: nil,
+                 settings_path: missing_path
+               })
+    end
+
+    test "logs and returns ok when local Claude settings cleanup fails" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-stop-session-fail-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        settings_path = Path.join(test_root, ".claude/settings.json")
+        File.mkdir_p!(settings_path)
+
+        log =
+          capture_log(fn ->
+            assert :ok =
+                     AppServer.stop_session(%{
+                       workspace: test_root,
+                       metadata: %{},
+                       worker_host: nil,
+                       settings_path: settings_path
+                     })
+          end)
+
+        assert log =~ "Claude settings cleanup failed"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "removes local Claude settings file when a session stops" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-stop-session-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-STOP")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude"
+        )
+
+        assert {:ok, session} = AppServer.start_session(workspace)
+        assert File.exists?(session.settings_path)
+
+        assert :ok = AppServer.stop_session(session)
+        refute File.exists?(session.settings_path)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "removes remote Claude settings file over ssh when a session stops" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-stop-session-#{System.unique_integer([:positive])}"
+        )
+
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
+      try do
+        fake_ssh = Path.join(test_root, "ssh")
+        trace_file = Path.join(test_root, "remote-stop.trace")
+        File.mkdir_p!(test_root)
+        System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+        File.write!(fake_ssh, trace_only_ssh_script(trace_file))
+        File.chmod!(fake_ssh, 0o755)
+
+        assert :ok =
+                 AppServer.stop_session(%{
+                   workspace: "/remote/workspace",
+                   metadata: %{},
+                   worker_host: "worker-01",
+                   settings_path: "/remote/workspace/.claude/settings.json"
+                 })
+
+        traced_command = File.read!(trace_file)
+        assert traced_command =~ "rm -f"
+        assert traced_command =~ ".claude/settings.json"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "logs and returns ok when remote Claude settings cleanup fails" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-stop-fail-#{System.unique_integer([:positive])}"
+        )
+
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
+      try do
+        fake_ssh = Path.join(test_root, "ssh")
+        File.mkdir_p!(test_root)
+        System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+        File.write!(fake_ssh, failing_ssh_script(23))
+        File.chmod!(fake_ssh, 0o755)
+
+        log =
+          capture_log(fn ->
+            assert :ok =
+                     AppServer.stop_session(%{
+                       workspace: "/remote/workspace",
+                       metadata: %{},
+                       worker_host: "worker-01",
+                       settings_path: "/remote/workspace/.claude/settings.json"
+                     })
+          end)
+
+        assert log =~ "Claude settings cleanup failed"
+        assert log =~ "status=23"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "logs and returns ok when ssh is unavailable for remote settings cleanup" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-stop-no-ssh-#{System.unique_integer([:positive])}"
+        )
+
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
+      try do
+        File.mkdir_p!(test_root)
+        System.put_env("PATH", test_root)
+
+        log =
+          capture_log(fn ->
+            assert :ok =
+                     AppServer.stop_session(%{
+                       workspace: "/remote/workspace",
+                       metadata: %{},
+                       worker_host: "worker-01",
+                       settings_path: "/remote/workspace/.claude/settings.json"
+                     })
+          end)
+
+        assert log =~ "Claude settings cleanup failed"
+        assert log =~ ":ssh_not_found"
+      after
+        File.rm_rf(test_root)
+      end
     end
   end
 
@@ -753,11 +1036,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         )
 
         {:ok, session} = AppServer.start_session(workspace, worker_host: "worker-01")
+        refute File.exists?(Path.join(workspace, ".claude/settings.json"))
 
         assert {:ok, result} = AppServer.run_turn(session, "remote task", %{}, [])
         assert result.input_tokens == 5
         assert result.output_tokens == 3
         traced_command = File.read!(trace_file)
+        assert traced_command =~ "cd"
+        assert traced_command =~ workspace
         assert traced_command =~ "fake-claude-remote"
         assert traced_command =~ "--output-format stream-json"
         assert traced_command =~ "--print"
@@ -902,6 +1188,26 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     printf '%s\\n' '{"type":"system","subtype":"init","session_id":"#{session_id}","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
     printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"#{session_id}","total_cost_usd":0.001,"usage":{"input_tokens":#{input_tokens},"output_tokens":#{output_tokens},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
     exit 0
+    """
+  end
+
+  defp trace_only_ssh_script(trace_file) do
+    """
+    #!/bin/sh
+    last_arg=""
+    for arg in "$@"; do
+      last_arg="$arg"
+    done
+    printf '%s' "$last_arg" > "#{trace_file}"
+    exit 0
+    """
+  end
+
+  defp failing_ssh_script(status) do
+    """
+    #!/bin/sh
+    printf '%s\\n' 'ssh failed'
+    exit #{status}
     """
   end
 end

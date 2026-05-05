@@ -1460,6 +1460,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().agent.command == "codex app-server"
   end
 
+  test "config defaults Claude approval policy to never when omitted" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude",
+      agent_command: "claude",
+      agent_approval_policy: nil
+    )
+
+    assert Config.settings!().agent.approval_policy == "never"
+  end
+
   test "config validates local worktree repository settings" do
     test_root =
       Path.join(

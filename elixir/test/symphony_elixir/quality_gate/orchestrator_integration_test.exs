@@ -185,6 +185,76 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
 
     snapshot = wait_for_skipped(pid, "issue-err-1")
     assert [%{issue_id: "issue-err-1", error: :stub_boom}] = snapshot.skipped
+
+    send(pid, :run_poll_cycle)
+    refute_receive {:memory_tracker_comment, "issue-err-1", _}, 200
+
+    edited_issue = %{issue | updated_at: ~U[2026-05-05 04:00:00Z]}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [edited_issue])
+
+    send(pid, :run_poll_cycle)
+    assert_receive {:memory_tracker_comment, "issue-err-1", edited_body}, 500
+    assert edited_body =~ "LLM call failed"
+  end
+
+  test "retry dispatch applies the quality gate before requeueing an active issue" do
+    issue = %Issue{
+      id: "issue-retry-skip-1",
+      identifier: "MT-RETRY-SKIP",
+      title: "Retry skip me",
+      description: "Still vague on retry",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-RETRY-SKIP",
+      updated_at: ~U[2026-05-05 03:00:00Z]
+    }
+
+    Application.put_env(:symphony_elixir, :quality_gate_anthropic_module, SkipProvider)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      quality_gate: %{
+        enabled: true,
+        provider: "anthropic",
+        model: "claude-haiku-4-5-20251001",
+        min_score: 6,
+        on_error: "pass"
+      }
+    )
+
+    name = Module.concat(__MODULE__, :RetrySkipOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    retry_token = make_ref()
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | claimed: MapSet.put(state.claimed, issue.id),
+          retry_attempts: %{
+            issue.id => %{
+              attempt: 2,
+              retry_token: retry_token,
+              due_at_ms: System.monotonic_time(:millisecond),
+              identifier: issue.identifier,
+              error: "agent exited: :boom"
+            }
+          }
+      }
+    end)
+
+    send(pid, {:retry_issue, issue.id, retry_token})
+
+    assert_receive {:memory_tracker_comment, "issue-retry-skip-1", body}, 500
+    assert body =~ "score 3"
+
+    state = :sys.get_state(pid)
+    assert state.running == %{}
+    assert state.retry_attempts == %{}
+    refute MapSet.member?(state.claimed, issue.id)
+    assert Map.has_key?(state.quality_gate_skipped, issue.id)
   end
 
   defp wait_for_skipped(pid, issue_id, timeout_ms \\ 1_000) do

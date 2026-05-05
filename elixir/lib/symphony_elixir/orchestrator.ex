@@ -58,6 +58,7 @@ defmodule SymphonyElixir.Orchestrator do
       budget_daily_paused_logged: false,
       budget_exhausted: MapSet.new(),
       quality_gate_cache: %{},
+      quality_gate_comment_keys: MapSet.new(),
       quality_gate_skipped: %{}
     ]
   end
@@ -668,10 +669,20 @@ defmodule SymphonyElixir.Orchestrator do
         %{passed: passed, skipped: skipped, cache: cache} =
           QualityGate.evaluate(issues, gate_config, state.quality_gate_cache)
 
-        {cache, skipped_with_status} = post_quality_gate_skip_comments(skipped, gate_config, cache)
+        comment_keys = retain_quality_gate_comment_keys(state.quality_gate_comment_keys, issues)
+
+        {cache, comment_keys, skipped_with_status} =
+          post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys)
+
         skipped_index = index_skipped_entries(skipped_with_status)
 
-        state = %{state | quality_gate_cache: cache, quality_gate_skipped: skipped_index}
+        state = %{
+          state
+          | quality_gate_cache: cache,
+            quality_gate_comment_keys: comment_keys,
+            quality_gate_skipped: skipped_index
+        }
+
         {passed, state}
 
       _disabled ->
@@ -680,35 +691,72 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp post_quality_gate_skip_comments(skipped, gate_config, cache) do
-    Enum.reduce(skipped, {cache, []}, fn entry, {cache_acc, entries} ->
-      case post_quality_gate_comment_if_needed(entry, gate_config, cache_acc) do
-        {:posted, updated_cache} ->
-          {updated_cache, [%{entry | comment_posted?: true} | entries]}
+  defp post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys) do
+    Enum.reduce(skipped, {cache, comment_keys, []}, fn entry, {cache_acc, keys_acc, entries} ->
+      case post_quality_gate_comment_if_needed(entry, gate_config, cache_acc, keys_acc) do
+        {:posted, updated_cache, updated_keys} ->
+          {updated_cache, updated_keys, [%{entry | comment_posted?: true} | entries]}
 
-        {:skipped_post, ^cache_acc} ->
-          {cache_acc, [entry | entries]}
+        {:skipped_post, cache_next, keys_next} ->
+          entry = %{entry | comment_posted?: entry.comment_posted? or MapSet.member?(keys_next, quality_gate_comment_key(entry))}
+          {cache_next, keys_next, [entry | entries]}
       end
     end)
-    |> then(fn {cache_acc, entries_rev} -> {cache_acc, Enum.reverse(entries_rev)} end)
+    |> then(fn {cache_acc, keys_acc, entries_rev} -> {cache_acc, keys_acc, Enum.reverse(entries_rev)} end)
   end
 
-  defp post_quality_gate_comment_if_needed(%{comment_posted?: true}, _config, cache),
-    do: {:skipped_post, cache}
+  defp post_quality_gate_comment_if_needed(%{comment_posted?: true}, _config, cache, comment_keys),
+    do: {:skipped_post, cache, comment_keys}
 
-  defp post_quality_gate_comment_if_needed(entry, gate_config, cache) do
+  defp post_quality_gate_comment_if_needed(entry, gate_config, cache, comment_keys) do
     body = QualityGate.skip_comment_body(entry, gate_config)
+    comment_key = quality_gate_comment_key(entry)
 
-    case Tracker.create_comment(entry.issue_id, body) do
-      :ok ->
-        {:posted, QualityGate.mark_comment_posted(cache, entry)}
+    if MapSet.member?(comment_keys, comment_key) do
+      {:skipped_post, cache, comment_keys}
+    else
+      case Tracker.create_comment(entry.issue_id, body) do
+        :ok ->
+          {:posted, QualityGate.mark_comment_posted(cache, entry), MapSet.put(comment_keys, comment_key)}
 
-      {:error, reason} ->
-        Logger.warning("QualityGate skip-comment post failed issue=#{entry.identifier || entry.issue_id} reason=#{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("QualityGate skip-comment post failed issue=#{entry.identifier || entry.issue_id} reason=#{inspect(reason)}")
 
-        {:skipped_post, cache}
+          {:skipped_post, cache, comment_keys}
+      end
     end
   end
+
+  defp quality_gate_comment_key(entry) do
+    updated_at =
+      case Map.get(entry, :updated_at) do
+        %DateTime{} = value -> DateTime.to_iso8601(value)
+        value when is_binary(value) -> value
+        _ -> "unknown"
+      end
+
+    kind = if Map.has_key?(entry, :score), do: "score", else: "error"
+    "#{entry.issue_id}:#{updated_at}:#{kind}"
+  end
+
+  defp retain_quality_gate_comment_keys(comment_keys, issues) when is_struct(comment_keys, MapSet) and is_list(issues) do
+    active_ids =
+      issues
+      |> Enum.flat_map(fn
+        %Issue{id: id} when is_binary(id) -> [id]
+        _ -> []
+      end)
+      |> MapSet.new()
+
+    comment_keys
+    |> Enum.filter(fn key ->
+      [issue_id | _rest] = String.split(key, ":", parts: 2)
+      MapSet.member?(active_ids, issue_id)
+    end)
+    |> MapSet.new()
+  end
+
+  defp retain_quality_gate_comment_keys(_comment_keys, _issues), do: MapSet.new()
 
   defp index_skipped_entries(entries) do
     Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
@@ -1112,7 +1160,7 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state |> forget_completed_issue(issue_id) |> release_issue_claim(issue_id)}
 
       retry_candidate_issue?(issue, terminal_states) ->
-        handle_active_retry(state, issue, attempt, metadata)
+        handle_quality_gated_active_retry(state, issue, attempt, metadata)
 
       true ->
         Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
@@ -1144,6 +1192,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
+
+  defp handle_quality_gated_active_retry(%State{} = state, %Issue{} = issue, attempt, metadata) do
+    {issues, state} = apply_quality_gate([issue], state)
+
+    if Enum.any?(issues, fn
+         %Issue{id: id} -> id == issue.id
+         _ -> false
+       end) do
+      handle_active_retry(state, issue, attempt, metadata)
+    else
+      Logger.info("Skipping retry dispatch after quality gate rejected #{issue_context(issue)}")
+      {:noreply, release_issue_claim(state, issue.id)}
+    end
+  end
 
   defp run_terminal_workspace_cleanup do
     case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do

@@ -49,17 +49,31 @@ defmodule SymphonyElixir.QualityGate do
           required(:scored_at) => DateTime.t()
         }
 
-  @type skip_entry :: %{
+  @type scored_skip :: %{
+          required(:kind) => :scored,
           required(:issue) => Issue.t(),
           required(:issue_id) => String.t(),
           required(:identifier) => String.t() | nil,
           required(:url) => String.t() | nil,
           required(:updated_at) => DateTime.t() | nil,
           required(:reason) => String.t(),
-          optional(:score) => integer(),
-          optional(:error) => term(),
+          required(:score) => integer(),
           required(:comment_posted?) => boolean()
         }
+
+  @type error_skip :: %{
+          required(:kind) => :error,
+          required(:issue) => Issue.t(),
+          required(:issue_id) => String.t(),
+          required(:identifier) => String.t() | nil,
+          required(:url) => String.t() | nil,
+          required(:updated_at) => DateTime.t() | nil,
+          required(:reason) => String.t(),
+          required(:error) => term(),
+          required(:comment_posted?) => boolean()
+        }
+
+  @type skip_entry :: scored_skip() | error_skip()
 
   @type result :: %{passed: [Issue.t()], skipped: [skip_entry()], cache: cache()}
 
@@ -134,6 +148,7 @@ defmodule SymphonyElixir.QualityGate do
       {issue_id, %{passed?: false} = entry} ->
         [
           %{
+            kind: :scored,
             issue_id: issue_id,
             identifier: entry.identifier,
             title: entry.title,
@@ -186,7 +201,7 @@ defmodule SymphonyElixir.QualityGate do
   Format the body of the Linear comment posted when an issue is skipped.
   """
   @spec skip_comment_body(skip_entry(), Schema.QualityGate.t()) :: String.t()
-  def skip_comment_body(%{score: score, reason: reason}, %Schema.QualityGate{min_score: min_score})
+  def skip_comment_body(%{kind: :scored, score: score, reason: reason}, %Schema.QualityGate{min_score: min_score})
       when is_integer(score) do
     """
     Symphony quality gate: skipped (score #{score} < threshold #{min_score}).
@@ -199,7 +214,7 @@ defmodule SymphonyElixir.QualityGate do
     """
   end
 
-  def skip_comment_body(%{reason: reason}, %Schema.QualityGate{min_score: min_score}) do
+  def skip_comment_body(%{kind: :error, reason: reason}, %Schema.QualityGate{min_score: min_score}) do
     """
     Symphony quality gate: skipped (LLM call failed; threshold #{min_score}).
 
@@ -260,10 +275,10 @@ defmodule SymphonyElixir.QualityGate do
     end
   end
 
-  defp handle_provider_error(%Issue{} = issue, %Schema.QualityGate{on_error: "skip"} = config, cache, reason) do
+  defp handle_provider_error(%Issue{} = issue, %Schema.QualityGate{on_error: "skip"}, cache, reason) do
     Logger.warning("QualityGate LLM call failed; on_error=skip issue=#{issue.identifier || issue.id} reason=#{inspect(reason)}")
 
-    {:skip, build_error_skip_entry(issue, config, reason), cache}
+    {:skip, build_error_skip_entry(issue, reason), cache}
   end
 
   defp handle_provider_error(%Issue{} = issue, _config, cache, reason) do
@@ -289,6 +304,7 @@ defmodule SymphonyElixir.QualityGate do
 
   defp build_skip_entry(%Issue{} = issue, %{score: score, reason: reason} = entry) do
     %{
+      kind: :scored,
       issue: issue,
       issue_id: issue.id,
       identifier: issue.identifier,
@@ -300,8 +316,9 @@ defmodule SymphonyElixir.QualityGate do
     }
   end
 
-  defp build_error_skip_entry(%Issue{} = issue, %Schema.QualityGate{} = _config, error) do
+  defp build_error_skip_entry(%Issue{} = issue, error) do
     %{
+      kind: :error,
       issue: issue,
       issue_id: issue.id,
       identifier: issue.identifier,

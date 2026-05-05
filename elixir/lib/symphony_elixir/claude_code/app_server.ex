@@ -198,7 +198,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp write_settings_file(claude_dir, settings_path, json, worker_host) when is_binary(worker_host) do
     command = remote_write_settings_command(claude_dir, settings_path, json)
 
-    case SSH.run(worker_host, command, stderr_to_stdout: true) do
+    case ssh_module().run(worker_host, command, stderr_to_stdout: true) do
       {:ok, {_output, 0}} ->
         :ok
 
@@ -248,7 +248,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp start_port(workspace, command, prompt, worker_host) do
     with {:ok, command_words} <- command_words(command) do
-      SSH.start_port(worker_host, remote_launch_command(workspace, command_words, prompt), line: @port_line_bytes)
+      ssh_module().start_port(
+        worker_host,
+        remote_launch_command(workspace, command_words, prompt),
+        line: @port_line_bytes
+      )
     end
   end
 
@@ -337,7 +341,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp remove_remote_settings(worker_host, settings_path) do
-    case SSH.run(worker_host, remote_remove_settings_command(settings_path), stderr_to_stdout: true) do
+    case ssh_module().run(worker_host, remote_remove_settings_command(settings_path), stderr_to_stdout: true) do
       {:ok, {_output, 0}} ->
         :ok
 
@@ -353,6 +357,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp ssh_module do
+    Application.get_env(:symphony_elixir, :claude_code_ssh_module, SSH)
   end
 
   defp read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms) do

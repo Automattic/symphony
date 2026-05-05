@@ -13,9 +13,7 @@ defmodule SymphonyElixir.QualityGate.Provider do
           required(:provider) => String.t(),
           required(:model) => String.t(),
           required(:api_key) => String.t(),
-          optional(:timeout_ms) => pos_integer(),
-          optional(:request_fun) => (map(), [{String.t(), String.t()}], pos_integer() ->
-                                       {:ok, %{status: integer(), body: term()}} | {:error, term()})
+          optional(:timeout_ms) => pos_integer()
         }
 
   @type score_result :: %{

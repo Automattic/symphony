@@ -735,7 +735,12 @@ defmodule SymphonyElixir.Orchestrator do
         _ -> "unknown"
       end
 
-    kind = if Map.has_key?(entry, :score), do: "score", else: "error"
+    kind =
+      case entry.kind do
+        :scored -> "score"
+        :error -> "error"
+      end
+
     "#{entry.issue_id}:#{updated_at}:#{kind}"
   end
 
@@ -764,6 +769,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp snapshot_skipped_entry(entry) do
     %{
+      kind: entry.kind,
       issue_id: entry.issue_id,
       identifier: entry.identifier,
       url: URLUtils.present_url(entry.url),

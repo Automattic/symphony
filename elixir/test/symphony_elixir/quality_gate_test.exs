@@ -74,7 +74,9 @@ defmodule SymphonyElixir.QualityGateTest do
         )
 
       assert [%Issue{id: "ID-1"}] = result.passed
-      assert [%{issue_id: "ID-2", score: 3, reason: "vague", comment_posted?: false}] = result.skipped
+
+      assert [%{kind: :scored, issue_id: "ID-2", score: 3, reason: "vague", comment_posted?: false}] =
+               result.skipped
 
       assert %{passed?: true, score: 9} = Map.get(result.cache, "ID-1")
       assert %{passed?: false, score: 3, comment_posted?: false} = Map.get(result.cache, "ID-2")
@@ -146,7 +148,7 @@ defmodule SymphonyElixir.QualityGateTest do
       result = QualityGate.evaluate([fresh_issue], config, cache, provider_module: StubProvider)
 
       assert result.passed == []
-      assert [%{score: 4, reason: "rescored", comment_posted?: false}] = result.skipped
+      assert [%{kind: :scored, score: 4, reason: "rescored", comment_posted?: false}] = result.skipped
       assert %{updated_at: ^fresh_at, comment_posted?: false} = Map.get(result.cache, "ID-1")
     end
 
@@ -173,7 +175,7 @@ defmodule SymphonyElixir.QualityGateTest do
       result = QualityGate.evaluate([cached_issue], config, cache, provider_module: StubProvider)
 
       assert result.passed == []
-      assert [%{comment_posted?: true, score: 3}] = result.skipped
+      assert [%{kind: :scored, comment_posted?: true, score: 3}] = result.skipped
     end
 
     test "on_error: pass lets the issue through when the LLM call fails" do
@@ -195,7 +197,7 @@ defmodule SymphonyElixir.QualityGateTest do
       result = QualityGate.evaluate(issues, config, %{}, provider_module: ErroringProvider)
 
       assert result.passed == []
-      assert [%{issue_id: "ID-FAIL", error: :stub_boom, reason: reason}] = result.skipped
+      assert [%{kind: :error, issue_id: "ID-FAIL", error: :stub_boom, reason: reason}] = result.skipped
       assert reason =~ "LLM call failed"
       # Cache is not updated on failure (so we retry next cycle)
       assert result.cache == %{}
@@ -207,7 +209,7 @@ defmodule SymphonyElixir.QualityGateTest do
 
       result = QualityGate.evaluate([issue("ID-1")], config, %{}, provider_module: StubProvider)
 
-      assert [%{error: :missing_anthropic_api_key}] = result.skipped
+      assert [%{kind: :error, error: :missing_anthropic_api_key}] = result.skipped
       assert result.cache == %{}
     end
   end
@@ -241,7 +243,7 @@ defmodule SymphonyElixir.QualityGateTest do
   describe "skip_comment_body/2" do
     test "describes the score and threshold for score-based skips" do
       config = config_enabled(min_score: 6)
-      entry = %{score: 3, reason: "vague description"}
+      entry = %{kind: :scored, score: 3, reason: "vague description"}
 
       body = QualityGate.skip_comment_body(entry, config)
 
@@ -253,7 +255,7 @@ defmodule SymphonyElixir.QualityGateTest do
 
     test "explains LLM failures for error-based skips" do
       config = config_enabled(min_score: 6)
-      entry = %{reason: "LLM call failed: :stub_boom"}
+      entry = %{kind: :error, reason: "LLM call failed: :stub_boom"}
 
       body = QualityGate.skip_comment_body(entry, config)
 
@@ -304,8 +306,8 @@ defmodule SymphonyElixir.QualityGateTest do
       }
 
       assert [
-               %{issue_id: "ID-NEW", score: 4},
-               %{issue_id: "ID-OLD", score: 3}
+               %{kind: :scored, issue_id: "ID-NEW", score: 4},
+               %{kind: :scored, issue_id: "ID-OLD", score: 3}
              ] = QualityGate.skipped_from_cache(cache)
     end
   end

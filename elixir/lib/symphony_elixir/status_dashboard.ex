@@ -872,11 +872,11 @@ defmodule SymphonyElixir.StatusDashboard do
       reason_part
   end
 
-  defp format_skipped_score(%{score: score}) when is_integer(score) do
+  defp format_skipped_score(%{kind: :scored, score: score}) when is_integer(score) do
     " " <> colorize("score=#{score}", @ansi_yellow)
   end
 
-  defp format_skipped_score(%{error: error}) when not is_nil(error) do
+  defp format_skipped_score(%{kind: :error, error: error}) when not is_nil(error) do
     " " <> colorize("error", @ansi_red)
   end
 

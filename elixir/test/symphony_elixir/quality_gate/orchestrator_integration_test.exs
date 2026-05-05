@@ -71,7 +71,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     assert body =~ "threshold 6"
 
     snapshot = wait_for_skipped(pid, "issue-skip-1")
-    assert [%{issue_id: "issue-skip-1", score: 3, identifier: "MT-SKIP"}] = snapshot.skipped
+    assert [%{kind: :scored, issue_id: "issue-skip-1", score: 3, identifier: "MT-SKIP"}] = snapshot.skipped
     assert snapshot.running == []
 
     # Re-poll: comment is not posted again for unchanged updated_at
@@ -184,7 +184,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     assert body =~ "LLM call failed"
 
     snapshot = wait_for_skipped(pid, "issue-err-1")
-    assert [%{issue_id: "issue-err-1", error: :stub_boom}] = snapshot.skipped
+    assert [%{kind: :error, issue_id: "issue-err-1", error: :stub_boom}] = snapshot.skipped
 
     send(pid, :run_poll_cycle)
     refute_receive {:memory_tracker_comment, "issue-err-1", _}, 200

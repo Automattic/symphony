@@ -173,6 +173,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          retrying: [],
          skipped: [
            %{
+             kind: :scored,
              issue_id: "issue-skip-1",
              identifier: "MT-SKIP",
              url: "https://example.org/MT-SKIP",
@@ -182,6 +183,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              updated_at: ~U[2026-05-05 03:00:00Z]
            },
            %{
+             kind: :error,
              issue_id: "issue-skip-2",
              identifier: "MT-ERR",
              url: nil,

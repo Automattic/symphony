@@ -4,6 +4,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
   alias SymphonyElixir.ClaudeCode.AppServer
   alias SymphonyElixir.Config.Schema.Agent
 
+  defmodule StubSSH do
+    def run(worker_host, command, opts) do
+      send(self(), {:stub_ssh_run, worker_host, command, opts})
+      Process.get(:stub_ssh_run_result, {:ok, {"", 0}})
+    end
+
+    def start_port(_worker_host, _command, _opts), do: {:error, :unexpected_start_port}
+  end
+
   describe "build_sandbox_settings/1" do
     test "allowlist mode includes built-in domains and sets allowManagedDomainsOnly" do
       network_access = %Agent.NetworkAccess{
@@ -516,6 +525,47 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     end
 
     test "removes remote Claude settings file over ssh when a session stops" do
+      Application.put_env(:symphony_elixir, :claude_code_ssh_module, StubSSH)
+      on_exit(fn -> Application.delete_env(:symphony_elixir, :claude_code_ssh_module) end)
+
+      assert :ok =
+               AppServer.stop_session(%{
+                 workspace: "/remote/workspace",
+                 metadata: %{},
+                 worker_host: "worker-01",
+                 settings_path: "/remote/workspace/.claude/settings.json"
+               })
+
+      assert_receive {:stub_ssh_run, "worker-01", command, [stderr_to_stdout: true]}
+      assert command =~ "rm -f '/remote/workspace/.claude/settings.json'"
+      assert command =~ "rmdir '/remote/workspace/.claude' 2>/dev/null || true"
+    end
+
+    test "logs and returns ok when stubbed remote Claude settings cleanup fails" do
+      Application.put_env(:symphony_elixir, :claude_code_ssh_module, StubSSH)
+      on_exit(fn -> Application.delete_env(:symphony_elixir, :claude_code_ssh_module) end)
+
+      Process.put(:stub_ssh_run_result, {:ok, {"permission denied", 23}})
+
+      log =
+        capture_log(fn ->
+          assert :ok =
+                   AppServer.stop_session(%{
+                     workspace: "/remote/workspace",
+                     metadata: %{},
+                     worker_host: "worker-01",
+                     settings_path: "/remote/workspace/.claude/settings.json"
+                   })
+        end)
+
+      assert_receive {:stub_ssh_run, "worker-01", command, [stderr_to_stdout: true]}
+      assert command =~ ".claude/settings.json"
+      assert log =~ "Claude settings cleanup failed"
+      assert log =~ "status=23"
+      assert log =~ "permission denied"
+    end
+
+    test "removes remote Claude settings file through ssh command integration when a session stops" do
       test_root =
         Path.join(
           System.tmp_dir!(),

@@ -79,6 +79,16 @@ defmodule SymphonyElixir.QualityTest do
     assert eval.outcome == "no_changes"
     assert eval.tests_read == false
 
+    no_read_evidence =
+      Quality.build_eval_log_for_test(running_entry, "success", nil,
+        agent_kind: "claude",
+        touched_paths: ["lib/symphony_elixir/run_store.ex"],
+        existing_test_paths: ["test/symphony_elixir/run_store_test.exs"],
+        transcript_events: [%{"type" => "message"}]
+      )
+
+    assert no_read_evidence.tests_read == false
+
     unavailable =
       Quality.build_eval_log_for_test(running_entry, "success", nil,
         agent_kind: "claude",

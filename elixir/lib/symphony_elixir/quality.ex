@@ -241,8 +241,9 @@ defmodule SymphonyElixir.Quality do
 
   defp tests_read_signal(running_entry, opts) do
     with {:ok, evidence_events} <- transcript_evidence_events(running_entry, opts),
-         read_evidence when read_evidence != [] <- read_evidence(evidence_events),
          test_paths when test_paths != [] <- candidate_test_paths(running_entry, opts) do
+      read_evidence = read_evidence(evidence_events)
+
       if Enum.any?(test_paths, &test_path_read?(&1, read_evidence, Map.get(running_entry, :workspace_path))) do
         true
       else

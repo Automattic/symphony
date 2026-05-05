@@ -116,8 +116,8 @@ defmodule SymphonyElixir.Config do
              Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
         {:ok,
          %{
-           approval_policy: settings.codex.approval_policy,
-           thread_sandbox: settings.codex.thread_sandbox,
+           approval_policy: settings.agent.approval_policy,
+           thread_sandbox: settings.agent.thread_sandbox,
            thread_config: Schema.resolve_codex_thread_config(settings),
            turn_sandbox_policy: turn_sandbox_policy
          }}
@@ -126,6 +126,23 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_semantics(settings) do
+    cond do
+      is_nil(settings.agent.kind) ->
+        {:error, {:invalid_workflow_config, "agent.kind is required. Add `kind: codex` (or `kind: claude`) and `command: <your-command>` under your `agent:` key. The top-level `codex:` section has moved to `agent:`. Rename each field accordingly."}}
+
+      settings.agent.kind not in ["codex", "claude"] ->
+        {:error, {:unsupported_agent_kind, settings.agent.kind}}
+
+      true ->
+        with :ok <- validate_tracker_semantics(settings),
+             :ok <- validate_workspace_semantics(settings) do
+          warn_if_budget_token_reporting_unavailable(settings)
+          :ok
+        end
+    end
+  end
+
+  defp validate_tracker_semantics(settings) do
     cond do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
@@ -140,10 +157,7 @@ defmodule SymphonyElixir.Config do
         {:error, :missing_linear_project_slug}
 
       true ->
-        with :ok <- validate_workspace_semantics(settings) do
-          warn_if_budget_token_reporting_unavailable(settings)
-          :ok
-        end
+        :ok
     end
   end
 
@@ -158,8 +172,8 @@ defmodule SymphonyElixir.Config do
   defp warn_if_budget_token_reporting_unavailable(%Schema{} = settings) do
     budget_keys = configured_budget_keys(settings.agent)
 
-    if budget_keys != [] and not codex_app_server_command?(settings.codex.command) do
-      Logger.warning("#{budget_warning_subject(budget_keys)} but codex.command may not report token usage command=#{inspect(settings.codex.command)}")
+    if budget_keys != [] and not codex_app_server_command?(settings.agent.command) do
+      Logger.warning("#{budget_warning_subject(budget_keys)} but agent.command may not report token usage command=#{inspect(settings.agent.command)}")
     end
 
     :ok

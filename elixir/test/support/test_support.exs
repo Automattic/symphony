@@ -114,15 +114,16 @@ defmodule SymphonyElixir.TestSupport do
           max_concurrent_agents_by_state: %{},
           max_tokens_per_issue: nil,
           max_tokens_per_day: nil,
-          codex_command: "codex app-server",
-          codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
-          codex_thread_sandbox: "workspace-write",
-          codex_turn_sandbox_policy: nil,
-          codex_network_access: nil,
-          codex_turn_timeout_ms: 3_600_000,
-          codex_read_timeout_ms: 5_000,
-          codex_stall_timeout_ms: 300_000,
-          codex_command_timeout_ms: 600_000,
+          agent_kind: "codex",
+          agent_command: "codex app-server",
+          agent_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
+          agent_thread_sandbox: "workspace-write",
+          agent_turn_sandbox_policy: nil,
+          agent_network_access: nil,
+          agent_turn_timeout_ms: 3_600_000,
+          agent_read_timeout_ms: 5_000,
+          agent_stall_timeout_ms: 300_000,
+          agent_command_timeout_ms: 600_000,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -163,15 +164,16 @@ defmodule SymphonyElixir.TestSupport do
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     max_tokens_per_issue = Keyword.get(config, :max_tokens_per_issue)
     max_tokens_per_day = Keyword.get(config, :max_tokens_per_day)
-    codex_command = Keyword.get(config, :codex_command)
-    codex_approval_policy = Keyword.get(config, :codex_approval_policy)
-    codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
-    codex_turn_sandbox_policy = Keyword.get(config, :codex_turn_sandbox_policy)
-    codex_network_access = Keyword.get(config, :codex_network_access)
-    codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
-    codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
-    codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
-    codex_command_timeout_ms = Keyword.get(config, :codex_command_timeout_ms)
+    agent_kind = Keyword.get(config, :agent_kind)
+    agent_command = Keyword.get(config, :agent_command)
+    agent_approval_policy = Keyword.get(config, :agent_approval_policy)
+    agent_thread_sandbox = Keyword.get(config, :agent_thread_sandbox)
+    agent_turn_sandbox_policy = Keyword.get(config, :agent_turn_sandbox_policy)
+    agent_network_access = Keyword.get(config, :agent_network_access)
+    agent_turn_timeout_ms = Keyword.get(config, :agent_turn_timeout_ms)
+    agent_read_timeout_ms = Keyword.get(config, :agent_read_timeout_ms)
+    agent_stall_timeout_ms = Keyword.get(config, :agent_stall_timeout_ms)
+    agent_command_timeout_ms = Keyword.get(config, :agent_command_timeout_ms)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -209,22 +211,22 @@ defmodule SymphonyElixir.TestSupport do
         "  fetch_before_dispatch: #{yaml_value(workspace_fetch_before_dispatch)}",
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
         "agent:",
+        "  kind: #{yaml_value(agent_kind)}",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "  max_tokens_per_issue: #{yaml_value(max_tokens_per_issue)}",
         "  max_tokens_per_day: #{yaml_value(max_tokens_per_day)}",
-        "codex:",
-        "  command: #{yaml_value(codex_command)}",
-        "  approval_policy: #{yaml_value(codex_approval_policy)}",
-        "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
-        "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",
-        codex_network_access && "  network_access: #{yaml_value(codex_network_access)}",
-        "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
-        "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
-        "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
-        "  command_timeout_ms: #{yaml_value(codex_command_timeout_ms)}",
+        "  command: #{yaml_value(agent_command)}",
+        "  approval_policy: #{yaml_value(agent_approval_policy)}",
+        "  thread_sandbox: #{yaml_value(agent_thread_sandbox)}",
+        "  turn_sandbox_policy: #{yaml_value(agent_turn_sandbox_policy)}",
+        agent_network_access && "  network_access: #{yaml_value(agent_network_access)}",
+        "  turn_timeout_ms: #{yaml_value(agent_turn_timeout_ms)}",
+        "  read_timeout_ms: #{yaml_value(agent_read_timeout_ms)}",
+        "  stall_timeout_ms: #{yaml_value(agent_stall_timeout_ms)}",
+        "  command_timeout_ms: #{yaml_value(agent_command_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         routing_yaml(routing),
         observability_yaml(

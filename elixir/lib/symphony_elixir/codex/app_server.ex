@@ -3,6 +3,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   Minimal client for the Codex app-server JSON-RPC 2.0 stream over stdio.
   """
 
+  @behaviour SymphonyElixir.AgentBehaviour
+
   require Logger
   alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
 
@@ -201,7 +203,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
+            args: [~c"-lc", String.to_charlist(Config.settings!().agent.command)],
             cd: String.to_charlist(workspace),
             env: agent_runtime_env(),
             line: @port_line_bytes
@@ -220,7 +222,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp remote_launch_command(workspace) when is_binary(workspace) do
     [
       "cd #{shell_escape(workspace)}",
-      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{Config.settings!().codex.command}"
+      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{Config.settings!().agent.command}"
     ]
     |> Enum.join(" && ")
   end
@@ -348,7 +350,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
-    config = Config.settings!().codex
+    config = Config.settings!().agent
 
     receive_loop(
       port,
@@ -1297,7 +1299,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp normalize_command(_command), do: nil
 
   defp await_response(port, request_id) do
-    with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "")
+    with_timeout_response(port, request_id, Config.settings!().agent.read_timeout_ms, "")
   end
 
   defp with_timeout_response(port, request_id, timeout_ms, pending_line) do

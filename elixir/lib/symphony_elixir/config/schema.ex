@@ -13,14 +13,11 @@ defmodule SymphonyElixir.Config.Schema do
 
   @type t :: %__MODULE__{}
 
-  @codex_built_in_network_allowed_domains [
+  @shared_built_in_network_allowed_domains [
     "api.github.com",
     "api.linear.app",
-    "api.openai.com",
-    "auth.openai.com",
     "bitbucket.org",
     "codeload.github.com",
-    "chatgpt.com",
     "crates.io",
     "files.pythonhosted.org",
     "github-cloud.githubusercontent.com",
@@ -48,6 +45,18 @@ defmodule SymphonyElixir.Config.Schema do
     "static.crates.io",
     "sum.golang.org"
   ]
+
+  @codex_built_in_network_allowed_domains @shared_built_in_network_allowed_domains ++
+                                            [
+                                              "api.openai.com",
+                                              "auth.openai.com",
+                                              "chatgpt.com"
+                                            ]
+
+  @claude_built_in_network_allowed_domains @shared_built_in_network_allowed_domains ++
+                                             [
+                                               "api.anthropic.com"
+                                             ]
 
   defmodule StringOrMap do
     @moduledoc false
@@ -168,50 +177,12 @@ defmodule SymphonyElixir.Config.Schema do
 
     alias SymphonyElixir.Config.Schema
 
-    @primary_key false
-    embedded_schema do
-      field(:max_concurrent_agents, :integer, default: 10)
-      field(:max_turns, :integer, default: 20)
-      field(:max_retry_backoff_ms, :integer, default: 300_000)
-      field(:max_concurrent_agents_by_state, :map, default: %{})
-      field(:max_tokens_per_issue, :integer)
-      field(:max_tokens_per_day, :integer)
-    end
-
-    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
-    def changeset(schema, attrs) do
-      schema
-      |> cast(
-        attrs,
-        [
-          :max_concurrent_agents,
-          :max_turns,
-          :max_retry_backoff_ms,
-          :max_concurrent_agents_by_state,
-          :max_tokens_per_issue,
-          :max_tokens_per_day
-        ],
-        empty_values: []
-      )
-      |> validate_number(:max_concurrent_agents, greater_than: 0)
-      |> validate_number(:max_turns, greater_than: 0)
-      |> validate_number(:max_retry_backoff_ms, greater_than: 0)
-      |> validate_number(:max_tokens_per_issue, greater_than: 0)
-      |> validate_number(:max_tokens_per_day, greater_than: 0)
-      |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
-      |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
-    end
-  end
-
-  defmodule Codex do
-    @moduledoc false
-    use Ecto.Schema
-    import Ecto.Changeset
-
     defmodule NetworkAccess do
       @moduledoc false
       use Ecto.Schema
       import Ecto.Changeset
+
+      @type t :: %__MODULE__{}
 
       @primary_key false
       @modes ["allowlist", "open", "block"]
@@ -233,17 +204,16 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:command, :string, default: "codex app-server")
+      field(:kind, :string)
+      field(:max_concurrent_agents, :integer, default: 10)
+      field(:max_turns, :integer, default: 20)
+      field(:max_retry_backoff_ms, :integer, default: 300_000)
+      field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:max_tokens_per_issue, :integer)
+      field(:max_tokens_per_day, :integer)
+      field(:command, :string)
 
-      field(:approval_policy, StringOrMap,
-        default: %{
-          "reject" => %{
-            "sandbox_approval" => true,
-            "rules" => true,
-            "mcp_elicitations" => true
-          }
-        }
-      )
+      field(:approval_policy, StringOrMap, default: "never")
 
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
@@ -260,6 +230,13 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(
         attrs,
         [
+          :kind,
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state,
+          :max_tokens_per_issue,
+          :max_tokens_per_day,
           :command,
           :approval_policy,
           :thread_sandbox,
@@ -271,11 +248,19 @@ defmodule SymphonyElixir.Config.Schema do
         ],
         empty_values: []
       )
-      |> validate_required([:command])
+      |> validate_required([:kind, :command])
+      |> validate_inclusion(:kind, ["codex", "claude"])
+      |> validate_number(:max_concurrent_agents, greater_than: 0)
+      |> validate_number(:max_turns, greater_than: 0)
+      |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:max_tokens_per_issue, greater_than: 0)
+      |> validate_number(:max_tokens_per_day, greater_than: 0)
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:command_timeout_ms, greater_than_or_equal_to: 0)
+      |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
+      |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
       |> cast_embed(:network_access, with: &NetworkAccess.changeset/2)
     end
   end
@@ -465,7 +450,6 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
-    embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_many(:routing, Routing, on_replace: :delete)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
@@ -492,7 +476,7 @@ defmodule SymphonyElixir.Config.Schema do
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
     policy =
-      case settings.codex.turn_sandbox_policy do
+      case settings.agent.turn_sandbox_policy do
         %{} = policy ->
           policy
 
@@ -503,14 +487,14 @@ defmodule SymphonyElixir.Config.Schema do
           |> default_turn_sandbox_policy()
       end
 
-    apply_codex_network_access(policy, codex_network_access(settings.codex.network_access))
+    apply_codex_network_access(policy, codex_network_access(settings.agent.network_access))
   end
 
   @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil, keyword()) ::
           {:ok, map()} | {:error, term()}
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
     policy_result =
-      case settings.codex.turn_sandbox_policy do
+      case settings.agent.turn_sandbox_policy do
         %{} = policy ->
           resolve_explicit_runtime_turn_sandbox_policy(policy, workspace, settings.workspace.root, opts)
 
@@ -524,7 +508,7 @@ defmodule SymphonyElixir.Config.Schema do
       {:ok,
        policy
        |> ensure_workspace_write_roots(settings, workspace, opts)
-       |> apply_codex_network_access(codex_network_access(settings.codex.network_access))}
+       |> apply_codex_network_access(codex_network_access(settings.agent.network_access))}
     end
   end
 
@@ -535,9 +519,15 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   @doc false
+  @spec claude_built_in_network_allowed_domains() :: [String.t()]
+  def claude_built_in_network_allowed_domains do
+    @claude_built_in_network_allowed_domains
+  end
+
+  @doc false
   @spec codex_effective_network_allowed_domains(%__MODULE__{}) :: [String.t()]
   def codex_effective_network_allowed_domains(%__MODULE__{} = settings) do
-    network_access = codex_network_access(settings.codex.network_access)
+    network_access = codex_network_access(settings.agent.network_access)
     denied_domains = network_access.denied_domains |> normalize_domain_list() |> MapSet.new()
 
     (@codex_built_in_network_allowed_domains ++ normalize_domain_list(network_access.allowed_domains))
@@ -548,7 +538,7 @@ defmodule SymphonyElixir.Config.Schema do
   @doc false
   @spec resolve_codex_thread_config(%__MODULE__{}) :: map() | nil
   def resolve_codex_thread_config(%__MODULE__{} = settings) do
-    case codex_network_access(settings.codex.network_access).mode do
+    case codex_network_access(settings.agent.network_access).mode do
       "allowlist" ->
         domains =
           settings
@@ -635,7 +625,6 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
-    |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:routing, with: &Routing.changeset/2)
     |> validate_unique_routing_labels()
@@ -657,17 +646,17 @@ defmodule SymphonyElixir.Config.Schema do
         repo: resolve_path_value(settings.workspace.repo, nil)
     }
 
-    codex = %{
-      settings.codex
-      | approval_policy: normalize_keys(settings.codex.approval_policy),
-        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy),
-        network_access: normalize_network_access(settings.codex.network_access)
+    agent = %{
+      settings.agent
+      | approval_policy: normalize_keys(settings.agent.approval_policy),
+        turn_sandbox_policy: normalize_optional_map(settings.agent.turn_sandbox_policy),
+        network_access: normalize_network_access(settings.agent.network_access)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    %{settings | tracker: tracker, workspace: workspace, agent: agent}
   end
 
-  defp normalize_network_access(%Codex.NetworkAccess{} = network_access) do
+  defp normalize_network_access(%Agent.NetworkAccess{} = network_access) do
     %{
       network_access
       | allowed_domains: normalize_domain_list(network_access.allowed_domains),
@@ -675,8 +664,8 @@ defmodule SymphonyElixir.Config.Schema do
     }
   end
 
-  defp codex_network_access(%Codex.NetworkAccess{} = network_access), do: network_access
-  defp codex_network_access(nil), do: %Codex.NetworkAccess{}
+  defp codex_network_access(%Agent.NetworkAccess{} = network_access), do: network_access
+  defp codex_network_access(nil), do: %Agent.NetworkAccess{}
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -857,15 +846,15 @@ defmodule SymphonyElixir.Config.Schema do
     }
   end
 
-  defp apply_codex_network_access(policy, %Codex.NetworkAccess{mode: "allowlist"}) do
+  defp apply_codex_network_access(policy, %Agent.NetworkAccess{mode: "allowlist"}) do
     put_known_network_access(policy, true)
   end
 
-  defp apply_codex_network_access(policy, %Codex.NetworkAccess{mode: "open"}) do
+  defp apply_codex_network_access(policy, %Agent.NetworkAccess{mode: "open"}) do
     put_known_network_access(policy, true)
   end
 
-  defp apply_codex_network_access(policy, %Codex.NetworkAccess{mode: "block"}) do
+  defp apply_codex_network_access(policy, %Agent.NetworkAccess{mode: "block"}) do
     put_known_network_access(policy, false)
   end
 

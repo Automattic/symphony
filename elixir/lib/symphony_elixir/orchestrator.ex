@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, RunStore, StatusDashboard, Tracker, URLUtils, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, Quality, RunStore, StatusDashboard, Tracker, URLUtils, Workspace}
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixirWeb.ObservabilityPubSub
 
@@ -1494,12 +1494,42 @@ defmodule SymphonyElixir.Orchestrator do
         |> ignore_missing_run()
         |> log_run_store_error("persist run completion")
 
+        persist_quality_eval_async(Map.merge(running_entry, attrs), status, error)
+
       _ ->
         :ok
     end
   end
 
   defp persist_run_completion(_running_entry, _status, _error), do: :ok
+
+  defp persist_quality_eval_async(%{run_id: run_id} = running_entry, status, error)
+       when is_binary(run_id) and is_binary(status) do
+    start_quality_eval_task(running_entry, status, error)
+  end
+
+  defp persist_quality_eval_async(_running_entry, _status, _error), do: :ok
+
+  defp start_quality_eval_task(running_entry, status, error) do
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           Quality.persist_run_eval(running_entry, status, error)
+         end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Unable to start async quality eval logger: #{inspect(reason)}")
+        :ok
+    end
+  rescue
+    exception ->
+      Logger.warning("Unable to start async quality eval logger: #{Exception.message(exception)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("Unable to start async quality eval logger: #{inspect({kind, reason})}")
+      :ok
+  end
 
   defp persist_retry(retry) when is_map(retry) do
     retry

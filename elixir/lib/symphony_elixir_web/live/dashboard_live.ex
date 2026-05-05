@@ -56,6 +56,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <div class="status-stack">
+            <a class="action-pill hero-action" href="/quality">Quality</a>
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               Live

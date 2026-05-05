@@ -163,4 +163,57 @@ defmodule SymphonyElixir.RunStoreTest do
              %{status: "running"}
            ] = Enum.sort_by(RunStore.list_runs(:all), &Map.get(&1, :run_id, "zzz"))
   end
+
+  test "persists eval logs with indexed filter fields" do
+    now = DateTime.utc_now()
+    yesterday = DateTime.add(now, -1, :day)
+
+    assert :ok =
+             RunStore.put_eval_log(%{
+               eval_id: "eval-1",
+               run_id: "run-1",
+               issue_identifier: "RSM-1",
+               issue_labels: ["bug", "backend"],
+               outcome: "pr_opened",
+               agent_kind: "codex",
+               tokens: %{input_tokens: 10, output_tokens: 5, total_tokens: 15},
+               tests_read: true,
+               duration_seconds: 12,
+               workspace_path: "/tmp/workspaces/RSM-1",
+               session_id: "session-1",
+               logged_at: now,
+               date: DateTime.to_date(now)
+             })
+
+    assert :ok =
+             RunStore.put_eval_log(%{
+               eval_id: "eval-2",
+               run_id: "run-2",
+               issue_identifier: "RSM-2",
+               issue_labels: ["feature"],
+               outcome: "error",
+               agent_kind: "claude",
+               tokens: %{input_tokens: 3, output_tokens: 2, total_tokens: 5},
+               tests_read: false,
+               duration_seconds: 4,
+               logged_at: yesterday,
+               date: DateTime.to_date(yesterday)
+             })
+
+    assert [%{eval_id: "eval-1"}] = RunStore.list_eval_logs(outcome: "pr_opened", limit: :all)
+    assert [%{eval_id: "eval-2"}] = RunStore.list_eval_logs(agent_kind: "claude", limit: :all)
+    assert [%{eval_id: "eval-1"}] = RunStore.list_eval_logs(issue_label: "backend", limit: :all)
+    assert [%{eval_id: "eval-1"}] = RunStore.list_eval_logs(date_from: DateTime.to_date(now), limit: :all)
+
+    attributes = :mnesia.table_info(:symphony_run_store_eval_logs, :attributes)
+    indexes = :mnesia.table_info(:symphony_run_store_eval_logs, :index)
+
+    for indexed_field <- [:outcome, :agent_kind, :issue_label, :date] do
+      assert attribute_position(attributes, indexed_field) in indexes
+    end
+  end
+
+  defp attribute_position(attributes, field) do
+    Enum.find_index(attributes, &(&1 == field)) + 2
+  end
 end

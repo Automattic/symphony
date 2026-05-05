@@ -115,10 +115,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert text =~ "I will help you."
     end
 
-    test "parses tool_use event and returns notification with tool name" do
+    test "parses tool_use event and returns tool_use with tool name" do
       line = ~s({"type":"tool_use","name":"bash","id":"tool-1","input":{"command":"ls"}})
 
-      assert {:notification, "tool: bash"} = AppServer.parse_event(line)
+      assert {:tool_use, "bash"} = AppServer.parse_event(line)
     end
 
     test "parses assistant event with no text content items and returns generic notification" do
@@ -705,44 +705,6 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
-    test "returns error when prompt file cannot be written" do
-      test_root =
-        Path.join(
-          System.tmp_dir!(),
-          "symphony-elixir-claude-code-prompt-fail-#{System.unique_integer([:positive])}"
-        )
-
-      try do
-        workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-PF")
-        File.mkdir_p!(workspace)
-
-        write_workflow_file!(Workflow.workflow_file_path(),
-          workspace_root: workspace_root,
-          agent_kind: "claude",
-          agent_command: "fake-claude"
-        )
-
-        {:ok, session} = AppServer.start_session(workspace)
-
-        # Make the workspace read-only so the prompt file cannot be written
-        File.chmod!(workspace, 0o555)
-
-        result = AppServer.run_turn(session, "do the thing", %{}, [])
-        assert {:error, {:prompt_file_write_failed, _}} = result
-      after
-        File.chmod!(
-          Path.join(
-            Path.join(test_root, "workspaces"),
-            "RSM-PF"
-          ),
-          0o755
-        )
-
-        File.rm_rf(test_root)
-      end
-    end
-
     test "runs a turn over ssh for remote workers" do
       test_root =
         Path.join(
@@ -797,32 +759,30 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert result.output_tokens == 3
         traced_command = File.read!(trace_file)
         assert traced_command =~ "fake-claude-remote"
-        assert traced_command =~ "cat"
-        assert traced_command =~ ".claude_prompt_"
+        assert traced_command =~ "--output-format stream-json"
+        assert traced_command =~ "--print"
+        assert traced_command =~ "remote task"
       after
         File.rm_rf(test_root)
       end
     end
 
-    test "skips noeol partial lines without crashing" do
+    test "returns error when process exits 0 without emitting a result event" do
       test_root =
         Path.join(
           System.tmp_dir!(),
-          "symphony-elixir-claude-code-run-turn-noeol-#{System.unique_integer([:positive])}"
+          "symphony-elixir-claude-code-no-result-#{System.unique_integer([:positive])}"
         )
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-4")
+        workspace = Path.join(workspace_root, "RSM-NORESULT")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
-        padding = String.duplicate("a", 1_100_000)
-
         File.write!(fake_claude, """
         #!/bin/sh
-        printf '#{padding}\\n'
-        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":100,"duration_api_ms":80,"is_error":false,"num_turns":1,"result":"ok","session_id":"sess-run-4","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        printf '%s\\n' 'some unexpected non-json output'
         exit 0
         """)
 
@@ -836,8 +796,100 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         {:ok, session} = AppServer.start_session(workspace)
 
-        assert {:ok, result} = AppServer.run_turn(session, "do the thing", %{}, [])
-        assert result.input_tokens == 1
+        assert {:error, :no_result_event} = AppServer.run_turn(session, "do the thing", %{}, [])
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns command_timeout when a tool call runs too long" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-command-timeout-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-CMDTIMEOUT")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"tool_use","name":"bash","id":"t-1","input":{"command":"sleep 10"}}'
+        sleep 1
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_turn_timeout_ms: 5_000,
+          agent_command_timeout_ms: 30
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:error, :command_timeout} = AppServer.run_turn(session, "do the thing", %{}, [])
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "correctly reassembles lines split by port line limit into parseable events" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-run-turn-noeol-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-4")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        # Build a tool_use event whose JSON is padded to exceed @port_line_bytes (1 MB)
+        # by stuffing extra whitespace into an otherwise valid JSON field.
+        padding = String.duplicate("a", 1_100_000)
+
+        oversized_tool_use =
+          Jason.encode!(%{
+            "type" => "tool_use",
+            "name" => "bash",
+            "id" => "t-large",
+            "input" => %{"padding" => padding}
+          })
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '#{oversized_tool_use}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":100,"duration_api_ms":80,"is_error":false,"num_turns":1,"result":"ok","session_id":"sess-run-4","total_cost_usd":0.0,"usage":{"input_tokens":7,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+        test_pid = self()
+        on_message = fn msg -> send(test_pid, {:turn_msg, msg}) end
+
+        assert {:ok, result} = AppServer.run_turn(session, "do the thing", %{}, on_message: on_message)
+        assert result.input_tokens == 7
+        assert result.output_tokens == 3
+
+        # The oversized tool_use line must have been reassembled and parsed correctly
+        assert_received {:turn_msg, {:notification, "tool: bash"}}
       after
         File.rm_rf(test_root)
       end

@@ -128,7 +128,7 @@ defmodule SymphonyElixir.Config do
   defp validate_semantics(settings) do
     cond do
       is_nil(settings.agent.kind) ->
-        {:error, {:invalid_workflow_config, "agent.kind is required. Add `kind: codex` under your `agent:` key. The top-level `codex:` section has moved to `agent:`. Rename each field accordingly."}}
+        {:error, {:invalid_workflow_config, "agent.kind is required. Add `kind: codex` (or `kind: claude`) and `command: <your-command>` under your `agent:` key. The top-level `codex:` section has moved to `agent:`. Rename each field accordingly."}}
 
       settings.agent.kind not in ["codex", "claude"] ->
         {:error, {:unsupported_agent_kind, settings.agent.kind}}

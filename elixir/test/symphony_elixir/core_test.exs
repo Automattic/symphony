@@ -951,7 +951,7 @@ defmodule SymphonyElixir.CoreTest do
     assert_receive {:enrichment_query, query, %{id: "issue-1", commentFirst: comment_first, relationFirst: relation_first}}
 
     assert query =~ "SymphonyLinearIssueEnrichment"
-    assert query =~ "comments(first: $commentFirst"
+    assert query =~ "comments(first: $commentFirst, orderBy: createdAt)"
     assert query =~ "relations(first: $relationFirst)"
     assert comment_first == 20
     assert relation_first == 50

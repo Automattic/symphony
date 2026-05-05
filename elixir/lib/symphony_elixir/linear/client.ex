@@ -126,7 +126,7 @@ defmodule SymphonyElixir.Linear.Client do
   @enrichment_query """
   query SymphonyLinearIssueEnrichment($id: String!, $commentFirst: Int!, $relationFirst: Int!) {
     issue(id: $id) {
-      comments(first: $commentFirst, orderBy: { field: createdAt, direction: Descending }) {
+      comments(first: $commentFirst, orderBy: createdAt) {
         nodes {
           body
           createdAt

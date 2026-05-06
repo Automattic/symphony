@@ -177,7 +177,7 @@ defmodule SymphonyElixir.RunStoreTest do
                outcome: "pr_opened",
                agent_kind: "codex",
                tokens: %{input_tokens: 10, output_tokens: 5, total_tokens: 15},
-               tests_read: true,
+               tests_run: true,
                duration_seconds: 12,
                workspace_path: "/tmp/workspaces/RSM-1",
                session_id: "session-1",
@@ -194,7 +194,7 @@ defmodule SymphonyElixir.RunStoreTest do
                outcome: "error",
                agent_kind: "claude",
                tokens: %{input_tokens: 3, output_tokens: 2, total_tokens: 5},
-               tests_read: false,
+               tests_run: false,
                duration_seconds: 4,
                logged_at: yesterday,
                date: DateTime.to_date(yesterday)

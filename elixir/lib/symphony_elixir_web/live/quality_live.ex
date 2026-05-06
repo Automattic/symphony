@@ -57,8 +57,8 @@ defmodule SymphonyElixirWeb.QualityLive do
         </article>
 
         <article class="metric-card">
-          <p class="metric-label">Tests-read rate</p>
-          <p class="metric-value numeric"><%= format_rate(@payload.metrics.tests_read_rate) %></p>
+          <p class="metric-label">Tests-run rate</p>
+          <p class="metric-value numeric"><%= format_rate(@payload.metrics.tests_run_rate) %></p>
           <p class="metric-detail">when applicable</p>
         </article>
 
@@ -138,7 +138,7 @@ defmodule SymphonyElixirWeb.QualityLive do
                   <th>Outcome</th>
                   <th>Agent</th>
                   <th>Tokens</th>
-                  <th>Tests</th>
+                  <th>Tests run</th>
                   <th>Duration</th>
                   <th>Date</th>
                 </tr>
@@ -151,10 +151,13 @@ defmodule SymphonyElixirWeb.QualityLive do
                       <span :if={entry.session_id} class="muted mono"><%= short_id(entry.session_id) %></span>
                     </div>
                   </td>
-                  <td><span class={outcome_badge_class(entry.outcome)}><%= outcome_label(entry.outcome) %></span></td>
+                  <td>
+                    <span class={outcome_badge_class(entry.outcome)}><%= outcome_label(entry.outcome) %></span>
+                    <span :if={entry.error_kind} class="error-kind-label"><%= entry.error_kind %></span>
+                  </td>
                   <td><%= entry.agent_kind || "unknown" %></td>
                   <td class="numeric"><%= format_int(get_in(entry, [:tokens, :total_tokens])) %></td>
-                  <td><%= tests_read_label(entry.tests_read) %></td>
+                  <td><%= tests_run_label(entry.tests_run) %></td>
                   <td class="numeric"><%= format_duration(entry.duration_seconds) %></td>
                   <td class="numeric"><%= entry.date || "n/a" %></td>
                 </tr>
@@ -194,9 +197,9 @@ defmodule SymphonyElixirWeb.QualityLive do
   defp outcome_label(outcome) when is_binary(outcome), do: outcome
   defp outcome_label(_outcome), do: "Unknown"
 
-  defp tests_read_label(true), do: "Read"
-  defp tests_read_label(false), do: "Missed"
-  defp tests_read_label(_value), do: "n/a"
+  defp tests_run_label(true), do: "Yes"
+  defp tests_run_label(false), do: "No"
+  defp tests_run_label(_value), do: "n/a"
 
   defp format_rate(nil), do: "n/a"
   defp format_rate(rate) when is_number(rate), do: "#{round(rate * 100)}%"

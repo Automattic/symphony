@@ -562,6 +562,14 @@ pre,
   min-width: 860px;
 }
 
+.error-kind-label {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 0.15rem;
+  letter-spacing: 0;
+}
+
 .session-copy-btn {
   font-family: "Sohne Mono", "SFMono-Regular", "SF Mono", Consolas, monospace;
   font-size: 0.78rem;

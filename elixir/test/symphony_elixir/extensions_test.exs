@@ -510,7 +510,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                agent_kind: "codex",
                tokens: %{input_tokens: 20, output_tokens: 10, total_tokens: 30},
                duration_seconds: 45,
-               tests_read: true,
+               tests_run: true,
                workspace_path: "/tmp/workspaces/RSM-API-1",
                session_id: "session-api-1",
                logged_at: now,
@@ -530,7 +530,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                agent_kind: "claude",
                tokens: %{input_tokens: 5, output_tokens: 5, total_tokens: 10},
                duration_seconds: 5,
-               tests_read: false,
+               tests_run: false,
                session_id: "session-api-2",
                logged_at: yesterday,
                date: DateTime.to_date(yesterday)
@@ -779,7 +779,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                agent_kind: "codex",
                tokens: %{input_tokens: 30, output_tokens: 20, total_tokens: 50},
                duration_seconds: 90,
-               tests_read: true,
+               tests_run: true,
                session_id: "session-live-1",
                logged_at: now,
                date: DateTime.to_date(now)
@@ -797,7 +797,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                agent_kind: "claude",
                tokens: %{input_tokens: 10, output_tokens: 5, total_tokens: 15},
                duration_seconds: 30,
-               tests_read: false,
+               tests_run: false,
                logged_at: now,
                date: DateTime.to_date(now)
              })
@@ -809,7 +809,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Quality Dashboard"
     assert html =~ "PR-opened rate"
     assert html =~ "Avg tokens"
-    assert html =~ "Tests-read rate"
+    assert html =~ "Tests-run rate"
     assert html =~ "Error rate"
     assert html =~ "RSM-LIVE-1"
     refute html =~ "RSM-LIVE-2"

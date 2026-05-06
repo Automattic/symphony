@@ -853,6 +853,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, issues} = Client.fetch_issue_states_by_ids_for_test(issue_ids, graphql_fun)
 
     assert Enum.map(issues, & &1.id) == issue_ids
+    assert Enum.all?(issues, & &1.assigned_to_worker)
 
     assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, first: 50, relationFirst: 50}}
     assert query =~ "SymphonyLinearIssuesById"
@@ -865,7 +866,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     raw_issues = [
       raw_linear_issue("issue-1", "MT-1", "user-2"),
-      raw_linear_issue("issue-2", "MT-2", nil)
+      raw_linear_issue("issue-2", "MT-2", nil),
+      raw_linear_issue("issue-3", "MT-3", "user-1")
     ]
 
     graphql_fun = fn query, variables ->
@@ -873,12 +875,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       {:ok, %{"data" => %{"issues" => %{"nodes" => raw_issues}}}}
     end
 
-    assert {:ok, issues} = Client.fetch_issue_states_by_ids_for_test(["issue-1", "issue-2"], graphql_fun)
+    assert {:ok, issues} = Client.fetch_issue_states_by_ids_for_test(["issue-1", "issue-2", "issue-3"], graphql_fun)
 
-    assert Enum.map(issues, & &1.identifier) == ["MT-1", "MT-2"]
-    refute Enum.any?(issues, & &1.assigned_to_worker)
+    assert Enum.map(issues, & &1.identifier) == ["MT-1", "MT-2", "MT-3"]
+    assert Enum.map(issues, & &1.assigned_to_worker) == [false, false, true]
 
-    assert_receive {:fetch_issue_states_page, query, %{ids: ["issue-1", "issue-2"], first: 2, relationFirst: 50}}
+    assert_receive {:fetch_issue_states_page, query, %{ids: ["issue-1", "issue-2", "issue-3"], first: 3, relationFirst: 50}}
     assert query =~ "SymphonyLinearIssuesById"
     assert query =~ "issues(filter: {id: {in: $ids}}"
   end

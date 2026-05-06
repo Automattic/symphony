@@ -318,69 +318,102 @@ defmodule SymphonyElixir.CiPoller do
 
   defp rerun_failed_ci(record, ci_status, failed_checks, settings, opts, now) do
     github = Keyword.get(opts, :github, PullRequest)
-    run_id = failed_run_id(failed_checks)
+    run_ids = failed_run_ids(failed_checks)
 
-    if is_binary(run_id) do
-      case github.rerun_failed(run_id, cwd: Map.get(record, :workspace_path)) do
-        :ok ->
-          attrs =
-            ci_status_attrs(
-              record,
-              ci_status,
-              %{
-                status: "rerun_requested",
-                failed_checks: failed_checks,
-                rerun_attempted_shas: append_string(Map.get(record, :rerun_attempted_shas, []), Map.get(ci_status, :commit_sha)),
-                rerun_requested_at: now,
-                rerun_run_id: run_id
-              },
-              now
-            )
+    case run_ids do
+      [_ | _] ->
+        case rerun_failed_run_ids(github, run_ids, Map.get(record, :workspace_path)) do
+          :ok ->
+            attrs =
+              ci_status_attrs(
+                record,
+                ci_status,
+                %{
+                  status: "rerun_requested",
+                  failed_checks: failed_checks,
+                  rerun_attempted_shas: append_string(Map.get(record, :rerun_attempted_shas, []), Map.get(ci_status, :commit_sha)),
+                  rerun_requested_at: now,
+                  rerun_run_id: List.first(run_ids),
+                  rerun_run_ids: run_ids
+                },
+                now
+              )
 
-          complete_ci_update(opts, record, attrs, {:rerun_requested, Map.get(record, :issue_id), run_id})
+            complete_ci_update(opts, record, attrs, {:rerun_requested, Map.get(record, :issue_id), rerun_action_run_ids(run_ids)})
 
-        {:error, reason} ->
-          record_poll_error(record, {:rerun_failed, run_id, reason}, opts, now)
-      end
-    else
-      dispatch_ci_failure(record, ci_status, failed_checks, settings, Keyword.put(opts, :missing_run_id, true), now)
+          {:error, {run_id, reason}} ->
+            record_poll_error(record, {:rerun_failed, run_id, reason}, opts, now)
+        end
+
+      [] ->
+        dispatch_ci_failure(record, ci_status, failed_checks, settings, Keyword.put(opts, :missing_run_id, true), now)
     end
   end
+
+  defp rerun_failed_run_ids(github, run_ids, workspace_path) when is_list(run_ids) do
+    Enum.reduce_while(run_ids, :ok, fn run_id, :ok ->
+      case github.rerun_failed(run_id, cwd: workspace_path) do
+        :ok ->
+          {:cont, :ok}
+
+        {:error, reason} ->
+          {:halt, {:error, {run_id, reason}}}
+      end
+    end)
+  end
+
+  defp rerun_action_run_ids([run_id]), do: run_id
+  defp rerun_action_run_ids(run_ids), do: run_ids
 
   defp dispatch_ci_failure(record, ci_status, failed_checks, settings, opts, now) do
     tracker = Keyword.get(opts, :tracker, Tracker)
     issue_id = Map.get(record, :issue_id)
 
-    with {:ok, log_excerpt} <- failed_log_excerpt(record, failed_checks, settings, opts),
-         :ok <- tracker.add_label(issue_id, @ci_failed_label),
-         :ok <- tracker.update_issue_state(issue_id, @active_state) do
-      retry_count = ci_retry_count(record) + 1
-      ci_failure = ci_failure_context(ci_status, failed_checks, log_excerpt)
+    case failed_log_excerpt(record, failed_checks, settings, opts) do
+      {:ok, log_excerpt} ->
+        persist_and_dispatch_ci_failure(record, ci_status, failed_checks, opts, now, tracker, issue_id, log_excerpt)
 
-      attrs =
-        ci_status_attrs(
-          record,
-          ci_status,
-          %{
-            status: "dispatch_requested",
-            target_issue_state: @active_state,
-            ci_retry_count: retry_count,
-            ci_failed_label_confirmed: true,
-            failed_checks: failed_checks,
-            log_excerpt: log_excerpt,
-            ci_failure: ci_failure,
-            dispatched_shas: append_string(Map.get(record, :dispatched_shas, []), Map.get(ci_status, :commit_sha)),
-            last_action: "dispatch",
-            last_action_at: now
-          },
-          now
-        )
-
-      emit_ci_failed(record, ci_status, failed_checks, retry_count)
-      complete_ci_update(opts, record, attrs, {:state_transitioned, issue_id, :ci_failure, @active_state})
-    else
       {:error, reason} ->
-        record_transition_error(record, ci_status, failed_checks, opts, now, "dispatch", reason)
+        record_poll_error(record, reason, opts, now)
+    end
+  end
+
+  defp persist_and_dispatch_ci_failure(record, ci_status, failed_checks, opts, now, tracker, issue_id, log_excerpt) do
+    retry_count = ci_retry_count(record) + 1
+    ci_failure = ci_failure_context(ci_status, failed_checks, log_excerpt)
+
+    attrs =
+      ci_status_attrs(
+        record,
+        ci_status,
+        %{
+          status: "dispatch_requested",
+          target_issue_state: @active_state,
+          ci_retry_count: retry_count,
+          ci_failed_label_confirmed: true,
+          failed_checks: failed_checks,
+          log_excerpt: log_excerpt,
+          ci_failure: ci_failure,
+          dispatched_shas: append_string(Map.get(record, :dispatched_shas, []), Map.get(ci_status, :commit_sha)),
+          last_action: "dispatch",
+          last_action_at: now
+        },
+        now
+      )
+
+    case complete_ci_update(opts, record, attrs, :ok) do
+      :ok ->
+        with :ok <- tracker.add_label(issue_id, @ci_failed_label),
+             :ok <- tracker.update_issue_state(issue_id, @active_state) do
+          emit_ci_failed(record, ci_status, failed_checks, retry_count)
+          {:state_transitioned, issue_id, :ci_failure, @active_state}
+        else
+          {:error, reason} ->
+            record_transition_error(record, ci_status, failed_checks, opts, now, "dispatch", reason)
+        end
+
+      {:update_error, _issue_id, _reason} = error ->
+        error
     end
   end
 
@@ -389,8 +422,35 @@ defmodule SymphonyElixir.CiPoller do
     issue_id = Map.get(record, :issue_id)
     escalation_state = settings.ci.escalation_state || @in_review_state
 
-    with {:ok, log_excerpt} <- failed_log_excerpt(record, failed_checks, settings, opts),
-         :ok <- tracker.add_label(issue_id, @human_help_label),
+    context = %{
+      escalation_state: escalation_state,
+      issue_id: issue_id,
+      now: now,
+      opts: opts,
+      settings: settings,
+      tracker: tracker
+    }
+
+    case failed_log_excerpt(record, failed_checks, settings, opts) do
+      {:ok, log_excerpt} ->
+        do_escalate_ci_failure(record, ci_status, failed_checks, context, log_excerpt)
+
+      {:error, reason} ->
+        record_poll_error(record, reason, opts, now)
+    end
+  end
+
+  defp do_escalate_ci_failure(record, ci_status, failed_checks, context, log_excerpt) do
+    %{
+      escalation_state: escalation_state,
+      issue_id: issue_id,
+      now: now,
+      opts: opts,
+      settings: settings,
+      tracker: tracker
+    } = context
+
+    with :ok <- tracker.add_label(issue_id, @human_help_label),
          :ok <- tracker.update_issue_state(issue_id, escalation_state) do
       ci_failure = ci_failure_context(ci_status, failed_checks, log_excerpt)
 
@@ -410,8 +470,14 @@ defmodule SymphonyElixir.CiPoller do
           now
         )
 
-      emit_ci_escalated(record, ci_status, failed_checks, settings)
-      complete_ci_update(opts, record, attrs, {:escalated, issue_id, escalation_state})
+      case complete_ci_update(opts, record, attrs, {:escalated, issue_id, escalation_state}) do
+        {:escalated, ^issue_id, ^escalation_state} = action ->
+          emit_ci_escalated(record, ci_status, failed_checks, settings)
+          action
+
+        {:update_error, _issue_id, _reason} = error ->
+          error
+      end
     else
       {:error, reason} ->
         record_transition_error(record, ci_status, failed_checks, opts, now, "escalate", reason)
@@ -495,20 +561,41 @@ defmodule SymphonyElixir.CiPoller do
 
   defp failed_log_excerpt(record, failed_checks, settings, opts) do
     github = Keyword.get(opts, :github, PullRequest)
-    run_id = failed_run_id(failed_checks)
+    run_ids = failed_run_ids(failed_checks)
 
     cond do
-      is_binary(run_id) ->
-        case github.fetch_failed_log(run_id, cwd: Map.get(record, :workspace_path)) do
-          {:ok, log} -> {:ok, log_excerpt(log, settings.ci.log_excerpt_lines)}
-          {:error, reason} -> {:ok, "Failed to fetch failed GitHub Actions log for run #{run_id}: #{inspect(reason)}"}
-        end
+      run_ids != [] ->
+        failed_log_excerpts(github, run_ids, Map.get(record, :workspace_path), settings.ci.log_excerpt_lines)
 
       Keyword.get(opts, :missing_run_id) ->
         {:ok, "No GitHub Actions run id was available for the failed check."}
 
       true ->
         {:ok, "No GitHub Actions run id was available for the failed check."}
+    end
+  end
+
+  defp failed_log_excerpts(github, [run_id], workspace_path, line_limit) do
+    case github.fetch_failed_log(run_id, cwd: workspace_path) do
+      {:ok, log} -> {:ok, log_excerpt(log, line_limit)}
+      {:error, reason} -> {:error, {:failed_log_unavailable, run_id, reason}}
+    end
+  end
+
+  defp failed_log_excerpts(github, run_ids, workspace_path, line_limit) when is_list(run_ids) do
+    Enum.reduce_while(run_ids, {:ok, []}, fn run_id, {:ok, excerpts} ->
+      case github.fetch_failed_log(run_id, cwd: workspace_path) do
+        {:ok, log} ->
+          excerpt = "Run #{run_id} failed log:\n#{log_excerpt(log, line_limit)}"
+          {:cont, {:ok, [excerpt | excerpts]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:failed_log_unavailable, run_id, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, excerpts} -> {:ok, excerpts |> Enum.reverse() |> Enum.join("\n\n")}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -552,6 +639,11 @@ defmodule SymphonyElixir.CiPoller do
           status: "state_transition_error",
           error: inspect(reason),
           failed_checks: failed_checks,
+          ci_retry_count: ci_retry_count(record),
+          ci_failed_label_confirmed: Map.get(record, :ci_failed_label_confirmed, false),
+          dispatched_shas: string_list(Map.get(record, :dispatched_shas, [])),
+          ci_failure: Map.get(record, :ci_failure),
+          log_excerpt: Map.get(record, :log_excerpt),
           last_action: action,
           last_action_at: nil
         },
@@ -688,13 +780,16 @@ defmodule SymphonyElixir.CiPoller do
     String.match?(line, ~r/(error|failed|failure|exception|stacktrace|traceback|panic)/i)
   end
 
-  defp failed_run_id(failed_checks) do
-    Enum.find_value(failed_checks, fn check ->
+  defp failed_run_ids(failed_checks) do
+    failed_checks
+    |> Enum.map(fn check ->
       case Map.get(check, :run_id) do
         run_id when is_binary(run_id) and run_id != "" -> run_id
         _ -> nil
       end
     end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
   end
 
   defp ci_failure_context(ci_status, failed_checks, log_excerpt) do

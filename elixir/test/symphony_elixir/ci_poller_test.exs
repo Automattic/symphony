@@ -24,6 +24,7 @@ defmodule SymphonyElixir.CiPollerTest do
 
     def update_issue_state(issue_id, state_name) do
       recipient = Application.fetch_env!(:symphony_elixir, :ci_test_recipient)
+      send(recipient, {:ci_failure_at_transition, issue_id, SymphonyElixir.CiPoller.pending_ci_failure(issue_id)})
       send(recipient, {:issue_state_update, issue_id, state_name})
       :ok
     end
@@ -57,7 +58,15 @@ defmodule SymphonyElixir.CiPollerTest do
     def fetch_failed_log(run_id, _opts) do
       recipient = Application.fetch_env!(:symphony_elixir, :ci_test_recipient)
       send(recipient, {:fetch_failed_log, run_id})
-      {:ok, Application.get_env(:symphony_elixir, :ci_test_failed_log, "line 1\nERROR: failed\nline 3")}
+
+      case Application.get_env(:symphony_elixir, :ci_test_failed_log_error) do
+        nil ->
+          logs_by_run_id = Application.get_env(:symphony_elixir, :ci_test_failed_logs_by_run_id, %{})
+          {:ok, Map.get(logs_by_run_id, run_id, Application.get_env(:symphony_elixir, :ci_test_failed_log, "line 1\nERROR: failed\nline 3"))}
+
+        reason ->
+          {:error, reason}
+      end
     end
 
     defp next_status do
@@ -86,14 +95,25 @@ defmodule SymphonyElixir.CiPollerTest do
     end
   end
 
+  defmodule FailingUpdateRunStore do
+    def list_runs(:all), do: []
+    def list_ci_checks, do: [Application.fetch_env!(:symphony_elixir, :ci_test_ci_record)]
+    def update_ci_check(_issue_id, _attrs), do: {:error, :write_failed}
+    def put_ci_check(_record), do: :ok
+    def delete_ci_check(_issue_id), do: :ok
+  end
+
   setup do
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :ci_test_issues)
       Application.delete_env(:symphony_elixir, :ci_test_status)
       Application.delete_env(:symphony_elixir, :ci_test_statuses)
       Application.delete_env(:symphony_elixir, :ci_test_failed_log)
+      Application.delete_env(:symphony_elixir, :ci_test_failed_log_error)
+      Application.delete_env(:symphony_elixir, :ci_test_failed_logs_by_run_id)
       Application.delete_env(:symphony_elixir, :ci_test_recipient)
       Application.delete_env(:symphony_elixir, :ci_test_review_activity)
+      Application.delete_env(:symphony_elixir, :ci_test_ci_record)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -152,6 +172,25 @@ defmodule SymphonyElixir.CiPollerTest do
              RunStore.list_ci_checks()
   end
 
+  test "first failure reruns every distinct failed workflow run before dispatching" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :ci_test_status, multi_failed_status("abc123"))
+    put_run(issue, now)
+
+    assert {:ok, %{actions: [{:rerun_requested, "issue-2401", ["987", "654"]}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:rerun_failed, "987"}
+    assert_receive {:rerun_failed, "654"}
+    refute_receive {:issue_state_update, _, _}
+    refute_receive {:add_label, _, _}
+
+    assert [%{status: "rerun_requested", rerun_attempted_shas: ["abc123"], rerun_run_ids: ["987", "654"], ci_retry_count: 0}] =
+             RunStore.list_ci_checks()
+  end
+
   test "second failure dispatches once with prompt ci failure context" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()
@@ -167,8 +206,10 @@ defmodule SymphonyElixir.CiPollerTest do
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
 
     assert_receive {:add_label, "issue-2401", "ci-failed"}
+    assert_receive {:ci_failure_at_transition, "issue-2401", %{commit_sha: "abc123", log_excerpt: transition_log_excerpt}}
     assert_receive {:issue_state_update, "issue-2401", "In Progress"}
     assert_receive {:fetch_failed_log, "987"}
+    assert transition_log_excerpt =~ "ERROR: specs failed"
 
     assert %{
              commit_sha: "abc123",
@@ -191,6 +232,68 @@ defmodule SymphonyElixir.CiPollerTest do
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 2, :minute))
 
     refute_receive {:issue_state_update, _, _}
+  end
+
+  test "failed log fetch errors back off without dispatching or consuming retries" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :ci_test_status, failed_status("abc123"))
+    Application.put_env(:symphony_elixir, :ci_test_failed_log_error, :log_not_ready)
+    put_run(issue, now)
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/RSM-2401",
+               status: "rerun_requested",
+               ci_retry_count: 0,
+               rerun_attempted_shas: ["abc123"],
+               dispatched_shas: [],
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:poll_error, "issue-2401", {:failed_log_unavailable, "987", :log_not_ready}}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    assert_receive {:fetch_failed_log, "987"}
+    refute_receive {:add_label, _, _}
+    refute_receive {:issue_state_update, _, _}
+
+    assert [%{status: "poll_error", ci_retry_count: 0, dispatched_shas: [], error: "{:failed_log_unavailable, \"987\", :log_not_ready}"}] =
+             RunStore.list_ci_checks()
+  end
+
+  test "failed persistence prevents dispatch transition and ci notification" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [])
+    Application.put_env(:symphony_elixir, :ci_test_status, failed_status("abc123"))
+
+    Application.put_env(:symphony_elixir, :ci_test_ci_record, %{
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_url: issue.url,
+      pr_url: List.first(issue.pr_urls),
+      workspace_path: "/tmp/workspaces/RSM-2401",
+      status: "rerun_requested",
+      ci_retry_count: 0,
+      rerun_attempted_shas: ["abc123"],
+      dispatched_shas: [],
+      updated_at: now
+    })
+
+    Notifications.subscribe()
+
+    assert {:ok, %{actions: [{:update_error, "issue-2401", {:update_ci_check_failed, :write_failed}}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, run_store: FailingUpdateRunStore, now: DateTime.add(now, 1, :minute))
+
+    refute_receive {:add_label, _, _}
+    refute_receive {:issue_state_update, _, _}
+    refute_receive {:notification_event, %{event: "ci_failed"}}
   end
 
   test "max retries escalates instead of dispatching again" do
@@ -377,6 +480,20 @@ defmodule SymphonyElixir.CiPollerTest do
       commit_sha: sha,
       checks: [
         %{name: "specs", status: "COMPLETED", conclusion: "FAILURE", run_id: "987"}
+      ]
+    }
+  end
+
+  defp multi_failed_status(sha) do
+    %{
+      pr_url: "https://github.com/example/repo/pull/2401",
+      pr_title: "Handle CI",
+      state: "OPEN",
+      commit_sha: sha,
+      checks: [
+        %{name: "specs", status: "COMPLETED", conclusion: "FAILURE", run_id: "987"},
+        %{name: "lint", status: "COMPLETED", conclusion: "FAILURE", run_id: "654"},
+        %{name: "specs retry", status: "COMPLETED", conclusion: "FAILURE", run_id: "987"}
       ]
     }
   end

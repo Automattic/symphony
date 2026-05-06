@@ -34,7 +34,8 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            enriched_issue = enrich_issue_for_dispatch(issue, opts)
+            run_codex_turns(workspace, enriched_issue, codex_update_recipient, opts, worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -42,6 +43,25 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp enrich_issue_for_dispatch(issue, opts) do
+    issue_enricher = Keyword.get(opts, :issue_enricher, &Tracker.enrich_issue/1)
+
+    try do
+      case issue_enricher.(issue) do
+        {:ok, enriched_issue} ->
+          enriched_issue
+
+        {:error, reason} ->
+          Logger.warning("issue_enrichment_failed #{issue_context(issue)} reason=#{inspect(reason)}")
+          issue
+      end
+    rescue
+      exception ->
+        Logger.warning("issue_enrichment_failed #{issue_context(issue)} reason=#{inspect(exception)}")
+        issue
     end
   end
 

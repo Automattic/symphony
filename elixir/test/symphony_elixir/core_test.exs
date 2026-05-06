@@ -866,11 +866,128 @@ defmodule SymphonyElixir.CoreTest do
     assert remaining_ms <= max_remaining_ms
   end
 
+  defp no_op_issue_enricher do
+    fn issue -> {:ok, issue} end
+  end
+
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
   test "fetch issues by states with empty state set is a no-op" do
     assert {:ok, []} = Client.fetch_issues_by_states([])
+  end
+
+  test "linear client enriches issue comments and linked issues" do
+    long_body = String.duplicate("x", 805)
+
+    issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:enrichment_query, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "comments" => %{
+               "nodes" => [
+                 %{
+                   "body" => "Third recent note",
+                   "createdAt" => "2026-05-05T01:00:00Z",
+                   "user" => %{"name" => "Sam"}
+                 },
+                 %{
+                   "body" => "## Codex Workpad\n" <> long_body,
+                   "createdAt" => "2026-05-05T02:00:00Z",
+                   "user" => %{"name" => "Codex"}
+                 },
+                 %{
+                   "body" => "Second recent note",
+                   "createdAt" => "2026-05-05T03:00:00Z",
+                   "user" => %{"name" => "Alex"}
+                 },
+                 %{
+                   "body" => "Latest human note",
+                   "createdAt" => "2026-05-05T04:00:00Z",
+                   "user" => %{"name" => "Taylor"}
+                 }
+               ]
+             },
+             "relations" => %{
+               "nodes" => [
+                 %{
+                   "type" => "related",
+                   "relatedIssue" => %{
+                     "identifier" => "MT-2",
+                     "title" => "Related context",
+                     "state" => %{"name" => "Todo"}
+                   }
+                 },
+                 %{
+                   "type" => "BLOCKS",
+                   "relatedIssue" => %{
+                     "identifier" => "MT-3",
+                     "title" => "Downstream issue",
+                     "state" => %{"name" => "In Progress"}
+                   }
+                 },
+                 %{
+                   "type" => "blocked_by",
+                   "relatedIssue" => %{
+                     "identifier" => "MT-4",
+                     "title" => "Upstream blocker",
+                     "state" => %{"name" => "In Progress"}
+                   }
+                 }
+               ]
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, enriched_issue} = Client.fetch_issue_enrichment_for_test(issue, graphql_fun)
+
+    assert_receive {:enrichment_query, query, %{id: "issue-1", commentLast: comment_last, relationFirst: relation_first}}
+
+    assert query =~ "SymphonyLinearIssueEnrichment"
+    assert query =~ "comments(last: $commentLast, orderBy: createdAt)"
+    assert query =~ "relations(first: $relationFirst)"
+    assert comment_last == 20
+    assert relation_first == 50
+
+    assert [
+             %{author: "Codex", body: workpad_body, created_at: ~U[2026-05-05 02:00:00Z]},
+             %{author: "Taylor", body: "Latest human note", created_at: ~U[2026-05-05 04:00:00Z]},
+             %{author: "Alex", body: "Second recent note", created_at: ~U[2026-05-05 03:00:00Z]}
+           ] = enriched_issue.comments
+
+    assert String.starts_with?(workpad_body, "## Codex Workpad\n")
+    assert String.length(workpad_body) == 800
+
+    assert enriched_issue.linked_issues == [
+             %{relation: "related", identifier: "MT-2", title: "Related context", state: "Todo"},
+             %{relation: "blocks", identifier: "MT-3", title: "Downstream issue", state: "In Progress"}
+           ]
+  end
+
+  test "linear client reports enrichment errors without changing issue fetchers" do
+    issue = %Issue{id: "issue-missing", identifier: "MT-404"}
+
+    assert {:error, :missing_issue_id} =
+             Client.fetch_issue_enrichment_for_test(%{issue | id: " "}, fn _query, _variables ->
+               flunk("missing IDs should not call GraphQL")
+             end)
+
+    assert {:error, :issue_not_found} =
+             Client.fetch_issue_enrichment_for_test(issue, fn _query, _variables ->
+               {:ok, %{"data" => %{"issue" => nil}}}
+             end)
+
+    assert {:error, {:linear_graphql_errors, [%{"message" => "bad"}]}} =
+             Client.fetch_issue_enrichment_for_test(issue, fn _query, _variables ->
+               {:ok, %{"errors" => [%{"message" => "bad"}]}}
+             end)
   end
 
   test "prompt builder renders issue and attempt values from workflow template" do
@@ -1103,6 +1220,26 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
+    refute prompt =~ "Recent comments:"
+    refute prompt =~ "Linked issues:"
+
+    enriched_issue = %{
+      issue
+      | comments: [
+          %{author: "Codex", body: "## Codex Workpad\nExisting plan", created_at: ~U[2026-05-05 02:00:00Z]}
+        ],
+        linked_issues: [
+          %{relation: "related", identifier: "MT-617", title: "Design decision", state: "Todo"}
+        ]
+    }
+
+    enriched_prompt = PromptBuilder.build_prompt(enriched_issue)
+
+    assert enriched_prompt =~ "Recent comments:"
+    assert enriched_prompt =~ "[Codex @ 2026-05-05T02:00:00Z]"
+    assert enriched_prompt =~ "## Codex Workpad\nExisting plan"
+    assert enriched_prompt =~ "Linked issues:"
+    assert enriched_prompt =~ "- related: MT-617 - Design decision (Todo)"
   end
 
   test "prompt builder adds continuation guidance for retries" do
@@ -1123,7 +1260,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt == "Retry #2"
   end
 
-  test "agent runner keeps workspace after successful codex run" do
+  test "agent runner falls back when issue enrichment raises and keeps workspace after successful codex run" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1187,7 +1324,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       before = MapSet.new(File.ls!(workspace_root))
-      assert :ok = AgentRunner.run(issue)
+      assert :ok = AgentRunner.run(issue, nil, issue_enricher: fn _issue -> raise "boom" end)
       entries_after = MapSet.new(File.ls!(workspace_root))
 
       created =
@@ -1278,7 +1415,8 @@ defmodule SymphonyElixir.CoreTest do
                AgentRunner.run(
                  issue,
                  test_pid,
-                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_enricher: no_op_issue_enricher()
                )
 
       assert_receive {:codex_worker_update, "issue-live-updates",
@@ -1426,7 +1564,9 @@ defmodule SymphonyElixir.CoreTest do
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         agent_command: "#{codex_binary} app-server",
-        max_turns: 3
+        max_turns: 3,
+        prompt:
+          "First prompt {{ issue.identifier }}{% for comment in issue.comments %} comment={{ comment.body }}{% endfor %}{% for link in issue.linked_issues %} link={{ link.identifier }}{% endfor %}"
       )
 
       parent = self()
@@ -1465,7 +1605,25 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      issue_enricher = fn issue ->
+        send(parent, {:issue_enriched, issue.identifier})
+
+        {:ok,
+         %{
+           issue
+           | comments: [%{author: "Codex", body: "Prior workpad", created_at: ~U[2026-05-05 02:00:00Z]}],
+             linked_issues: [%{relation: "related", identifier: "MT-248", title: "Related", state: "Todo"}]
+         }}
+      end
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: state_fetcher,
+                 issue_enricher: issue_enricher
+               )
+
+      assert_receive {:issue_enriched, "MT-247"}
+      refute_receive {:issue_enriched, "MT-247"}, 50
       assert_receive {:issue_state_fetch, 1}
       assert_receive {:issue_state_fetch, 2}
 
@@ -1486,8 +1644,10 @@ defmodule SymphonyElixir.CoreTest do
         end)
 
       assert length(turn_texts) == 2
-      assert Enum.at(turn_texts, 0) =~ "You are an agent for this repository."
-      refute Enum.at(turn_texts, 1) =~ "You are an agent for this repository."
+      assert Enum.at(turn_texts, 0) =~ "First prompt MT-247"
+      assert Enum.at(turn_texts, 0) =~ "comment=Prior workpad"
+      assert Enum.at(turn_texts, 0) =~ "link=MT-248"
+      refute Enum.at(turn_texts, 1) =~ "First prompt MT-247"
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
     after
@@ -1582,7 +1742,11 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: state_fetcher,
+                 issue_enricher: no_op_issue_enricher()
+               )
 
       trace = File.read!(trace_file)
       assert length(String.split(trace, "RUN", trim: true)) == 1

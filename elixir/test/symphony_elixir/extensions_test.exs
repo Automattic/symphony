@@ -26,6 +26,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, issue_ids}
     end
 
+    def fetch_issue_enrichment(issue) do
+      send(self(), {:fetch_issue_enrichment_called, issue})
+      {:ok, %{issue | comments: [%{author: "Reviewer", body: "Existing context", created_at: ~U[2026-05-05 01:00:00Z]}]}}
+    end
+
     def graphql(query, variables) do
       send(self(), {:graphql_called, query, variables})
 
@@ -193,6 +198,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_candidate_issues()
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
+    assert {:ok, ^issue} = SymphonyElixir.Tracker.enrich_issue(issue)
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
@@ -217,6 +223,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:ok, ["issue-1"]} = Adapter.fetch_issue_states_by_ids(["issue-1"])
     assert_receive {:fetch_issue_states_by_ids_called, ["issue-1"]}
+
+    issue = %Issue{id: "issue-1", identifier: "MT-1"}
+    assert {:ok, enriched_issue} = Adapter.enrich_issue(issue)
+    assert enriched_issue.comments == [%{author: "Reviewer", body: "Existing context", created_at: ~U[2026-05-05 01:00:00Z]}]
+    assert_receive {:fetch_issue_enrichment_called, ^issue}
 
     Process.put(
       {FakeLinearClient, :graphql_result},

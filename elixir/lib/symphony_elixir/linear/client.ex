@@ -8,6 +8,11 @@ defmodule SymphonyElixir.Linear.Client do
 
   @issue_page_size 50
   @attachment_page_size 20
+  @enrichment_comment_last 20
+  @enrichment_relation_first 50
+  @enrichment_comment_limit 3
+  @enrichment_comment_body_limit 800
+  @workpad_marker "## Codex Workpad"
   @max_error_body_log_bytes 1_000
 
   @query """
@@ -118,6 +123,34 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @enrichment_query """
+  query SymphonyLinearIssueEnrichment($id: String!, $commentLast: Int!, $relationFirst: Int!) {
+    issue(id: $id) {
+      comments(last: $commentLast, orderBy: createdAt) {
+        nodes {
+          body
+          createdAt
+          user {
+            name
+          }
+        }
+      }
+      relations(first: $relationFirst) {
+        nodes {
+          type
+          relatedIssue {
+            identifier
+            title
+            state {
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+  """
+
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     tracker = Config.settings!().tracker
@@ -174,6 +207,13 @@ defmodule SymphonyElixir.Linear.Client do
         end
     end
   end
+
+  @spec fetch_issue_enrichment(Issue.t()) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_enrichment(%Issue{} = issue) do
+    do_fetch_issue_enrichment(issue, &graphql/2)
+  end
+
+  def fetch_issue_enrichment(_issue), do: {:error, :invalid_issue}
 
   @spec graphql(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def graphql(query, variables \\ %{}, opts \\ [])
@@ -233,6 +273,16 @@ defmodule SymphonyElixir.Linear.Client do
     issue_pages
     |> Enum.reduce([], &prepend_page_issues/2)
     |> finalize_paginated_issues()
+  end
+
+  @doc false
+  @spec fetch_issue_enrichment_for_test(
+          Issue.t(),
+          (String.t(), map() -> {:ok, map()} | {:error, term()})
+        ) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_enrichment_for_test(%Issue{} = issue, graphql_fun)
+      when is_function(graphql_fun, 2) do
+    do_fetch_issue_enrichment(issue, graphql_fun)
   end
 
   @doc false
@@ -375,6 +425,39 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
+  defp do_fetch_issue_enrichment(%Issue{id: issue_id} = issue, graphql_fun)
+       when is_function(graphql_fun, 2) do
+    case normalize_issue_id(issue_id) do
+      nil ->
+        {:error, :missing_issue_id}
+
+      id ->
+        with {:ok, body} <-
+               graphql_fun.(@enrichment_query, %{
+                 id: id,
+                 commentLast: @enrichment_comment_last,
+                 relationFirst: @enrichment_relation_first
+               }),
+             {:ok, enrichment} <- decode_issue_enrichment_response(body) do
+          {:ok,
+           %{
+             issue
+             | comments: extract_comments(enrichment),
+               linked_issues: extract_linked_issues(enrichment)
+           }}
+        end
+    end
+  end
+
+  defp normalize_issue_id(issue_id) when is_binary(issue_id) do
+    case String.trim(issue_id) do
+      "" -> nil
+      id -> id
+    end
+  end
+
+  defp normalize_issue_id(_issue_id), do: nil
+
   defp issue_order_index(ids) when is_list(ids) do
     ids
     |> Enum.with_index()
@@ -504,6 +587,18 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp decode_linear_page_response(response, assignee_filter), do: decode_linear_response(response, assignee_filter)
+
+  defp decode_issue_enrichment_response(%{"data" => %{"issue" => issue}}) when is_map(issue) do
+    {:ok, issue}
+  end
+
+  defp decode_issue_enrichment_response(%{"data" => %{"issue" => nil}}), do: {:error, :issue_not_found}
+
+  defp decode_issue_enrichment_response(%{"errors" => errors}) do
+    {:error, {:linear_graphql_errors, errors}}
+  end
+
+  defp decode_issue_enrichment_response(_unknown), do: {:error, :linear_unknown_payload}
 
   defp next_page_cursor(%{has_next_page: true, end_cursor: end_cursor})
        when is_binary(end_cursor) and byte_size(end_cursor) > 0 do
@@ -707,6 +802,109 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp extract_blockers(_), do: []
+
+  defp extract_comments(%{"comments" => %{"nodes" => comments}}) when is_list(comments) do
+    normalized_comments =
+      comments
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {comment, index} ->
+        case normalize_comment(comment, index) do
+          nil -> []
+          normalized -> [normalized]
+        end
+      end)
+      |> Enum.reverse()
+
+    workpad_comment = Enum.find(normalized_comments, & &1.contains_workpad_marker)
+
+    normalized_comments
+    |> select_comments(workpad_comment)
+    |> Enum.map(&Map.take(&1, [:author, :body, :created_at]))
+  end
+
+  defp extract_comments(_issue), do: []
+
+  defp normalize_comment(%{"body" => body} = comment, index) when is_binary(body) do
+    trimmed_body = String.trim(body)
+
+    if trimmed_body == "" do
+      nil
+    else
+      %{
+        index: index,
+        author: comment_author(comment),
+        body: truncate_comment_body(body),
+        contains_workpad_marker: String.contains?(body, @workpad_marker),
+        created_at: parse_datetime(comment["createdAt"])
+      }
+    end
+  end
+
+  defp normalize_comment(_comment, _index), do: nil
+
+  defp comment_author(%{"user" => %{"name" => name}}) when is_binary(name) do
+    case String.trim(name) do
+      "" -> "Unknown"
+      author -> author
+    end
+  end
+
+  defp comment_author(_comment), do: "Unknown"
+
+  defp truncate_comment_body(body) when is_binary(body) do
+    String.slice(body, 0, @enrichment_comment_body_limit)
+  end
+
+  defp select_comments(comments, nil) do
+    Enum.take(comments, @enrichment_comment_limit)
+  end
+
+  defp select_comments(comments, workpad_comment) when is_map(workpad_comment) do
+    recent_comments =
+      comments
+      |> Enum.reject(&(&1.index == workpad_comment.index))
+      |> Enum.take(@enrichment_comment_limit - 1)
+
+    [workpad_comment | recent_comments]
+  end
+
+  defp extract_linked_issues(%{"relations" => %{"nodes" => relations}}) when is_list(relations) do
+    Enum.flat_map(relations, &normalize_linked_issue/1)
+  end
+
+  defp extract_linked_issues(_issue), do: []
+
+  defp normalize_linked_issue(%{"type" => relation_type, "relatedIssue" => related_issue})
+       when is_binary(relation_type) and is_map(related_issue) do
+    case normalize_relation_type(relation_type) do
+      relation when relation in ["related", "blocks"] ->
+        case related_issue["identifier"] do
+          identifier when is_binary(identifier) and identifier != "" ->
+            [
+              %{
+                relation: relation,
+                identifier: identifier,
+                title: related_issue["title"],
+                state: get_in(related_issue, ["state", "name"])
+              }
+            ]
+
+          _ ->
+            []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  defp normalize_linked_issue(_relation), do: []
+
+  defp normalize_relation_type(relation_type) when is_binary(relation_type) do
+    relation_type
+    |> String.trim()
+    |> String.downcase()
+  end
 
   defp parse_datetime(nil), do: nil
 

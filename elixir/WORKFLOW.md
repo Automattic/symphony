@@ -84,6 +84,21 @@ Description:
 No description provided.
 {% endif %}
 
+{% if issue.comments.size > 0 %}
+Recent comments:
+{% for comment in issue.comments %}
+[{{ comment.author }} @ {{ comment.created_at }}]
+{{ comment.body }}
+{% endfor %}
+{% endif %}
+
+{% if issue.linked_issues.size > 0 %}
+Linked issues:
+{% for link in issue.linked_issues %}
+- {{ link.relation }}: {{ link.identifier }} - {{ link.title }} ({{ link.state }})
+{% endfor %}
+{% endif %}
+
 Instructions:
 
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.

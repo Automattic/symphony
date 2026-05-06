@@ -111,4 +111,22 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
 
     assert :ok = PullRequest.request_review(pr_url, ["reviewer", "reviewer", "maintainer"], gh_runner: runner)
   end
+
+  test "reply_to_comment can fall back to an inline comment node id" do
+    pr_url = "https://github.example.com/org/repo/pull/42"
+
+    runner = fn
+      ["api", "--hostname", "github.example.com", "repos/org/repo/pulls/42/comments/PRRC_kwDO/replies", "-f", "body=Addressed."], opts ->
+        assert opts[:stderr_to_stdout]
+        {"{}", 0}
+    end
+
+    assert :ok =
+             PullRequest.reply_to_comment(
+               pr_url,
+               %{node_id: "PRRC_kwDO", kind: "inline_comment"},
+               "Addressed.",
+               gh_runner: runner
+             )
+  end
 end

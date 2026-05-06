@@ -85,6 +85,44 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     end
   end
 
+  defmodule FailingActionGitHub do
+    @spec fetch_activity(String.t(), keyword()) :: {:ok, map()}
+    def fetch_activity(_pr_url, _opts) do
+      {:ok, Application.fetch_env!(:symphony_elixir, :pr_review_test_activity)}
+    end
+
+    @spec reply_to_comment(String.t(), map(), String.t(), keyword()) :: :ok
+    def reply_to_comment(pr_url, comment, body, _opts) do
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+      send(recipient, {:github_reply, pr_url, comment, body})
+      :ok
+    end
+
+    @spec request_review(String.t(), [String.t()], keyword()) :: :ok | {:error, term()}
+    def request_review(pr_url, reviewers, _opts) do
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+
+      if take_request_review_failure() do
+        send(recipient, {:github_request_review_failed, pr_url, reviewers})
+        {:error, :gh_transient}
+      else
+        send(recipient, {:github_request_review, pr_url, reviewers})
+        :ok
+      end
+    end
+
+    defp take_request_review_failure do
+      case Application.get_env(:symphony_elixir, :pr_review_test_request_review_failures, 0) do
+        count when is_integer(count) and count > 0 ->
+          Application.put_env(:symphony_elixir, :pr_review_test_request_review_failures, count - 1)
+          true
+
+        _count ->
+          false
+      end
+    end
+  end
+
   defmodule RaisingRunStore do
     @spec list_runs(:all) :: no_return()
     def list_runs(:all), do: raise("poll exploded")
@@ -187,6 +225,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       Application.delete_env(:symphony_elixir, :pr_review_test_state_update_failures)
       Application.delete_env(:symphony_elixir, :pr_review_test_delete_failures)
       Application.delete_env(:symphony_elixir, :pr_review_test_github_error)
+      Application.delete_env(:symphony_elixir, :pr_review_test_request_review_failures)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -482,6 +521,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     :ok =
       put_review(now, %{
+        status: "rework_requested",
         pending_last_addressed_comment_id: "comment-1",
         pending_reviewer_comments: [
           %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
@@ -510,6 +550,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     :ok =
       put_review(now, %{
+        status: "rework_requested",
         pending_last_addressed_comment_id: "comment-2",
         pending_reviewer_comments: [
           %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42},
@@ -521,10 +562,127 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
     assert reply_body =~ "addressed"
-    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-2"}, _reply_body}
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "pr-review-summary"}, summary_body}
+    assert summary_body =~ "comment-2"
     assert_receive {:github_request_review, "https://github.com/example/repo/pull/1780", ["human-reviewer", "maintainer"]}
 
     assert [%{last_addressed_comment_id: "comment-2", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+  end
+
+  test "auto reply does not duplicate successful replies when request review fails before cursor advancement" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_github_user: "agent-user",
+      pr_review_auto_reply: true,
+      pr_review_auto_request_review: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        pending_last_addressed_comment_id: "comment-2",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42},
+          %{id: "comment-2", kind: "comment", author: "maintainer", body: "Also update docs."}
+        ]
+      })
+
+    Application.put_env(:symphony_elixir, :pr_review_test_request_review_failures, 1)
+
+    assert {:error, {:auto_request_review_failed, :gh_transient}} =
+             PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: FailingActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, _reply_body}
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "pr-review-summary"}, _summary_body}
+
+    assert_receive {:github_request_review_failed, "https://github.com/example/repo/pull/1780", ["human-reviewer", "maintainer"]}
+
+    assert [
+             %{
+               status: "rework_requested",
+               pending_last_addressed_comment_id: "comment-2",
+               replied_comment_ids: ["comment-1", "comment-2"]
+             }
+           ] = RunStore.list_pr_reviews()
+
+    assert :ok =
+             PrReviewPoller.complete_pending_reviewer_comments(
+               "issue-1780",
+               github: FailingActionGitHub,
+               now: DateTime.add(now, 1, :minute)
+             )
+
+    refute_receive {:github_reply, _, _, _}, 50
+    assert_receive {:github_request_review, "https://github.com/example/repo/pull/1780", ["human-reviewer", "maintainer"]}
+
+    assert [
+             %{last_addressed_comment_id: "comment-2", pending_reviewer_comments: [], replied_comment_ids: []}
+           ] = RunStore.list_pr_reviews()
+  end
+
+  test "completion ignores pending comments unless the review record is waiting for rework" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    :ok =
+      put_review(now, %{
+        status: "watching",
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    refute_receive {:github_reply, _, _, _}
+    refute_receive {:github_request_review, _, _}
+
+    assert [
+             %{
+               status: "watching",
+               pending_last_addressed_comment_id: "comment-1",
+               pending_reviewer_comments: [%{id: "comment-1"}]
+             } = record
+           ] = RunStore.list_pr_reviews()
+
+    refute Map.has_key?(record, :last_addressed_comment_id)
+  end
+
+  test "polling clears stale pending comments after the addressed cursor catches up" do
+    now = ~U[2026-05-01 09:00:00Z]
+    comment_at = DateTime.add(now, -45, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      put_review(now, %{
+        status: "watching",
+        last_addressed_comment_id: "comment-1",
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "comment", author: "human-reviewer", body: "Already handled.", created_at: comment_at}
+        ]
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(comment_at,
+        comments: [
+          %{id: "comment-1", kind: "comment", author: "human-reviewer", body: "Already handled.", created_at: comment_at}
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert [%{pending_reviewer_comments: [], pending_last_addressed_comment_id: nil}] = RunStore.list_pr_reviews()
   end
 
   test "approval wins over stale cleanup" do

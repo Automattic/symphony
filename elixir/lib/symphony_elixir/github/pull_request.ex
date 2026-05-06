@@ -5,6 +5,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
 
   @type comment :: %{
           optional(:id) => String.t() | nil,
+          optional(:node_id) => String.t() | nil,
           optional(:author) => String.t() | nil,
           optional(:body) => String.t() | nil,
           optional(:url) => String.t() | nil,
@@ -203,6 +204,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   defp normalize_inline_comment(comment) when is_map(comment) do
     %{
       id: normalize_id(Map.get(comment, "id") || Map.get(comment, "node_id") || Map.get(comment, "html_url")),
+      node_id: normalize_id(Map.get(comment, "node_id")),
       kind: "inline_comment",
       author: get_in(comment, ["user", "login"]),
       body: Map.get(comment, "body"),
@@ -287,7 +289,10 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   defp normalize_line(value) when is_integer(value), do: value
   defp normalize_line(_value), do: nil
 
-  defp comment_id(comment) when is_map(comment), do: normalize_id(Map.get(comment, :id) || Map.get(comment, "id"))
+  defp comment_id(comment) when is_map(comment) do
+    normalize_id(Map.get(comment, :id) || Map.get(comment, "id") || Map.get(comment, :node_id) || Map.get(comment, "node_id"))
+  end
+
   defp comment_id(_comment), do: nil
 
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""

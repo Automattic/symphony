@@ -6,7 +6,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.{Config, RunStore, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Notifications, RunStore, Tracker, Workspace}
   alias SymphonyElixir.GitHub.PullRequest
   alias SymphonyElixir.Linear.Issue
 
@@ -353,6 +353,7 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp record_poll_error(record, reason, opts, now) do
     attrs = poll_error_attrs(record, reason, opts, now)
+    maybe_emit_poll_run_failed(record, attrs, reason)
 
     case update_review(opts, record, attrs) do
       :ok ->
@@ -1209,6 +1210,26 @@ defmodule SymphonyElixir.PrReviewPoller do
       _value -> 0
     end
   end
+
+  defp maybe_emit_poll_run_failed(record, %{consecutive_errors: consecutive_errors}, reason)
+       when consecutive_errors >= @github_error_backoff_threshold do
+    if consecutive_errors(record) < @github_error_backoff_threshold do
+      Notifications.emit_event(:run_failed, %{
+        issue_id: Map.get(record, :issue_id),
+        issue_identifier: Map.get(record, :issue_identifier),
+        issue_url: Map.get(record, :issue_url),
+        pr_url: Map.get(record, :pr_url),
+        state: @in_review_state,
+        reason: "PR review polling failed #{consecutive_errors} consecutive times: #{inspect(reason)}",
+        metadata: %{
+          source: "pr_review_poller",
+          consecutive_errors: consecutive_errors
+        }
+      })
+    end
+  end
+
+  defp maybe_emit_poll_run_failed(_record, _attrs, _reason), do: :ok
 
   defp github_error_backoff_ms(consecutive_errors, opts) do
     exponent = max(consecutive_errors - @github_error_backoff_threshold, 0)

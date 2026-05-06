@@ -1216,6 +1216,8 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       issue.id => review_record(now, %{consecutive_errors: 2})
     })
 
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
     assert {:ok, %{actions: [{:poll_error, "issue-1780", :rate_limited}]}} =
              PrReviewPoller.poll_once(
                tracker: FakeTracker,
@@ -1226,6 +1228,14 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              )
 
     assert_receive {:github_fetch, "https://github.com/example/repo/pull/1780"}
+
+    assert_receive {:notification_event,
+                    %SymphonyElixir.Notifications.Event{
+                      event: "run_failed",
+                      issue_identifier: "RSM-1780",
+                      metadata: %{source: "pr_review_poller", consecutive_errors: 3}
+                    }},
+                   500
 
     assert [%{consecutive_errors: 3, next_poll_at: next_poll_at}] =
              StatefulRunStore.list_pr_reviews()

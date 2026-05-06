@@ -98,6 +98,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_endpoint: "https://api.linear.app/graphql",
           tracker_api_token: "token",
           tracker_project_slug: "project",
+          tracker_team: nil,
+          tracker_labels: [],
           tracker_assignee: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
@@ -144,6 +146,7 @@ defmodule SymphonyElixir.TestSupport do
           server_port: nil,
           server_host: nil,
           quality_gate: nil,
+          notifications: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -153,6 +156,8 @@ defmodule SymphonyElixir.TestSupport do
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
+    tracker_team = Keyword.get(config, :tracker_team)
+    tracker_labels = Keyword.get(config, :tracker_labels)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
@@ -199,6 +204,7 @@ defmodule SymphonyElixir.TestSupport do
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     quality_gate = Keyword.get(config, :quality_gate)
+    notifications = Keyword.get(config, :notifications)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -209,6 +215,8 @@ defmodule SymphonyElixir.TestSupport do
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
+        "  team: #{yaml_value(tracker_team)}",
+        "  labels: #{yaml_value(tracker_labels)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
@@ -256,6 +264,7 @@ defmodule SymphonyElixir.TestSupport do
         ),
         server_yaml(server_port, server_host),
         quality_gate_yaml(quality_gate),
+        notifications_yaml(notifications),
         "---",
         prompt
       ]
@@ -375,6 +384,74 @@ defmodule SymphonyElixir.TestSupport do
       lines -> Enum.join(["quality_gate:" | lines], "\n")
     end
   end
+
+  defp notifications_yaml(nil), do: nil
+
+  defp notifications_yaml(opts) when is_list(opts) or is_map(opts) do
+    config = map_from(opts)
+
+    fields =
+      [
+        kv("enabled", Map.get(config, :enabled)),
+        kv("redact_titles", Map.get(config, :redact_titles)),
+        notification_channels_yaml(Map.get(config, :channels))
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case fields do
+      [] -> nil
+      lines -> Enum.join(["notifications:" | lines], "\n")
+    end
+  end
+
+  defp notification_channels_yaml(nil), do: nil
+  defp notification_channels_yaml([]), do: "  channels: []"
+
+  defp notification_channels_yaml(channels) when is_list(channels) do
+    channel_lines =
+      channels
+      |> Enum.map(&notification_channel_yaml/1)
+      |> Enum.reject(&is_nil/1)
+
+    if channel_lines == [] do
+      nil
+    else
+      Enum.join(["  channels:" | channel_lines], "\n")
+    end
+  end
+
+  defp notification_channels_yaml(_channels), do: nil
+
+  defp notification_channel_yaml(channel) when is_list(channel) or is_map(channel) do
+    channel = map_from(channel)
+
+    [
+      "    - kind: #{yaml_value(Map.get(channel, :kind))}",
+      notification_channel_entry("webhook_url", Map.get(channel, :webhook_url)),
+      notification_channel_entry("url", Map.get(channel, :url)),
+      notification_channel_entry("events", Map.get(channel, :events)),
+      notification_headers_yaml(Map.get(channel, :headers))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp notification_channel_yaml(_channel), do: nil
+
+  defp notification_channel_entry(_name, nil), do: nil
+  defp notification_channel_entry(name, value), do: "      #{name}: #{yaml_value(value)}"
+
+  defp notification_headers_yaml(nil), do: nil
+  defp notification_headers_yaml(headers) when headers == %{}, do: nil
+
+  defp notification_headers_yaml(headers) when is_map(headers) do
+    entries =
+      Enum.map_join(headers, "\n", fn {key, value} -> "        #{key}: #{yaml_value(value)}" end)
+
+    "      headers:\n" <> entries
+  end
+
+  defp notification_headers_yaml(_headers), do: nil
 
   defp map_from(opts) when is_list(opts), do: Enum.into(opts, %{})
   defp map_from(opts) when is_map(opts), do: opts

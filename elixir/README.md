@@ -143,6 +143,18 @@ pr_review:
   # auto_request_review: false
   # github_user: null
   # bot_users: []
+notifications:
+  enabled: false
+  # redact_titles: true
+  # channels:
+  #   - kind: slack
+  #     webhook_url: $SLACK_WEBHOOK_URL
+  #     events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded]
+  #   - kind: webhook
+  #     url: $NOTIFY_WEBHOOK_URL
+  #     events: [run_failed, budget_exceeded]
+  #     headers:
+  #       Authorization: $NOTIFY_AUTH_HEADER
 quality_gate:
   enabled: true
   provider: anthropic           # or: openai
@@ -159,6 +171,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- For Linear trackers, `project_slug` is optional when another scoping filter is set. Configure at
+  least one of `project_slug`, `team`, or `labels`; these filters are combined server-side. Example:
+  `team: "RSM"` with `labels: ["backend", "infra"]`.
 - Safer Codex defaults are used when policy fields are omitted:
   - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.
@@ -197,6 +212,13 @@ Notes:
   either budget is configured with a command that may not report token usage. Per-issue exhausted
   runs are rehydrated from run history across restarts while the current limit still applies; raising
   or removing the per-issue limit lets the issue dispatch again.
+- The optional `notifications` block is disabled by default. When enabled, Symphony emits semantic
+  lifecycle events to configured Slack incoming webhooks and generic JSON webhooks without blocking
+  the orchestrator. Supported v1 events are `pr_opened`, `awaiting_review`, `run_failed`,
+  `issue_completed`, and `budget_exceeded`. Per-channel `events` filters limit delivery; omitting
+  `events` sends all supported events to that channel. `redact_titles: true` suppresses issue and PR
+  titles while preserving identifiers and URLs. Slack and webhook URL/header values support the same
+  `$VAR` environment reference convention used by other secret-backed settings.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
@@ -217,8 +239,10 @@ Notes:
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - Set `tracker.assignee` to a Linear user ID, or `me` to use the current API token's Linear viewer,
   when you want one Symphony process to pick up only issues assigned to that user. If unset, all
-  active issues in the configured project are eligible. `tracker.assignee` reads from
+  active issues in the configured Linear scope are eligible. `tracker.assignee` reads from
   `LINEAR_ASSIGNEE` when unset or when value is `$LINEAR_ASSIGNEE`.
+- `tracker.project_slug` is optional. Linear tracker configs must set at least one of
+  `tracker.project_slug`, `tracker.team`, or a non-empty `tracker.labels` list.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` and `workspace.repo` resolve `$VAR`
   before path handling. For Codex, `agent.command` stays a shell command string and any `$VAR`

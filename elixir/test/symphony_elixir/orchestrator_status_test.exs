@@ -925,6 +925,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
     warning =
       capture_log(fn ->
         send(
@@ -961,6 +963,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert run_record.error =~ "token budget exhausted"
     assert run_record.tokens == %{input_tokens: 7, output_tokens: 5, total_tokens: 12}
     refute Process.alive?(worker_pid)
+
+    assert_receive {:notification_event,
+                    %SymphonyElixir.Notifications.Event{
+                      event: "budget_exceeded",
+                      issue_identifier: "MT-BUDGET",
+                      metadata: %{scope: "issue", limit: 10}
+                    }},
+                   500
   end
 
   test "orchestrator pauses new dispatch when the daily token budget is exhausted" do

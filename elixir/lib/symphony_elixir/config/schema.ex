@@ -96,6 +96,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:team, :string)
+      field(:labels, {:array, :string}, default: [])
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -106,9 +108,37 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :team, :labels, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
+      |> normalize_optional_string(:project_slug)
+      |> normalize_optional_string(:team)
+      |> normalize_string_list(:labels)
+    end
+
+    defp normalize_optional_string(changeset, field) do
+      update_change(changeset, field, fn
+        value when is_binary(value) ->
+          case String.trim(value) do
+            "" -> nil
+            normalized -> normalized
+          end
+
+        nil ->
+          nil
+      end)
+    end
+
+    defp normalize_string_list(changeset, field) do
+      update_change(changeset, field, fn
+        values when is_list(values) ->
+          values
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+
+        nil ->
+          []
+      end)
     end
   end
 
@@ -524,6 +554,88 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Notifications do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @type t :: %__MODULE__{}
+
+    defmodule Channel do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @primary_key false
+      @kinds ["slack", "webhook"]
+      @events ["pr_opened", "awaiting_review", "run_failed", "issue_completed", "budget_exceeded"]
+
+      embedded_schema do
+        field(:kind, :string)
+        field(:webhook_url, :string)
+        field(:url, :string)
+        field(:events, {:array, :string})
+        field(:headers, :map, default: %{})
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:kind, :webhook_url, :url, :events, :headers], empty_values: [])
+        |> update_change(:kind, &normalize_string/1)
+        |> update_change(:events, &normalize_events/1)
+        |> update_change(:headers, &normalize_headers/1)
+        |> validate_required([:kind])
+        |> validate_inclusion(:kind, @kinds)
+        |> validate_event_names()
+      end
+
+      defp normalize_events(events) when is_list(events) do
+        events
+        |> Enum.map(&normalize_string/1)
+        |> Enum.reject(&(&1 == ""))
+        |> Enum.uniq()
+      end
+
+      defp normalize_headers(headers) when is_map(headers) do
+        Enum.reduce(headers, %{}, fn {key, value}, acc ->
+          Map.put(acc, to_string(key), value)
+        end)
+      end
+
+      defp normalize_string(value) when is_binary(value) do
+        value
+        |> String.trim()
+        |> String.downcase()
+      end
+
+      defp validate_event_names(changeset) do
+        validate_change(changeset, :events, fn :events, events ->
+          invalid_events = Enum.reject(events || [], &(&1 in @events))
+
+          case invalid_events do
+            [] -> []
+            _ -> [events: "must include only supported notification events: #{Enum.join(@events, ", ")}"]
+          end
+        end)
+      end
+    end
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:redact_titles, :boolean, default: false)
+      embeds_many(:channels, Channel, on_replace: :delete)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled, :redact_titles], empty_values: [])
+      |> cast_embed(:channels, with: &Channel.changeset/2)
+    end
+  end
+
   embedded_schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
@@ -536,6 +648,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:pr_review, PrReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:notifications, Notifications, on_replace: :update, defaults_to_struct: true)
   end
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
@@ -713,6 +826,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:pr_review, with: &PrReview.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
+    |> cast_embed(:notifications, with: &Notifications.changeset/2)
   end
 
   defp finalize_settings(settings) do
@@ -738,8 +852,63 @@ defmodule SymphonyElixir.Config.Schema do
         network_access: normalize_network_access(settings.agent.network_access)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, agent: agent}
+    notifications = normalize_notifications(settings.notifications)
+
+    %{settings | tracker: tracker, workspace: workspace, agent: agent, notifications: notifications}
   end
+
+  defp normalize_notifications(%Notifications{} = notifications) do
+    %{notifications | channels: Enum.map(notifications.channels || [], &normalize_notification_channel/1)}
+  end
+
+  defp normalize_notification_channel(%Notifications.Channel{} = channel) do
+    %{
+      channel
+      | webhook_url: resolve_notification_value(channel.webhook_url),
+        url: resolve_notification_value(channel.url),
+        headers: resolve_notification_headers(channel.headers),
+        events: normalize_notification_events(channel.events)
+    }
+  end
+
+  defp resolve_notification_value(value) when is_binary(value) do
+    value
+    |> resolve_env_value(nil)
+    |> normalize_notification_string()
+  end
+
+  defp resolve_notification_value(_value), do: nil
+
+  defp resolve_notification_headers(headers) when is_map(headers) do
+    headers
+    |> Enum.reduce(%{}, fn {key, value}, acc ->
+      case normalize_notification_header_value(value) do
+        nil -> acc
+        normalized -> Map.put(acc, to_string(key), normalized)
+      end
+    end)
+  end
+
+  defp normalize_notification_header_value(value) when is_binary(value) do
+    value
+    |> resolve_env_value(nil)
+    |> normalize_notification_string()
+  end
+
+  defp normalize_notification_header_value(value) when is_integer(value) or is_boolean(value), do: to_string(value)
+  defp normalize_notification_header_value(_value), do: nil
+
+  defp normalize_notification_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_notification_string(_value), do: nil
+
+  defp normalize_notification_events(events) when is_list(events), do: Enum.map(events, &to_string/1)
+  defp normalize_notification_events(_events), do: nil
 
   defp normalize_network_access(%Agent.NetworkAccess{} = network_access) do
     %{

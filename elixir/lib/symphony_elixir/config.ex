@@ -108,6 +108,13 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec linear_scoping_filter_configured?(map() | nil) :: boolean()
+  def linear_scoping_filter_configured?(%{project_slug: project_slug, team: team, labels: labels}) do
+    present_string?(project_slug) or present_string?(team) or non_empty_list?(labels)
+  end
+
+  def linear_scoping_filter_configured?(_tracker), do: false
+
   @spec codex_runtime_settings(Path.t() | nil, keyword()) ::
           {:ok, codex_runtime_settings()} | {:error, term()}
   def codex_runtime_settings(workspace \\ nil, opts \\ []) do
@@ -137,7 +144,8 @@ defmodule SymphonyElixir.Config do
 
       true ->
         with :ok <- validate_tracker_semantics(settings),
-             :ok <- validate_workspace_semantics(settings) do
+             :ok <- validate_workspace_semantics(settings),
+             :ok <- validate_notifications_semantics(settings) do
           warn_if_budget_token_reporting_unavailable(settings)
           :ok
         end
@@ -155,8 +163,8 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
+      settings.tracker.kind == "linear" and not linear_scoping_filter_configured?(settings.tracker) ->
+        {:error, :missing_linear_scoping_filter}
 
       true ->
         :ok
@@ -201,6 +209,12 @@ defmodule SymphonyElixir.Config do
 
   defp codex_app_server_command?(_command), do: false
 
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
+
+  defp non_empty_list?(values) when is_list(values), do: Enum.any?(values, &present_string?/1)
+  defp non_empty_list?(_values), do: false
+
   defp validate_workspace_semantics(%Schema{workspace: %{strategy: "worktree"} = workspace, worker: worker}) do
     cond do
       not is_binary(workspace.repo) or String.trim(workspace.repo) == "" ->
@@ -217,6 +231,32 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_workspace_semantics(_settings), do: :ok
+
+  defp validate_notifications_semantics(%Schema{notifications: %{enabled: true, channels: channels}})
+       when is_list(channels) do
+    Enum.reduce_while(channels, :ok, fn channel, :ok ->
+      case validate_notification_channel(channel) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_notifications_semantics(_settings), do: :ok
+
+  defp validate_notification_channel(%{kind: "slack", webhook_url: url}) when is_binary(url), do: :ok
+
+  defp validate_notification_channel(%{kind: "slack"}) do
+    {:error, {:invalid_workflow_config, "notifications.channels entries with kind: slack require webhook_url (or a $VAR that resolves to one)"}}
+  end
+
+  defp validate_notification_channel(%{kind: "webhook", url: url}) when is_binary(url), do: :ok
+
+  defp validate_notification_channel(%{kind: "webhook"}) do
+    {:error, {:invalid_workflow_config, "notifications.channels entries with kind: webhook require url (or a $VAR that resolves to one)"}}
+  end
+
+  defp validate_notification_channel(_channel), do: :ok
 
   defp validate_local_worktree_repo(repo) when is_binary(repo) do
     with :ok <- validate_local_worktree_repo_path(repo),

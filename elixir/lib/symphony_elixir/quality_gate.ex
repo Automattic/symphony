@@ -673,9 +673,11 @@ defmodule SymphonyElixir.QualityGate do
 
   defp api_key_for(provider), do: {:error, {:unsupported_provider, provider}}
 
-  defp provider_module(@anthropic_provider),
+  @doc false
+  @spec provider_module(String.t()) :: module()
+  def provider_module(@anthropic_provider),
     do: Application.get_env(:symphony_elixir, :quality_gate_anthropic_module, SymphonyElixir.QualityGate.Anthropic)
 
-  defp provider_module(@openai_provider),
+  def provider_module(@openai_provider),
     do: Application.get_env(:symphony_elixir, :quality_gate_openai_module, SymphonyElixir.QualityGate.OpenAI)
 end

@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Linear.Issue, Notifications, PromptBuilder, Tracker, URLUtils, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -195,6 +195,8 @@ defmodule SymphonyElixir.AgentRunner do
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
+        emit_lifecycle_events(issue, refreshed_issue)
+
         if active_issue_state?(refreshed_issue.state) do
           {:continue, refreshed_issue}
         else
@@ -219,6 +221,36 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp active_issue_state?(_state_name), do: false
+
+  defp emit_lifecycle_events(%Issue{} = previous_issue, %Issue{} = refreshed_issue) do
+    if pull_request_opened?(previous_issue, refreshed_issue) do
+      Notifications.emit_issue_event(:pr_opened, refreshed_issue)
+    end
+
+    cond do
+      active_issue_state?(refreshed_issue.state) ->
+        :ok
+
+      in_review_state?(refreshed_issue.state) ->
+        Notifications.emit_issue_event(:awaiting_review, refreshed_issue)
+
+      done_state?(refreshed_issue.state) ->
+        Notifications.emit_issue_event(:issue_completed, refreshed_issue)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp pull_request_opened?(previous_issue, refreshed_issue) do
+    is_nil(URLUtils.pull_request_url(previous_issue)) and is_binary(URLUtils.pull_request_url(refreshed_issue))
+  end
+
+  defp in_review_state?(state_name) when is_binary(state_name), do: normalize_issue_state(state_name) == "in review"
+  defp in_review_state?(_state_name), do: false
+
+  defp done_state?(state_name) when is_binary(state_name), do: normalize_issue_state(state_name) == "done"
+  defp done_state?(_state_name), do: false
 
   defp selected_worker_host(nil, []), do: nil
 

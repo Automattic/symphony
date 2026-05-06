@@ -1,0 +1,390 @@
+defmodule SymphonyElixir.NotificationsTest do
+  use SymphonyElixir.TestSupport
+
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Notifications.Channels.Slack
+  alias SymphonyElixir.Notifications.Event
+  alias SymphonyElixir.Notifications.Formatter
+  alias SymphonyElixir.Notifications.Notifier
+  alias SymphonyElixir.Workflow
+
+  test "notifications default to disabled with no supervised notifier child" do
+    config = Config.settings!()
+
+    refute config.notifications.enabled
+    assert config.notifications.channels == []
+    refute Enum.member?(SymphonyElixir.Application.child_specs_for_runtime(%{}), Notifier)
+  end
+
+  test "notifications resolve channel env values and optional headers" do
+    slack_env = "SYMP_TEST_SLACK_WEBHOOK_#{System.unique_integer([:positive])}"
+    webhook_env = "SYMP_TEST_NOTIFY_WEBHOOK_#{System.unique_integer([:positive])}"
+    auth_env = "SYMP_TEST_NOTIFY_AUTH_#{System.unique_integer([:positive])}"
+
+    previous_slack = System.get_env(slack_env)
+    previous_webhook = System.get_env(webhook_env)
+    previous_auth = System.get_env(auth_env)
+
+    System.put_env(slack_env, "https://hooks.slack.test/services/T000/B000/XXX")
+    System.put_env(webhook_env, "https://notify.test/events")
+    System.put_env(auth_env, "Bearer token")
+
+    on_exit(fn ->
+      restore_env(slack_env, previous_slack)
+      restore_env(webhook_env, previous_webhook)
+      restore_env(auth_env, previous_auth)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      notifications: %{
+        enabled: true,
+        redact_titles: true,
+        channels: [
+          %{kind: "slack", webhook_url: "$#{slack_env}", events: ["pr_opened", "run_failed"]},
+          %{kind: "webhook", url: "$#{webhook_env}", headers: %{Authorization: "$#{auth_env}"}}
+        ]
+      }
+    )
+
+    config = Config.settings!()
+
+    assert config.notifications.enabled
+    assert config.notifications.redact_titles
+
+    assert [
+             %{kind: "slack", webhook_url: "https://hooks.slack.test/services/T000/B000/XXX", events: ["pr_opened", "run_failed"]},
+             %{kind: "webhook", url: "https://notify.test/events", headers: %{"Authorization" => "Bearer token"}, events: nil}
+           ] = config.notifications.channels
+
+    assert Enum.member?(SymphonyElixir.Application.child_specs_for_runtime(%{}), Notifier)
+  end
+
+  test "notifications normalize optional channel headers and invalid event filters" do
+    missing_env = "SYMP_TEST_MISSING_NOTIFY_URL_#{System.unique_integer([:positive])}"
+    System.delete_env(missing_env)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      notifications: %{
+        enabled: false,
+        channels: [
+          %{
+            kind: "webhook",
+            url: "$#{missing_env}",
+            events: [" RUN_FAILED ", "", "run_failed"],
+            headers: %{
+              Authorization: " Bearer token ",
+              Blank: "  ",
+              Count: 2,
+              Enabled: true,
+              Missing: nil
+            }
+          }
+        ]
+      }
+    )
+
+    assert [
+             %{
+               url: nil,
+               events: ["run_failed"],
+               headers: %{
+                 "Authorization" => "Bearer token",
+                 "Count" => "2",
+                 "Enabled" => "true"
+               }
+             }
+           ] = Config.settings!().notifications.channels
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      notifications: %{
+        enabled: false,
+        channels: [%{kind: "webhook", url: "https://notify.test/events", events: ["bogus"]}]
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "must include only supported notification events"
+  end
+
+  test "notification schema treats nil headers and nil header values as empty" do
+    assert {:ok, %{notifications: %{channels: [%{headers: %{}}]}}} =
+             Schema.parse(%{
+               "notifications" => %{
+                 "enabled" => false,
+                 "channels" => [%{"kind" => "webhook", "url" => "https://notify.test/events", "headers" => nil}]
+               }
+             })
+
+    assert {:ok, %{notifications: %{channels: [%{headers: %{}}]}}} =
+             Schema.parse(%{
+               "notifications" => %{
+                 "enabled" => false,
+                 "channels" => [
+                   %{
+                     "kind" => "webhook",
+                     "url" => "https://notify.test/events",
+                     "headers" => %{"Drop" => %{"nested" => "value"}}
+                   }
+                 ]
+               }
+             })
+  end
+
+  test "event builder normalizes attrs, issue structs, and transcript links" do
+    write_workflow_file!(Workflow.workflow_file_path(), server_port: 4105, server_host: "0.0.0.0")
+
+    assert Event.known_events() == [
+             "pr_opened",
+             "awaiting_review",
+             "run_failed",
+             "issue_completed",
+             "budget_exceeded"
+           ]
+
+    assert Event.known_event?(" RUN_FAILED ")
+    refute Event.known_event?("reviewer_commented")
+
+    {:ok, default_event} = Event.new(:run_failed)
+    assert default_event.event == "run_failed"
+    assert default_event.issue_id == nil
+    assert default_event.transcript_url == nil
+
+    {:ok, event} =
+      Event.new(:run_failed,
+        issue_id: 123,
+        issue_identifier: "RSM-6",
+        issue_title: " ",
+        pr_title: %{unexpected: true},
+        state: :done,
+        timestamp: ~U[2026-05-06 09:00:00Z]
+      )
+
+    assert event.issue_id == "123"
+    assert event.issue_identifier == "RSM-6"
+    assert event.issue_title == nil
+    assert event.pr_title == nil
+    assert event.state == "done"
+    assert event.transcript_url == "http://127.0.0.1:4105/issues/RSM-6/transcript"
+
+    assert {:error, {:unknown_notification_event, 123}} = Event.new(123, %{})
+    assert {:ok, %Event{issue_identifier: nil}} = Event.new(:run_failed, :invalid_attrs)
+
+    issue = %Issue{
+      id: "issue-7",
+      identifier: "RSM-7",
+      title: "Needs review",
+      state: "In Review",
+      url: " https://linear.test/RSM-7 ",
+      pr_urls: ["", "https://github.test/org/repo/pull/7"]
+    }
+
+    assert {:ok,
+            %Event{
+              issue_id: "issue-7",
+              issue_identifier: "RSM-7",
+              issue_title: "Needs review",
+              issue_url: "https://linear.test/RSM-7",
+              pr_url: "https://github.test/org/repo/pull/7",
+              state: "In Review"
+            }} = Event.from_issue(:awaiting_review, issue)
+
+    assert {:ok, %Event{issue_identifier: "RSM-8"}} =
+             Event.from_issue(:budget_exceeded, :not_an_issue, issue_identifier: "RSM-8")
+  end
+
+  test "event transcript link falls back cleanly when config cannot load" do
+    workflow_path = Workflow.workflow_file_path()
+    missing_path = Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md")
+
+    :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+
+    try do
+      Workflow.set_workflow_file_path(missing_path)
+      assert {:ok, %Event{transcript_url: nil}} = Event.new(:run_failed, %{issue_identifier: "RSM-9"})
+    after
+      Workflow.set_workflow_file_path(workflow_path)
+      {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+    end
+  end
+
+  test "formatter builds stable webhook payload and redacts titles" do
+    {:ok, event} =
+      Event.new(:pr_opened, %{
+        issue_id: "issue-1",
+        issue_identifier: "RSM-1",
+        issue_title: "Sensitive title",
+        issue_url: "https://linear.test/RSM-1",
+        pr_url: "https://github.test/org/repo/pull/1",
+        transcript_url: "http://127.0.0.1:4000/issues/RSM-1/transcript",
+        timestamp: ~U[2026-05-06 08:00:00Z]
+      })
+
+    payload = Formatter.webhook_payload(event)
+    redacted = Formatter.webhook_payload(event, redact_titles: true)
+
+    assert payload["event"] == "pr_opened"
+    assert payload["issue_identifier"] == "RSM-1"
+    assert payload["issue_title"] == "Sensitive title"
+    assert payload["state_url"] == "https://github.test/org/repo/pull/1"
+    assert payload["transcript_url"] == "http://127.0.0.1:4000/issues/RSM-1/transcript"
+    refute Map.has_key?(redacted, "issue_title")
+    assert redacted["issue_identifier"] == "RSM-1"
+    assert redacted["issue_url"] == "https://linear.test/RSM-1"
+  end
+
+  test "formatter builds Slack block attachment payload with state URL and transcript link" do
+    {:ok, event} =
+      Event.new("run_failed", %{
+        issue_identifier: "RSM-2",
+        issue_title: "Broken run",
+        issue_url: "https://linear.test/RSM-2",
+        pr_url: "https://github.test/org/repo/pull/2",
+        transcript_url: "http://127.0.0.1:4000/issues/RSM-2/transcript",
+        reason: "agent exited"
+      })
+
+    payload = Formatter.slack_payload(event)
+    encoded = Jason.encode!(payload)
+
+    assert payload["text"] == "Run failed: RSM-2"
+    assert [%{"blocks" => blocks}] = payload["attachments"]
+    assert is_list(blocks)
+    assert encoded =~ "RSM-2"
+    assert encoded =~ "Broken run"
+    assert encoded =~ "https://github.test/org/repo/pull/2"
+    assert encoded =~ "http://127.0.0.1:4000/issues/RSM-2/transcript"
+
+    redacted = Formatter.slack_payload(event, redact_titles: true)
+    refute Jason.encode!(redacted) =~ "Broken run"
+  end
+
+  test "formatter covers event titles, fallback URLs, empty fields, and escaping" do
+    for {event_name, expected_title} <- [
+          {"pr_opened", "PR opened"},
+          {"awaiting_review", "Awaiting review"},
+          {"issue_completed", "Issue completed"},
+          {"budget_exceeded", "Budget exceeded"},
+          {"custom_event", "custom_event"}
+        ] do
+      event = %Event{
+        event: event_name,
+        issue_id: "issue-#{event_name}",
+        issue_identifier: 123,
+        issue_url: "https://linear.test/#{event_name}>",
+        pr_url: nil,
+        issue_title: nil,
+        state: :done,
+        reason: "",
+        transcript_url: "",
+        timestamp: ~U[2026-05-06 10:00:00Z],
+        tokens: %{},
+        metadata: %{}
+      }
+
+      payload = Formatter.slack_payload(event)
+      encoded = Jason.encode!(payload)
+
+      assert payload["text"] == "#{expected_title}: 123"
+      assert encoded =~ expected_title
+      assert encoded =~ "https://linear.test/#{event_name}%3E"
+      refute encoded =~ "Transcript"
+    end
+
+    issue_event = %Event{
+      event: "issue_completed",
+      issue_identifier: "RSM-10",
+      issue_url: "https://linear.test/RSM-10",
+      timestamp: ~U[2026-05-06 10:00:00Z],
+      tokens: %{},
+      metadata: %{}
+    }
+
+    assert Formatter.state_url(issue_event) == "https://linear.test/RSM-10"
+    assert Formatter.webhook_payload(issue_event)["state_url"] == "https://linear.test/RSM-10"
+
+    budget_payload = Formatter.slack_payload(%{issue_event | event: "budget_exceeded"})
+    completed_payload = Formatter.slack_payload(issue_event)
+
+    assert [%{"color" => "warning"}] = budget_payload["attachments"]
+    assert [%{"color" => "good"}] = completed_payload["attachments"]
+  end
+
+  test "notifier honors per-channel event filters" do
+    test_pid = self()
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-3"})
+
+    notifications = %{
+      enabled: true,
+      redact_titles: false,
+      channels: [
+        %{kind: "slack", webhook_url: "https://slack.test", events: ["pr_opened"]},
+        %{kind: "webhook", url: "https://webhook.test", events: ["run_failed"], headers: %{"Authorization" => "token"}}
+      ]
+    }
+
+    request_fun = fn url, payload, headers, _timeout_ms ->
+      send(test_pid, {:post, url, payload, headers})
+      {:ok, %{status: 200, body: "ok"}}
+    end
+
+    assert :ok =
+             Notifier.deliver_for_test(event, notifications,
+               task_starter: fn fun ->
+                 fun.()
+                 :ok
+               end,
+               request_fun: request_fun
+             )
+
+    assert_receive {:post, "https://webhook.test", %{"event" => "run_failed"}, [{"Authorization", "token"}]}
+    refute_receive {:post, "https://slack.test", _payload, _headers}, 50
+  end
+
+  test "notifier retries Slack 429 with retry-after before dropping" do
+    test_pid = self()
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-4"})
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    notifications = %{
+      enabled: true,
+      redact_titles: false,
+      channels: [%{kind: "slack", webhook_url: "https://slack.test", events: ["run_failed"]}]
+    }
+
+    request_fun = fn url, payload, headers, _timeout_ms ->
+      attempt = Agent.get_and_update(counter, fn value -> {value + 1, value + 1} end)
+      send(test_pid, {:post, attempt, url, payload, headers})
+
+      case attempt do
+        1 -> {:ok, %{status: 429, headers: [{"retry-after", "2"}], body: "rate limited"}}
+        _ -> {:ok, %{status: 200, body: "ok"}}
+      end
+    end
+
+    assert :ok =
+             Notifier.deliver_for_test(event, notifications,
+               task_starter: fn fun ->
+                 fun.()
+                 :ok
+               end,
+               request_fun: request_fun,
+               sleep_fun: fn delay_ms -> send(test_pid, {:sleep, delay_ms}) end
+             )
+
+    assert_receive {:post, 1, "https://slack.test", _payload, []}
+    assert_receive {:sleep, 2_000}
+    assert_receive {:post, 2, "https://slack.test", _payload, []}
+  end
+
+  test "Slack channel reports retry delay from 429 response" do
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-5"})
+
+    request_fun = fn _url, _payload, _headers, _timeout_ms ->
+      {:ok, %{status: 429, headers: [{"Retry-After", "3"}], body: "rate limited"}}
+    end
+
+    assert {:retry, 3_000} =
+             Slack.deliver(%{webhook_url: "https://slack.test"}, event, request_fun: request_fun)
+  end
+end

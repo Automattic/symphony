@@ -1410,6 +1410,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       test_pid = self()
+      assert :ok = SymphonyElixir.Notifications.subscribe()
 
       assert :ok =
                AgentRunner.run(
@@ -1428,6 +1429,13 @@ defmodule SymphonyElixir.CoreTest do
                      500
 
       assert session_id == "thread-live-turn-live"
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "issue_completed",
+                        issue_identifier: "MT-99"
+                      }},
+                     500
     after
       File.rm_rf(test_root)
     end

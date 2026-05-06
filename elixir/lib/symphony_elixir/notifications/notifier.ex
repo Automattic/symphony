@@ -60,12 +60,14 @@ defmodule SymphonyElixir.Notifications.Notifier do
 
   defp deliver_event(%Event{} = event, %{enabled: true, channels: channels} = notifications, opts)
        when is_list(channels) do
+    redact_titles = Map.get(notifications, :redact_titles, false)
+
     channels
     |> Enum.filter(&deliver_to_channel?(&1, event))
     |> Enum.each(fn channel ->
       start_delivery_task(
         fn ->
-          deliver_channel_with_retry(channel, event, notifications, 1, opts)
+          deliver_channel_with_retry(channel, event, 1, redact_titles, opts)
         end,
         opts
       )
@@ -111,33 +113,31 @@ defmodule SymphonyElixir.Notifications.Notifier do
       :ok
   end
 
-  defp deliver_channel_with_retry(channel, event, notifications, attempt, opts) do
-    opts = Keyword.put(opts, :redact_titles, Map.get(notifications, :redact_titles, false))
+  defp deliver_channel_with_retry(channel, event, attempt, redact_titles, opts) do
+    opts = Keyword.put(opts, :redact_titles, redact_titles)
 
     case deliver_channel(channel, event, opts) do
       :ok ->
         :ok
 
       {:retry, retry_after_ms} ->
-        retry_or_drop(channel, event, attempt, retry_after_ms, {:retry_after, retry_after_ms}, opts)
+        retry_or_drop(channel, event, attempt, retry_after_ms, {:retry_after, retry_after_ms}, redact_titles, opts)
 
       {:error, reason} ->
-        retry_or_drop(channel, event, attempt, retry_delay(attempt), reason, opts)
+        retry_or_drop(channel, event, attempt, retry_delay(attempt), reason, redact_titles, opts)
     end
   end
 
-  defp retry_or_drop(channel, event, attempt, delay_ms, reason, opts) do
+  defp retry_or_drop(channel, event, attempt, delay_ms, reason, redact_titles, opts) do
     if attempt < @max_attempts do
       sleep(delay_ms, opts)
-      deliver_channel_with_retry(channel, event, nil_to_map(opts), attempt + 1, opts)
+      deliver_channel_with_retry(channel, event, attempt + 1, redact_titles, opts)
     else
       Logger.warning("Dropping notification after #{attempt} attempts event=#{event.event} channel=#{channel_kind(channel)} reason=#{inspect(reason)}")
 
       :ok
     end
   end
-
-  defp nil_to_map(opts), do: %{redact_titles: Keyword.get(opts, :redact_titles, false)}
 
   defp deliver_channel(%{kind: "slack"} = channel, event, opts), do: Slack.deliver(channel, event, opts)
   defp deliver_channel(%{kind: "webhook"} = channel, event, opts), do: Webhook.deliver(channel, event, opts)

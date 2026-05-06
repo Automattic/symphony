@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Notifications.Event do
   alias SymphonyElixir.Linear.Issue
 
   @known_events ["pr_opened", "awaiting_review", "run_failed", "issue_completed", "budget_exceeded"]
+  @max_string_value_length 1024
 
   defstruct [
     :event,
@@ -65,7 +66,7 @@ defmodule SymphonyElixir.Notifications.Event do
           pr_url: string_value(attrs, [:pr_url, "pr_url"]) || URLUtils.pull_request_url(attrs),
           pr_title: string_value(attrs, [:pr_title, "pr_title"]),
           state: string_value(attrs, [:state, "state"]),
-          reason: string_value(attrs, [:reason, "reason"]),
+          reason: inspected_string_value(attrs, [:reason, "reason"]),
           run_id: string_value(attrs, [:run_id, "run_id"]),
           session_id: string_value(attrs, [:session_id, "session_id"]),
           attempt: integer_value(attrs, [:attempt, "attempt"]),
@@ -146,6 +147,38 @@ defmodule SymphonyElixir.Notifications.Event do
 
       _ ->
         nil
+    end
+  end
+
+  defp inspected_string_value(attrs, keys) when is_list(keys) do
+    Enum.find_value(keys, &inspected_string_value(attrs, &1))
+  end
+
+  defp inspected_string_value(attrs, key) when is_map(attrs) do
+    case string_value(attrs, key) do
+      nil ->
+        attrs
+        |> Map.get(key)
+        |> inspected_fallback()
+
+      value ->
+        String.slice(value, 0, @max_string_value_length)
+    end
+  end
+
+  defp inspected_fallback(nil), do: nil
+  defp inspected_fallback(value) when is_binary(value), do: trim_string(value)
+
+  defp inspected_fallback(value) do
+    value
+    |> inspect(limit: 50, printable_limit: @max_string_value_length)
+    |> trim_string()
+  end
+
+  defp trim_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> String.slice(trimmed, 0, @max_string_value_length)
     end
   end
 

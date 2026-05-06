@@ -46,9 +46,8 @@ defmodule SymphonyElixir.Application do
         {Phoenix.PubSub, name: SymphonyElixir.PubSub},
         {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
         SymphonyElixir.WorkflowStore,
-        notifier_child_spec()
+        SymphonyElixir.Notifications.Notifier
       ]
-      |> Enum.reject(&is_nil/1)
 
     if orchestrator_runtime_disabled?(env) do
       core_children
@@ -69,13 +68,6 @@ defmodule SymphonyElixir.Application do
     case SymphonyElixir.Config.settings!().pr_review.mode do
       "polling" -> SymphonyElixir.PrReviewPoller
       _mode -> nil
-    end
-  end
-
-  defp notifier_child_spec do
-    case SymphonyElixir.Config.settings!().notifications do
-      %{enabled: true} -> SymphonyElixir.Notifications.Notifier
-      _notifications -> nil
     end
   end
 

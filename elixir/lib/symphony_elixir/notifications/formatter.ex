@@ -173,6 +173,9 @@ defmodule SymphonyElixir.Notifications.Formatter do
   defp escape_mrkdwn(value), do: value |> to_string() |> escape_mrkdwn()
 
   defp escape_link(value) when is_binary(value) do
-    String.replace(value, ">", "%3E")
+    value
+    |> String.replace("<", "%3C")
+    |> String.replace(">", "%3E")
+    |> String.replace("|", "%7C")
   end
 end

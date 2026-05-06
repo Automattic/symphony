@@ -9,12 +9,21 @@ defmodule SymphonyElixir.NotificationsTest do
   alias SymphonyElixir.Notifications.Notifier
   alias SymphonyElixir.Workflow
 
-  test "notifications default to disabled with no supervised notifier child" do
+  test "notifications default to disabled while notifier remains supervised" do
     config = Config.settings!()
 
     refute config.notifications.enabled
     assert config.notifications.channels == []
-    refute Enum.member?(SymphonyElixir.Application.child_specs_for_runtime(%{}), Notifier)
+    assert Enum.member?(SymphonyElixir.Application.child_specs_for_runtime(%{}), Notifier)
+
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-0"})
+
+    opts = [
+      task_starter: fn _fun -> flunk("disabled notifications should not start delivery tasks") end
+    ]
+
+    assert :ok =
+             Notifier.deliver_for_test(event, config.notifications, opts)
   end
 
   test "notifications resolve channel env values and optional headers" do
@@ -156,6 +165,7 @@ defmodule SymphonyElixir.NotificationsTest do
         issue_identifier: "RSM-6",
         issue_title: " ",
         pr_title: %{unexpected: true},
+        reason: {:exit, :killed},
         state: :done,
         timestamp: ~U[2026-05-06 09:00:00Z]
       )
@@ -164,11 +174,13 @@ defmodule SymphonyElixir.NotificationsTest do
     assert event.issue_identifier == "RSM-6"
     assert event.issue_title == nil
     assert event.pr_title == nil
+    assert event.reason == "{:exit, :killed}"
     assert event.state == "done"
     assert event.transcript_url == "http://127.0.0.1:4105/issues/RSM-6/transcript"
 
     assert {:error, {:unknown_notification_event, 123}} = Event.new(123, %{})
     assert {:ok, %Event{issue_identifier: nil}} = Event.new(:run_failed, :invalid_attrs)
+    assert {:ok, %Event{reason: nil}} = Event.new(:run_failed, %{reason: " "})
 
     issue = %Issue{
       id: "issue-7",
@@ -271,7 +283,7 @@ defmodule SymphonyElixir.NotificationsTest do
         event: event_name,
         issue_id: "issue-#{event_name}",
         issue_identifier: 123,
-        issue_url: "https://linear.test/#{event_name}>",
+        issue_url: "https://linear.test/#{event_name}<filter|ok>",
         pr_url: nil,
         issue_title: nil,
         state: :done,
@@ -287,7 +299,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
       assert payload["text"] == "#{expected_title}: 123"
       assert encoded =~ expected_title
-      assert encoded =~ "https://linear.test/#{event_name}%3E"
+      assert encoded =~ "https://linear.test/#{event_name}%3Cfilter%7Cok%3E"
       refute encoded =~ "Transcript"
     end
 
@@ -386,5 +398,40 @@ defmodule SymphonyElixir.NotificationsTest do
 
     assert {:retry, 3_000} =
              Slack.deliver(%{webhook_url: "https://slack.test"}, event, request_fun: request_fun)
+  end
+
+  test "notifier drops Slack delivery after max attempts" do
+    test_pid = self()
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-6"})
+
+    notifications = %{
+      enabled: true,
+      redact_titles: false,
+      channels: [%{kind: "slack", webhook_url: "https://slack.test", events: ["run_failed"]}]
+    }
+
+    request_fun = fn _url, _payload, _headers, _timeout_ms ->
+      send(test_pid, :attempted)
+      {:error, :nxdomain}
+    end
+
+    log =
+      capture_log(fn ->
+        assert :ok =
+                 Notifier.deliver_for_test(event, notifications,
+                   task_starter: fn fun ->
+                     fun.()
+                     :ok
+                   end,
+                   request_fun: request_fun,
+                   sleep_fun: fn _delay_ms -> :ok end
+                 )
+      end)
+
+    assert_receive :attempted
+    assert_receive :attempted
+    assert_receive :attempted
+    refute_receive :attempted, 50
+    assert log =~ "Dropping notification after 3 attempts"
   end
 end

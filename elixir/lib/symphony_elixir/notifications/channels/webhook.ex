@@ -1,0 +1,46 @@
+defmodule SymphonyElixir.Notifications.Channels.Webhook do
+  @moduledoc false
+
+  alias SymphonyElixir.Notifications.{Event, Formatter}
+
+  @default_timeout_ms 5_000
+
+  @spec deliver(map(), Event.t()) :: :ok | {:retry, non_neg_integer()} | {:error, term()}
+  def deliver(channel, event), do: deliver(channel, event, [])
+
+  @spec deliver(map(), Event.t(), keyword()) :: :ok | {:retry, non_neg_integer()} | {:error, term()}
+  def deliver(%{url: url} = channel, %Event{} = event, opts) when is_binary(url) do
+    payload = Formatter.webhook_payload(event, redact_titles: Keyword.get(opts, :redact_titles, false))
+    headers = channel_headers(channel)
+    post_json(url, payload, headers, opts)
+  end
+
+  def deliver(_channel, _event, _opts), do: {:error, :missing_webhook_url}
+
+  defp post_json(url, payload, headers, opts) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+
+    case request_fun(opts).(url, payload, headers, timeout_ms) do
+      {:ok, %{status: status}} when status in 200..299 ->
+        :ok
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:http_status, status, body}}
+
+      {:ok, %{status: status}} ->
+        {:error, {:http_status, status, nil}}
+
+      {:error, reason} ->
+        {:error, {:request_failed, reason}}
+    end
+  end
+
+  defp request_fun(opts) do
+    Keyword.get(opts, :request_fun, fn url, payload, headers, timeout_ms ->
+      Req.post(url, json: payload, headers: headers, receive_timeout: timeout_ms)
+    end)
+  end
+
+  defp channel_headers(%{headers: headers}) when is_map(headers), do: Map.to_list(headers)
+  defp channel_headers(_channel), do: []
+end

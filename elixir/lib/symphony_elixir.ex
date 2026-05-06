@@ -41,11 +41,13 @@ defmodule SymphonyElixir.Application do
   @doc false
   @spec child_specs_for_runtime(map()) :: [Supervisor.child_spec() | module() | {module(), term()}]
   def child_specs_for_runtime(env \\ System.get_env()) when is_map(env) do
-    core_children = [
-      {Phoenix.PubSub, name: SymphonyElixir.PubSub},
-      {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
-      SymphonyElixir.WorkflowStore
-    ]
+    core_children =
+      [
+        {Phoenix.PubSub, name: SymphonyElixir.PubSub},
+        {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+        SymphonyElixir.WorkflowStore,
+        SymphonyElixir.Notifications.Notifier
+      ]
 
     if orchestrator_runtime_disabled?(env) do
       core_children

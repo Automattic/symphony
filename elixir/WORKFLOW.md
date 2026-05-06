@@ -63,6 +63,20 @@ agent:
 #   clarification_floor: 4     # optional; scores 4..5 ask clarification
 #   max_clarification_rounds: 2
 #   on_error: pass             # or: skip — behavior when the LLM call fails
+# Optional semantic event notifications. Omit the block or keep enabled false
+# for no outbound notification HTTP calls.
+# notifications:
+#   enabled: true
+#   channels:
+#     - kind: slack
+#       webhook_url: $SLACK_WEBHOOK_URL
+#       events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded]
+#     - kind: webhook
+#       url: $NOTIFY_WEBHOOK_URL
+#       events: [run_failed, budget_exceeded]
+#       headers:
+#         Authorization: $NOTIFY_AUTH_HEADER
+#   redact_titles: false
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

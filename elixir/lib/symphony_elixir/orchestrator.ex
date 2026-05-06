@@ -27,7 +27,6 @@ defmodule SymphonyElixir.Orchestrator do
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @default_transcript_buffer_size 200
-  @awaiting_clarification_label "awaiting-clarification"
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -682,7 +681,6 @@ defmodule SymphonyElixir.Orchestrator do
         {cache, comment_keys, skipped_with_status} =
           post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys)
 
-        sync_quality_gate_labels(passed, awaiting_with_status, skipped_with_status)
         persist_quality_gate_cache(cache)
 
         awaiting_index = index_quality_gate_entries(awaiting_with_status)
@@ -800,56 +798,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retain_quality_gate_comment_keys(_comment_keys, _issues), do: MapSet.new()
-
-  defp sync_quality_gate_labels(passed, awaiting, skipped) do
-    # Keep label reconciliation synchronous with comment posting for now. Issues
-    # already carrying awaiting-clarification may still do tracker round-trips
-    # each poll; a synced cache marker or async fanout would be a future refinement.
-    Enum.each(awaiting, &ensure_awaiting_clarification_label/1)
-    Enum.each(passed, &remove_awaiting_clarification_label/1)
-    Enum.each(skipped, fn entry -> remove_awaiting_clarification_label(entry.issue) end)
-  end
-
-  defp ensure_awaiting_clarification_label(%{issue: %Issue{} = issue}) do
-    unless issue_has_label?(issue, @awaiting_clarification_label) do
-      case Tracker.add_label(issue.id, @awaiting_clarification_label) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("QualityGate awaiting-clarification label add failed issue=#{issue_context(issue)} reason=#{inspect(reason)}")
-      end
-    end
-  end
-
-  defp ensure_awaiting_clarification_label(_entry), do: :ok
-
-  defp remove_awaiting_clarification_label(%Issue{} = issue) do
-    if issue_has_label?(issue, @awaiting_clarification_label) do
-      case Tracker.remove_label(issue.id, @awaiting_clarification_label) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("QualityGate awaiting-clarification label remove failed issue=#{issue_context(issue)} reason=#{inspect(reason)}")
-      end
-    end
-  end
-
-  defp remove_awaiting_clarification_label(_issue), do: :ok
-
-  defp issue_has_label?(%Issue{labels: labels}, label) when is_list(labels) and is_binary(label) do
-    normalized_label = normalize_issue_label(label)
-
-    Enum.any?(labels, fn issue_label ->
-      normalize_issue_label(issue_label) == normalized_label
-    end)
-  end
-
-  defp issue_has_label?(_issue, _label), do: false
-
-  defp normalize_issue_label(label) when is_binary(label), do: label |> String.trim() |> String.downcase()
-  defp normalize_issue_label(label), do: label |> to_string() |> normalize_issue_label()
 
   defp index_quality_gate_entries(entries) do
     Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)

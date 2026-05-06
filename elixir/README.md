@@ -255,7 +255,8 @@ the session, surfaced in the dashboard's `Skipped` section, and a Linear
 comment is posted explaining the score and how to re-queue. When
 `clarification_floor` is set, scores from `clarification_floor` through
 `pass_threshold - 1` are held in Linear with a deterministic clarification
-comment and the `awaiting-clarification` label instead of being dispatched.
+comment instead of being dispatched. They also appear in the dashboard's
+`Awaiting clarification` section.
 
 ```yaml
 quality_gate:
@@ -280,8 +281,8 @@ quality_gate:
 - Clarification comments are posted once per issue/comment-activity key. If the
   operator replies and the issue still scores in the clarification band,
   Symphony asks again until `max_clarification_rounds` is reached; after that it
-  skips with a comment naming the cap. If a clarified issue later passes, the
-  `awaiting-clarification` label is removed.
+  skips with a comment naming the cap. If a clarified issue later passes, it is
+  dispatched on the next poll.
 - `on_error: pass` (default) lets an issue qualify when the LLM call
   fails, so a failing provider does not block dispatch. `on_error: skip`
   is stricter — when the LLM call fails, the issue is skipped for the

@@ -162,8 +162,6 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     assert body =~ "Questions:"
     assert body =~ "1. What should the agent verify before opening a PR?"
 
-    assert_receive {:memory_tracker_label_added, "issue-mid-1", "awaiting-clarification"}, 500
-
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.running == []
     assert snapshot.skipped == []
@@ -172,7 +170,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
              snapshot.awaiting_clarification
   end
 
-  test "orchestrator removes awaiting label when a clarified issue passes on the next poll" do
+  test "orchestrator dispatches clarified issue on the next poll without label mutation" do
     issue = %Issue{
       id: "issue-reply-1",
       identifier: "MT-REPLY",
@@ -210,12 +208,10 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
 
     assert_receive {:memory_tracker_comment, "issue-reply-1", body}, 500
     assert body =~ "clarification requested"
-    assert_receive {:memory_tracker_label_added, "issue-reply-1", "awaiting-clarification"}, 500
 
     answered_issue = %{
       issue
-      | labels: ["awaiting-clarification"],
-        comments: [
+      | comments: [
           %{
             author: "Operator",
             body: "Acceptance criteria are clear and the target module is listed.",
@@ -228,7 +224,6 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
 
     send(pid, :run_poll_cycle)
 
-    assert_receive {:memory_tracker_label_removed, "issue-reply-1", "awaiting-clarification"}, 500
     refute_receive {:memory_tracker_comment, "issue-reply-1", _}, 200
 
     snapshot = GenServer.call(pid, :snapshot)

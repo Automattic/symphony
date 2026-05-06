@@ -50,7 +50,7 @@ agent:
 # Optional: score each candidate issue for agent-readiness with an LLM before
 # queuing it. Scores at or above `pass_threshold` dispatch. Scores below
 # `clarification_floor` skip. Scores in between ask Linear clarification
-# questions and add the `awaiting-clarification` label.
+# questions and appear in the dashboard's Awaiting clarification section.
 # Existing configs may keep `min_score`; when `pass_threshold` is unset,
 # Symphony treats `min_score` as the pass threshold and clarification stays off
 # unless `clarification_floor` is set.

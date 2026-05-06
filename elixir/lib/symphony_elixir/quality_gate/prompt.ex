@@ -20,10 +20,10 @@ defmodule SymphonyElixir.QualityGate.Prompt do
     - Sandbox dependency: needs production credentials, manual UI testing, real browsers, deploys
 
   Reply with ONLY a single JSON object:
-    {"score": <integer 1-10>, "reason": "<one short sentence>"}
+    {"score": <integer 1-10>, "reason": "<one short sentence>", "questions": ["<question>", "<question>", "<question>"]}
 
-  If the issue is almost ready but needs clarification, include:
-    {"questions": ["<question>", "<question>", "<question>"]}
+  The "questions" field is optional. Include it on the same JSON object only when
+  the issue is almost ready but needs clarification.
 
   Clarifying questions must:
     - include 3 to 5 questions

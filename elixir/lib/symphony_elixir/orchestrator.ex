@@ -802,6 +802,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp retain_quality_gate_comment_keys(_comment_keys, _issues), do: MapSet.new()
 
   defp sync_quality_gate_labels(passed, awaiting, skipped) do
+    # Keep label reconciliation synchronous with comment posting for now. Issues
+    # already carrying awaiting-clarification may still do tracker round-trips
+    # each poll; a synced cache marker or async fanout would be a future refinement.
     Enum.each(awaiting, &ensure_awaiting_clarification_label/1)
     Enum.each(passed, &remove_awaiting_clarification_label/1)
     Enum.each(skipped, fn entry -> remove_awaiting_clarification_label(entry.issue) end)

@@ -1483,12 +1483,15 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       test_pid = self()
+      assert :ok = SymphonyElixir.Notifications.subscribe()
 
       assert :ok =
                AgentRunner.run(
                  issue,
                  test_pid,
-                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_state_fetcher: fn [_issue_id] ->
+                   {:ok, [%{issue | state: "Done", pr_urls: ["https://github.test/org/repo/pull/99"]}]}
+                 end,
                  issue_enricher: no_op_issue_enricher()
                )
 
@@ -1501,6 +1504,20 @@ defmodule SymphonyElixir.CoreTest do
                      500
 
       assert session_id == "thread-live-turn-live"
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "issue_completed",
+                        issue_identifier: "MT-99"
+                      }},
+                     500
+
+      refute_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "pr_opened",
+                        issue_identifier: "MT-99"
+                      }},
+                     50
     after
       File.rm_rf(test_root)
     end

@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Orchestrator do
     AgentRunner,
     Config,
     Notifications,
+    PrReviewPoller,
     Quality,
     QualityGate,
     RunStore,
@@ -174,6 +175,7 @@ defmodule SymphonyElixir.Orchestrator do
           case reason do
             :normal ->
               persist_run_completion(running_entry, "success", nil)
+              complete_pr_review_comment_cursor(issue_id)
               Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
               state
@@ -1740,6 +1742,19 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp persist_run_completion(_running_entry, _status, _error), do: :ok
+
+  defp complete_pr_review_comment_cursor(issue_id) when is_binary(issue_id) do
+    case PrReviewPoller.complete_pending_reviewer_comments(issue_id) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to complete pending PR review comments issue_id=#{issue_id}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp complete_pr_review_comment_cursor(_issue_id), do: :ok
 
   defp persist_quality_eval_async(%{run_id: run_id} = running_entry, status, error)
        when is_binary(run_id) and is_binary(status) do

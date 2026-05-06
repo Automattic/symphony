@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue, Notifications, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Linear.Issue, Notifications, PromptBuilder, PrReviewPoller, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -178,7 +178,9 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    PromptBuilder.build_prompt(issue, put_reviewer_comments(issue, opts))
+  end
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
     """
@@ -191,6 +193,20 @@ defmodule SymphonyElixir.AgentRunner do
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
   end
+
+  defp put_reviewer_comments(issue, opts) when is_list(opts) do
+    if Keyword.has_key?(opts, :reviewer_comments) do
+      opts
+    else
+      Keyword.put(opts, :reviewer_comments, pending_reviewer_comments(issue))
+    end
+  end
+
+  defp pending_reviewer_comments(%Issue{id: issue_id}) when is_binary(issue_id) do
+    PrReviewPoller.pending_reviewer_comments(issue_id)
+  end
+
+  defp pending_reviewer_comments(_issue), do: []
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do

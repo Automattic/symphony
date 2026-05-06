@@ -4,7 +4,15 @@ defmodule SymphonyElixir.Notifications.Event do
   alias SymphonyElixir.{Config, HttpServer, URLUtils}
   alias SymphonyElixir.Linear.Issue
 
-  @known_events ["pr_opened", "awaiting_review", "run_failed", "issue_completed", "budget_exceeded"]
+  @known_events [
+    "pr_opened",
+    "awaiting_review",
+    "run_failed",
+    "issue_completed",
+    "budget_exceeded",
+    "reviewer_commented",
+    "rework_pushed"
+  ]
   @max_string_value_length 1024
 
   defstruct [

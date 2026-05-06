@@ -2,6 +2,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Notifications.Event
   alias SymphonyElixir.PrReviewPoller
 
   defmodule FakeTracker do
@@ -439,6 +440,65 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     refute Map.has_key?(record, :last_addressed_comment_id)
   end
 
+  test "emits reviewer_commented once when actionable reviewer comments trigger rework" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Please refactor this before merge.",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-1",
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:notification_event,
+                    %Event{
+                      event: "reviewer_commented",
+                      issue_id: "issue-1780",
+                      issue_identifier: "RSM-1780",
+                      issue_title: "Review manager",
+                      issue_url: "https://linear.app/a8c/issue/RSM-1780",
+                      pr_url: "https://github.com/example/repo/pull/1780",
+                      state: "In Progress",
+                      reason: "1 actionable reviewer comment discovered",
+                      timestamp: ^now,
+                      metadata: %{
+                        source: "pr_review_poller",
+                        comment_count: 1,
+                        latest_comment_id: "comment-1"
+                      }
+                    }},
+                   500
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               now: DateTime.add(now, 1, :minute)
+             )
+
+    refute_receive {:notification_event, %Event{event: "reviewer_commented"}}, 50
+  end
+
   test "plain reviewer comments still respect cooldown" do
     now = ~U[2026-05-01 09:00:00Z]
     latest_comment_at = DateTime.add(now, -10, :minute)
@@ -588,6 +648,48 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     refute_receive {:github_reply, _, _, _}
     refute_receive {:github_request_review, _, _}
     assert [%{last_addressed_comment_id: "comment-1", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+  end
+
+  test "emits rework_pushed once when pending reviewer comments are completed" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        issue_title: "Review manager",
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:notification_event,
+                    %Event{
+                      event: "rework_pushed",
+                      issue_id: "issue-1780",
+                      issue_identifier: "RSM-1780",
+                      issue_title: "Review manager",
+                      issue_url: "https://linear.app/a8c/issue/RSM-1780",
+                      pr_url: "https://github.com/example/repo/pull/1780",
+                      state: "In Progress",
+                      reason: "1 actionable reviewer comment addressed",
+                      timestamp: ^now,
+                      metadata: %{
+                        source: "pr_review_poller",
+                        comment_count: 1,
+                        latest_comment_id: "comment-1"
+                      }
+                    }},
+                   500
+
+    assert [%{last_addressed_comment_id: "comment-1", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: DateTime.add(now, 1, :minute))
+    refute_receive {:notification_event, %Event{event: "rework_pushed"}}, 50
   end
 
   test "pending reviewer comment lookup errors are recorded and block cursor completion" do
@@ -1381,6 +1483,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     %{
       issue_id: "issue-1780",
       issue_identifier: "RSM-1780",
+      issue_title: "Review manager",
       issue_url: "https://linear.app/a8c/issue/RSM-1780",
       pr_url: "https://github.com/example/repo/pull/1780",
       workspace_path: "/tmp/workspaces/RSM-1780",

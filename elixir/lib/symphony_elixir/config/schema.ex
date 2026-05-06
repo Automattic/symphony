@@ -601,7 +601,15 @@ defmodule SymphonyElixir.Config.Schema do
 
       @primary_key false
       @kinds ["slack", "webhook"]
-      @events ["pr_opened", "awaiting_review", "run_failed", "issue_completed", "budget_exceeded"]
+      @events [
+        "pr_opened",
+        "awaiting_review",
+        "run_failed",
+        "issue_completed",
+        "budget_exceeded",
+        "reviewer_commented",
+        "rework_pushed"
+      ]
 
       embedded_schema do
         field(:kind, :string)

@@ -175,8 +175,9 @@ defmodule SymphonyElixir.PrReviewPoller do
     with {:ok, settings} <- poll_settings(opts),
          :ok <- ensure_pending_comment_lookup_succeeded(record),
          {:ok, record} <- maybe_reply_to_comments(record, comments, settings, github, opts, now),
-         {:ok, record} <- advance_reviewer_comment_cursor(record, cursor, opts, now) do
-      maybe_request_review(record, comments, settings, github, opts, now)
+         {:ok, record} <- advance_reviewer_comment_cursor(record, cursor, opts, now),
+         :ok <- maybe_request_review(record, comments, settings, github, opts, now) do
+      emit_rework_pushed(record, comments, cursor, now)
     end
   end
 
@@ -273,6 +274,7 @@ defmodule SymphonyElixir.PrReviewPoller do
       base = %{
         issue_id: issue.id,
         issue_identifier: issue.identifier,
+        issue_title: issue.title,
         issue_url: issue.url,
         pr_url: pr_url,
         workspace_path: workspace_path,
@@ -490,6 +492,7 @@ defmodule SymphonyElixir.PrReviewPoller do
            })
          ) do
       :ok ->
+        maybe_emit_reviewer_commented(record, attrs, action, now)
         {:state_transitioned, Map.get(record, :issue_id), action_atom(action), @active_state}
 
       {:error, reason} ->
@@ -1230,6 +1233,63 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp maybe_emit_poll_run_failed(_record, _attrs, _reason), do: :ok
+
+  defp maybe_emit_reviewer_commented(record, attrs, "rework", now) do
+    comments = attrs |> Map.get(:pending_reviewer_comments, []) |> normalize_comments()
+
+    if comments != [] do
+      Notifications.emit_event(
+        :reviewer_commented,
+        reviewer_feedback_event_attrs(record, %{
+          state: @active_state,
+          reason: actionable_comment_reason(comments, "discovered"),
+          timestamp: now,
+          metadata: reviewer_feedback_metadata(comments)
+        })
+      )
+    end
+  end
+
+  defp maybe_emit_reviewer_commented(_record, _attrs, _action, _now), do: :ok
+
+  defp emit_rework_pushed(_record, [], nil, _now), do: :ok
+
+  defp emit_rework_pushed(record, comments, cursor, now) do
+    Notifications.emit_event(
+      :rework_pushed,
+      reviewer_feedback_event_attrs(record, %{
+        state: @active_state,
+        reason: actionable_comment_reason(comments, "addressed"),
+        timestamp: now,
+        metadata: reviewer_feedback_metadata(comments, cursor)
+      })
+    )
+  end
+
+  defp reviewer_feedback_event_attrs(record, attrs) do
+    %{
+      issue_id: Map.get(record, :issue_id),
+      issue_identifier: Map.get(record, :issue_identifier),
+      issue_title: Map.get(record, :issue_title),
+      issue_url: Map.get(record, :issue_url),
+      pr_url: Map.get(record, :pr_url)
+    }
+    |> Map.merge(attrs)
+  end
+
+  defp actionable_comment_reason([_comment], verb), do: "1 actionable reviewer comment #{verb}"
+  defp actionable_comment_reason(comments, verb), do: "#{length(comments)} actionable reviewer comments #{verb}"
+
+  defp reviewer_feedback_metadata(comments, latest_comment_id \\ nil) do
+    comments = normalize_comments(comments)
+    latest_comment_id = latest_comment_id || latest_comment_id(comments)
+
+    %{
+      source: "pr_review_poller",
+      comment_count: length(comments),
+      latest_comment_id: latest_comment_id
+    }
+  end
 
   defp github_error_backoff_ms(consecutive_errors, opts) do
     exponent = max(consecutive_errors - @github_error_backoff_threshold, 0)

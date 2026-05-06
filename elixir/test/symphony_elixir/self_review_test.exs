@@ -23,6 +23,14 @@ defmodule SymphonyElixir.SelfReviewTest do
   defmodule NoReviewProvider do
   end
 
+  defmodule HttpErrorProvider do
+    def review(_request, _settings), do: {:error, {:provider_http_status, 503, "server exploded"}}
+  end
+
+  defmodule RequestErrorProvider do
+    def review(_request, _settings), do: {:error, {:provider_request_failed, :timeout}}
+  end
+
   setup do
     System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
     Application.put_env(:symphony_elixir, :self_review_test_recipient, self())
@@ -42,7 +50,7 @@ defmodule SymphonyElixir.SelfReviewTest do
 
     result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider)
 
-    assert result.verdict == "approve"
+    assert result.verdict == :approve
     assert result.findings == []
     assert result.source.changed_paths == ["feature.txt"]
     assert result.source.acceptance_criteria =~ "Add the self-review gate"
@@ -68,12 +76,12 @@ defmodule SymphonyElixir.SelfReviewTest do
 
     result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider)
 
-    assert result.verdict == "request_changes"
+    assert result.verdict == :request_changes
 
     assert [
              %{
-               severity: "blocking",
-               category: "commit_message",
+               severity: :blocking,
+               category: :commit_message,
                description: "The commit subject claims a gate but only changes docs.",
                evidence: "feat: add self review"
              }
@@ -91,7 +99,7 @@ defmodule SymphonyElixir.SelfReviewTest do
 
     result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider)
 
-    assert result.verdict == "approve"
+    assert result.verdict == :approve
     assert result.findings == []
   end
 
@@ -102,7 +110,7 @@ defmodule SymphonyElixir.SelfReviewTest do
     log =
       capture_log(fn ->
         result = SelfReview.evaluate(issue(), repo, enabled_config(diff_max_lines: 3), provider_module: StubProvider)
-        assert result.verdict == "approve"
+        assert result.verdict == :approve
         assert result.source.diff_truncated?
         assert result.source.diff_line_count > 3
       end)
@@ -119,9 +127,10 @@ defmodule SymphonyElixir.SelfReviewTest do
     log =
       capture_log(fn ->
         result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider)
-        assert result.verdict == "approve"
+        assert result.verdict == :approve
         assert result.findings == []
         assert result.fail_open_reason == {:malformed_response, :no_json_object}
+        assert result.fail_open_category == :parse_error
       end)
 
     assert log =~ "SelfReview malformed LLM output"
@@ -133,9 +142,10 @@ defmodule SymphonyElixir.SelfReviewTest do
     result =
       SelfReview.evaluate(issue(), repo, %Schema.SelfReview{enabled: false}, provider_module: RaisingProvider)
 
-    assert result.verdict == "approve"
+    assert result.verdict == :approve
     assert result.findings == []
     assert result.fail_open_reason == :disabled
+    assert result.fail_open_category == :disabled
 
     refute_receive {:self_review_request, _request}, 50
   end
@@ -143,8 +153,11 @@ defmodule SymphonyElixir.SelfReviewTest do
   test "nil config and invalid inputs fail open without provider calls" do
     repo = changed_repo!("feature.txt", "implementation\n")
 
-    assert %{verdict: "approve", fail_open_reason: :disabled} = SelfReview.evaluate(issue(), repo, nil)
-    assert %{verdict: "approve", fail_open_reason: :invalid_input} = SelfReview.evaluate(%{}, repo, enabled_config())
+    assert %{verdict: :approve, fail_open_reason: :disabled, fail_open_category: :disabled} =
+             SelfReview.evaluate(issue(), repo, nil)
+
+    assert %{verdict: :approve, fail_open_reason: :invalid_input, fail_open_category: :self_review_unavailable} =
+             SelfReview.evaluate(%{}, repo, enabled_config())
 
     refute_receive {:self_review_request, _request}, 50
   end
@@ -160,12 +173,50 @@ defmodule SymphonyElixir.SelfReviewTest do
         missing_callback = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: NoReviewProvider)
         local_git_failure = SelfReview.evaluate(issue(), plain_dir, enabled_config(), provider_module: StubProvider)
 
-        assert missing_callback.verdict == "approve"
-        assert local_git_failure.verdict == "approve"
+        assert missing_callback.verdict == :approve
+        assert missing_callback.fail_open_category == :provider_unavailable
+        assert local_git_failure.verdict == :approve
+        assert local_git_failure.fail_open_category == :git_unavailable
       end)
 
     assert log =~ "provider_missing_review_callback"
     assert log =~ "git_failed"
+  end
+
+  test "provider configuration and runtime failures fail open with sanitized categories" do
+    repo = changed_repo!("feature.txt", "implementation\n")
+
+    previous_anthropic_key = System.get_env("ANTHROPIC_API_KEY")
+    System.delete_env("ANTHROPIC_API_KEY")
+
+    try do
+      missing_anthropic_key = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider)
+      assert missing_anthropic_key.fail_open_category == :provider_unavailable
+    after
+      restore_env("ANTHROPIC_API_KEY", previous_anthropic_key)
+    end
+
+    previous_openai_key = System.get_env("OPENAI_API_KEY")
+    System.delete_env("OPENAI_API_KEY")
+
+    try do
+      missing_openai_key =
+        SelfReview.evaluate(issue(), repo, enabled_config(provider: "openai", model: "gpt-5.1-mini"), provider_module: StubProvider)
+
+      assert missing_openai_key.fail_open_category == :provider_unavailable
+    after
+      restore_env("OPENAI_API_KEY", previous_openai_key)
+    end
+
+    http_error = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: HttpErrorProvider)
+    request_error = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: RequestErrorProvider)
+
+    unsupported_provider =
+      SelfReview.evaluate(issue(), repo, enabled_config(provider: "unsupported"), provider_module: StubProvider)
+
+    assert http_error.fail_open_category == :provider_unavailable
+    assert request_error.fail_open_category == :provider_unavailable
+    assert unsupported_provider.fail_open_category == :provider_unavailable
   end
 
   test "parses schema edge cases and prompt helpers" do
@@ -178,31 +229,39 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert {:error, {:malformed_response, :invalid_verdict}} = SelfReview.parse_response(~s({"verdict":"maybe","findings":[]}))
     assert {:error, {:malformed_response, :invalid_findings}} = SelfReview.parse_response(~s({"verdict":"approve","findings":{}}))
 
-    assert {:ok, %{verdict: "approve", findings: []}} =
+    assert {:ok, %{verdict: :approve, findings: []}} =
              SelfReview.parse_response(~s({"verdict":"approve","findings":[],"note":"escaped \\" quote"}))
 
-    assert {:ok, %{verdict: "request_changes", findings: [%{evidence: "line"}]}} =
+    assert {:ok, %{verdict: :request_changes, findings: [%{evidence: "line"}]}} =
              SelfReview.parse_response(~s({"verdict":"request_changes","findings":[{"severity":"blocking","category":"scope_creep","description":"Unrelated file changed.","evidence":"line"}]}))
 
-    assert {:ok, %{verdict: "request_changes", findings: [%{category: "scope_creep"}]}} =
+    assert {:ok, %{verdict: :request_changes, findings: [%{category: :scope_creep}]}} =
              SelfReview.parse_response(~s({"verdict":"request_changes","findings":[{"severity":"blocking","category":"scope_creep","description":"Unrelated file changed.","evidence":""}]}))
 
-    assert {:ok, %{verdict: "request_changes", findings: [%{category: "scope_creep"}]}} =
+    assert {:ok, %{verdict: :request_changes, findings: [%{category: :scope_creep}]}} =
              SelfReview.parse_response(~s({"verdict":"request_changes","findings":[{"severity":"blocking","category":"scope_creep","description":"Unrelated file changed.","evidence":123}]}))
 
-    assert SelfReview.request_changes?(%{verdict: "request_changes", findings: [%{category: "scope_creep"}]})
-    refute SelfReview.request_changes?(%{verdict: "approve", findings: []})
+    assert {:ok, %{verdict: :approve, findings: []}} =
+             SelfReview.parse_response(~s({"verdict":"request_changes","findings":["not a finding"]}))
+
+    assert SelfReview.request_changes?(%{verdict: :request_changes, findings: [%{category: :scope_creep}]})
+    refute SelfReview.request_changes?(%{verdict: :approve, findings: []})
     assert SelfReview.approval_prompt(%{}) =~ "approved"
     assert SelfReview.push_prompt(%{findings: []}) =~ "no remaining blocking findings"
+    assert SelfReview.fail_open_prompt(%{fail_open_category: :parse_error}) =~ "Self-review did not run: parse_error."
+    assert SelfReview.push_prompt(%{fail_open_category: :git_unavailable, findings: []}) =~ "Self-review did not run: git_unavailable."
 
-    finding = %{severity: "blocking", category: "scope_creep", description: "Unrelated file changed.", evidence: "diff --git"}
+    finding = %{severity: :blocking, category: :scope_creep, description: "Unrelated file changed.", evidence: "diff --git"}
     assert SelfReview.request_changes_prompt(%{findings: [finding]}) =~ "Evidence: diff --git"
     assert SelfReview.push_prompt(%{findings: [finding]}) =~ "Push regardless now"
     assert SelfReview.known_limitations_section([finding]) =~ "Evidence: `diff --git`"
 
-    bare_finding = %{severity: "blocking", category: "commit_message", description: "Commit body overclaims."}
+    bare_finding = %{severity: :blocking, category: :commit_message, description: "Commit body overclaims."}
     assert SelfReview.request_changes_prompt(%{findings: [bare_finding]}) =~ "Commit body overclaims."
     assert SelfReview.known_limitations_section([bare_finding]) =~ "commit_message"
+
+    string_category_finding = %{severity: :blocking, category: "scope_creep", description: "String category."}
+    assert SelfReview.known_limitations_section([string_category_finding]) =~ "scope_creep"
   end
 
   test "handles remote git collection through ssh" do
@@ -227,7 +286,7 @@ defmodule SymphonyElixir.SelfReviewTest do
         SelfReview.evaluate(issue(), "/remote/worktree", enabled_config(), worker_host: "worker-1", provider_module: StubProvider)
       end)
 
-    assert result.verdict == "approve"
+    assert result.verdict == :approve
     assert result.source.changed_paths == ["remote.txt"]
     assert_receive {:self_review_request, %{user: user}}
     assert user =~ "feat: remote self review"
@@ -243,7 +302,7 @@ defmodule SymphonyElixir.SelfReviewTest do
             SelfReview.evaluate(issue(), "/remote/worktree", enabled_config(), worker_host: "worker-1", provider_module: StubProvider)
           end)
 
-        assert result.verdict == "approve"
+        assert result.verdict == :approve
       end)
 
     assert log =~ "git_failed"
@@ -258,7 +317,7 @@ defmodule SymphonyElixir.SelfReviewTest do
       log =
         capture_log(fn ->
           result = SelfReview.evaluate(issue(), "/remote/worktree", enabled_config(), worker_host: "worker-1", provider_module: StubProvider)
-          assert result.verdict == "approve"
+          assert result.verdict == :approve
         end)
 
       assert log =~ "ssh_not_found"
@@ -274,7 +333,7 @@ defmodule SymphonyElixir.SelfReviewTest do
     issue = %Issue{id: "issue-weird", identifier: "MT-WEIRD", title: 123, description: nil}
     result = SelfReview.evaluate(issue, repo, enabled_config(), provider_module: StubProvider)
 
-    assert result.verdict == "approve"
+    assert result.verdict == :approve
     assert result.source.issue_title == "123"
     assert result.source.issue_description == ""
     assert result.source.acceptance_criteria == ""
@@ -287,7 +346,7 @@ defmodule SymphonyElixir.SelfReviewTest do
     issue = %Issue{id: "issue-no-diff", identifier: "MT-NO-DIFF", title: nil, description: "No criteria here."}
     result = SelfReview.evaluate(issue, repo, enabled_config(), provider_module: StubProvider)
 
-    assert result.verdict == "approve"
+    assert result.verdict == :approve
     assert result.source.issue_title == ""
     assert result.source.acceptance_criteria == ""
     assert result.source.diff == ""

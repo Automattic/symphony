@@ -184,6 +184,17 @@ defmodule SymphonyElixir.AgentRunner do
 
         do_run_codex_turns(agent_module, app_session, next_context, turn_number + 1, max_turns)
 
+      {:normal_continuation, next_context} ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(
+          agent_module,
+          app_session,
+          next_context,
+          turn_number + 1,
+          max_turns
+        )
+
       :normal_continuation ->
         Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
@@ -197,7 +208,7 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp initial_self_review_state, do: %{phase: :not_run}
+  defp initial_self_review_state, do: %{phase: :not_run, request_change_rounds: 0}
 
   defp maybe_self_review_next_turn(run_context, turn_number, max_turns) do
     config = Config.settings!().self_review
@@ -215,20 +226,45 @@ defmodule SymphonyElixir.AgentRunner do
   defp self_review_next_turn(%{self_review: %{phase: :not_run}} = run_context, config, _turn_number, _max_turns) do
     result = evaluate_self_review(run_context, config)
 
-    if SelfReview.request_changes?(result) do
-      {:self_review_turn,
-       %{
-         run_context
-         | self_review: %{phase: :awaiting_correction, findings: result.findings},
-           next_prompt: SelfReview.request_changes_prompt(result)
-       }}
-    else
-      {:self_review_turn,
-       %{
-         run_context
-         | self_review: %{phase: :complete},
-           next_prompt: SelfReview.approval_prompt(result)
-       }}
+    cond do
+      SelfReview.request_changes?(result) and correction_round_available?(run_context, config) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{
+               phase: :awaiting_correction,
+               findings: result.findings,
+               request_change_rounds: next_request_change_round(run_context)
+             },
+             next_prompt: SelfReview.request_changes_prompt(result)
+         }}
+
+      SelfReview.fail_open?(result) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{phase: :complete, request_change_rounds: request_change_rounds(run_context)},
+             next_prompt: SelfReview.fail_open_prompt(result)
+         }}
+
+      SelfReview.request_changes?(result) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{
+               phase: :complete,
+               final_findings: result.findings,
+               request_change_rounds: request_change_rounds(run_context)
+             },
+             next_prompt: SelfReview.push_prompt(result)
+         }}
+
+      true ->
+        {:normal_continuation,
+         %{
+           run_context
+           | self_review: %{phase: :complete, request_change_rounds: request_change_rounds(run_context)}
+         }}
     end
   end
 
@@ -238,12 +274,24 @@ defmodule SymphonyElixir.AgentRunner do
     {:self_review_turn,
      %{
        run_context
-       | self_review: %{phase: :complete, final_findings: result.findings},
+       | self_review: %{
+           phase: :complete,
+           final_findings: result.findings,
+           request_change_rounds: request_change_rounds(run_context)
+         },
          next_prompt: SelfReview.push_prompt(result)
      }}
   end
 
   defp self_review_next_turn(_run_context, _config, _turn_number, _max_turns), do: :normal_continuation
+
+  defp correction_round_available?(run_context, config) do
+    request_change_rounds(run_context) < config.max_rounds
+  end
+
+  defp next_request_change_round(run_context), do: request_change_rounds(run_context) + 1
+
+  defp request_change_rounds(%{self_review: %{request_change_rounds: rounds}}) when is_integer(rounds), do: rounds
 
   defp evaluate_self_review(%{issue: issue, workspace: workspace, opts: opts, worker_host: worker_host}, config) do
     provider_module = Keyword.get(opts, :self_review_provider_module)

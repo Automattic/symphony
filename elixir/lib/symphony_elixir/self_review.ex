@@ -12,7 +12,11 @@ defmodule SymphonyElixir.SelfReview do
   alias SymphonyElixir.{Config.Schema, QualityGate, SSH}
   alias SymphonyElixir.Linear.Issue
 
-  @allowed_categories ~w(acceptance_criteria commit_message scope_creep)
+  @allowed_categories %{
+    "acceptance_criteria" => :acceptance_criteria,
+    "commit_message" => :commit_message,
+    "scope_creep" => :scope_creep
+  }
   @max_tokens 2_048
 
   @system_prompt """
@@ -51,9 +55,14 @@ defmodule SymphonyElixir.SelfReview do
   }
   """
 
+  @type verdict :: :approve | :request_changes
+  @type finding_category :: :acceptance_criteria | :commit_message | :scope_creep
+  @type fail_open_category ::
+          :disabled | :parse_error | :git_unavailable | :provider_unavailable | :self_review_unavailable
+
   @type finding :: %{
-          required(:severity) => String.t(),
-          required(:category) => String.t(),
+          required(:severity) => :blocking,
+          required(:category) => finding_category(),
           required(:description) => String.t(),
           optional(:evidence) => String.t()
         }
@@ -70,10 +79,11 @@ defmodule SymphonyElixir.SelfReview do
         }
 
   @type result :: %{
-          required(:verdict) => String.t(),
+          required(:verdict) => verdict(),
           required(:findings) => [finding()],
           optional(:source) => source_material(),
-          optional(:fail_open_reason) => term()
+          optional(:fail_open_reason) => term(),
+          optional(:fail_open_category) => fail_open_category()
         }
 
   @spec evaluate(Issue.t(), Path.t(), Schema.SelfReview.t() | nil) :: result()
@@ -92,9 +102,9 @@ defmodule SymphonyElixir.SelfReview do
       |> Map.put(:source, source)
       |> tap(fn parsed -> log_result(issue, parsed, source) end)
     else
-      {:error, {:malformed_response, reason}} ->
+      {:error, {:malformed_response, reason} = fail_open_reason} ->
         Logger.warning("SelfReview malformed LLM output; failing open issue=#{issue.identifier || issue.id} reason=#{inspect(reason)}")
-        approve_result({:malformed_response, reason})
+        approve_result(fail_open_reason)
 
       {:error, reason} ->
         Logger.warning("SelfReview failed open issue=#{issue.identifier || issue.id} reason=#{inspect(reason)}")
@@ -113,19 +123,19 @@ defmodule SymphonyElixir.SelfReview do
          {:ok, decoded} <- decode_json(json),
          {:ok, _verdict} <- coerce_verdict(Map.get(decoded, "verdict")),
          {:ok, findings} <- coerce_findings(Map.get(decoded, "findings")) do
-      {:ok,
-       %{
-         verdict: if(findings == [], do: "approve", else: "request_changes"),
-         findings: findings
-       }}
+      {:ok, result_from_findings(findings)}
     else
       {:error, reason} -> {:error, {:malformed_response, reason}}
     end
   end
 
   @spec request_changes?(result()) :: boolean()
-  def request_changes?(%{verdict: "request_changes", findings: [_ | _]}), do: true
+  def request_changes?(%{verdict: :request_changes}), do: true
   def request_changes?(_result), do: false
+
+  @spec fail_open?(result()) :: boolean()
+  def fail_open?(%{fail_open_category: category}) when category not in [nil, :disabled], do: true
+  def fail_open?(_result), do: false
 
   @spec approval_prompt(result()) :: String.t()
   def approval_prompt(_result) do
@@ -133,6 +143,17 @@ defmodule SymphonyElixir.SelfReview do
     Pre-push self-review approved the committed diff.
 
     Continue the normal workflow push and PR handoff now. Do not add a "Known limitations from self-review" section to the PR description.
+    """
+  end
+
+  @spec fail_open_prompt(result()) :: String.t()
+  def fail_open_prompt(result) do
+    """
+    Pre-push self-review did not complete, but the gate fails open by design.
+
+    Push regardless now and append this exact section to the PR description so reviewers can see what happened:
+
+    #{fail_open_known_limitations_section(result)}
     """
   end
 
@@ -148,7 +169,21 @@ defmodule SymphonyElixir.SelfReview do
   end
 
   @spec push_prompt(result()) :: String.t()
-  def push_prompt(%{findings: []}) do
+  def push_prompt(%{} = result) do
+    if fail_open?(result) do
+      """
+      Final self-review did not complete, but the gate fails open by design.
+
+      Push regardless now and append this exact section to the PR description so reviewers can see what happened:
+
+      #{fail_open_known_limitations_section(result)}
+      """
+    else
+      push_prompt_for_findings(Map.get(result, :findings, []))
+    end
+  end
+
+  defp push_prompt_for_findings([]) do
     """
     Final self-review found no remaining blocking findings.
 
@@ -156,7 +191,7 @@ defmodule SymphonyElixir.SelfReview do
     """
   end
 
-  def push_prompt(%{findings: findings}) do
+  defp push_prompt_for_findings(findings) do
     """
     Final self-review still reports blocking findings. Push regardless now.
 
@@ -177,13 +212,28 @@ defmodule SymphonyElixir.SelfReview do
             _ -> ""
           end
 
-        "- #{finding.category}: #{finding.description}#{evidence}"
+        "- #{format_category(finding.category)}: #{finding.description}#{evidence}"
       end)
 
     """
     ## Known limitations from self-review
 
     #{body}
+    """
+    |> String.trim()
+  end
+
+  @spec fail_open_known_limitations_section(result()) :: String.t()
+  def fail_open_known_limitations_section(result) do
+    category =
+      result
+      |> Map.get(:fail_open_category, :self_review_unavailable)
+      |> to_string()
+
+    """
+    ## Known limitations from self-review
+
+    - Self-review did not run: #{category}.
     """
     |> String.trim()
   end
@@ -364,20 +414,21 @@ defmodule SymphonyElixir.SelfReview do
   defp coerce_findings(_findings), do: {:error, :invalid_findings}
 
   defp normalize_finding(%{"severity" => "blocking", "category" => category, "description" => description} = finding)
-       when category in @allowed_categories and is_binary(description) do
+       when is_binary(description) do
     description = String.trim(description)
 
-    if description == "" do
-      []
-    else
+    with %{^category => normalized_category} <- @allowed_categories,
+         false <- description == "" do
       [
         %{
-          severity: "blocking",
-          category: category,
+          severity: :blocking,
+          category: normalized_category,
           description: description
         }
         |> maybe_put_evidence(Map.get(finding, "evidence"))
       ]
+    else
+      _ -> []
     end
   end
 
@@ -392,16 +443,39 @@ defmodule SymphonyElixir.SelfReview do
 
   defp maybe_put_evidence(finding, _evidence), do: finding
 
-  defp log_result(issue, %{verdict: "request_changes", findings: findings}, _source) do
+  defp log_result(issue, %{verdict: :request_changes, findings: findings}, _source) do
     Logger.info("SelfReview requested changes issue=#{issue.identifier || issue.id} findings=#{length(findings)}")
   end
 
-  defp log_result(issue, %{verdict: "approve"}, %{diff_truncated?: truncated?}) do
+  defp log_result(issue, %{verdict: :approve}, %{diff_truncated?: truncated?}) do
     suffix = if truncated?, do: " truncated=true", else: ""
     Logger.info("SelfReview approved issue=#{issue.identifier || issue.id}#{suffix}")
   end
 
-  defp approve_result(reason), do: %{verdict: "approve", findings: [], fail_open_reason: reason}
+  defp result_from_findings([]), do: %{verdict: :approve, findings: []}
+  defp result_from_findings([_ | _] = findings), do: %{verdict: :request_changes, findings: findings}
+
+  defp approve_result(reason) do
+    %{
+      verdict: :approve,
+      findings: [],
+      fail_open_reason: reason,
+      fail_open_category: fail_open_category(reason)
+    }
+  end
+
+  defp fail_open_category(:disabled), do: :disabled
+  defp fail_open_category({:malformed_response, _reason}), do: :parse_error
+  defp fail_open_category({:git_failed, _args, _status, _output}), do: :git_unavailable
+  defp fail_open_category({:git_failed, _worker_host, _args, _status, _output}), do: :git_unavailable
+  defp fail_open_category(:ssh_not_found), do: :git_unavailable
+  defp fail_open_category(:missing_anthropic_api_key), do: :provider_unavailable
+  defp fail_open_category(:missing_openai_api_key), do: :provider_unavailable
+  defp fail_open_category({:provider_http_status, _status, _body}), do: :provider_unavailable
+  defp fail_open_category({:provider_request_failed, _reason}), do: :provider_unavailable
+  defp fail_open_category({:provider_missing_review_callback, _provider}), do: :provider_unavailable
+  defp fail_open_category({:unsupported_provider, _provider}), do: :provider_unavailable
+  defp fail_open_category(_reason), do: :self_review_unavailable
 
   defp acceptance_criteria(description) when is_binary(description) do
     case Regex.run(~r/^##\s+Acceptance criteria\s*(.*?)(?=^##\s+|\z)/ims, description, capture: :all_but_first) do
@@ -430,9 +504,12 @@ defmodule SymphonyElixir.SelfReview do
           _ -> ""
         end
 
-      "#{index}. [#{finding.category}] #{finding.description}#{evidence}"
+      "#{index}. [#{format_category(finding.category)}] #{finding.description}#{evidence}"
     end)
   end
+
+  defp format_category(category) when is_atom(category), do: Atom.to_string(category)
+  defp format_category(category), do: to_string(category)
 
   defp blank_fallback(value, fallback \\ "(none)")
 

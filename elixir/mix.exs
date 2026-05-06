@@ -14,6 +14,7 @@ defmodule SymphonyElixir.MixProject do
         ],
         ignore_modules: [
           SymphonyElixir.Config,
+          SymphonyElixir.ControlClient,
           SymphonyElixir.GitHub.PullRequest,
           SymphonyElixir.Linear.Client,
           SymphonyElixir.Notifications,
@@ -49,7 +50,10 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.StaticAssets,
           SymphonyElixirWeb.TranscriptLive,
           SymphonyElixirWeb.Router,
-          SymphonyElixirWeb.Router.Helpers
+          SymphonyElixirWeb.Router.Helpers,
+          Mix.Tasks.Symphony.Pause,
+          Mix.Tasks.Symphony.Resume,
+          Mix.Tasks.Symphony.Stop
         ]
       ],
       test_ignore_filters: [

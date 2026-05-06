@@ -102,12 +102,30 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
+  defp send_agent_session_info(recipient, %Issue{id: issue_id}, agent_module, session)
+       when is_binary(issue_id) and is_pid(recipient) and is_atom(agent_module) do
+    send(
+      recipient,
+      {:worker_runtime_info, issue_id,
+       %{
+         agent_module: agent_module,
+         agent_session: session
+       }}
+    )
+
+    :ok
+  end
+
+  defp send_agent_session_info(_recipient, _issue, _agent_module, _session), do: :ok
+
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
     with {:ok, agent_module} <- agent_module(),
          {:ok, session} <- agent_module.start_session(workspace, worker_host: worker_host) do
+      send_agent_session_info(codex_update_recipient, issue, agent_module, session)
+
       run_context = %{
         workspace: workspace,
         issue: issue,

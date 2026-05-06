@@ -20,6 +20,10 @@ pr_review:
   mode: tracker
 observability:
   transcript_buffer_size: 200
+# Operator controls are exposed in the dashboard. For CLI fallback tasks
+# (`mix symphony.pause`, `mix symphony.resume`, `mix symphony.stop`), start
+# Symphony as a named node, for example:
+# ELIXIR_ERL_OPTIONS="-name symphony@127.0.0.1 -setcookie $SYMPHONY_COOKIE"
 workspace:
   root: ~/Projects/symphony-workspaces
   strategy: worktree

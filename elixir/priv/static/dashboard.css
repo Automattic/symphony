@@ -80,6 +80,12 @@ button.secondary:hover {
   box-shadow: none;
 }
 
+.danger-button {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
+
 .subtle-button {
   appearance: none;
   border: 1px solid var(--line-strong);
@@ -105,6 +111,17 @@ button.secondary:hover {
   background: white;
   border-color: var(--muted);
   color: var(--ink);
+}
+
+.danger-subtle-button {
+  border-color: #f6d3cf;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.danger-subtle-button:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 pre {
@@ -308,6 +325,57 @@ pre,
   font-size: 0.75rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ops-control-card {
+  border: 1px solid rgba(217, 217, 227, 0.82);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 1rem 1.15rem;
+}
+
+.ops-control-card-paused {
+  border-color: #f1d8a6;
+  background: #fffaf0;
+}
+
+.ops-control-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ops-control-copy {
+  display: grid;
+  gap: 0.45rem;
+  min-width: min(100%, 22rem);
+}
+
+.ops-control-detail,
+.ops-control-error {
+  margin: 0;
+  color: var(--muted);
+}
+
+.ops-control-detail {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.ops-control-error {
+  color: var(--danger);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.ops-control-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 .section-card {

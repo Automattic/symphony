@@ -7,6 +7,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @dashboard_pause_reason "Paused from dashboard"
 
   @impl true
   def mount(_params, _session, socket) do
@@ -14,6 +15,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign(:pending_control, nil)
+      |> assign(:control_error, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -34,7 +37,36 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
+     |> assign(:control_error, nil)
      |> assign(:now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_event("arm-pause", _params, socket) do
+    {:noreply, assign(socket, :pending_control, :pause)}
+  end
+
+  def handle_event("pause-dispatch", _params, socket) do
+    result = SymphonyElixir.Orchestrator.pause_dispatch(orchestrator(), @dashboard_pause_reason)
+    {:noreply, reload_after_control(socket, result)}
+  end
+
+  def handle_event("arm-resume", _params, socket) do
+    {:noreply, assign(socket, :pending_control, :resume)}
+  end
+
+  def handle_event("resume-dispatch", _params, socket) do
+    result = SymphonyElixir.Orchestrator.resume_dispatch(orchestrator())
+    {:noreply, reload_after_control(socket, result)}
+  end
+
+  def handle_event("arm-stop", %{"issue-id" => issue_id}, socket) do
+    {:noreply, assign(socket, :pending_control, {:stop, issue_id})}
+  end
+
+  def handle_event("stop-running", %{"issue-id" => issue_id}, socket) do
+    result = SymphonyElixir.Orchestrator.stop_running(orchestrator(), issue_id)
+    {:noreply, reload_after_control(socket, result)}
   end
 
   @impl true
@@ -79,6 +111,43 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
+        <section class={["ops-control-card", @payload.pause.paused && "ops-control-card-paused"]}>
+          <div class="ops-control-main">
+            <div class="ops-control-copy">
+              <span class={if @payload.pause.paused, do: "state-badge state-badge-warning", else: "state-badge state-badge-active"}>
+                Dispatch <%= if @payload.pause.paused, do: "paused", else: "active" %>
+              </span>
+              <%= if @payload.pause.paused do %>
+                <p class="ops-control-detail">
+                  <strong><%= @payload.pause.reason || "No reason provided" %></strong>
+                  <%= if @payload.pause.paused_at do %>
+                    <span class="muted mono">since <%= @payload.pause.paused_at %></span>
+                  <% end %>
+                </p>
+              <% end %>
+              <%= if @control_error do %>
+                <p class="ops-control-error"><%= @control_error %></p>
+              <% end %>
+            </div>
+
+            <div class="ops-control-actions">
+              <%= if @payload.pause.paused do %>
+                <%= if @pending_control == :resume do %>
+                  <button type="button" phx-click="resume-dispatch">Confirm Resume</button>
+                <% else %>
+                  <button type="button" class="secondary" phx-click="arm-resume">Resume Dispatch</button>
+                <% end %>
+              <% else %>
+                <%= if @pending_control == :pause do %>
+                  <button type="button" class="danger-button" phx-click="pause-dispatch">Confirm Pause</button>
+                <% else %>
+                  <button type="button" class="secondary" phx-click="arm-pause">Pause Dispatch</button>
+                <% end %>
+              <% end %>
+            </div>
+          </div>
+        </section>
+
         <section class="metric-grid dashboard-metrics">
           <article class="metric-card">
             <p class="metric-label">Running</p>
@@ -157,6 +226,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <col />
                   <col style="width: 10rem;" />
                   <col style="width: 10rem;" />
+                  <col style="width: 8rem;" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -167,6 +237,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Codex update</th>
                     <th>Tokens</th>
                     <th>Links</th>
+                    <th>Control</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -229,6 +300,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <a class="action-pill" href={"/issues/#{entry.issue_identifier}/transcript"}>Transcript</a>
                         <a class="action-pill" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                       </div>
+                    </td>
+                    <td class="links-cell">
+                      <%= if pending_stop?(@pending_control, entry.issue_id) do %>
+                        <button
+                          type="button"
+                          class="subtle-button danger-subtle-button"
+                          phx-click="stop-running"
+                          phx-value-issue-id={entry.issue_id}
+                        >
+                          Confirm Stop
+                        </button>
+                      <% else %>
+                        <button
+                          type="button"
+                          class="subtle-button danger-subtle-button"
+                          phx-click="arm-stop"
+                          phx-value-issue-id={entry.issue_id}
+                        >
+                          Stop
+                        </button>
+                      <% end %>
                     </td>
                   </tr>
                 </tbody>
@@ -343,6 +435,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
+
+  defp reload_after_control(socket, result) do
+    socket
+    |> assign(:payload, load_payload())
+    |> assign(:pending_control, nil)
+    |> assign(:control_error, control_error(result))
+  end
+
+  defp control_error({:ok, _payload}), do: nil
+  defp control_error(:unavailable), do: "Orchestrator unavailable"
+  defp control_error({:error, reason}), do: "Control failed: #{inspect(reason)}"
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
@@ -497,6 +600,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp pending_stop?({:stop, issue_id}, issue_id), do: true
+  defp pending_stop?(_pending_control, _issue_id), do: false
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

@@ -13,6 +13,7 @@ defmodule SymphonyElixir.RunStore do
   @totals_table :symphony_run_store_totals
   @pr_review_table :symphony_run_store_pr_reviews
   @eval_logs_table :symphony_run_store_eval_logs
+  @pause_table :symphony_run_store_pause
   @eval_log_attributes [:eval_id, :outcome, :agent_kind, :issue_label, :date, :record]
   @eval_log_indexes [:outcome, :agent_kind, :issue_label, :date]
   @tables [
@@ -20,10 +21,13 @@ defmodule SymphonyElixir.RunStore do
     {@retry_table, [:issue_id, :record], []},
     {@totals_table, [:key, :record], []},
     {@pr_review_table, [:issue_id, :record], []},
+    {@pause_table, [:key, :record], []},
     {@eval_logs_table, @eval_log_attributes, [type: :bag, index: @eval_log_indexes]}
   ]
   @data_tables Enum.map(@tables, fn {table, _attributes, _opts} -> table end)
   @codex_totals_key :codex_totals
+  @pause_key :dispatch_pause
+  @unpaused %{paused: false, reason: nil, paused_at: nil}
 
   defmodule State do
     @moduledoc false
@@ -228,6 +232,22 @@ defmodule SymphonyElixir.RunStore do
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :logged_at)), :desc)
         |> limit_eval_logs(Keyword.get(opts, :limit, 50))
       end)
+    end
+  end
+
+  @spec set_paused(boolean(), String.t() | nil) :: :ok | {:error, term()}
+  def set_paused(paused, reason) when is_boolean(paused) do
+    with :ok <- ensure_started() do
+      durable_transaction(fn -> write_pause_state(paused, reason) end)
+    end
+  end
+
+  def set_paused(_paused, _reason), do: {:error, :invalid_pause_state}
+
+  @spec get_paused() :: map() | {:error, term()}
+  def get_paused do
+    with :ok <- ensure_started() do
+      transaction(fn -> read_pause_record() end)
     end
   end
 
@@ -484,6 +504,62 @@ defmodule SymphonyElixir.RunStore do
       [] -> nil
     end
   end
+
+  defp read_pause_record do
+    case :mnesia.read(@pause_table, @pause_key) do
+      [{@pause_table, @pause_key, record}] when is_map(record) ->
+        Map.merge(@unpaused, record)
+
+      _ ->
+        @unpaused
+    end
+  end
+
+  defp write_pause_state(paused, reason) do
+    current = read_pause_record()
+
+    cond do
+      paused and Map.get(current, :paused) == true ->
+        :ok
+
+      paused ->
+        persist_pause_record(reason)
+
+      Map.get(current, :paused) == true ->
+        :mnesia.delete({@pause_table, @pause_key})
+        :ok
+
+      true ->
+        :ok
+    end
+  end
+
+  defp persist_pause_record(reason) do
+    now = DateTime.utc_now()
+
+    :mnesia.write(
+      {@pause_table, @pause_key,
+       %{
+         paused: true,
+         reason: normalize_pause_reason(reason),
+         paused_at: now,
+         updated_at: now
+       }}
+    )
+
+    :ok
+  end
+
+  defp normalize_pause_reason(reason) when is_binary(reason) do
+    reason
+    |> String.trim()
+    |> case do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_pause_reason(_reason), do: nil
 
   defp all_records(table) do
     :mnesia.match_object({table, :_, :_})

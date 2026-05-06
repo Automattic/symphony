@@ -86,7 +86,42 @@ Optional flags:
 
 Symphony also keeps an OTP-native durable run store next to the configured log file
 (`run_store/`). It persists run history, retry queue entries, session metadata, and aggregate token
-totals so retry backoff and observability data survive process restarts.
+totals so retry backoff and observability data survive process restarts. The same store persists
+the operator dispatch pause flag, including its reason and timestamp.
+
+## Operator Controls
+
+The LiveView dashboard exposes dispatch controls at `/`:
+
+- `Pause Dispatch` stops new issue dispatches while in-flight agents continue.
+- `Resume Dispatch` clears the persisted pause flag.
+- `Stop` on a running issue terminates that issue's active agent session, records the run as
+  `stopped`, and leaves the Linear issue state unchanged.
+
+The dashboard uses a single acknowledgement click for pause, resume, and stop actions. When paused,
+the banner shows the persisted reason and timestamp; a restart preserves that state.
+
+If the dashboard is unavailable, use the mix task fallbacks against a named local Symphony node:
+
+```bash
+export SYMPHONY_COOKIE="replace-with-a-shared-cookie"
+export ELIXIR_ERL_OPTIONS="-name symphony@127.0.0.1 -setcookie $SYMPHONY_COOKIE"
+mise exec -- ./bin/symphony ./WORKFLOW.md
+```
+
+Then, from another shell in `elixir/`:
+
+```bash
+export SYMPHONY_NODE=symphony@127.0.0.1
+export SYMPHONY_COOKIE="replace-with-a-shared-cookie"
+mise exec -- mix symphony.pause "deploy window"
+mise exec -- mix symphony.resume
+mise exec -- mix symphony.stop RSM-123
+```
+
+Pause/resume/stop are idempotent: calling them when already in the target state is not an error.
+While paused, `PrReviewPoller` still records observed PR decisions but defers Linear state
+transitions until dispatch resumes.
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.

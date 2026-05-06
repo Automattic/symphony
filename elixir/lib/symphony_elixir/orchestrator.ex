@@ -59,6 +59,7 @@ defmodule SymphonyElixir.Orchestrator do
       budget_daily_used: 0,
       budget_daily_paused_logged: false,
       budget_exhausted: MapSet.new(),
+      pause: %{paused: false, reason: nil, paused_at: nil},
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
       quality_gate_skipped: %{}
@@ -78,6 +79,7 @@ defmodule SymphonyElixir.Orchestrator do
     :ok = ensure_run_store_started()
     {retry_attempts, claimed} = hydrate_retry_attempts()
     codex_totals = persisted_codex_totals()
+    pause = persisted_pause_state()
     budget_day_started_on = Date.utc_today()
     budget_daily_used = hydrate_budget_daily_used(budget_day_started_on)
     budget_exhausted = hydrate_budget_exhausted()
@@ -96,6 +98,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed_run_metadata: completed_run_metadata,
       codex_totals: codex_totals,
       codex_rate_limits: nil,
+      pause: pause,
       budget_day_started_on: budget_day_started_on,
       budget_daily_used: budget_daily_used,
       budget_daily_paused_logged: false,
@@ -217,6 +220,8 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+          |> maybe_put_runtime_value(:agent_module, runtime_info[:agent_module])
+          |> maybe_put_runtime_value(:agent_session, runtime_info[:agent_session])
 
         persist_running_entry(updated_running_entry)
         notify_dashboard()
@@ -794,10 +799,15 @@ defmodule SymphonyElixir.Orchestrator do
   defp choose_issues(issues, state) do
     state = reset_daily_budget_if_needed(state)
 
-    if daily_budget_paused?(state) do
-      log_daily_budget_pause(state)
-    else
-      dispatch_chosen_issues(issues, state)
+    cond do
+      operator_paused?(state) ->
+        log_operator_pause(state)
+
+      daily_budget_paused?(state) ->
+        log_daily_budget_pause(state)
+
+      true ->
+        dispatch_chosen_issues(issues, state)
     end
   end
 
@@ -1016,6 +1026,8 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: nil,
           last_codex_event: nil,
           codex_app_server_pid: nil,
+          agent_module: nil,
+          agent_session: nil,
           codex_input_tokens: 0,
           codex_output_tokens: 0,
           codex_total_tokens: 0,
@@ -1332,23 +1344,39 @@ defmodule SymphonyElixir.Orchestrator do
   defp done_state?(_state_name), do: false
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
-         dispatch_slots_available?(issue, state) and
-         worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
-    else
-      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+    cond do
+      operator_paused?(state) ->
+        state = log_operator_pause(state)
 
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue.id,
-         attempt + 1,
-         Map.merge(metadata, %{
-           identifier: issue.identifier,
-           error: "no available orchestrator slots"
-         })
-       )}
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "dispatch paused by operator"
+           })
+         )}
+
+      retry_candidate_issue?(issue, terminal_state_set()) and
+        dispatch_slots_available?(issue, state) and
+          worker_slots_available?(state, metadata[:worker_host]) ->
+        {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+
+      true ->
+        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt + 1,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "no available orchestrator slots"
+           })
+         )}
     end
   end
 
@@ -1481,6 +1509,37 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
+  defp find_running_issue(running, issue_id_or_identifier)
+       when is_map(running) and is_binary(issue_id_or_identifier) do
+    Enum.find_value(running, fn
+      {issue_id, %{identifier: identifier} = running_entry}
+      when issue_id == issue_id_or_identifier or identifier == issue_id_or_identifier ->
+        {issue_id, running_entry}
+
+      _entry ->
+        nil
+    end)
+  end
+
+  defp find_running_issue(_running, _issue_id_or_identifier), do: nil
+
+  defp stop_agent_session(%{agent_module: agent_module, agent_session: session})
+       when is_atom(agent_module) and not is_nil(session) do
+    if function_exported?(agent_module, :stop_session, 1) do
+      agent_module.stop_session(session)
+    end
+  rescue
+    exception ->
+      Logger.warning("Agent stop_session raised while stopping issue: #{Exception.message(exception)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("Agent stop_session failed while stopping issue: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  defp stop_agent_session(_running_entry), do: :ok
+
   defp running_entry_session_id(%{session_id: session_id}) when is_binary(session_id),
     do: session_id
 
@@ -1521,6 +1580,21 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Failed to read persisted codex totals: #{inspect(reason)}")
         @empty_codex_totals
     end
+  end
+
+  defp persisted_pause_state do
+    case RunStore.get_paused() do
+      %{} = pause ->
+        Map.merge(unpaused_state(), pause)
+
+      {:error, reason} ->
+        Logger.warning("Failed to read persisted pause state: #{inspect(reason)}")
+        unpaused_state()
+    end
+  end
+
+  defp unpaused_state do
+    %{paused: false, reason: nil, paused_at: nil}
   end
 
   defp hydrate_retry_attempts do
@@ -1883,19 +1957,77 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
   def request_refresh(server) do
-    if Process.whereis(server) do
+    if server_available?(server) do
       GenServer.call(server, :request_refresh)
     else
       :unavailable
     end
   end
 
+  @spec pause_dispatch(String.t() | nil) :: {:ok, map()} | :unavailable | {:error, term()}
+  def pause_dispatch(reason) do
+    pause_dispatch(__MODULE__, reason)
+  end
+
+  @spec pause_dispatch(GenServer.server(), String.t() | nil) :: {:ok, map()} | :unavailable | {:error, term()}
+  def pause_dispatch(server, reason) do
+    if server_available?(server) do
+      GenServer.call(server, {:pause_dispatch, reason})
+    else
+      :unavailable
+    end
+  end
+
+  @spec resume_dispatch() :: {:ok, map()} | :unavailable | {:error, term()}
+  def resume_dispatch do
+    resume_dispatch(__MODULE__)
+  end
+
+  @spec resume_dispatch(GenServer.server()) :: {:ok, map()} | :unavailable | {:error, term()}
+  def resume_dispatch(server) do
+    if server_available?(server) do
+      GenServer.call(server, :resume_dispatch)
+    else
+      :unavailable
+    end
+  end
+
+  @spec pause_status() :: map() | :unavailable
+  def pause_status do
+    pause_status(__MODULE__)
+  end
+
+  @spec pause_status(GenServer.server()) :: map() | :unavailable
+  def pause_status(server) do
+    if server_available?(server) do
+      GenServer.call(server, :pause_status)
+    else
+      :unavailable
+    end
+  end
+
+  @spec stop_running(String.t()) :: {:ok, map()} | :unavailable | {:error, term()}
+  def stop_running(issue_id_or_identifier) do
+    stop_running(__MODULE__, issue_id_or_identifier)
+  end
+
+  @spec stop_running(GenServer.server(), String.t()) :: {:ok, map()} | :unavailable | {:error, term()}
+  def stop_running(server, issue_id_or_identifier) when is_binary(issue_id_or_identifier) do
+    if server_available?(server) do
+      GenServer.call(server, {:stop_running, issue_id_or_identifier})
+    else
+      :unavailable
+    end
+  end
+
+  def stop_running(_server, _issue_id_or_identifier), do: {:error, :invalid_issue_id}
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    if Process.whereis(server) do
+    if server_available?(server) do
       try do
         GenServer.call(server, :snapshot, timeout)
       catch
@@ -1907,7 +2039,71 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp server_available?(server) when is_pid(server), do: Process.alive?(server)
+  defp server_available?(server) when is_atom(server), do: is_pid(Process.whereis(server))
+  defp server_available?(_server), do: false
+
   @impl true
+  def handle_call({:pause_dispatch, reason}, _from, state) do
+    case RunStore.set_paused(true, reason) do
+      :ok ->
+        pause = persisted_pause_state()
+        Logger.warning("Operator paused dispatch reason=#{inspect(pause.reason)} paused_at=#{inspect(pause.paused_at)}")
+        notify_dashboard()
+        {:reply, {:ok, pause}, %{state | pause: pause}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(:resume_dispatch, _from, state) do
+    case RunStore.set_paused(false, nil) do
+      :ok ->
+        pause = persisted_pause_state()
+        Logger.warning("Operator resumed dispatch")
+        notify_dashboard()
+        {:reply, {:ok, pause}, schedule_tick(%{state | pause: pause}, 0)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(:pause_status, _from, state) do
+    {:reply, state.pause || unpaused_state(), state}
+  end
+
+  def handle_call({:stop_running, issue_id_or_identifier}, _from, state) do
+    case find_running_issue(state.running, issue_id_or_identifier) do
+      {issue_id, running_entry} ->
+        session_id = running_entry_session_id(running_entry)
+        Logger.warning("Operator stopping running agent issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}")
+        stop_agent_session(running_entry)
+
+        state =
+          terminate_running_issue(state, issue_id, true,
+            status: "stopped",
+            error: "agent stopped by operator",
+            track_completed_run: true
+          )
+
+        notify_dashboard()
+
+        {:reply,
+         {:ok,
+          %{
+            stopped: true,
+            issue_id: issue_id,
+            issue_identifier: running_entry.identifier,
+            session_id: session_id
+          }}, state}
+
+      nil ->
+        {:reply, {:ok, %{stopped: false, issue_id: issue_id_or_identifier}}, state}
+    end
+  end
+
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()
@@ -1984,6 +2180,7 @@ defmodule SymphonyElixir.Orchestrator do
        run_history: persisted_run_history(),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       pause: state.pause || unpaused_state(),
        budget: budget_snapshot(state),
        polling: %{
          checking?: state.poll_check_in_progress == true,
@@ -2331,6 +2528,19 @@ defmodule SymphonyElixir.Orchestrator do
       limit when is_integer(limit) and limit > 0 -> state.budget_daily_used >= limit
       _ -> false
     end
+  end
+
+  defp operator_paused?(%State{pause: %{paused: true}}), do: true
+  defp operator_paused?(_state), do: false
+
+  defp log_operator_pause(%State{} = state) do
+    pause = state.pause || unpaused_state()
+
+    if Map.get(pause, :paused) == true do
+      Logger.warning("Operator dispatch pause active reason=#{inspect(Map.get(pause, :reason))} paused_at=#{inspect(Map.get(pause, :paused_at))}; skipping dispatch")
+    end
+
+    state
   end
 
   defp log_daily_budget_pause(%State{budget_daily_paused_logged: true} = state), do: state

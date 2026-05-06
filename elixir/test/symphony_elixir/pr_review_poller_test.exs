@@ -132,6 +132,11 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       end
     end
 
+    @spec get_paused() :: map()
+    def get_paused do
+      Application.get_env(:symphony_elixir, :pr_review_test_pause, %{paused: false, reason: nil, paused_at: nil})
+    end
+
     defp take_failure(key, value) do
       failures = Application.get_env(:symphony_elixir, key, [])
 
@@ -166,6 +171,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       Application.delete_env(:symphony_elixir, :pr_review_test_state_update_failures)
       Application.delete_env(:symphony_elixir, :pr_review_test_delete_failures)
       Application.delete_env(:symphony_elixir, :pr_review_test_github_error)
+      Application.delete_env(:symphony_elixir, :pr_review_test_pause)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -299,6 +305,58 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     assert [%{status: "merge_requested", target_issue_state: "In Progress", last_action: "merge"}] =
              RunStore.list_pr_reviews()
+  end
+
+  test "defers state transitions while dispatch is paused and processes them on resume" do
+    now = ~U[2026-05-01 09:00:00Z]
+    issue = in_review_issue(updated_at: now)
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, review_decision: "APPROVED"))
+
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      issue.id => review_record(now)
+    })
+
+    Application.put_env(:symphony_elixir, :pr_review_test_pause, %{
+      paused: true,
+      reason: "deploy window",
+      paused_at: now
+    })
+
+    assert {:ok, %{actions: [{:state_transition_deferred, "issue-1780", :merge, "In Progress"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               now: now
+             )
+
+    refute_receive {:issue_state_update, _, _}, 50
+
+    assert [
+             %{
+               status: "merge_deferred",
+               target_issue_state: "In Progress",
+               last_action: nil,
+               last_action_at: nil,
+               last_review_decision: "APPROVED"
+             }
+           ] = StatefulRunStore.list_pr_reviews()
+
+    Application.put_env(:symphony_elixir, :pr_review_test_pause, %{paused: false, reason: nil, paused_at: nil})
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :merge, "In Progress"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               now: DateTime.add(now, 5, :second)
+             )
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert [%{status: "merge_requested", target_issue_state: "In Progress", last_action: "merge"}] =
+             StatefulRunStore.list_pr_reviews()
   end
 
   test "approval wins over stale cleanup" do

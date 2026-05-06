@@ -3,6 +3,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   alias SymphonyElixirWeb.ObservabilityPubSub
 
+  defmodule StopSessionAgent do
+    @spec stop_session(map()) :: :ok
+    def stop_session(%{recipient: recipient}) when is_pid(recipient) do
+      send(recipient, :agent_stop_session_called)
+      :ok
+    end
+
+    def stop_session(_session), do: :ok
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -1019,6 +1029,201 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert warning =~ "Daily token budget exhausted"
     assert warning =~ "pausing new dispatch"
+  end
+
+  test "operator pause is exposed in snapshots and preserves retry queue without dispatching" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      max_concurrent_agents: 1
+    )
+
+    issue = %Issue{
+      id: "issue-operator-pause",
+      identifier: "MT-PAUSE",
+      title: "Operator pause",
+      description: "Do not dispatch during operator pause",
+      state: "Todo",
+      url: "https://example.org/issues/MT-PAUSE"
+    }
+
+    assert :ok = RunStore.set_paused(true, "deploy window")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :OperatorPauseOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    warning =
+      capture_log(fn ->
+        send(pid, :run_poll_cycle)
+
+        assert %{running: [], pause: %{paused: true, reason: "deploy window", paused_at: %DateTime{}}} =
+                 wait_for_snapshot(pid, fn snapshot ->
+                   snapshot.running == [] and snapshot.pause.paused == true
+                 end)
+      end)
+
+    assert warning =~ "Operator dispatch pause active"
+    assert RunStore.list_runs() == []
+
+    retry_token = make_ref()
+    due_at_ms = System.monotonic_time(:millisecond)
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | retry_attempts: %{
+            issue.id => %{
+              attempt: 1,
+              timer_ref: nil,
+              retry_token: retry_token,
+              due_at_ms: due_at_ms,
+              identifier: issue.identifier,
+              error: "agent exited: :boom",
+              worker_host: nil,
+              workspace_path: nil
+            }
+          },
+          claimed: MapSet.put(state.claimed, issue.id)
+      }
+    end)
+
+    send(pid, {:retry_issue, issue.id, retry_token})
+
+    assert %{running: [], retrying: [%{issue_id: "issue-operator-pause", error: "dispatch paused by operator"}]} =
+             wait_for_snapshot(pid, fn snapshot ->
+               snapshot.running == [] and length(snapshot.retrying) == 1
+             end)
+
+    assert {:ok, %{paused: false, reason: nil, paused_at: nil}} =
+             Orchestrator.resume_dispatch(orchestrator_name)
+  end
+
+  test "stop_running stops the tracked session, marks the run stopped, and cleans workspace" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-stop-running-test-#{System.unique_integer([:positive])}"
+      )
+
+    marker = Path.join(workspace_root, "before_remove.marker")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      hook_before_remove: "printf stopped > #{marker}"
+    )
+
+    issue = %Issue{
+      id: "issue-stop-running",
+      identifier: "MT-STOP",
+      title: "Stop running",
+      description: "Terminate one running issue",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-STOP"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(workspace)
+
+    orchestrator_name = Module.concat(__MODULE__, :StopRunningOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      File.rm_rf(workspace_root)
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    worker_ref = Process.monitor(worker_pid)
+    started_at = DateTime.utc_now()
+    run_id = "run-stop-running"
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: worker_ref,
+      run_id: run_id,
+      identifier: issue.identifier,
+      issue: issue,
+      worker_host: nil,
+      workspace_path: workspace,
+      session_id: "thread-stop-turn-stop",
+      transcript_path: nil,
+      transcript_buffer: :queue.new(),
+      transcript_buffer_size: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_app_server_pid: nil,
+      agent_module: StopSessionAgent,
+      agent_session: %{recipient: self()},
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      turn_count: 1,
+      retry_attempt: 0,
+      started_at: started_at
+    }
+
+    assert :ok =
+             RunStore.put_run(%{
+               run_id: run_id,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               title: issue.title,
+               state: issue.state,
+               status: "running",
+               attempt: 1,
+               started_at: started_at,
+               workspace_path: workspace,
+               session_id: "thread-stop-turn-stop"
+             })
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | running: %{issue.id => running_entry},
+          claimed: MapSet.put(state.claimed, issue.id)
+      }
+    end)
+
+    assert {:ok,
+            %{
+              stopped: true,
+              issue_id: "issue-stop-running",
+              issue_identifier: "MT-STOP",
+              session_id: "thread-stop-turn-stop"
+            }} = Orchestrator.stop_running(orchestrator_name, issue.identifier)
+
+    assert_receive :agent_stop_session_called
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :shutdown}
+
+    assert %{running: []} = GenServer.call(pid, :snapshot)
+    assert File.read!(marker) == "stopped"
+    refute File.exists?(workspace)
+
+    assert [%{run_id: ^run_id, status: "stopped", error: "agent stopped by operator"}] =
+             RunStore.list_runs()
+
+    assert {:ok, %{stopped: false, issue_id: "MT-STOP"}} =
+             Orchestrator.stop_running(orchestrator_name, issue.identifier)
   end
 
   test "orchestrator resets daily budget accounting at UTC day boundaries" do

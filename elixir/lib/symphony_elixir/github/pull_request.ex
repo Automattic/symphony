@@ -197,7 +197,10 @@ defmodule SymphonyElixir.GitHub.PullRequest do
     end
   end
 
-  defp cwd_opt(cwd) when is_binary(cwd) and cwd != "", do: [cd: cwd]
+  defp cwd_opt(cwd) when is_binary(cwd) and cwd != "" do
+    if File.dir?(cwd), do: [cd: cwd], else: []
+  end
+
   defp cwd_opt(_cwd), do: []
 
   defp parse_datetime(value) when is_binary(value) do

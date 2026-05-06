@@ -52,4 +52,32 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert activity.latest_review_activity_at == ~U[2026-05-01 09:05:00Z]
     assert Enum.map(activity.comments, & &1.kind) == ["review", "inline_comment"]
   end
+
+  test "fetch_activity ignores a stale cwd when the workspace was already removed" do
+    pr_url = "https://github.com/org/repo/pull/17"
+    missing_cwd = Path.join(System.tmp_dir!(), "missing-symphony-workspace-#{System.unique_integer([:positive])}")
+
+    runner = fn
+      ["pr", "view", ^pr_url, "--json", _fields], opts ->
+        refute Keyword.has_key?(opts, :cd)
+
+        {Jason.encode!(%{
+           "number" => 17,
+           "state" => "MERGED",
+           "reviewDecision" => nil,
+           "updatedAt" => "2026-05-05T09:34:09Z",
+           "comments" => [],
+           "reviews" => [],
+           "url" => pr_url
+         }), 0}
+
+      ["api", "repos/org/repo/pulls/17/comments"], opts ->
+        refute Keyword.has_key?(opts, :cd)
+
+        {Jason.encode!([]), 0}
+    end
+
+    assert {:ok, activity} = PullRequest.fetch_activity(pr_url, cwd: missing_cwd, gh_runner: runner)
+    assert activity.state == "MERGED"
+  end
 end

@@ -57,6 +57,18 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
     assert_receive {:pause, "deploy"}
   end
 
+  test "pause task reports when an already-paused reason is preserved" do
+    Application.put_env(:symphony_elixir, :control_task_test_result, {:ok, %{paused: true, reason: "deploy"}})
+
+    output =
+      capture_io(fn ->
+        assert :ok = Pause.run(["incident"])
+      end)
+
+    assert output =~ "Dispatch already paused: deploy; requested reason ignored"
+    assert_receive {:pause, "incident"}
+  end
+
   test "resume task clears the pause through the control client" do
     Application.put_env(:symphony_elixir, :control_task_test_result, {:ok, %{paused: false}})
 

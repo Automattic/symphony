@@ -629,6 +629,59 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              StatefulRunStore.list_pr_reviews()
   end
 
+  test "defers rework state transitions while dispatch is paused" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_review_at = DateTime.add(now, -31, :minute)
+    issue = in_review_issue(updated_at: now)
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_review_at,
+        review_decision: "CHANGES_REQUESTED",
+        comments: [
+          %{
+            kind: "inline_comment",
+            author: "reviewer",
+            body: "Please split this.",
+            url: "https://github.com/example/repo/pull/1780#discussion_r1"
+          }
+        ]
+      )
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      issue.id => review_record(now)
+    })
+
+    Application.put_env(:symphony_elixir, :pr_review_test_pause, %{
+      paused: true,
+      reason: "deploy window",
+      paused_at: now
+    })
+
+    assert {:ok, %{actions: [{:state_transition_deferred, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               now: now
+             )
+
+    refute_receive {:issue_state_update, _, _}, 50
+
+    assert [
+             %{
+               status: "rework_deferred",
+               target_issue_state: "In Progress",
+               last_action: nil,
+               last_action_at: nil,
+               last_review_decision: "CHANGES_REQUESTED"
+             }
+           ] = StatefulRunStore.list_pr_reviews()
+  end
+
   test "auto reply and auto request review are off by default when comments are completed" do
     now = ~U[2026-05-01 09:00:00Z]
 

@@ -29,6 +29,7 @@ defmodule SymphonyElixir.Orchestrator do
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @default_transcript_buffer_size 200
+  @stop_session_cleanup_timeout_ms 5_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -61,6 +62,7 @@ defmodule SymphonyElixir.Orchestrator do
       budget_daily_paused_logged: false,
       budget_exhausted: MapSet.new(),
       pause: %{paused: false, reason: nil, paused_at: nil},
+      operator_pause_logged: false,
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
       quality_gate_skipped: %{},
@@ -581,18 +583,18 @@ defmodule SymphonyElixir.Orchestrator do
           Keyword.get(opts, :error, "agent stopped by orchestrator")
         )
 
-        worker_host = Map.get(running_entry, :worker_host)
-
-        if cleanup_workspace do
-          cleanup_issue_workspace(identifier, worker_host)
-        end
-
         if is_pid(pid) do
           terminate_task(pid)
         end
 
         if is_reference(ref) do
           Process.demonitor(ref, [:flush])
+        end
+
+        worker_host = Map.get(running_entry, :worker_host)
+
+        if cleanup_workspace do
+          cleanup_issue_workspace(identifier, worker_host)
         end
 
         %{
@@ -1577,6 +1579,59 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp find_running_issue(_running, _issue_id_or_identifier), do: nil
 
+  defp start_stop_agent_session_cleanup(%{run_id: run_id} = running_entry) do
+    if stop_agent_session_configured?(running_entry),
+      do: start_stop_agent_session_cleanup_task(running_entry, run_id),
+      else: :ok
+  end
+
+  defp start_stop_agent_session_cleanup(_running_entry), do: :ok
+
+  defp start_stop_agent_session_cleanup_task(running_entry, run_id) do
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           running_entry
+           |> stop_agent_session_with_timeout(@stop_session_cleanup_timeout_ms)
+           |> record_stop_agent_session_cleanup_result(run_id)
+         end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, reason} ->
+        record_stop_agent_session_cleanup_result(run_id, {:error, {:cleanup_task_start_failed, reason}})
+    end
+  end
+
+  defp stop_agent_session_configured?(%{agent_module: agent_module, agent_session: session})
+       when is_atom(agent_module) and not is_nil(session) do
+    function_exported?(agent_module, :stop_session, 1)
+  end
+
+  defp stop_agent_session_configured?(_running_entry), do: false
+
+  defp stop_agent_session_with_timeout(running_entry, timeout_ms) do
+    task =
+      Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
+        stop_agent_session(running_entry)
+      end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        normalize_stop_session_result(result)
+
+      {:exit, reason} ->
+        {:error, {:exit, reason}}
+
+      nil ->
+        task
+        |> Task.shutdown(:brutal_kill)
+        |> normalize_stop_session_shutdown(timeout_ms)
+    end
+  end
+
+  defp normalize_stop_session_shutdown({:ok, result}, _timeout_ms), do: normalize_stop_session_result(result)
+  defp normalize_stop_session_shutdown({:exit, reason}, _timeout_ms), do: {:error, {:exit, reason}}
+  defp normalize_stop_session_shutdown(nil, timeout_ms), do: {:error, {:timeout, timeout_ms}}
+
   defp stop_agent_session(%{agent_module: agent_module, agent_session: session})
        when is_atom(agent_module) and not is_nil(session) do
     if function_exported?(agent_module, :stop_session, 1) do
@@ -1584,15 +1639,35 @@ defmodule SymphonyElixir.Orchestrator do
     end
   rescue
     exception ->
-      Logger.warning("Agent stop_session raised while stopping issue: #{Exception.message(exception)}")
-      :ok
+      {:error, Exception.format(:error, exception, __STACKTRACE__)}
   catch
     kind, reason ->
-      Logger.warning("Agent stop_session failed while stopping issue: #{inspect({kind, reason})}")
-      :ok
+      {:error, {kind, reason}}
   end
 
   defp stop_agent_session(_running_entry), do: :ok
+
+  defp normalize_stop_session_result(:ok), do: :ok
+  defp normalize_stop_session_result(nil), do: :ok
+  defp normalize_stop_session_result({:error, reason}), do: {:error, reason}
+  defp normalize_stop_session_result(other), do: {:error, {:unexpected_result, other}}
+
+  defp record_stop_agent_session_cleanup_result(:ok, _run_id), do: :ok
+
+  defp record_stop_agent_session_cleanup_result({:error, reason}, run_id) when is_binary(run_id) do
+    message = "agent stopped by operator; stop_session cleanup failed: #{inspect(reason)}"
+    Logger.warning("Agent stop_session cleanup failed while stopping issue run_id=#{run_id} reason=#{inspect(reason)}")
+
+    run_id
+    |> RunStore.update_run(%{error: message, updated_at: DateTime.utc_now()})
+    |> ignore_missing_run()
+    |> log_run_store_error("record stop_session cleanup failure")
+  end
+
+  defp record_stop_agent_session_cleanup_result({:error, reason}, _run_id) do
+    Logger.warning("Agent stop_session cleanup failed while stopping issue reason=#{inspect(reason)}")
+    :ok
+  end
 
   defp running_entry_session_id(%{session_id: session_id}) when is_binary(session_id),
     do: session_id
@@ -2134,12 +2209,20 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def handle_call({:pause_dispatch, reason}, _from, state) do
+    already_paused? = operator_paused?(state)
+
     case RunStore.set_paused(true, reason) do
       :ok ->
         pause = persisted_pause_state()
-        Logger.warning("Operator paused dispatch reason=#{inspect(pause.reason)} paused_at=#{inspect(pause.paused_at)}")
+
+        if already_paused? do
+          Logger.info("Operator pause requested while dispatch is already paused reason=#{inspect(pause.reason)} paused_at=#{inspect(pause.paused_at)}")
+        else
+          Logger.warning("Operator paused dispatch reason=#{inspect(pause.reason)} paused_at=#{inspect(pause.paused_at)}")
+        end
+
         notify_dashboard()
-        {:reply, {:ok, pause}, %{state | pause: pause}}
+        {:reply, {:ok, pause}, %{state | pause: pause, operator_pause_logged: true}}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -2152,7 +2235,7 @@ defmodule SymphonyElixir.Orchestrator do
         pause = persisted_pause_state()
         Logger.warning("Operator resumed dispatch")
         notify_dashboard()
-        {:reply, {:ok, pause}, schedule_tick(%{state | pause: pause}, 0)}
+        {:reply, {:ok, pause}, schedule_tick(%{state | pause: pause, operator_pause_logged: false}, 0)}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -2168,7 +2251,6 @@ defmodule SymphonyElixir.Orchestrator do
       {issue_id, running_entry} ->
         session_id = running_entry_session_id(running_entry)
         Logger.warning("Operator stopping running agent issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}")
-        stop_agent_session(running_entry)
 
         state =
           terminate_running_issue(state, issue_id, true,
@@ -2177,6 +2259,7 @@ defmodule SymphonyElixir.Orchestrator do
             track_completed_run: true
           )
 
+        start_stop_agent_session_cleanup(running_entry)
         notify_dashboard()
 
         {:reply,
@@ -2628,14 +2711,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp operator_paused?(%State{pause: %{paused: true}}), do: true
   defp operator_paused?(_state), do: false
 
+  defp log_operator_pause(%State{operator_pause_logged: true} = state), do: state
+
   defp log_operator_pause(%State{} = state) do
     pause = state.pause || unpaused_state()
 
     if Map.get(pause, :paused) == true do
       Logger.warning("Operator dispatch pause active reason=#{inspect(Map.get(pause, :reason))} paused_at=#{inspect(Map.get(pause, :paused_at))}; skipping dispatch")
+      %{state | operator_pause_logged: true}
+    else
+      state
     end
-
-    state
   end
 
   defp log_daily_budget_pause(%State{budget_daily_paused_logged: true} = state), do: state

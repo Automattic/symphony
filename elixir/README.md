@@ -120,6 +120,8 @@ mise exec -- mix symphony.stop RSM-123
 ```
 
 Pause/resume/stop are idempotent: calling them when already in the target state is not an error.
+Repeating pause while already paused preserves the original reason and timestamp; the CLI reports
+that any newly requested reason was ignored.
 While paused, `PrReviewPoller` still records observed PR decisions but defers Linear state
 transitions until dispatch resumes.
 

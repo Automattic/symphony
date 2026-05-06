@@ -804,6 +804,35 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Resume Dispatch"
   end
 
+  test "dashboard liveview disarms armed pause control after timeout" do
+    Application.put_env(:symphony_elixir, :dashboard_control_confirm_timeout_ms, 5)
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :dashboard_control_confirm_timeout_ms)
+    end)
+
+    orchestrator_name = Module.concat(__MODULE__, :DisarmDashboardOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert view
+           |> element("button", "Pause Dispatch")
+           |> render_click() =~ "Confirm Pause"
+
+    assert_eventually(fn ->
+      html = render(view)
+      String.contains?(html, "Pause Dispatch") and not String.contains?(html, "Confirm Pause")
+    end)
+  end
+
   test "quality liveview renders metrics, recent eval logs, and filters" do
     now = DateTime.utc_now()
 

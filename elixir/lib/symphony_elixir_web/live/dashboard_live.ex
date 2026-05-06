@@ -7,6 +7,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @default_control_confirm_timeout_ms 10_000
   @dashboard_pause_reason "Paused from dashboard"
 
   @impl true
@@ -16,6 +17,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
       |> assign(:pending_control, nil)
+      |> assign(:pending_control_token, nil)
       |> assign(:control_error, nil)
 
     if connected?(socket) do
@@ -41,9 +43,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
      |> assign(:now, DateTime.utc_now())}
   end
 
+  def handle_info({:disarm_control, token}, %{assigns: %{pending_control_token: token}} = socket) do
+    {:noreply, disarm_control(socket)}
+  end
+
+  def handle_info({:disarm_control, _token}, socket), do: {:noreply, socket}
+
   @impl true
   def handle_event("arm-pause", _params, socket) do
-    {:noreply, assign(socket, :pending_control, :pause)}
+    {:noreply, arm_control(socket, :pause)}
   end
 
   def handle_event("pause-dispatch", _params, socket) do
@@ -52,7 +60,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("arm-resume", _params, socket) do
-    {:noreply, assign(socket, :pending_control, :resume)}
+    {:noreply, arm_control(socket, :resume)}
   end
 
   def handle_event("resume-dispatch", _params, socket) do
@@ -61,7 +69,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("arm-stop", %{"issue-id" => issue_id}, socket) do
-    {:noreply, assign(socket, :pending_control, {:stop, issue_id})}
+    {:noreply, arm_control(socket, {:stop, issue_id})}
   end
 
   def handle_event("stop-running", %{"issue-id" => issue_id}, socket) do
@@ -439,8 +447,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp reload_after_control(socket, result) do
     socket
     |> assign(:payload, load_payload())
-    |> assign(:pending_control, nil)
+    |> disarm_control()
     |> assign(:control_error, control_error(result))
+  end
+
+  defp arm_control(socket, control) do
+    token = make_ref()
+    Process.send_after(self(), {:disarm_control, token}, control_confirm_timeout_ms())
+
+    socket
+    |> assign(:pending_control, control)
+    |> assign(:pending_control_token, token)
+  end
+
+  defp disarm_control(socket) do
+    socket
+    |> assign(:pending_control, nil)
+    |> assign(:pending_control_token, nil)
   end
 
   defp control_error({:ok, _payload}), do: nil
@@ -453,6 +476,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
+  end
+
+  defp control_confirm_timeout_ms do
+    Application.get_env(:symphony_elixir, :dashboard_control_confirm_timeout_ms, @default_control_confirm_timeout_ms)
   end
 
   defp completed_runtime_seconds(payload) do

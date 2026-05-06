@@ -86,7 +86,8 @@ defmodule SymphonyElixir.RunStoreTest do
     assert :ok =
              RunStore.update_pr_review("issue-1", %{
                status: "cooling_down",
-               last_activity_at: due_at
+               last_activity_at: due_at,
+               last_addressed_comment_id: "comment-1"
              })
 
     assert [
@@ -95,7 +96,8 @@ defmodule SymphonyElixir.RunStoreTest do
                pr_url: "https://github.com/example/repo/pull/1",
                workspace_path: "/tmp/workspaces/RSM-1",
                status: "cooling_down",
-               last_activity_at: ^due_at
+               last_activity_at: ^due_at,
+               last_addressed_comment_id: "comment-1"
              }
            ] = RunStore.list_pr_reviews()
 
@@ -105,6 +107,28 @@ defmodule SymphonyElixir.RunStoreTest do
     totals = %{input_tokens: 10, output_tokens: 4, total_tokens: 14, seconds_running: 10}
     assert :ok = RunStore.put_codex_totals(totals)
     assert totals == RunStore.get_codex_totals()
+
+    quality_gate_cache = %{
+      "issue-1" => %{
+        updated_at: started_at,
+        comment_signature: "comments",
+        score: 5,
+        reason: "needs answer",
+        passed?: false,
+        awaiting_clarification?: true,
+        questions: ["What should pass?", "Which module?", "What is out of scope?"],
+        rounds_asked: 1,
+        comment_posted?: true,
+        identifier: "RSM-1",
+        title: "Persist me",
+        state: "Todo",
+        url: "https://example.org/RSM-1",
+        scored_at: started_at
+      }
+    }
+
+    assert :ok = RunStore.put_quality_gate_cache(quality_gate_cache)
+    assert quality_gate_cache == RunStore.get_quality_gate_cache()
   end
 
   test "persists dispatch pause state across run store restart" do

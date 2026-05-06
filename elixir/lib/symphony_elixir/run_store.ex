@@ -28,6 +28,7 @@ defmodule SymphonyElixir.RunStore do
   @codex_totals_key :codex_totals
   @pause_key :dispatch_pause
   @unpaused %{paused: false, reason: nil, paused_at: nil}
+  @quality_gate_cache_key :quality_gate_cache
 
   defmodule State do
     @moduledoc false
@@ -163,6 +164,25 @@ defmodule SymphonyElixir.RunStore do
   def get_codex_totals do
     with :ok <- ensure_started() do
       transaction(&read_codex_totals/0)
+    end
+  end
+
+  @spec put_quality_gate_cache(map()) :: :ok | {:error, term()}
+  def put_quality_gate_cache(cache) when is_map(cache) do
+    with :ok <- ensure_started() do
+      durable_transaction(fn ->
+        :mnesia.write({@totals_table, @quality_gate_cache_key, normalize_record(cache)})
+        :ok
+      end)
+    end
+  end
+
+  def put_quality_gate_cache(_cache), do: {:error, :invalid_quality_gate_cache}
+
+  @spec get_quality_gate_cache() :: map() | nil | {:error, term()}
+  def get_quality_gate_cache do
+    with :ok <- ensure_started() do
+      transaction(&read_quality_gate_cache/0)
     end
   end
 
@@ -560,6 +580,13 @@ defmodule SymphonyElixir.RunStore do
   end
 
   defp normalize_pause_reason(_reason), do: nil
+
+  defp read_quality_gate_cache do
+    case :mnesia.read(@totals_table, @quality_gate_cache_key) do
+      [{@totals_table, @quality_gate_cache_key, cache}] -> cache
+      [] -> nil
+    end
+  end
 
   defp all_records(table) do
     :mnesia.match_object({table, :_, :_})

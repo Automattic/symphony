@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
 
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -14,11 +15,17 @@ defmodule SymphonyElixir.CoreTest do
     assert config.polling.interval_ms == 30_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    assert config.tracker.team == nil
+    assert config.tracker.labels == []
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
     assert config.pr_review.mode == "tracker"
     assert config.pr_review.cooldown_minutes == nil
     assert config.pr_review.stale_days == nil
+    assert config.pr_review.github_user == nil
+    assert config.pr_review.bot_users == []
+    assert config.pr_review.auto_reply == false
+    assert config.pr_review.auto_request_review == false
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -43,12 +50,82 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "tracker.active_states"
 
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+    System.delete_env("LINEAR_API_KEY")
+
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: "token",
-      tracker_project_slug: nil
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_team: "RSM"
     )
 
-    assert {:error, :missing_linear_project_slug} = Config.validate!()
+    assert {:error, :missing_linear_api_token} = Config.validate!()
+    restore_env("LINEAR_API_KEY", previous_linear_api_key)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil,
+      tracker_team: nil,
+      tracker_labels: []
+    )
+
+    assert {:error, :missing_linear_scoping_filter} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: "",
+      tracker_team: "  ",
+      tracker_labels: ["", "  "]
+    )
+
+    assert {:error, :missing_linear_scoping_filter} = Config.validate!()
+    assert Config.settings!().tracker.project_slug == nil
+    assert Config.settings!().tracker.team == nil
+    assert Config.settings!().tracker.labels == []
+
+    tracker =
+      %TrackerConfig{
+        project_slug: "project",
+        team: "RSM",
+        labels: ["backend"]
+      }
+      |> TrackerConfig.changeset(%{
+        project_slug: nil,
+        team: nil,
+        labels: nil
+      })
+      |> Ecto.Changeset.apply_changes()
+
+    assert tracker.project_slug == nil
+    assert tracker.team == nil
+    assert tracker.labels == []
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil,
+      tracker_team: nil,
+      tracker_labels: ["", " backend ", "infra", " "]
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.labels == ["backend", "infra"]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: "RSM"
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.team == "RSM"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: nil,
+      tracker_labels: ["backend"]
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.labels == ["backend"]
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",
@@ -93,13 +170,21 @@ defmodule SymphonyElixir.CoreTest do
       tracker_kind: "memory",
       pr_review_mode: "polling",
       pr_review_cooldown_minutes: 15,
-      pr_review_stale_days: 3
+      pr_review_stale_days: 3,
+      pr_review_github_user: "agent-user",
+      pr_review_bot_users: ["symphony-bot"],
+      pr_review_auto_reply: true,
+      pr_review_auto_request_review: true
     )
 
     config = Config.settings!()
     assert config.pr_review.mode == "polling"
     assert config.pr_review.cooldown_minutes == 15
     assert config.pr_review.stale_days == 3
+    assert config.pr_review.github_user == "agent-user"
+    assert config.pr_review.bot_users == ["symphony-bot"]
+    assert config.pr_review.auto_reply == true
+    assert config.pr_review.auto_request_review == true
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -110,17 +195,28 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "polling"
     assert config.pr_review.cooldown_minutes == 10
     assert config.pr_review.stale_days == 7
+    assert config.pr_review.bot_users == []
+    assert config.pr_review.auto_reply == false
+    assert config.pr_review.auto_request_review == false
 
     write_workflow_file!(Workflow.workflow_file_path(),
       pr_review_mode: "tracker",
       pr_review_cooldown_minutes: "invalid",
-      pr_review_stale_days: -1
+      pr_review_stale_days: -1,
+      pr_review_github_user: "ignored",
+      pr_review_bot_users: ["ignored"],
+      pr_review_auto_reply: true,
+      pr_review_auto_request_review: true
     )
 
     config = Config.settings!()
     assert config.pr_review.mode == "tracker"
     assert config.pr_review.cooldown_minutes == nil
     assert config.pr_review.stale_days == nil
+    assert config.pr_review.github_user == nil
+    assert config.pr_review.bot_users == []
+    assert config.pr_review.auto_reply == false
+    assert config.pr_review.auto_request_review == false
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -1060,6 +1156,71 @@ defmodule SymphonyElixir.CoreTest do
     assert PromptBuilder.build_prompt(issue, extra_prompt: nil) == "Ticket MT-702"
   end
 
+  test "prompt builder renders unaddressed reviewer comments with inline context" do
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      prompt: "Ticket {{ issue.identifier }}{% for comment in reviewer_comments %}\nreview={{ comment.path }}:{{ comment.line }} {{ comment.body }}{% endfor %}"
+    )
+
+    issue = %Issue{
+      identifier: "MT-703",
+      title: "Append review comments",
+      description: "Prompt builder should append reviewer context",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-703",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        reviewer_comments: [
+          %{
+            id: "comment-1",
+            kind: "inline_comment",
+            author: "Reviewer",
+            body: "Please split this function.",
+            path: "lib/example.ex",
+            line: 42,
+            url: "https://github.com/example/repo/pull/1#discussion_r1"
+          }
+        ]
+      )
+
+    assert prompt =~ "review=lib/example.ex:42 Please split this function."
+    assert prompt =~ "Unaddressed reviewer comments:"
+    assert prompt =~ "Reviewer: [inline_comment] lib/example.ex:42"
+    assert prompt =~ "Please split this function."
+  end
+
+  test "prompt builder normalizes sparse reviewer comments" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "MT-704",
+      title: "Sparse review comments",
+      description: "Prompt builder should tolerate sparse reviewer context",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-704",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        reviewer_comments: [
+          %{id: 123, body: "Top-level follow-up.", path: "README.md"},
+          %{body: "PR-level note."},
+          123
+        ]
+      )
+
+    assert prompt =~ "Ticket MT-704"
+    assert prompt =~ "Reviewer: README.md"
+    assert prompt =~ "Top-level follow-up."
+    assert prompt =~ "Reviewer:\nPR-level note."
+
+    assert PromptBuilder.build_prompt(issue, reviewer_comments: :not_a_list) == "Ticket MT-704"
+  end
+
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
 
@@ -1634,6 +1795,27 @@ defmodule SymphonyElixir.CoreTest do
       end
 
       assert :ok =
+               RunStore.put_pr_review(%{
+                 issue_id: "issue-continue",
+                 issue_identifier: "MT-247",
+                 pr_url: "https://github.com/example/repo/pull/247",
+                 workspace_path: workspace_root,
+                 status: "rework_requested",
+                 pending_last_addressed_comment_id: "comment-247",
+                 pending_reviewer_comments: [
+                   %{
+                     id: "comment-247",
+                     kind: "inline_comment",
+                     author: "Reviewer",
+                     body: "Please tighten this branch.",
+                     path: "lib/example.ex",
+                     line: 42
+                   }
+                 ],
+                 updated_at: ~U[2026-05-05 02:00:00Z]
+               })
+
+      assert :ok =
                AgentRunner.run(issue, nil,
                  issue_state_fetcher: state_fetcher,
                  issue_enricher: issue_enricher
@@ -1664,6 +1846,9 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 0) =~ "First prompt MT-247"
       assert Enum.at(turn_texts, 0) =~ "comment=Prior workpad"
       assert Enum.at(turn_texts, 0) =~ "link=MT-248"
+      assert Enum.at(turn_texts, 0) =~ "Unaddressed reviewer comments:"
+      assert Enum.at(turn_texts, 0) =~ "lib/example.ex:42"
+      assert Enum.at(turn_texts, 0) =~ "Please tighten this branch."
       refute Enum.at(turn_texts, 1) =~ "First prompt MT-247"
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"

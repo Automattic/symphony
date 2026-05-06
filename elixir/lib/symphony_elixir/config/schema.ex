@@ -96,6 +96,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:team, :string)
+      field(:labels, {:array, :string}, default: [])
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -106,9 +108,37 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :team, :labels, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
+      |> normalize_optional_string(:project_slug)
+      |> normalize_optional_string(:team)
+      |> normalize_string_list(:labels)
+    end
+
+    defp normalize_optional_string(changeset, field) do
+      update_change(changeset, field, fn
+        value when is_binary(value) ->
+          case String.trim(value) do
+            "" -> nil
+            normalized -> normalized
+          end
+
+        nil ->
+          nil
+      end)
+    end
+
+    defp normalize_string_list(changeset, field) do
+      update_change(changeset, field, fn
+        values when is_list(values) ->
+          values
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+
+        nil ->
+          []
+      end)
     end
   end
 
@@ -388,12 +418,20 @@ defmodule SymphonyElixir.Config.Schema do
       field(:mode, :string, default: "tracker")
       field(:cooldown_minutes, :integer)
       field(:stale_days, :integer)
+      field(:github_user, :string)
+      field(:bot_users, {:array, :string}, default: [])
+      field(:auto_reply, :boolean, default: false)
+      field(:auto_request_review, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(polling_attrs(attrs), [:mode, :cooldown_minutes, :stale_days], empty_values: [])
+      |> cast(
+        polling_attrs(attrs),
+        [:mode, :cooldown_minutes, :stale_days, :github_user, :bot_users, :auto_reply, :auto_request_review],
+        empty_values: []
+      )
       |> put_polling_defaults()
       |> validate_required([:mode])
       |> validate_inclusion(:mode, @modes)
@@ -402,8 +440,24 @@ defmodule SymphonyElixir.Config.Schema do
 
     defp polling_attrs(attrs) when is_map(attrs) do
       case attrs |> Map.get("mode", Map.get(attrs, :mode, "tracker")) |> to_string() do
-        "polling" -> attrs
-        _mode -> Map.drop(attrs, ["cooldown_minutes", :cooldown_minutes, "stale_days", :stale_days])
+        "polling" ->
+          attrs
+
+        _mode ->
+          Map.drop(attrs, [
+            "cooldown_minutes",
+            :cooldown_minutes,
+            "stale_days",
+            :stale_days,
+            "github_user",
+            :github_user,
+            "bot_users",
+            :bot_users,
+            "auto_reply",
+            :auto_reply,
+            "auto_request_review",
+            :auto_request_review
+          ])
       end
     end
 
@@ -412,6 +466,9 @@ defmodule SymphonyElixir.Config.Schema do
         changeset
         |> put_default(:cooldown_minutes, @default_cooldown_minutes)
         |> put_default(:stale_days, @default_stale_days)
+        |> put_default(:bot_users, [])
+        |> put_default(:auto_reply, false)
+        |> put_default(:auto_request_review, false)
       else
         changeset
       end
@@ -466,23 +523,56 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     @providers ["anthropic", "openai"]
     @on_error_modes ["pass", "skip"]
+    @fields [
+      :enabled,
+      :provider,
+      :model,
+      :min_score,
+      :pass_threshold,
+      :clarification_floor,
+      :max_clarification_rounds,
+      :on_error
+    ]
 
     embedded_schema do
       field(:enabled, :boolean, default: false)
       field(:provider, :string)
       field(:model, :string)
       field(:min_score, :integer, default: 6)
+      field(:pass_threshold, :integer)
+      field(:clarification_floor, :integer)
+      field(:max_clarification_rounds, :integer, default: 2)
       field(:on_error, :string, default: "pass")
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:enabled, :provider, :model, :min_score, :on_error], empty_values: [])
+      |> cast(attrs, @fields, empty_values: [])
       |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
       |> validate_inclusion(:on_error, @on_error_modes, message: "must be one of: #{Enum.join(@on_error_modes, ", ")}")
       |> validate_number(:min_score, greater_than_or_equal_to: 1, less_than_or_equal_to: 10)
+      |> validate_number(:pass_threshold, greater_than_or_equal_to: 1, less_than_or_equal_to: 10)
+      |> validate_number(:clarification_floor, greater_than_or_equal_to: 1, less_than_or_equal_to: 10)
+      |> validate_number(:max_clarification_rounds, greater_than_or_equal_to: 1)
+      |> validate_clarification_band()
       |> validate_required_when_enabled()
+    end
+
+    defp validate_clarification_band(changeset) do
+      floor = get_field(changeset, :clarification_floor)
+      threshold = get_field(changeset, :pass_threshold) || get_field(changeset, :min_score)
+
+      cond do
+        is_nil(floor) or is_nil(threshold) ->
+          changeset
+
+        floor < threshold ->
+          changeset
+
+        true ->
+          add_error(changeset, :clarification_floor, "must be less than pass_threshold")
+      end
     end
 
     defp validate_required_when_enabled(changeset) do

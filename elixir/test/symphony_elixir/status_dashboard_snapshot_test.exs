@@ -225,6 +225,37 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     assert rendered =~ "No issues skipped this session"
   end
 
+  test "awaiting clarification section renders issue identifier, round, and url" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         awaiting_clarification: [
+           %{
+             kind: :clarification,
+             issue_id: "issue-await-1",
+             identifier: "MT-AWAIT",
+             url: "https://example.org/MT-AWAIT",
+             score: 5,
+             reason: "needs acceptance criteria",
+             rounds_asked: 2,
+             updated_at: ~U[2026-05-05 03:00:00Z]
+           }
+         ],
+         skipped: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "Awaiting clarification"
+    assert rendered =~ "MT-AWAIT"
+    assert rendered =~ "round=2"
+    assert rendered =~ "https://example.org/MT-AWAIT"
+  end
+
   test "backoff queue row escapes escaped newline sequences" do
     snapshot_data =
       {:ok,

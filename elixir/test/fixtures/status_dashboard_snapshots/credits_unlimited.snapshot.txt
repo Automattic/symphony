@@ -21,6 +21,9 @@
 \e[1m├─ Backoff queue\e[0m
 │
 │  \e[90mNo queued retries\e[0m
+\e[1m├─ Awaiting clarification\e[0m
+│
+│  \e[90mNo issues awaiting clarification\e[0m
 \e[1m├─ Skipped (quality gate)\e[0m
 │
 │  \e[90mNo issues skipped this session\e[0m

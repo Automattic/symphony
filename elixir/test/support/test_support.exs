@@ -98,6 +98,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_endpoint: "https://api.linear.app/graphql",
           tracker_api_token: "token",
           tracker_project_slug: "project",
+          tracker_team: nil,
+          tracker_labels: [],
           tracker_assignee: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
@@ -137,6 +139,10 @@ defmodule SymphonyElixir.TestSupport do
           pr_review_mode: "tracker",
           pr_review_cooldown_minutes: nil,
           pr_review_stale_days: nil,
+          pr_review_github_user: nil,
+          pr_review_bot_users: nil,
+          pr_review_auto_reply: nil,
+          pr_review_auto_request_review: nil,
           server_port: nil,
           server_host: nil,
           quality_gate: nil,
@@ -150,6 +156,8 @@ defmodule SymphonyElixir.TestSupport do
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
+    tracker_team = Keyword.get(config, :tracker_team)
+    tracker_labels = Keyword.get(config, :tracker_labels)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
@@ -189,6 +197,10 @@ defmodule SymphonyElixir.TestSupport do
     pr_review_mode = Keyword.get(config, :pr_review_mode)
     pr_review_cooldown_minutes = Keyword.get(config, :pr_review_cooldown_minutes)
     pr_review_stale_days = Keyword.get(config, :pr_review_stale_days)
+    pr_review_github_user = Keyword.get(config, :pr_review_github_user)
+    pr_review_bot_users = Keyword.get(config, :pr_review_bot_users)
+    pr_review_auto_reply = Keyword.get(config, :pr_review_auto_reply)
+    pr_review_auto_request_review = Keyword.get(config, :pr_review_auto_request_review)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     quality_gate = Keyword.get(config, :quality_gate)
@@ -203,6 +215,8 @@ defmodule SymphonyElixir.TestSupport do
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
+        "  team: #{yaml_value(tracker_team)}",
+        "  labels: #{yaml_value(tracker_labels)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
@@ -239,7 +253,15 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms,
           observability_transcript_buffer_size
         ),
-        pr_review_yaml(pr_review_mode, pr_review_cooldown_minutes, pr_review_stale_days),
+        pr_review_yaml(
+          pr_review_mode,
+          pr_review_cooldown_minutes,
+          pr_review_stale_days,
+          pr_review_github_user,
+          pr_review_bot_users,
+          pr_review_auto_reply,
+          pr_review_auto_request_review
+        ),
         server_yaml(server_port, server_host),
         quality_gate_yaml(quality_gate),
         notifications_yaml(notifications),
@@ -317,12 +339,16 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
-  defp pr_review_yaml(mode, cooldown_minutes, stale_days) do
+  defp pr_review_yaml(mode, cooldown_minutes, stale_days, github_user, bot_users, auto_reply, auto_request_review) do
     [
       "pr_review:",
       "  mode: #{yaml_value(mode)}",
       !is_nil(cooldown_minutes) && "  cooldown_minutes: #{yaml_value(cooldown_minutes)}",
-      !is_nil(stale_days) && "  stale_days: #{yaml_value(stale_days)}"
+      !is_nil(stale_days) && "  stale_days: #{yaml_value(stale_days)}",
+      !is_nil(github_user) && "  github_user: #{yaml_value(github_user)}",
+      !is_nil(bot_users) && "  bot_users: #{yaml_value(bot_users)}",
+      !is_nil(auto_reply) && "  auto_reply: #{yaml_value(auto_reply)}",
+      !is_nil(auto_request_review) && "  auto_request_review: #{yaml_value(auto_request_review)}"
     ]
     |> Enum.reject(&(&1 in [nil, false]))
     |> Enum.join("\n")
@@ -349,6 +375,9 @@ defmodule SymphonyElixir.TestSupport do
         kv("provider", Map.get(map_from(opts), :provider)),
         kv("model", Map.get(map_from(opts), :model)),
         kv("min_score", Map.get(map_from(opts), :min_score)),
+        kv("pass_threshold", Map.get(map_from(opts), :pass_threshold)),
+        kv("clarification_floor", Map.get(map_from(opts), :clarification_floor)),
+        kv("max_clarification_rounds", Map.get(map_from(opts), :max_clarification_rounds)),
         kv("on_error", Map.get(map_from(opts), :on_error))
       ]
       |> Enum.reject(&is_nil/1)

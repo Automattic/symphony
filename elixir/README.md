@@ -130,10 +130,12 @@ PR review mode is controlled by the optional `pr_review` block. `tracker` is the
 preserves the existing human-driven review loop. In `polling` mode, Symphony starts a
 `PrReviewPoller` process that discovers in-review issues with attached GitHub PRs, records their
 PR URL and workspace path in the durable run store, waits `cooldown_minutes` before responding to
-requested changes, moves approved or change-requested issues back to `In Progress` for the
-orchestrator to dispatch through the normal run path, and removes tracked workspaces when PRs close
-or stay idle beyond `stale_days`. `cooldown_minutes` and `stale_days` are polling-only settings;
-polling mode defaults them to 10 minutes and 7 days when omitted.
+requested changes or non-bot reviewer comments, moves approved or rework-requested issues back to
+`In Progress` for the orchestrator to dispatch through the normal run path, injects unaddressed
+reviewer comments into the first prompt, and removes tracked workspaces when PRs close or stay idle
+beyond `stale_days`. `cooldown_minutes`, `stale_days`, comment bot filters, and review follow-up
+flags are polling-only settings; polling mode defaults them to 10 minutes, 7 days, no ignored users,
+and no GitHub replies or review re-requests when omitted.
 
 Minimal example:
 
@@ -170,6 +172,12 @@ agent:
     denied_domains: []
 pr_review:
   mode: tracker
+  # The following keys are polling-mode only and are ignored while mode is tracker.
+  # mode: polling
+  # auto_reply: false
+  # auto_request_review: false
+  # github_user: null
+  # bot_users: []
 notifications:
   enabled: false
   # redact_titles: true
@@ -186,7 +194,9 @@ quality_gate:
   enabled: true
   provider: anthropic           # or: openai
   model: claude-haiku-4-5-20251001
-  min_score: 6                  # 1–10; issues below this score are skipped
+  pass_threshold: 6             # >= this score, issues dispatch
+  clarification_floor: 4        # 4..5 asks Linear clarification questions
+  max_clarification_rounds: 2   # then skip until the description is updated
   on_error: pass                # or: skip
 ---
 
@@ -198,6 +208,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- For Linear trackers, `project_slug` is optional when another scoping filter is set. Configure at
+  least one of `project_slug`, `team`, or `labels`; these filters are combined server-side. Example:
+  `team: "RSM"` with `labels: ["backend", "infra"]`.
 - Safer Codex defaults are used when policy fields are omitted:
   - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.
@@ -263,8 +276,10 @@ Notes:
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - Set `tracker.assignee` to a Linear user ID, or `me` to use the current API token's Linear viewer,
   when you want one Symphony process to pick up only issues assigned to that user. If unset, all
-  active issues in the configured project are eligible. `tracker.assignee` reads from
+  active issues in the configured Linear scope are eligible. `tracker.assignee` reads from
   `LINEAR_ASSIGNEE` when unset or when value is `$LINEAR_ASSIGNEE`.
+- `tracker.project_slug` is optional. Linear tracker configs must set at least one of
+  `tracker.project_slug`, `tracker.team`, or a non-empty `tracker.labels` list.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` and `workspace.repo` resolve `$VAR`
   before path handling. For Codex, `agent.command` stays a shell command string and any `$VAR`
@@ -301,26 +316,40 @@ agent:
 ## Quality gate
 
 The optional `quality_gate` block scores each candidate issue with an LLM
-*before* it is queued for dispatch. Issues that score below `min_score`
-are skipped for the session, surfaced in the dashboard's `Skipped` section,
-and a Linear comment is posted explaining the score and how to re-queue.
+*before* it is queued for dispatch. Issues that score at or above
+`pass_threshold` dispatch. Issues below `clarification_floor` are skipped for
+the session, surfaced in the dashboard's `Skipped` section, and a Linear
+comment is posted explaining the score and how to re-queue. When
+`clarification_floor` is set, scores from `clarification_floor` through
+`pass_threshold - 1` are held in Linear with a deterministic clarification
+comment instead of being dispatched. They also appear in the dashboard's
+`Awaiting clarification` section.
 
 ```yaml
 quality_gate:
   enabled: true
   provider: anthropic           # or: openai
   model: claude-haiku-4-5-20251001
-  min_score: 6                  # 1–10; below this score, issues are skipped
+  pass_threshold: 6             # 1–10; scores >= this dispatch
+  clarification_floor: 4        # optional; scores 4..5 ask for clarification
+  max_clarification_rounds: 2   # optional; default 2
   on_error: pass                # or: skip
 ```
 
 - API keys are read from the environment (`ANTHROPIC_API_KEY` /
   `OPENAI_API_KEY`); they are never read from `WORKFLOW.md`.
-- Scores are cached per issue keyed by Linear's `updated_at`, so unchanged
-  issues are not re-evaluated. Editing the issue description bumps
-  `updated_at` and lets the gate re-score on the next poll.
-- Comments are posted once per skip (per `updated_at`). If an issue is
-  edited and still scores below the threshold, a fresh comment is posted.
+- `min_score` is still accepted for existing configs. When `pass_threshold` is
+  unset, Symphony treats `min_score` as the pass threshold and leaves
+  clarification disabled unless `clarification_floor` is explicitly set.
+- Scores are cached per issue keyed by Linear's `updated_at` plus
+  non-quality-gate comment activity, so an operator reply invalidates the cache
+  and the next poll re-scores with the reply in context. Symphony's own
+  quality-gate comments do not invalidate the cache by themselves.
+- Clarification comments are posted once per issue/comment-activity key. If the
+  operator replies and the issue still scores in the clarification band,
+  Symphony asks again until `max_clarification_rounds` is reached; after that it
+  skips with a comment naming the cap. If a clarified issue later passes, it is
+  dispatched on the next poll.
 - `on_error: pass` (default) lets an issue qualify when the LLM call
   fails, so a failing provider does not block dispatch. `on_error: skip`
   is stricter — when the LLM call fails, the issue is skipped for the

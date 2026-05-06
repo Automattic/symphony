@@ -83,7 +83,7 @@ agent:
 #   channels:
 #     - kind: slack
 #       webhook_url: $SLACK_WEBHOOK_URL
-#       events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded]
+#       events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, reviewer_commented, rework_pushed]
 #     - kind: webhook
 #       url: $NOTIFY_WEBHOOK_URL
 #       events: [run_failed, budget_exceeded]

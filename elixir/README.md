@@ -186,7 +186,7 @@ notifications:
   # channels:
   #   - kind: slack
   #     webhook_url: $SLACK_WEBHOOK_URL
-  #     events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded]
+  #     events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, reviewer_commented, rework_pushed]
   #   - kind: webhook
   #     url: $NOTIFY_WEBHOOK_URL
   #     events: [run_failed, budget_exceeded]
@@ -254,7 +254,7 @@ Notes:
 - The optional `notifications` block is disabled by default. When enabled, Symphony emits semantic
   lifecycle events to configured Slack incoming webhooks and generic JSON webhooks without blocking
   the orchestrator. Supported v1 events are `pr_opened`, `awaiting_review`, `run_failed`,
-  `issue_completed`, and `budget_exceeded`. Per-channel `events` filters limit delivery; omitting
+  `issue_completed`, `budget_exceeded`, `reviewer_commented`, and `rework_pushed`. Per-channel `events` filters limit delivery; omitting
   `events` sends all supported events to that channel. `redact_titles: true` suppresses issue and PR
   titles while preserving identifiers and URLs. Slack and webhook URL/header values support the same
   `$VAR` environment reference convention used by other secret-backed settings.

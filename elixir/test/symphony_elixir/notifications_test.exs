@@ -50,7 +50,7 @@ defmodule SymphonyElixir.NotificationsTest do
         enabled: true,
         redact_titles: true,
         channels: [
-          %{kind: "slack", webhook_url: "$#{slack_env}", events: ["pr_opened", "run_failed"]},
+          %{kind: "slack", webhook_url: "$#{slack_env}", events: ["pr_opened", "reviewer_commented", "rework_pushed", "run_failed"]},
           %{kind: "webhook", url: "$#{webhook_env}", headers: %{Authorization: "$#{auth_env}"}}
         ]
       }
@@ -62,7 +62,11 @@ defmodule SymphonyElixir.NotificationsTest do
     assert config.notifications.redact_titles
 
     assert [
-             %{kind: "slack", webhook_url: "https://hooks.slack.test/services/T000/B000/XXX", events: ["pr_opened", "run_failed"]},
+             %{
+               kind: "slack",
+               webhook_url: "https://hooks.slack.test/services/T000/B000/XXX",
+               events: ["pr_opened", "reviewer_commented", "rework_pushed", "run_failed"]
+             },
              %{kind: "webhook", url: "https://notify.test/events", headers: %{"Authorization" => "Bearer token"}, events: nil}
            ] = config.notifications.channels
 
@@ -80,7 +84,7 @@ defmodule SymphonyElixir.NotificationsTest do
           %{
             kind: "webhook",
             url: "$#{missing_env}",
-            events: [" RUN_FAILED ", "", "run_failed"],
+            events: [" REWORK_PUSHED ", " RUN_FAILED ", "", "run_failed"],
             headers: %{
               Authorization: " Bearer token ",
               Blank: "  ",
@@ -96,7 +100,7 @@ defmodule SymphonyElixir.NotificationsTest do
     assert [
              %{
                url: nil,
-               events: ["run_failed"],
+               events: ["rework_pushed", "run_failed"],
                headers: %{
                  "Authorization" => "Bearer token",
                  "Count" => "2",
@@ -148,11 +152,13 @@ defmodule SymphonyElixir.NotificationsTest do
              "awaiting_review",
              "run_failed",
              "issue_completed",
-             "budget_exceeded"
+             "budget_exceeded",
+             "reviewer_commented",
+             "rework_pushed"
            ]
 
     assert Event.known_event?(" RUN_FAILED ")
-    refute Event.known_event?("reviewer_commented")
+    assert Event.known_event?("reviewer_commented")
 
     {:ok, default_event} = Event.new(:run_failed)
     assert default_event.event == "run_failed"
@@ -271,6 +277,53 @@ defmodule SymphonyElixir.NotificationsTest do
     refute Jason.encode!(redacted) =~ "Broken run"
   end
 
+  test "formatter includes reviewer feedback context for webhook and Slack payloads" do
+    issue_url = "https://linear.test/RSM-2407"
+    pr_url = "https://github.test/org/repo/pull/2407"
+    transcript_url = "http://127.0.0.1:4000/issues/RSM-2407/transcript"
+
+    for {event_name, title} <- [
+          {"reviewer_commented", "Reviewer commented"},
+          {"rework_pushed", "Rework pushed"}
+        ] do
+      {:ok, event} =
+        Event.new(event_name, %{
+          issue_id: "issue-2407",
+          issue_identifier: "RSM-2407",
+          issue_title: "Reviewer feedback",
+          issue_url: issue_url,
+          pr_url: pr_url,
+          transcript_url: transcript_url,
+          timestamp: ~U[2026-05-06 08:00:00Z]
+        })
+
+      payload = Formatter.webhook_payload(event)
+      redacted_payload = Formatter.webhook_payload(event, redact_titles: true)
+
+      assert payload["event"] == event_name
+      assert payload["issue_identifier"] == "RSM-2407"
+      assert payload["issue_title"] == "Reviewer feedback"
+      assert payload["issue_url"] == issue_url
+      assert payload["pr_url"] == pr_url
+      assert payload["state_url"] == pr_url
+      assert payload["transcript_url"] == transcript_url
+      assert payload["timestamp"] == "2026-05-06T08:00:00Z"
+      refute Map.has_key?(redacted_payload, "issue_title")
+
+      slack_payload = Formatter.slack_payload(event)
+      encoded_slack = Jason.encode!(slack_payload)
+
+      assert slack_payload["text"] == "#{title}: RSM-2407"
+
+      for value <- [title, "RSM-2407", "Reviewer feedback", issue_url, pr_url, transcript_url, "2026-05-06T08:00:00Z"] do
+        assert encoded_slack =~ value
+      end
+
+      redacted_slack = Formatter.slack_payload(event, redact_titles: true)
+      refute Jason.encode!(redacted_slack) =~ "Reviewer feedback"
+    end
+  end
+
   test "formatter covers event titles, fallback URLs, empty fields, and escaping" do
     for {event_name, expected_title} <- [
           {"pr_opened", "PR opened"},
@@ -350,6 +403,43 @@ defmodule SymphonyElixir.NotificationsTest do
              )
 
     assert_receive {:post, "https://webhook.test", %{"event" => "run_failed"}, [{"Authorization", "token"}]}
+    refute_receive {:post, "https://slack.test", _payload, _headers}, 50
+  end
+
+  test "notifier honors reviewer feedback event filters" do
+    test_pid = self()
+    {:ok, reviewer_event} = Event.new(:reviewer_commented, %{issue_identifier: "RSM-2407"})
+    {:ok, rework_event} = Event.new(:rework_pushed, %{issue_identifier: "RSM-2407"})
+
+    notifications = %{
+      enabled: true,
+      redact_titles: false,
+      channels: [
+        %{kind: "slack", webhook_url: "https://slack.test", events: ["reviewer_commented"]},
+        %{kind: "webhook", url: "https://webhook.test", events: ["rework_pushed"], headers: %{}}
+      ]
+    }
+
+    request_fun = fn url, payload, headers, _timeout_ms ->
+      send(test_pid, {:post, url, payload, headers})
+      {:ok, %{status: 200, body: "ok"}}
+    end
+
+    opts = [
+      task_starter: fn fun ->
+        fun.()
+        :ok
+      end,
+      request_fun: request_fun
+    ]
+
+    assert :ok = Notifier.deliver_for_test(reviewer_event, notifications, opts)
+    assert_receive {:post, "https://slack.test", slack_payload, []}
+    assert Jason.encode!(slack_payload) =~ "Reviewer commented"
+    refute_receive {:post, "https://webhook.test", _payload, _headers}, 50
+
+    assert :ok = Notifier.deliver_for_test(rework_event, notifications, opts)
+    assert_receive {:post, "https://webhook.test", %{"event" => "rework_pushed"}, []}
     refute_receive {:post, "https://slack.test", _payload, _headers}, 50
   end
 

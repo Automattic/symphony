@@ -14,7 +14,7 @@ defmodule SymphonyElixir.Linear.Client do
   @enrichment_comment_body_limit 800
   @workpad_marker "## Codex Workpad"
   @max_error_body_log_bytes 1_000
-  @team_id_pattern ~r/^[0-9a-f-]{36}$/
+  @team_id_pattern ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
   @query """
   query SymphonyLinearPoll($filter: IssueFilter!, $first: Int!, $relationFirst: Int!, $attachmentFirst: Int!, $after: String) {
@@ -160,7 +160,7 @@ defmodule SymphonyElixir.Linear.Client do
       is_nil(tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
-      not linear_scoping_filter_configured?(tracker) ->
+      not Config.linear_scoping_filter_configured?(tracker) ->
         {:error, :missing_linear_scoping_filter}
 
       true ->
@@ -183,7 +183,7 @@ defmodule SymphonyElixir.Linear.Client do
         is_nil(tracker.api_key) ->
           {:error, :missing_linear_api_token}
 
-        not linear_scoping_filter_configured?(tracker) ->
+        not Config.linear_scoping_filter_configured?(tracker) ->
           {:error, :missing_linear_scoping_filter}
 
         true ->
@@ -285,6 +285,10 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   @doc false
+  @spec assignee_filter_ids_for_test(term()) :: [String.t()] | nil
+  def assignee_filter_ids_for_test(assignee_filter), do: assignee_filter_ids(assignee_filter)
+
+  @doc false
   @spec fetch_candidate_issues_for_test((String.t(), map() -> {:ok, map()} | {:error, term()})) ::
           {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues_for_test(graphql_fun) when is_function(graphql_fun, 2) do
@@ -307,7 +311,9 @@ defmodule SymphonyElixir.Linear.Client do
         {:ok, []}
 
       ids ->
-        do_fetch_issue_states(ids, nil, graphql_fun)
+        with {:ok, assignee_filter} <- routing_assignee_filter(graphql_fun) do
+          do_fetch_issue_states(ids, assignee_filter, graphql_fun)
+        end
     end
   end
 
@@ -379,7 +385,7 @@ defmodule SymphonyElixir.Linear.Client do
     |> Enum.sort()
   end
 
-  defp assignee_filter_ids(_assignee_filter), do: nil
+  defp assignee_filter_ids(nil), do: nil
 
   defp prepend_page_issues(issues, acc_issues) when is_list(issues) and is_list(acc_issues) do
     Enum.reverse(issues, acc_issues)
@@ -653,11 +659,6 @@ defmodule SymphonyElixir.Linear.Client do
   defp assigned_to_worker?(_assignee, _assignee_filter), do: false
 
   defp assignee_id(%{} = assignee), do: normalize_assignee_match_value(assignee["id"])
-
-  defp linear_scoping_filter_configured?(tracker) do
-    is_binary(tracker.project_slug) or is_binary(tracker.team) or
-      (is_list(tracker.labels) and tracker.labels != [])
-  end
 
   defp routing_assignee_filter(graphql_fun \\ &graphql/2) do
     case Config.settings!().tracker.assignee do

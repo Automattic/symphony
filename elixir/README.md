@@ -106,9 +106,7 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..." # optional when team or labels is set
-  team: "RSM"
-  labels: ["backend"]
+  project_slug: "..."
   assignee: null
 workspace:
   root: ~/code/workspaces
@@ -153,6 +151,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- For Linear trackers, `project_slug` is optional when another scoping filter is set. Configure at
+  least one of `project_slug`, `team`, or `labels`; these filters are combined server-side. Example:
+  `team: "RSM"` with `labels: ["backend", "infra"]`.
 - Safer Codex defaults are used when policy fields are omitted:
   - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.

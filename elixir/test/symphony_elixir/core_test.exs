@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
 
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -65,6 +66,45 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert {:error, :missing_linear_scoping_filter} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: "",
+      tracker_team: "  ",
+      tracker_labels: ["", "  "]
+    )
+
+    assert {:error, :missing_linear_scoping_filter} = Config.validate!()
+    assert Config.settings!().tracker.project_slug == nil
+    assert Config.settings!().tracker.team == nil
+    assert Config.settings!().tracker.labels == []
+
+    tracker =
+      %TrackerConfig{
+        project_slug: "project",
+        team: "RSM",
+        labels: ["backend"]
+      }
+      |> TrackerConfig.changeset(%{
+        project_slug: nil,
+        team: nil,
+        labels: nil
+      })
+      |> Ecto.Changeset.apply_changes()
+
+    assert tracker.project_slug == nil
+    assert tracker.team == nil
+    assert tracker.labels == []
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil,
+      tracker_team: nil,
+      tracker_labels: ["", " backend ", "infra", " "]
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.labels == ["backend", "infra"]
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,

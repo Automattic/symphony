@@ -108,6 +108,13 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec linear_scoping_filter_configured?(map() | nil) :: boolean()
+  def linear_scoping_filter_configured?(%{project_slug: project_slug, team: team, labels: labels}) do
+    present_string?(project_slug) or present_string?(team) or non_empty_list?(labels)
+  end
+
+  def linear_scoping_filter_configured?(_tracker), do: false
+
   @spec codex_runtime_settings(Path.t() | nil, keyword()) ::
           {:ok, codex_runtime_settings()} | {:error, term()}
   def codex_runtime_settings(workspace \\ nil, opts \\ []) do
@@ -163,11 +170,6 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp linear_scoping_filter_configured?(tracker) do
-    is_binary(tracker.project_slug) or is_binary(tracker.team) or
-      (is_list(tracker.labels) and tracker.labels != [])
-  end
-
   defp default_server_port(settings) do
     cond do
       not settings.observability.dashboard_enabled -> nil
@@ -205,6 +207,12 @@ defmodule SymphonyElixir.Config do
   end
 
   defp codex_app_server_command?(_command), do: false
+
+  defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_string?(_value), do: false
+
+  defp non_empty_list?(values) when is_list(values), do: Enum.any?(values, &present_string?/1)
+  defp non_empty_list?(_values), do: false
 
   defp validate_workspace_semantics(%Schema{workspace: %{strategy: "worktree"} = workspace, worker: worker}) do
     cond do

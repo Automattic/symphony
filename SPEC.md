@@ -677,6 +677,8 @@ Validation checks:
 - `tracker.api_key` is present after `$` resolution.
 - At least one of `tracker.project_slug`, `tracker.team`, or non-empty
   `tracker.labels` is present when `tracker.kind == "linear"`.
+- Blank `tracker.project_slug`, `tracker.team`, and `tracker.labels` entries do not count as
+  configured Linear scoping filters.
 - `codex.command` is present and non-empty.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
@@ -693,6 +695,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.labels`: optional list of Linear label names when `tracker.kind=linear`
 - At least one of `tracker.project_slug`, `tracker.team`, or non-empty
   `tracker.labels` is REQUIRED when `tracker.kind=linear`
+- Blank `tracker.project_slug`, `tracker.team`, and `tracker.labels` entries are ignored for the
+  Linear scoping requirement.
 - `tracker.assignee`: optional string or `$VAR`, canonical env `LINEAR_ASSIGNEE` when
   `tracker.kind=linear`; `"me"` resolves the current Linear viewer
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
@@ -1324,7 +1328,7 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - Auth token sent in `Authorization` header
 - `tracker.project_slug` maps to Linear project `slugId` when set
 - `tracker.team` maps to Linear team `key` or `id`, chosen by whether the value
-  has UUID shape
+  has canonical UUID shape, case-insensitively
 - `tracker.labels` maps to `labels: { some: { name: { in: [...] } } }`
 - Candidate issue queries build one GraphQL `IssueFilter` variable dynamically,
   omitting unconfigured keys instead of sending null operands.

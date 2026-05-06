@@ -111,6 +111,34 @@ defmodule SymphonyElixir.Config.Schema do
         [:kind, :endpoint, :api_key, :project_slug, :team, :labels, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
+      |> normalize_optional_string(:project_slug)
+      |> normalize_optional_string(:team)
+      |> normalize_string_list(:labels)
+    end
+
+    defp normalize_optional_string(changeset, field) do
+      update_change(changeset, field, fn
+        value when is_binary(value) ->
+          case String.trim(value) do
+            "" -> nil
+            normalized -> normalized
+          end
+
+        nil ->
+          nil
+      end)
+    end
+
+    defp normalize_string_list(changeset, field) do
+      update_change(changeset, field, fn
+        values when is_list(values) ->
+          values
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+
+        nil ->
+          []
+      end)
     end
   end
 

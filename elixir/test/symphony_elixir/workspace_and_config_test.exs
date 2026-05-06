@@ -628,6 +628,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert get_in(variables, [:filter, "assignee", "id", "in"]) == ["user-2"]
   end
 
+  test "linear client fails loud when assignee filter shape drifts" do
+    assert Client.assignee_filter_ids_for_test(nil) == nil
+    assert Client.assignee_filter_ids_for_test(%{match_values: MapSet.new(["user-2", "user-1"])}) == ["user-1", "user-2"]
+
+    assert_raise FunctionClauseError, fn ->
+      Client.assignee_filter_ids_for_test(%{matches: MapSet.new(["user-1"])})
+    end
+  end
+
   test "linear client sends team key in candidate filter" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
@@ -662,6 +671,38 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
+  test "linear client sends uppercase UUID team as id in candidate filter" do
+    team_id = "A42DF4C4-7416-4A08-8FB2-97087043169F"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: team_id
+    )
+
+    variables = capture_candidate_variables!()
+
+    assert variables.filter == %{
+             "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+             "team" => %{"id" => %{"eq" => team_id}}
+           }
+  end
+
+  test "linear client does not treat loose 36 character team values as ids" do
+    team = "------------------------------------"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: team
+    )
+
+    variables = capture_candidate_variables!()
+
+    assert variables.filter == %{
+             "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+             "team" => %{"key" => %{"eq" => team}}
+           }
+  end
+
   test "linear client sends single and multiple labels with OR semantics" do
     for labels <- [["backend"], ["backend", "infra"]] do
       write_workflow_file!(Workflow.workflow_file_path(),
@@ -689,6 +730,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     refute Map.has_key?(variables.filter, "labels")
     refute Enum.any?(variables.filter, fn {_key, value} -> is_nil(value) end)
+  end
+
+  test "linear client normalizes blank candidate scope values before building filter" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: " ",
+      tracker_team: " RSM ",
+      tracker_labels: ["", " backend ", " "]
+    )
+
+    variables = capture_candidate_variables!()
+
+    assert variables.filter == %{
+             "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+             "team" => %{"key" => %{"eq" => "RSM"}},
+             "labels" => %{"some" => %{"name" => %{"in" => ["backend"]}}}
+           }
+
+    refute Map.has_key?(variables.filter, "project")
   end
 
   test "linear client combines configured candidate filter dimensions" do
@@ -799,6 +858,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert query =~ "SymphonyLinearIssuesById"
 
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
+  end
+
+  test "linear client refresh by id marks reassigned and unassigned issues as not routed to worker" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_assignee: "user-1")
+
+    raw_issues = [
+      raw_linear_issue("issue-1", "MT-1", "user-2"),
+      raw_linear_issue("issue-2", "MT-2", nil)
+    ]
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:fetch_issue_states_page, query, variables})
+      {:ok, %{"data" => %{"issues" => %{"nodes" => raw_issues}}}}
+    end
+
+    assert {:ok, issues} = Client.fetch_issue_states_by_ids_for_test(["issue-1", "issue-2"], graphql_fun)
+
+    assert Enum.map(issues, & &1.identifier) == ["MT-1", "MT-2"]
+    refute Enum.any?(issues, & &1.assigned_to_worker)
+
+    assert_receive {:fetch_issue_states_page, query, %{ids: ["issue-1", "issue-2"], first: 2, relationFirst: 50}}
+    assert query =~ "SymphonyLinearIssuesById"
+    assert query =~ "issues(filter: {id: {in: $ids}}"
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do

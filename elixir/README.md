@@ -135,6 +135,12 @@ agent:
     denied_domains: []
 pr_review:
   mode: tracker
+quality_gate:
+  enabled: true
+  provider: anthropic           # or: openai
+  model: claude-haiku-4-5-20251001
+  min_score: 6                  # 1–10; issues below this score are skipped
+  on_error: pass                # or: skip
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -237,6 +243,35 @@ agent:
   `--port` is supplied for that run. The service exposes `/`,
   `/issues/<issue_identifier>/transcript`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and
   `/api/v1/refresh`. The state endpoint includes recent durable run history when available.
+
+## Quality gate
+
+The optional `quality_gate` block scores each candidate issue with an LLM
+*before* it is queued for dispatch. Issues that score below `min_score`
+are skipped for the session, surfaced in the dashboard's `Skipped` section,
+and a Linear comment is posted explaining the score and how to re-queue.
+
+```yaml
+quality_gate:
+  enabled: true
+  provider: anthropic           # or: openai
+  model: claude-haiku-4-5-20251001
+  min_score: 6                  # 1–10; below this score, issues are skipped
+  on_error: pass                # or: skip
+```
+
+- API keys are read from the environment (`ANTHROPIC_API_KEY` /
+  `OPENAI_API_KEY`); they are never read from `WORKFLOW.md`.
+- Scores are cached per issue keyed by Linear's `updated_at`, so unchanged
+  issues are not re-evaluated. Editing the issue description bumps
+  `updated_at` and lets the gate re-score on the next poll.
+- Comments are posted once per skip (per `updated_at`). If an issue is
+  edited and still scores below the threshold, a fresh comment is posted.
+- `on_error: pass` (default) lets an issue qualify when the LLM call
+  fails, so a failing provider does not block dispatch. `on_error: skip`
+  is stricter — when the LLM call fails, the issue is skipped for the
+  cycle and retried on the next poll. In both cases the cache is *not*
+  updated on failure, so a transient outage automatically retries.
 
 ## Web dashboard
 

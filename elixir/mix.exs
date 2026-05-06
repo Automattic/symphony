@@ -21,6 +21,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Orchestrator.State,
           SymphonyElixir.PrReviewPoller,
           SymphonyElixir.Quality,
+          SymphonyElixir.QualityGate.Anthropic,
+          SymphonyElixir.QualityGate.OpenAI,
           SymphonyElixir.RunStore,
           SymphonyElixir.AgentRunner,
           SymphonyElixir.CLI,

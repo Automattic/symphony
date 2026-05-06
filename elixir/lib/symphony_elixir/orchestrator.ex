@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.{
     AgentRunner,
     Config,
+    Notifications,
     Quality,
     QualityGate,
     RunStore,
@@ -18,7 +19,6 @@ defmodule SymphonyElixir.Orchestrator do
     URLUtils,
     Workspace
   }
-
 
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixirWeb.ObservabilityPubSub
@@ -191,6 +191,7 @@ defmodule SymphonyElixir.Orchestrator do
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
               next_attempt = next_retry_attempt_from_running(running_entry)
+              emit_run_failed(running_entry, error, next_attempt)
 
               schedule_issue_retry(state, issue_id, next_attempt, %{
                 identifier: running_entry.identifier,
@@ -233,10 +234,15 @@ defmodule SymphonyElixir.Orchestrator do
 
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+        maybe_emit_pr_opened(running_entry, updated_running_entry)
 
-        state =
+        state_after_tokens =
           state
           |> apply_codex_token_delta(token_delta)
+
+        state =
+          state_after_tokens
+          |> maybe_emit_daily_budget_exceeded(state, issue_id, updated_running_entry)
           |> apply_codex_rate_limits(update)
           |> put_running_entry(issue_id, updated_running_entry)
           |> enforce_issue_budget(issue_id)
@@ -399,6 +405,7 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
+        maybe_emit_issue_completed(issue)
 
         terminate_running_issue(state, issue.id, true)
 
@@ -412,6 +419,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
+        maybe_emit_awaiting_review(issue)
 
         terminate_running_issue(state, issue.id, false, track_completed_run: true)
     end
@@ -469,6 +477,7 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(state_name, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{state_name}; removing from watching")
+        maybe_emit_issue_completed(issue)
         forget_completed_issue(state, issue_id)
 
       watching_issue_state?(state_name, active_states, terminal_states) ->
@@ -1242,6 +1251,86 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp notify_transcript(_issue_id, _event), do: :ok
 
+  defp maybe_emit_pr_opened(previous_entry, updated_entry) when is_map(updated_entry) do
+    if is_nil(URLUtils.pull_request_url(previous_entry)) and is_binary(URLUtils.pull_request_url(updated_entry)) do
+      emit_running_event(:pr_opened, updated_entry)
+    end
+  end
+
+  defp maybe_emit_awaiting_review(%Issue{state: state} = issue) do
+    if in_review_state?(state) do
+      Notifications.emit_issue_event(:awaiting_review, issue)
+    end
+  end
+
+  defp maybe_emit_awaiting_review(_issue), do: :ok
+
+  defp maybe_emit_issue_completed(%Issue{state: state} = issue) do
+    if done_state?(state) do
+      Notifications.emit_issue_event(:issue_completed, issue)
+    end
+  end
+
+  defp maybe_emit_issue_completed(_issue), do: :ok
+
+  defp emit_run_failed(running_entry, reason, next_attempt) when is_map(running_entry) do
+    emit_running_event(:run_failed, running_entry, %{
+      reason: reason,
+      attempt: next_attempt,
+      metadata: %{source: "orchestrator"}
+    })
+  end
+
+  defp maybe_emit_daily_budget_exceeded(
+         %State{} = state_after_tokens,
+         %State{} = state_before_tokens,
+         issue_id,
+         running_entry
+       ) do
+    daily_budget_just_logged? =
+      state_before_tokens.budget_daily_paused_logged != true and
+        state_after_tokens.budget_daily_paused_logged == true
+
+    if daily_budget_just_logged? do
+      limit = Config.settings!().agent.max_tokens_per_day
+
+      emit_running_event(:budget_exceeded, running_entry, %{
+        reason: "daily token budget exhausted: daily_used=#{state_after_tokens.budget_daily_used} limit=#{limit}",
+        issue_id: issue_id,
+        tokens: %{total_tokens: state_after_tokens.budget_daily_used},
+        metadata: %{source: "orchestrator", scope: "day", limit: limit}
+      })
+    end
+
+    state_after_tokens
+  end
+
+  defp maybe_emit_daily_budget_exceeded(state, _state_before_tokens, _issue_id, _running_entry), do: state
+
+  defp emit_budget_exceeded(running_entry, attrs) when is_map(running_entry) and is_map(attrs) do
+    attrs = Map.merge(%{metadata: %{source: "orchestrator", scope: "issue"}}, attrs)
+    emit_running_event(:budget_exceeded, running_entry, attrs)
+  end
+
+  defp emit_running_event(event, running_entry, attrs \\ %{}) when is_map(running_entry) and is_map(attrs) do
+    issue = Map.get(running_entry, :issue)
+
+    attrs =
+      attrs
+      |> Map.put_new(:run_id, Map.get(running_entry, :run_id))
+      |> Map.put_new(:session_id, Map.get(running_entry, :session_id))
+      |> Map.put_new(:pr_url, URLUtils.pull_request_url(running_entry) || URLUtils.pull_request_url(issue))
+      |> Map.put_new(:tokens, run_tokens(running_entry))
+
+    Notifications.emit_issue_event(event, issue, attrs)
+  end
+
+  defp in_review_state?(state_name) when is_binary(state_name), do: normalize_issue_state(state_name) == "in review"
+  defp in_review_state?(_state_name), do: false
+
+  defp done_state?(state_name) when is_binary(state_name), do: normalize_issue_state(state_name) == "done"
+  defp done_state?(_state_name), do: false
+
   defp handle_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
@@ -1926,6 +2015,7 @@ defmodule SymphonyElixir.Orchestrator do
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
     codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
     transcript_path = Map.get(running_entry, :transcript_path)
+    pull_request_url = URLUtils.pull_request_url(update) || URLUtils.pull_request_url(running_entry)
     last_reported_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
@@ -1945,6 +2035,7 @@ defmodule SymphonyElixir.Orchestrator do
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(Map.get(running_entry, :session_id), update),
         transcript_path: transcript_path_for_update(transcript_path, update),
+        pull_request_url: pull_request_url,
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
@@ -2128,6 +2219,10 @@ defmodule SymphonyElixir.Orchestrator do
     completed_metadata = Map.get(state.completed_run_metadata, issue_id, %{})
     existing = Map.get(state.watching, issue_id, %{})
 
+    if existing == %{} do
+      maybe_emit_awaiting_review(issue)
+    end
+
     watching_entry = %{
       identifier: watching_identifier(issue, issue_id, completed_metadata, existing),
       state: issue.state,
@@ -2294,6 +2389,12 @@ defmodule SymphonyElixir.Orchestrator do
 
     if is_integer(limit) and limit > 0 and total_tokens >= limit do
       log_issue_budget_exhausted(issue_id, running_entry, limit, total_tokens)
+
+      emit_budget_exceeded(running_entry, %{
+        reason: "token budget exhausted: total_tokens=#{total_tokens} limit=#{limit}",
+        tokens: run_tokens(running_entry),
+        metadata: %{source: "orchestrator", scope: "issue", limit: limit}
+      })
 
       state
       |> terminate_running_issue(issue_id, false,

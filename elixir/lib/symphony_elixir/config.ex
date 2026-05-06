@@ -137,7 +137,8 @@ defmodule SymphonyElixir.Config do
 
       true ->
         with :ok <- validate_tracker_semantics(settings),
-             :ok <- validate_workspace_semantics(settings) do
+             :ok <- validate_workspace_semantics(settings),
+             :ok <- validate_notifications_semantics(settings) do
           warn_if_budget_token_reporting_unavailable(settings)
           :ok
         end
@@ -217,6 +218,32 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_workspace_semantics(_settings), do: :ok
+
+  defp validate_notifications_semantics(%Schema{notifications: %{enabled: true, channels: channels}})
+       when is_list(channels) do
+    Enum.reduce_while(channels, :ok, fn channel, :ok ->
+      case validate_notification_channel(channel) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_notifications_semantics(_settings), do: :ok
+
+  defp validate_notification_channel(%{kind: "slack", webhook_url: url}) when is_binary(url), do: :ok
+
+  defp validate_notification_channel(%{kind: "slack"}) do
+    {:error, {:invalid_workflow_config, "notifications.channels entries with kind: slack require webhook_url (or a $VAR that resolves to one)"}}
+  end
+
+  defp validate_notification_channel(%{kind: "webhook", url: url}) when is_binary(url), do: :ok
+
+  defp validate_notification_channel(%{kind: "webhook"}) do
+    {:error, {:invalid_workflow_config, "notifications.channels entries with kind: webhook require url (or a $VAR that resolves to one)"}}
+  end
+
+  defp validate_notification_channel(_channel), do: :ok
 
   defp validate_local_worktree_repo(repo) when is_binary(repo) do
     with :ok <- validate_local_worktree_repo_path(repo),

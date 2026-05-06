@@ -159,7 +159,9 @@ quality_gate:
   enabled: true
   provider: anthropic           # or: openai
   model: claude-haiku-4-5-20251001
-  min_score: 6                  # 1–10; issues below this score are skipped
+  pass_threshold: 6             # >= this score, issues dispatch
+  clarification_floor: 4        # 4..5 asks Linear clarification questions
+  max_clarification_rounds: 2   # then skip until the description is updated
   on_error: pass                # or: skip
 ---
 
@@ -279,26 +281,40 @@ agent:
 ## Quality gate
 
 The optional `quality_gate` block scores each candidate issue with an LLM
-*before* it is queued for dispatch. Issues that score below `min_score`
-are skipped for the session, surfaced in the dashboard's `Skipped` section,
-and a Linear comment is posted explaining the score and how to re-queue.
+*before* it is queued for dispatch. Issues that score at or above
+`pass_threshold` dispatch. Issues below `clarification_floor` are skipped for
+the session, surfaced in the dashboard's `Skipped` section, and a Linear
+comment is posted explaining the score and how to re-queue. When
+`clarification_floor` is set, scores from `clarification_floor` through
+`pass_threshold - 1` are held in Linear with a deterministic clarification
+comment instead of being dispatched. They also appear in the dashboard's
+`Awaiting clarification` section.
 
 ```yaml
 quality_gate:
   enabled: true
   provider: anthropic           # or: openai
   model: claude-haiku-4-5-20251001
-  min_score: 6                  # 1–10; below this score, issues are skipped
+  pass_threshold: 6             # 1–10; scores >= this dispatch
+  clarification_floor: 4        # optional; scores 4..5 ask for clarification
+  max_clarification_rounds: 2   # optional; default 2
   on_error: pass                # or: skip
 ```
 
 - API keys are read from the environment (`ANTHROPIC_API_KEY` /
   `OPENAI_API_KEY`); they are never read from `WORKFLOW.md`.
-- Scores are cached per issue keyed by Linear's `updated_at`, so unchanged
-  issues are not re-evaluated. Editing the issue description bumps
-  `updated_at` and lets the gate re-score on the next poll.
-- Comments are posted once per skip (per `updated_at`). If an issue is
-  edited and still scores below the threshold, a fresh comment is posted.
+- `min_score` is still accepted for existing configs. When `pass_threshold` is
+  unset, Symphony treats `min_score` as the pass threshold and leaves
+  clarification disabled unless `clarification_floor` is explicitly set.
+- Scores are cached per issue keyed by Linear's `updated_at` plus
+  non-quality-gate comment activity, so an operator reply invalidates the cache
+  and the next poll re-scores with the reply in context. Symphony's own
+  quality-gate comments do not invalidate the cache by themselves.
+- Clarification comments are posted once per issue/comment-activity key. If the
+  operator replies and the issue still scores in the clarification band,
+  Symphony asks again until `max_clarification_rounds` is reached; after that it
+  skips with a comment naming the cap. If a clarified issue later passes, it is
+  dispatched on the next poll.
 - `on_error: pass` (default) lets an issue qualify when the LLM call
   fails, so a failing provider does not block dispatch. `on_error: skip`
   is stricter — when the LLM call fails, the issue is skipped for the

@@ -62,7 +62,8 @@ defmodule SymphonyElixir.Orchestrator do
       budget_exhausted: MapSet.new(),
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
-      quality_gate_skipped: %{}
+      quality_gate_skipped: %{},
+      quality_gate_awaiting_clarification: %{}
     ]
   end
 
@@ -79,6 +80,7 @@ defmodule SymphonyElixir.Orchestrator do
     :ok = ensure_run_store_started()
     {retry_attempts, claimed} = hydrate_retry_attempts()
     codex_totals = persisted_codex_totals()
+    quality_gate_cache = hydrate_quality_gate_cache()
     budget_day_started_on = Date.utc_today()
     budget_daily_used = hydrate_budget_daily_used(budget_day_started_on)
     budget_exhausted = hydrate_budget_exhausted()
@@ -100,7 +102,8 @@ defmodule SymphonyElixir.Orchestrator do
       budget_day_started_on: budget_day_started_on,
       budget_daily_used: budget_daily_used,
       budget_daily_paused_logged: false,
-      budget_exhausted: budget_exhausted
+      budget_exhausted: budget_exhausted,
+      quality_gate_cache: quality_gate_cache
     }
 
     mark_interrupted_runs()
@@ -679,29 +682,50 @@ defmodule SymphonyElixir.Orchestrator do
 
     case config do
       %SymphonyElixir.Config.Schema.QualityGate{enabled: true} = gate_config ->
-        %{passed: passed, skipped: skipped, cache: cache} =
+        %{passed: passed, skipped: skipped, awaiting_clarification: awaiting_clarification, cache: cache} =
           QualityGate.evaluate(issues, gate_config, state.quality_gate_cache)
 
         comment_keys = retain_quality_gate_comment_keys(state.quality_gate_comment_keys, issues)
 
+        {cache, comment_keys, awaiting_with_status} =
+          post_quality_gate_clarification_comments(awaiting_clarification, gate_config, cache, comment_keys)
+
         {cache, comment_keys, skipped_with_status} =
           post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys)
 
+        persist_quality_gate_cache(cache)
+
+        awaiting_index = index_quality_gate_entries(awaiting_with_status)
         skipped_index = index_skipped_entries(skipped_with_status)
 
         state = %{
           state
           | quality_gate_cache: cache,
             quality_gate_comment_keys: comment_keys,
+            quality_gate_awaiting_clarification: awaiting_index,
             quality_gate_skipped: skipped_index
         }
 
         {passed, state}
 
       _disabled ->
-        state = %{state | quality_gate_skipped: %{}}
+        state = %{state | quality_gate_skipped: %{}, quality_gate_awaiting_clarification: %{}}
         {issues, state}
     end
+  end
+
+  defp post_quality_gate_clarification_comments(awaiting, gate_config, cache, comment_keys) do
+    Enum.reduce(awaiting, {cache, comment_keys, []}, fn entry, {cache_acc, keys_acc, entries} ->
+      case post_quality_gate_comment_if_needed(entry, gate_config, cache_acc, keys_acc) do
+        {:posted, updated_cache, updated_keys} ->
+          {updated_cache, updated_keys, [%{entry | comment_posted?: true} | entries]}
+
+        {:skipped_post, cache_next, keys_next} ->
+          entry = %{entry | comment_posted?: entry.comment_posted? or MapSet.member?(keys_next, quality_gate_comment_key(entry))}
+          {cache_next, keys_next, [entry | entries]}
+      end
+    end)
+    |> then(fn {cache_acc, keys_acc, entries_rev} -> {cache_acc, keys_acc, Enum.reverse(entries_rev)} end)
   end
 
   defp post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys) do
@@ -722,7 +746,7 @@ defmodule SymphonyElixir.Orchestrator do
     do: {:skipped_post, cache, comment_keys}
 
   defp post_quality_gate_comment_if_needed(entry, gate_config, cache, comment_keys) do
-    body = QualityGate.skip_comment_body(entry, gate_config)
+    body = quality_gate_comment_body(entry, gate_config)
     comment_key = quality_gate_comment_key(entry)
 
     if MapSet.member?(comment_keys, comment_key) do
@@ -733,12 +757,20 @@ defmodule SymphonyElixir.Orchestrator do
           {:posted, QualityGate.mark_comment_posted(cache, entry), MapSet.put(comment_keys, comment_key)}
 
         {:error, reason} ->
-          Logger.warning("QualityGate skip-comment post failed issue=#{entry.identifier || entry.issue_id} reason=#{inspect(reason)}")
+          Logger.warning("QualityGate #{quality_gate_comment_kind(entry)} post failed issue=#{entry.identifier || entry.issue_id} reason=#{inspect(reason)}")
 
           {:skipped_post, cache, comment_keys}
       end
     end
   end
+
+  defp quality_gate_comment_body(%{kind: :clarification} = entry, gate_config),
+    do: QualityGate.clarification_comment_body(entry, gate_config)
+
+  defp quality_gate_comment_body(entry, gate_config), do: QualityGate.skip_comment_body(entry, gate_config)
+
+  defp quality_gate_comment_kind(%{kind: :clarification}), do: "clarification-comment"
+  defp quality_gate_comment_kind(_entry), do: "skip-comment"
 
   defp quality_gate_comment_key(entry) do
     updated_at =
@@ -752,9 +784,12 @@ defmodule SymphonyElixir.Orchestrator do
       case entry.kind do
         :scored -> "score"
         :error -> "error"
+        :clarification -> "clarification"
       end
 
-    "#{entry.issue_id}:#{updated_at}:#{kind}"
+    comment_signature = Map.get(entry, :comment_signature) || "none"
+
+    "#{entry.issue_id}:#{updated_at}:#{comment_signature}:#{kind}"
   end
 
   defp retain_quality_gate_comment_keys(comment_keys, issues) when is_struct(comment_keys, MapSet) and is_list(issues) do
@@ -776,8 +811,25 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retain_quality_gate_comment_keys(_comment_keys, _issues), do: MapSet.new()
 
+  defp index_quality_gate_entries(entries) do
+    Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
+  end
+
   defp index_skipped_entries(entries) do
     Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
+  end
+
+  defp snapshot_awaiting_clarification_entry(entry) do
+    %{
+      kind: entry.kind,
+      issue_id: entry.issue_id,
+      identifier: entry.identifier,
+      url: URLUtils.present_url(entry.url),
+      score: Map.get(entry, :score),
+      reason: Map.get(entry, :reason),
+      rounds_asked: Map.get(entry, :rounds_asked, 0),
+      updated_at: entry.updated_at
+    }
   end
 
   defp snapshot_skipped_entry(entry) do
@@ -1525,6 +1577,28 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp hydrate_quality_gate_cache do
+    case RunStore.get_quality_gate_cache() do
+      %{} = cache ->
+        cache
+
+      nil ->
+        %{}
+
+      {:error, reason} ->
+        Logger.warning("Failed to read persisted quality gate cache: #{inspect(reason)}")
+        %{}
+    end
+  end
+
+  defp persist_quality_gate_cache(cache) when is_map(cache) do
+    cache
+    |> RunStore.put_quality_gate_cache()
+    |> log_run_store_error("persist quality gate cache")
+  end
+
+  defp persist_quality_gate_cache(_cache), do: :ok
+
   defp hydrate_retry_attempts do
     case RunStore.list_retries() do
       retries when is_list(retries) ->
@@ -1990,11 +2064,17 @@ defmodule SymphonyElixir.Orchestrator do
       |> Map.values()
       |> Enum.map(&snapshot_skipped_entry/1)
 
+    awaiting_clarification =
+      state.quality_gate_awaiting_clarification
+      |> Map.values()
+      |> Enum.map(&snapshot_awaiting_clarification_entry/1)
+
     {:reply,
      %{
        running: running,
        watching: watching,
        retrying: retrying,
+       awaiting_clarification: awaiting_clarification,
        skipped: skipped,
        run_history: persisted_run_history(),
        codex_totals: state.codex_totals,

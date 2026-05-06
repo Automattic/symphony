@@ -17,7 +17,9 @@ defmodule SymphonyElixir.QualityGateConfigTest do
           enabled: true,
           provider: "anthropic",
           model: "claude-haiku-4-5-20251001",
-          min_score: 7,
+          pass_threshold: 7,
+          clarification_floor: 4,
+          max_clarification_rounds: 3,
           on_error: "skip"
         }
       )
@@ -27,8 +29,28 @@ defmodule SymphonyElixir.QualityGateConfigTest do
       assert gate.enabled
       assert gate.provider == "anthropic"
       assert gate.model == "claude-haiku-4-5-20251001"
-      assert gate.min_score == 7
+      assert gate.pass_threshold == 7
+      assert gate.min_score == 6
+      assert gate.clarification_floor == 4
+      assert gate.max_clarification_rounds == 3
       assert gate.on_error == "skip"
+    end
+
+    test "keeps min_score as a backwards-compatible threshold field" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        quality_gate: %{
+          enabled: true,
+          provider: "anthropic",
+          model: "claude-haiku-4-5-20251001",
+          min_score: 7
+        }
+      )
+
+      assert :ok = Config.validate!()
+      assert {:ok, %Schema{quality_gate: gate}} = Config.settings()
+      assert gate.min_score == 7
+      assert gate.pass_threshold == nil
+      assert gate.clarification_floor == nil
     end
 
     test "errors when enabled but provider is missing" do
@@ -96,6 +118,22 @@ defmodule SymphonyElixir.QualityGateConfigTest do
 
       assert {:error, {:invalid_workflow_config, message}} = Config.settings()
       assert message =~ "min_score"
+    end
+
+    test "rejects clarification_floor at or above the effective pass threshold" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        quality_gate: %{
+          enabled: true,
+          provider: "anthropic",
+          model: "x",
+          pass_threshold: 6,
+          clarification_floor: 6
+        }
+      )
+
+      assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+      assert message =~ "clarification_floor"
+      assert message =~ "pass_threshold"
     end
 
     test "allows enabled: false without requiring provider/model" do

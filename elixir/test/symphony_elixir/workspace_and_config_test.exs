@@ -492,6 +492,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         "id" => "user-1"
       },
       "labels" => %{"nodes" => [%{"name" => "Backend"}]},
+      "comments" => %{
+        "nodes" => [
+          %{
+            "body" => "Clarifying answer",
+            "createdAt" => "2026-01-01T01:00:00Z",
+            "user" => %{"name" => "Reviewer"}
+          }
+        ]
+      },
       "inverseRelations" => %{
         "nodes" => [
           %{
@@ -520,6 +529,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert issue.blocked_by == [%{id: "issue-2", identifier: "MT-2", state: "In Progress"}]
     assert issue.labels == ["backend"]
+    assert issue.comments == [%{author: "Reviewer", body: "Clarifying answer", created_at: ~U[2026-01-01 01:00:00Z]}]
     assert issue.priority == 2
     assert issue.state == "Todo"
 
@@ -592,6 +602,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert query =~ "SymphonyLinearPoll"
     assert query =~ "$filter: IssueFilter!"
     assert query =~ "issues(filter: $filter"
+    assert query =~ "comments(last: $commentLast, orderBy: createdAt)"
 
     assert variables == %{
              filter: %{
@@ -602,6 +613,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              first: 50,
              relationFirst: 50,
              attachmentFirst: 20,
+             commentLast: 20,
              after: nil
            }
   end

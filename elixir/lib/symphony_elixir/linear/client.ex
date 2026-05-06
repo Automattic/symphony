@@ -17,7 +17,7 @@ defmodule SymphonyElixir.Linear.Client do
   @team_id_pattern ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
   @query """
-  query SymphonyLinearPoll($filter: IssueFilter!, $first: Int!, $relationFirst: Int!, $attachmentFirst: Int!, $after: String) {
+  query SymphonyLinearPoll($filter: IssueFilter!, $first: Int!, $relationFirst: Int!, $attachmentFirst: Int!, $commentLast: Int!, $after: String) {
     issues(filter: $filter, first: $first, after: $after) {
       nodes {
         id
@@ -45,6 +45,15 @@ defmodule SymphonyElixir.Linear.Client do
             name
           }
         }
+        comments(last: $commentLast, orderBy: createdAt) {
+          nodes {
+            body
+            createdAt
+            user {
+              name
+            }
+          }
+        }
         inverseRelations(first: $relationFirst) {
           nodes {
             type
@@ -69,7 +78,7 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @query_by_ids """
-  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!, $attachmentFirst: Int!) {
+  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!, $attachmentFirst: Int!, $commentLast: Int!) {
     issues(filter: {id: {in: $ids}}, first: $first) {
       nodes {
         id
@@ -95,6 +104,15 @@ defmodule SymphonyElixir.Linear.Client do
         labels {
           nodes {
             name
+          }
+        }
+        comments(last: $commentLast, orderBy: createdAt) {
+          nodes {
+            body
+            createdAt
+            user {
+              name
+            }
           }
         }
         inverseRelations(first: $relationFirst) {
@@ -340,6 +358,7 @@ defmodule SymphonyElixir.Linear.Client do
              first: @issue_page_size,
              relationFirst: @issue_page_size,
              attachmentFirst: @attachment_page_size,
+             commentLast: @enrichment_comment_last,
              after: after_cursor
            }),
          {:ok, issues, page_info} <- decode_linear_page_response(body, nil) do
@@ -417,7 +436,8 @@ defmodule SymphonyElixir.Linear.Client do
            ids: batch_ids,
            first: length(batch_ids),
            relationFirst: @issue_page_size,
-           attachmentFirst: @attachment_page_size
+           attachmentFirst: @attachment_page_size,
+           commentLast: @enrichment_comment_last
          }) do
       {:ok, body} ->
         with {:ok, issues} <- decode_linear_response(body, assignee_filter) do
@@ -633,6 +653,7 @@ defmodule SymphonyElixir.Linear.Client do
       pr_urls: extract_pr_urls(issue),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
+      comments: extract_comments(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
       created_at: parse_datetime(issue["createdAt"]),
       updated_at: parse_datetime(issue["updatedAt"])

@@ -25,6 +25,9 @@
 │  \e[33m↻\e[0m \e[31mMT-452\e[0m \e[33mattempt=6\e[0m\e[2m in \e[0m\e[36m8.100s\e[0m \e[2merror=worker crashed restarting cleanly\e[0m
 │  \e[33m↻\e[0m \e[31mMT-453\e[0m \e[33mattempt=1\e[0m\e[2m in \e[0m\e[36m11.000s\e[0m \e[2merror=fourth queued retry should also render after removing the top-three limit\e[0m
 │
+\e[1m├─ Awaiting clarification\e[0m
+│
+│  \e[90mNo issues awaiting clarification\e[0m
 \e[1m├─ Skipped (quality gate)\e[0m
 │
 │  \e[90mNo issues skipped this session\e[0m

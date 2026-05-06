@@ -523,23 +523,56 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     @providers ["anthropic", "openai"]
     @on_error_modes ["pass", "skip"]
+    @fields [
+      :enabled,
+      :provider,
+      :model,
+      :min_score,
+      :pass_threshold,
+      :clarification_floor,
+      :max_clarification_rounds,
+      :on_error
+    ]
 
     embedded_schema do
       field(:enabled, :boolean, default: false)
       field(:provider, :string)
       field(:model, :string)
       field(:min_score, :integer, default: 6)
+      field(:pass_threshold, :integer)
+      field(:clarification_floor, :integer)
+      field(:max_clarification_rounds, :integer, default: 2)
       field(:on_error, :string, default: "pass")
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:enabled, :provider, :model, :min_score, :on_error], empty_values: [])
+      |> cast(attrs, @fields, empty_values: [])
       |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
       |> validate_inclusion(:on_error, @on_error_modes, message: "must be one of: #{Enum.join(@on_error_modes, ", ")}")
       |> validate_number(:min_score, greater_than_or_equal_to: 1, less_than_or_equal_to: 10)
+      |> validate_number(:pass_threshold, greater_than_or_equal_to: 1, less_than_or_equal_to: 10)
+      |> validate_number(:clarification_floor, greater_than_or_equal_to: 1, less_than_or_equal_to: 10)
+      |> validate_number(:max_clarification_rounds, greater_than_or_equal_to: 1)
+      |> validate_clarification_band()
       |> validate_required_when_enabled()
+    end
+
+    defp validate_clarification_band(changeset) do
+      floor = get_field(changeset, :clarification_floor)
+      threshold = get_field(changeset, :pass_threshold) || get_field(changeset, :min_score)
+
+      cond do
+        is_nil(floor) or is_nil(threshold) ->
+          changeset
+
+        floor < threshold ->
+          changeset
+
+        true ->
+          add_error(changeset, :clarification_floor, "must be less than pass_threshold")
+      end
     end
 
     defp validate_required_when_enabled(changeset) do

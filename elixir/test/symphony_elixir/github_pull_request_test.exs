@@ -19,6 +19,7 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
            "comments" => [],
            "reviews" => [
              %{
+               "id" => "PRR_kw1",
                "author" => %{"login" => "reviewer"},
                "body" => "Looks good.",
                "url" => "#{pr_url}#pullrequestreview-1",
@@ -34,9 +35,12 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
 
         {Jason.encode!([
            %{
+             "id" => 123,
              "user" => %{"login" => "reviewer"},
              "body" => "Nit fixed separately.",
              "html_url" => "#{pr_url}#discussion_r1",
+             "path" => "lib/example.ex",
+             "line" => 42,
              "created_at" => "2026-05-01T09:03:00Z",
              "updated_at" => "2026-05-01T09:05:00Z"
            }
@@ -51,6 +55,9 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert activity.latest_activity_at == ~U[2026-05-01 10:00:00Z]
     assert activity.latest_review_activity_at == ~U[2026-05-01 09:05:00Z]
     assert Enum.map(activity.comments, & &1.kind) == ["review", "inline_comment"]
+    assert Enum.map(activity.comments, & &1.id) == ["PRR_kw1", "123"]
+    assert List.last(activity.comments).path == "lib/example.ex"
+    assert List.last(activity.comments).line == 42
   end
 
   test "fetch_activity ignores a stale cwd when the workspace was already removed" do
@@ -79,5 +86,29 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
 
     assert {:ok, activity} = PullRequest.fetch_activity(pr_url, cwd: missing_cwd, gh_runner: runner)
     assert activity.state == "MERGED"
+  end
+
+  test "reply_to_comment posts inline replies and request_review re-requests reviewers" do
+    pr_url = "https://github.example.com/org/repo/pull/42"
+
+    runner = fn
+      ["api", "--hostname", "github.example.com", "repos/org/repo/pulls/42/comments/123/replies", "-f", "body=Addressed."], opts ->
+        assert opts[:stderr_to_stdout]
+        {"{}", 0}
+
+      ["pr", "edit", ^pr_url, "--add-reviewer", "reviewer", "--add-reviewer", "maintainer"], opts ->
+        assert opts[:stderr_to_stdout]
+        {"", 0}
+    end
+
+    assert :ok =
+             PullRequest.reply_to_comment(
+               pr_url,
+               %{id: "123", kind: "inline_comment"},
+               "Addressed.",
+               gh_runner: runner
+             )
+
+    assert :ok = PullRequest.request_review(pr_url, ["reviewer", "reviewer", "maintainer"], gh_runner: runner)
   end
 end

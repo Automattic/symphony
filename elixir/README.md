@@ -95,10 +95,12 @@ PR review mode is controlled by the optional `pr_review` block. `tracker` is the
 preserves the existing human-driven review loop. In `polling` mode, Symphony starts a
 `PrReviewPoller` process that discovers in-review issues with attached GitHub PRs, records their
 PR URL and workspace path in the durable run store, waits `cooldown_minutes` before responding to
-requested changes, moves approved or change-requested issues back to `In Progress` for the
-orchestrator to dispatch through the normal run path, and removes tracked workspaces when PRs close
-or stay idle beyond `stale_days`. `cooldown_minutes` and `stale_days` are polling-only settings;
-polling mode defaults them to 10 minutes and 7 days when omitted.
+requested changes or non-bot reviewer comments, moves approved or rework-requested issues back to
+`In Progress` for the orchestrator to dispatch through the normal run path, injects unaddressed
+reviewer comments into the first prompt, and removes tracked workspaces when PRs close or stay idle
+beyond `stale_days`. `cooldown_minutes`, `stale_days`, comment bot filters, and review follow-up
+flags are polling-only settings; polling mode defaults them to 10 minutes, 7 days, no ignored users,
+and no GitHub replies or review re-requests when omitted.
 
 Minimal example:
 
@@ -135,6 +137,10 @@ agent:
     denied_domains: []
 pr_review:
   mode: tracker
+  auto_reply: false
+  auto_request_review: false
+  github_user: null
+  bot_users: []
 quality_gate:
   enabled: true
   provider: anthropic           # or: openai

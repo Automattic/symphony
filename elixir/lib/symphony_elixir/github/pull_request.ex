@@ -4,10 +4,13 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   """
 
   @type comment :: %{
+          optional(:id) => String.t() | nil,
           optional(:author) => String.t() | nil,
           optional(:body) => String.t() | nil,
           optional(:url) => String.t() | nil,
           optional(:kind) => String.t(),
+          optional(:path) => String.t() | nil,
+          optional(:line) => integer() | nil,
           optional(:created_at) => DateTime.t() | nil,
           optional(:updated_at) => DateTime.t() | nil
         }
@@ -27,6 +30,66 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       do_fetch_activity(pr_url, opts)
     else
       {:error, :invalid_pr_url}
+    end
+  end
+
+  @spec reply_to_comment(String.t(), comment(), String.t(), keyword()) :: :ok | {:error, term()}
+  def reply_to_comment(pr_url, comment, body, opts \\ []) do
+    cond do
+      inline_comment?(comment) and is_binary(pr_url) and is_binary(body) ->
+        reply_to_inline_comment(pr_url, comment, body, opts)
+
+      is_binary(pr_url) and is_binary(body) ->
+        reply_to_pr_comment(pr_url, body, opts)
+
+      true ->
+        {:error, :invalid_reply}
+    end
+  end
+
+  @spec request_review(String.t(), [String.t()], keyword()) :: :ok | {:error, term()}
+  def request_review(pr_url, reviewers, opts \\ []) when is_binary(pr_url) and is_list(reviewers) do
+    reviewers = reviewers |> Enum.filter(&is_binary/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")) |> Enum.uniq()
+
+    case reviewers do
+      [] ->
+        :ok
+
+      [_ | _] ->
+        args = ["pr", "edit", pr_url] ++ Enum.flat_map(reviewers, &["--add-reviewer", &1])
+
+        case run_gh(args, opts) do
+          {:ok, _output} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp inline_comment?(%{kind: "inline_comment"}), do: true
+  defp inline_comment?(%{"kind" => "inline_comment"}), do: true
+  defp inline_comment?(_comment), do: false
+
+  defp reply_to_inline_comment(pr_url, comment, body, opts) do
+    with {:ok, host, owner, repo, number} <- parse_github_pr_url(pr_url),
+         comment_id when is_binary(comment_id) <- comment_id(comment),
+         {:ok, _output} <-
+           run_gh(
+             github_api_args(host, "repos/#{owner}/#{repo}/pulls/#{number}/comments/#{comment_id}/replies") ++
+               ["-f", "body=#{body}"],
+             opts
+           ) do
+      :ok
+    else
+      :error -> {:error, :invalid_pr_url}
+      nil -> {:error, :missing_comment_id}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp reply_to_pr_comment(pr_url, body, opts) do
+    case run_gh(["pr", "comment", pr_url, "--body", body], opts) do
+      {:ok, _output} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -105,6 +168,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   defp pr_comments(%{"comments" => comments}) when is_list(comments) do
     Enum.map(comments, fn comment ->
       %{
+        id: normalize_id(Map.get(comment, "id") || Map.get(comment, "databaseId") || Map.get(comment, "url")),
         kind: "comment",
         author: get_in(comment, ["author", "login"]),
         body: Map.get(comment, "body"),
@@ -121,6 +185,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
     reviews
     |> Enum.map(fn review ->
       %{
+        id: normalize_id(Map.get(review, "id") || Map.get(review, "databaseId") || Map.get(review, "url")),
         kind: "review",
         author: get_in(review, ["author", "login"]),
         body: Map.get(review, "body"),
@@ -137,10 +202,13 @@ defmodule SymphonyElixir.GitHub.PullRequest do
 
   defp normalize_inline_comment(comment) when is_map(comment) do
     %{
+      id: normalize_id(Map.get(comment, "id") || Map.get(comment, "node_id") || Map.get(comment, "html_url")),
       kind: "inline_comment",
       author: get_in(comment, ["user", "login"]),
       body: Map.get(comment, "body"),
       url: Map.get(comment, "html_url"),
+      path: Map.get(comment, "path"),
+      line: normalize_line(Map.get(comment, "line") || Map.get(comment, "original_line")),
       created_at: parse_datetime(Map.get(comment, "created_at")),
       updated_at: parse_datetime(Map.get(comment, "updated_at"))
     }
@@ -211,6 +279,16 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   end
 
   defp parse_datetime(_value), do: nil
+
+  defp normalize_id(value) when is_integer(value), do: Integer.to_string(value)
+  defp normalize_id(value) when is_binary(value), do: value
+  defp normalize_id(_value), do: nil
+
+  defp normalize_line(value) when is_integer(value), do: value
+  defp normalize_line(_value), do: nil
+
+  defp comment_id(comment) when is_map(comment), do: normalize_id(Map.get(comment, :id) || Map.get(comment, "id"))
+  defp comment_id(_comment), do: nil
 
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank?(nil), do: true

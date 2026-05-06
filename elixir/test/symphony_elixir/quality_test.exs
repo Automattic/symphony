@@ -83,8 +83,10 @@ defmodule SymphonyElixir.QualityTest do
     timeout_eval =
       Quality.build_eval_log_for_test(
         %{run_id: "run-quality-3", issue: %Issue{id: "i3", identifier: "RSM-3"}, started_at: DateTime.utc_now()},
-        "timeout", nil,
-        agent_kind: "codex", transcript_events: nil
+        "timeout",
+        nil,
+        agent_kind: "codex",
+        transcript_events: nil
       )
 
     assert timeout_eval.outcome == "error"
@@ -93,8 +95,10 @@ defmodule SymphonyElixir.QualityTest do
     budget_eval =
       Quality.build_eval_log_for_test(
         %{run_id: "run-quality-4", issue: %Issue{id: "i4", identifier: "RSM-4"}, started_at: DateTime.utc_now()},
-        "budget_exhausted", nil,
-        agent_kind: "codex", transcript_events: nil
+        "budget_exhausted",
+        nil,
+        agent_kind: "codex",
+        transcript_events: nil
       )
 
     assert budget_eval.outcome == "error"
@@ -103,8 +107,10 @@ defmodule SymphonyElixir.QualityTest do
     failure_eval =
       Quality.build_eval_log_for_test(
         %{run_id: "run-quality-5", issue: %Issue{id: "i5", identifier: "RSM-5"}, started_at: DateTime.utc_now()},
-        "failure", "agent exited: :boom",
-        agent_kind: "codex", transcript_events: nil
+        "failure",
+        "agent exited: :boom",
+        agent_kind: "codex",
+        transcript_events: nil
       )
 
     assert failure_eval.outcome == "error"
@@ -120,8 +126,10 @@ defmodule SymphonyElixir.QualityTest do
           issue: %Issue{id: "i6", identifier: "RSM-6", pull_request_url: "https://github.com/example/repo/pull/99"},
           started_at: DateTime.utc_now()
         },
-        "failure", "post-pr error",
-        agent_kind: "codex", transcript_events: nil
+        "failure",
+        "post-pr error",
+        agent_kind: "codex",
+        transcript_events: nil
       )
 
     assert eval.outcome == "pr_opened"

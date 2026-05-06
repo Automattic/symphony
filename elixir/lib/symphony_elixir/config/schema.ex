@@ -388,12 +388,20 @@ defmodule SymphonyElixir.Config.Schema do
       field(:mode, :string, default: "tracker")
       field(:cooldown_minutes, :integer)
       field(:stale_days, :integer)
+      field(:github_user, :string)
+      field(:bot_users, {:array, :string}, default: [])
+      field(:auto_reply, :boolean, default: false)
+      field(:auto_request_review, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(polling_attrs(attrs), [:mode, :cooldown_minutes, :stale_days], empty_values: [])
+      |> cast(
+        polling_attrs(attrs),
+        [:mode, :cooldown_minutes, :stale_days, :github_user, :bot_users, :auto_reply, :auto_request_review],
+        empty_values: []
+      )
       |> put_polling_defaults()
       |> validate_required([:mode])
       |> validate_inclusion(:mode, @modes)
@@ -402,8 +410,24 @@ defmodule SymphonyElixir.Config.Schema do
 
     defp polling_attrs(attrs) when is_map(attrs) do
       case attrs |> Map.get("mode", Map.get(attrs, :mode, "tracker")) |> to_string() do
-        "polling" -> attrs
-        _mode -> Map.drop(attrs, ["cooldown_minutes", :cooldown_minutes, "stale_days", :stale_days])
+        "polling" ->
+          attrs
+
+        _mode ->
+          Map.drop(attrs, [
+            "cooldown_minutes",
+            :cooldown_minutes,
+            "stale_days",
+            :stale_days,
+            "github_user",
+            :github_user,
+            "bot_users",
+            :bot_users,
+            "auto_reply",
+            :auto_reply,
+            "auto_request_review",
+            :auto_request_review
+          ])
       end
     end
 
@@ -412,6 +436,9 @@ defmodule SymphonyElixir.Config.Schema do
         changeset
         |> put_default(:cooldown_minutes, @default_cooldown_minutes)
         |> put_default(:stale_days, @default_stale_days)
+        |> put_default(:bot_users, [])
+        |> put_default(:auto_reply, false)
+        |> put_default(:auto_request_review, false)
       else
         changeset
       end

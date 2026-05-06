@@ -18,6 +18,13 @@ polling:
   interval_ms: 5000
 pr_review:
   mode: tracker
+  # Polling mode only. Defaults are false so the agent returns the PR silently
+  # after rework unless operators opt in.
+  auto_reply: false
+  auto_request_review: false
+  # Optional polling-mode self/bot filter for GitHub comment triggers.
+  github_user: null
+  bot_users: []
 observability:
   transcript_buffer_size: 200
 workspace:

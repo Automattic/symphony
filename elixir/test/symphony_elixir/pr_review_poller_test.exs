@@ -64,6 +64,27 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     end
   end
 
+  defmodule ActionGitHub do
+    @spec fetch_activity(String.t(), keyword()) :: {:ok, map()}
+    def fetch_activity(_pr_url, _opts) do
+      {:ok, Application.fetch_env!(:symphony_elixir, :pr_review_test_activity)}
+    end
+
+    @spec reply_to_comment(String.t(), map(), String.t(), keyword()) :: :ok
+    def reply_to_comment(pr_url, comment, body, _opts) do
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+      send(recipient, {:github_reply, pr_url, comment, body})
+      :ok
+    end
+
+    @spec request_review(String.t(), [String.t()], keyword()) :: :ok
+    def request_review(pr_url, reviewers, _opts) do
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+      send(recipient, {:github_request_review, pr_url, reviewers})
+      :ok
+    end
+  end
+
   defmodule RaisingRunStore do
     @spec list_runs(:all) :: no_return()
     def list_runs(:all), do: raise("poll exploded")
@@ -281,6 +302,161 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              RunStore.list_pr_reviews()
   end
 
+  test "plain non-bot reviewer comments trigger rework after cooldown and are stored for the prompt" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Please refactor this before merge.",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-1",
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert [
+             %{
+               status: "rework_requested",
+               pending_last_addressed_comment_id: "comment-1",
+               pending_reviewer_comments: [
+                 %{id: "comment-1", author: "human-reviewer", body: "Please refactor this before merge."}
+               ]
+             } = record
+           ] = RunStore.list_pr_reviews()
+
+    refute Map.has_key?(record, :last_addressed_comment_id)
+  end
+
+  test "plain reviewer comments still respect cooldown" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -10, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Please refactor this before merge.",
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:cooling_down, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    refute_receive {:issue_state_update, _, _}
+    assert [%{status: "cooling_down", pending_last_addressed_comment_id: "comment-1"}] = RunStore.list_pr_reviews()
+  end
+
+  test "configured bot and agent users do not trigger comment rework" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_github_user: "agent-user",
+      pr_review_bot_users: ["symphony-bot"]
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        comments: [
+          %{id: "bot-comment", kind: "comment", author: "symphony-bot", body: "Automated status.", created_at: latest_comment_at},
+          %{id: "self-comment", kind: "comment", author: "agent-user", body: "Agent follow-up.", created_at: latest_comment_at}
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    refute_receive {:issue_state_update, _, _}
+    assert [%{status: "watching"} = record] = RunStore.list_pr_reviews()
+    refute Map.has_key?(record, :pending_last_addressed_comment_id)
+  end
+
+  test "last addressed comment cursor deduplicates comments across later polls" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "inline_comment",
+            author: "human-reviewer",
+            body: "Please split this function.",
+            path: "lib/example.ex",
+            line: 42,
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", now: DateTime.add(now, 5, :minute))
+
+    assert [%{last_addressed_comment_id: "comment-1", pending_reviewer_comments: []}] =
+             RunStore.list_pr_reviews()
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               now: DateTime.add(now, 10, :minute)
+             )
+
+    refute_receive {:issue_state_update, _, _}
+  end
+
   test "moves an approved issue back to an active state for orchestrator-owned merge handling" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
@@ -299,6 +475,56 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     assert [%{status: "merge_requested", target_issue_state: "In Progress", last_action: "merge"}] =
              RunStore.list_pr_reviews()
+  end
+
+  test "auto reply and auto request review are off by default when comments are completed" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    :ok =
+      put_review(now, %{
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    refute_receive {:github_reply, _, _, _}
+    refute_receive {:github_request_review, _, _}
+    assert [%{last_addressed_comment_id: "comment-1", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+  end
+
+  test "auto reply and auto request review run only when explicitly enabled" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_github_user: "agent-user",
+      pr_review_auto_reply: true,
+      pr_review_auto_request_review: true
+    )
+
+    :ok =
+      put_review(now, %{
+        pending_last_addressed_comment_id: "comment-2",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42},
+          %{id: "comment-2", kind: "comment", author: "maintainer", body: "Also update docs."}
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
+    assert reply_body =~ "addressed"
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-2"}, _reply_body}
+    assert_receive {:github_request_review, "https://github.com/example/repo/pull/1780", ["human-reviewer", "maintainer"]}
+
+    assert [%{last_addressed_comment_id: "comment-2", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
   end
 
   test "approval wins over stale cleanup" do

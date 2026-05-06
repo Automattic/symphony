@@ -81,6 +81,85 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  @doc false
+  @spec pending_reviewer_comments(String.t(), keyword()) :: [map()]
+  def pending_reviewer_comments(issue_id, opts \\ []) do
+    if is_binary(issue_id) do
+      run_store = Keyword.get(opts, :run_store, RunStore)
+
+      with {:ok, reviews} <- list_pr_reviews(run_store),
+           %{} = record <- Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
+        record
+        |> Map.get(:pending_reviewer_comments, [])
+        |> normalize_comments()
+      else
+        _ -> []
+      end
+    else
+      []
+    end
+  end
+
+  @doc false
+  @spec complete_pending_reviewer_comments(String.t(), keyword()) :: :ok | {:error, term()}
+  def complete_pending_reviewer_comments(issue_id, opts \\ []) do
+    if is_binary(issue_id) do
+      do_complete_pending_reviewer_comments(issue_id, opts)
+    else
+      :ok
+    end
+  end
+
+  defp do_complete_pending_reviewer_comments(issue_id, opts) do
+    run_store = Keyword.get(opts, :run_store, RunStore)
+
+    case fetch_pr_review_record(run_store, issue_id) do
+      {:ok, record} -> complete_reviewer_comment_record(record, opts)
+      :missing -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_pr_review_record(run_store, issue_id) do
+    case list_pr_reviews(run_store) do
+      {:ok, reviews} ->
+        case Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
+          %{} = record -> {:ok, record}
+          nil -> :missing
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp complete_reviewer_comment_record(record, opts) do
+    github = Keyword.get(opts, :github, PullRequest)
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+    comments = record |> Map.get(:pending_reviewer_comments, []) |> normalize_comments()
+    cursor = Map.get(record, :pending_last_addressed_comment_id) || latest_comment_id(comments)
+
+    if comments == [] and is_nil(cursor) do
+      :ok
+    else
+      complete_reviewer_comment_record(record, comments, cursor, github, opts, now)
+    end
+  end
+
+  defp complete_reviewer_comment_record(record, comments, cursor, github, opts, now) do
+    with {:ok, settings} <- poll_settings(opts),
+         :ok <- maybe_reply_to_comments(record, comments, settings, github),
+         :ok <- maybe_request_review(record, comments, settings, github) do
+      update_review(opts, record, %{
+        last_addressed_comment_id: cursor,
+        last_addressed_comment_at: now,
+        pending_reviewer_comments: [],
+        pending_last_addressed_comment_id: nil,
+        updated_at: now
+      })
+    end
+  end
+
   defp poll_settings(opts) do
     case Keyword.fetch(opts, :settings) do
       {:ok, settings} -> {:ok, settings}
@@ -236,13 +315,16 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp handle_activity(record, activity, settings, opts, now) do
-    {attrs, latest_activity_at} = review_activity_attrs(record, activity, now)
+    {attrs, latest_activity_at, unaddressed_comments} = review_activity_attrs(record, activity, settings, now)
 
-    case review_action(activity, latest_activity_at, settings, now) do
+    case review_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
       :closed ->
         cleanup_review(record, opts, now, "closed")
 
       :changes_requested ->
+        maybe_transition_rework(record, attrs, settings, opts, now)
+
+      :review_comments ->
         maybe_transition_rework(record, attrs, settings, opts, now)
 
       :approved ->
@@ -256,7 +338,7 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp review_activity_attrs(record, activity, now) do
+  defp review_activity_attrs(record, activity, settings, now) do
     latest_activity_at =
       Map.get(activity, :latest_activity_at) ||
         Map.get(record, :last_activity_at) ||
@@ -268,27 +350,34 @@ defmodule SymphonyElixir.PrReviewPoller do
         Map.get(record, :last_review_activity_at) ||
         latest_activity_at
 
-    attrs = %{
-      status: "watching",
-      error: nil,
-      consecutive_errors: 0,
-      next_poll_at: nil,
-      last_activity_at: latest_activity_at,
-      last_review_activity_at: latest_review_activity_at,
-      last_review_decision: Map.get(activity, :review_decision),
-      updated_at: now
-    }
+    unaddressed_comments = unaddressed_reviewer_comments(record, Map.get(activity, :comments, []), settings)
+    latest_unaddressed_comment_at = latest_comment_activity_at(unaddressed_comments)
 
-    {attrs, latest_activity_at}
+    attrs =
+      %{
+        status: "watching",
+        error: nil,
+        consecutive_errors: 0,
+        next_poll_at: nil,
+        last_activity_at: latest_activity_at,
+        last_review_activity_at: latest_review_activity_at,
+        last_unaddressed_comment_at: latest_unaddressed_comment_at,
+        last_review_decision: Map.get(activity, :review_decision),
+        updated_at: now
+      }
+      |> maybe_put_pending_comments(unaddressed_comments)
+
+    {attrs, latest_activity_at, unaddressed_comments}
   end
 
-  defp review_action(activity, latest_activity_at, settings, now) do
+  defp review_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
     review_decision = normalize_decision(Map.get(activity, :review_decision))
 
     cond do
       closed_pr_state?(Map.get(activity, :state)) -> :closed
       review_decision == @changes_requested -> :changes_requested
       review_decision == @approved -> :approved
+      unaddressed_comments != [] -> :review_comments
       stale?(latest_activity_at, now, settings.pr_review.stale_days) -> :stale
       true -> :watching
     end
@@ -320,7 +409,9 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp action_activity_at(attrs) do
-    Map.get(attrs, :last_review_activity_at) || Map.fetch!(attrs, :last_activity_at)
+    Map.get(attrs, :last_unaddressed_comment_at) ||
+      Map.get(attrs, :last_review_activity_at) ||
+      Map.fetch!(attrs, :last_activity_at)
   end
 
   defp transition_issue_for_action(record, attrs, opts, now, action) do
@@ -511,6 +602,177 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  defp maybe_put_pending_comments(attrs, []), do: attrs
+
+  defp maybe_put_pending_comments(attrs, comments) when is_list(comments) do
+    attrs
+    |> Map.put(:pending_reviewer_comments, comments)
+    |> Map.put(:pending_last_addressed_comment_id, latest_comment_id(comments))
+  end
+
+  defp unaddressed_reviewer_comments(record, comments, settings) do
+    comments =
+      comments
+      |> normalize_comments()
+      |> Enum.reject(&(ignored_comment?(&1, settings) or String.trim(Map.get(&1, :body, "")) == ""))
+      |> sort_comments()
+
+    comments
+    |> comments_after_cursor(Map.get(record, :last_addressed_comment_id))
+    |> comments_after_last_action(record)
+  end
+
+  defp normalize_comments(comments) when is_list(comments) do
+    comments
+    |> Enum.map(&normalize_comment/1)
+    |> Enum.reject(&(Map.get(&1, :id) in [nil, ""]))
+  end
+
+  defp normalize_comments(_comments), do: []
+
+  defp normalize_comment(comment) when is_map(comment) do
+    %{
+      id: string_field(comment, :id) || fallback_comment_id(comment),
+      kind: string_field(comment, :kind),
+      author: string_field(comment, :author),
+      body: string_field(comment, :body) || "",
+      url: string_field(comment, :url),
+      path: string_field(comment, :path),
+      line: integer_field(comment, :line),
+      created_at: datetime_field(comment, :created_at),
+      updated_at: datetime_field(comment, :updated_at)
+    }
+  end
+
+  defp normalize_comment(_comment), do: %{id: nil}
+
+  defp ignored_comment?(comment, settings) do
+    author = normalize_user(Map.get(comment, :author))
+
+    author != nil and author in ignored_review_users(settings)
+  end
+
+  defp ignored_review_users(%{pr_review: pr_review}) do
+    ([Map.get(pr_review, :github_user)] ++ Map.get(pr_review, :bot_users, []))
+    |> Enum.map(&normalize_user/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp ignored_review_users(_settings), do: []
+
+  defp normalize_user(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> then(fn
+      "" -> nil
+      user -> user
+    end)
+  end
+
+  defp normalize_user(_value), do: nil
+
+  defp sort_comments(comments) do
+    Enum.sort_by(comments, fn comment ->
+      {comment_sort_timestamp(comment), Map.get(comment, :id)}
+    end)
+  end
+
+  defp comments_after_cursor(comments, cursor) when is_binary(cursor) and cursor != "" do
+    case Enum.split_while(comments, &(Map.get(&1, :id) != cursor)) do
+      {_before, [_cursor | after_cursor]} -> after_cursor
+      {_all, []} -> comments
+    end
+  end
+
+  defp comments_after_cursor(comments, _cursor), do: comments
+
+  defp comments_after_last_action(comments, record) do
+    case Map.get(record, :last_action_at) do
+      %DateTime{} = last_action_at ->
+        Enum.reject(comments, &comment_handled_by_action?(&1, last_action_at))
+
+      _ ->
+        comments
+    end
+  end
+
+  defp latest_comment_id([]), do: nil
+
+  defp latest_comment_id(comments) when is_list(comments) do
+    comments
+    |> sort_comments()
+    |> List.last()
+    |> case do
+      nil -> nil
+      comment -> Map.get(comment, :id)
+    end
+  end
+
+  defp latest_comment_activity_at(comments) when is_list(comments) do
+    comments
+    |> Enum.map(&comment_activity_at/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(DateTime, fn -> nil end)
+  end
+
+  defp comment_activity_at(comment) when is_map(comment), do: Map.get(comment, :updated_at) || Map.get(comment, :created_at)
+  defp comment_activity_at(_comment), do: nil
+
+  defp comment_handled_by_action?(comment, last_action_at) do
+    case comment_activity_at(comment) do
+      %DateTime{} = activity_at -> DateTime.compare(activity_at, last_action_at) in [:lt, :eq]
+      _ -> false
+    end
+  end
+
+  defp comment_sort_timestamp(comment) do
+    case comment_activity_at(comment) do
+      %DateTime{} = datetime -> DateTime.to_unix(datetime, :microsecond)
+      _ -> 0
+    end
+  end
+
+  defp fallback_comment_id(comment) when is_map(comment) do
+    [
+      string_field(comment, :kind),
+      string_field(comment, :author),
+      string_field(comment, :url),
+      string_field(comment, :body),
+      datetime_field(comment, :created_at),
+      datetime_field(comment, :updated_at)
+    ]
+    |> Enum.map_join("|", &fallback_id_part/1)
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp fallback_id_part(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp fallback_id_part(nil), do: ""
+  defp fallback_id_part(value), do: to_string(value)
+
+  defp string_field(map, key) when is_map(map) and is_atom(key) do
+    case Map.get(map, key) || Map.get(map, to_string(key)) do
+      value when is_binary(value) -> value
+      value when is_integer(value) -> Integer.to_string(value)
+      _value -> nil
+    end
+  end
+
+  defp integer_field(map, key) when is_map(map) and is_atom(key) do
+    case Map.get(map, key) || Map.get(map, to_string(key)) do
+      value when is_integer(value) -> value
+      _value -> nil
+    end
+  end
+
+  defp datetime_field(map, key) when is_map(map) and is_atom(key) do
+    case Map.get(map, key) || Map.get(map, to_string(key)) do
+      %DateTime{} = datetime -> datetime
+      _value -> nil
+    end
+  end
+
   defp cooldown_elapsed?(%DateTime{} = latest_activity_at, %DateTime{} = now, cooldown_minutes) do
     DateTime.diff(now, latest_activity_at, :second) >= cooldown_minutes * 60
   end
@@ -591,6 +853,50 @@ defmodule SymphonyElixir.PrReviewPoller do
       :ok -> success_action
       {:error, reason} -> {:update_error, Map.get(record, :issue_id), reason}
     end
+  end
+
+  defp maybe_reply_to_comments(_record, [], _settings, _github), do: :ok
+
+  defp maybe_reply_to_comments(record, comments, settings, github) do
+    case Map.get(settings.pr_review, :auto_reply, false) do
+      true -> reply_to_comments(record, comments, github)
+      _ -> :ok
+    end
+  end
+
+  defp reply_to_comments(record, comments, github) do
+    Enum.reduce_while(comments, :ok, fn comment, :ok ->
+      case github.reply_to_comment(Map.get(record, :pr_url), comment, addressed_comment_reply(), cwd: Map.get(record, :workspace_path)) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:auto_reply_failed, Map.get(comment, :id), reason}}}
+      end
+    end)
+  end
+
+  defp maybe_request_review(_record, [], _settings, _github), do: :ok
+
+  defp maybe_request_review(record, comments, settings, github) do
+    if Map.get(settings.pr_review, :auto_request_review, false) do
+      reviewers =
+        comments
+        |> Enum.map(&Map.get(&1, :author))
+        |> Enum.reject(&(normalize_user(&1) in ignored_review_users(settings)))
+        |> Enum.filter(&is_binary/1)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+        |> Enum.uniq()
+
+      case github.request_review(Map.get(record, :pr_url), reviewers, cwd: Map.get(record, :workspace_path)) do
+        :ok -> :ok
+        {:error, reason} -> {:error, {:auto_request_review_failed, reason}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp addressed_comment_reply do
+    "Thanks for the review. I addressed this in the latest rework run."
   end
 
   defp log_review_store_error(operation, issue_id, attrs, reason) do

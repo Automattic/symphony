@@ -86,7 +86,8 @@ defmodule SymphonyElixir.RunStoreTest do
     assert :ok =
              RunStore.update_pr_review("issue-1", %{
                status: "cooling_down",
-               last_activity_at: due_at
+               last_activity_at: due_at,
+               last_addressed_comment_id: "comment-1"
              })
 
     assert [
@@ -95,7 +96,8 @@ defmodule SymphonyElixir.RunStoreTest do
                pr_url: "https://github.com/example/repo/pull/1",
                workspace_path: "/tmp/workspaces/RSM-1",
                status: "cooling_down",
-               last_activity_at: ^due_at
+               last_activity_at: ^due_at,
+               last_addressed_comment_id: "comment-1"
              }
            ] = RunStore.list_pr_reviews()
 

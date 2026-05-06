@@ -346,6 +346,9 @@ defmodule SymphonyElixir.TestSupport do
         kv("provider", Map.get(map_from(opts), :provider)),
         kv("model", Map.get(map_from(opts), :model)),
         kv("min_score", Map.get(map_from(opts), :min_score)),
+        kv("pass_threshold", Map.get(map_from(opts), :pass_threshold)),
+        kv("clarification_floor", Map.get(map_from(opts), :clarification_floor)),
+        kv("max_clarification_rounds", Map.get(map_from(opts), :max_clarification_rounds)),
         kv("on_error", Map.get(map_from(opts), :on_error))
       ]
       |> Enum.reject(&is_nil/1)

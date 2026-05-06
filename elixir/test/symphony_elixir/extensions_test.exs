@@ -200,12 +200,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert {:ok, ^issue} = SymphonyElixir.Tracker.enrich_issue(issue)
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
+    assert :ok = SymphonyElixir.Tracker.add_label("issue-1", "awaiting-clarification")
+    assert :ok = SymphonyElixir.Tracker.remove_label("issue-1", "awaiting-clarification")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
+    assert_receive {:memory_tracker_label_added, "issue-1", "awaiting-clarification"}
+    assert_receive {:memory_tracker_label_removed, "issue-1", "awaiting-clarification"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
+    assert :ok = Memory.add_label("issue-1", "quiet-label")
+    assert :ok = Memory.remove_label("issue-1", "quiet-label")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
@@ -255,6 +261,53 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Process.put({FakeLinearClient, :graphql_result}, :unexpected)
     assert {:error, :comment_create_failed} = Adapter.create_comment("issue-1", "odd")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "team" => %{
+                 "id" => "team-1",
+                 "labels" => %{"nodes" => [%{"id" => "label-1"}]}
+               }
+             }
+           }
+         }},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.add_label("issue-1", "awaiting-clarification")
+    assert_receive {:graphql_called, label_lookup_query, %{issueId: "issue-1", labelName: "awaiting-clarification"}}
+    assert label_lookup_query =~ "labels"
+    assert_receive {:graphql_called, add_label_query, %{issueId: "issue-1", labelIds: ["label-1"]}}
+    assert add_label_query =~ "addedLabelIds"
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "team" => %{
+                 "id" => "team-1",
+                 "labels" => %{"nodes" => [%{"id" => "label-1"}]}
+               }
+             }
+           }
+         }},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.remove_label("issue-1", "awaiting-clarification")
+    assert_receive {:graphql_called, _label_lookup_query, %{issueId: "issue-1", labelName: "awaiting-clarification"}}
+    assert_receive {:graphql_called, remove_label_query, %{issueId: "issue-1", labelIds: ["label-1"]}}
+    assert remove_label_query =~ "removedLabelIds"
 
     Process.put(
       {FakeLinearClient, :graphql_results},
@@ -329,6 +382,97 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+  end
+
+  test "linear adapter creates missing labels before adding them" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        label_lookup_response(nil, "team-1"),
+        label_lookup_response(nil, "team-1"),
+        label_create_response(true, "label-new"),
+        issue_update_response(true)
+      ]
+    )
+
+    assert :ok = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    assert_receive {:graphql_called, label_lookup_query, %{issueId: "issue-1", labelName: "awaiting-clarification"}}
+    assert label_lookup_query =~ "labels"
+
+    assert_receive {:graphql_called, team_lookup_query, %{issueId: "issue-1", labelName: "__symphony_missing_label__"}}
+    assert team_lookup_query =~ "labels"
+
+    assert_receive {:graphql_called, create_label_query,
+                    %{
+                      input: %{
+                        name: "awaiting-clarification",
+                        teamId: "team-1",
+                        color: "#4A7DFF",
+                        description: "Symphony issues waiting for pre-dispatch clarification"
+                      }
+                    }}
+
+    assert create_label_query =~ "issueLabelCreate"
+    assert_receive {:graphql_called, add_label_query, %{issueId: "issue-1", labelIds: ["label-new"]}}
+    assert add_label_query =~ "addedLabelIds"
+  end
+
+  test "linear adapter reports add label failure modes" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response("label-1"), issue_update_response(false)])
+    assert {:error, :label_add_failed} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [{:error, :boom}])
+    assert {:error, :boom} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response("label-1"), :unexpected])
+    assert {:error, :label_add_failed} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response(nil), label_lookup_response(nil), label_create_response(false, nil)])
+    assert {:error, :label_create_failed} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response(nil), label_lookup_response(nil), {:error, :create_boom}])
+    assert {:error, :create_boom} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [label_lookup_response(nil), label_lookup_response(nil), {:ok, %{"data" => %{"issueLabelCreate" => %{"success" => true, "issueLabel" => %{}}}}}]
+    )
+
+    assert {:error, :label_create_failed} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_failed_response()])
+    assert {:error, :label_lookup_failed} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response(nil), label_lookup_failed_response()])
+    assert {:error, :label_lookup_failed} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response(nil), {:error, :team_boom}])
+    assert {:error, :team_boom} = Adapter.add_label("issue-1", "awaiting-clarification")
+
+    assert {:error, :invalid_label_request} = Adapter.add_label(:bad_issue_id, "awaiting-clarification")
+  end
+
+  test "linear adapter treats missing remove labels as already removed and reports failures" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response(nil)])
+    assert :ok = Adapter.remove_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response("label-1"), issue_update_response(false)])
+    assert {:error, :label_remove_failed} = Adapter.remove_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [{:error, :boom}])
+    assert {:error, :boom} = Adapter.remove_label("issue-1", "awaiting-clarification")
+
+    Process.put({FakeLinearClient, :graphql_results}, [label_lookup_response("label-1"), :unexpected])
+    assert {:error, :label_remove_failed} = Adapter.remove_label("issue-1", "awaiting-clarification")
+
+    assert {:error, :invalid_label_request} = Adapter.remove_label("issue-1", :bad_label_name)
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
@@ -1088,6 +1232,46 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
+  end
+
+  defp label_lookup_response(label_id, team_id \\ "team-1") do
+    nodes =
+      case label_id do
+        id when is_binary(id) -> [%{"id" => id}]
+        _ -> []
+      end
+
+    {:ok,
+     %{
+       "data" => %{
+         "issue" => %{
+           "team" => %{
+             "id" => team_id,
+             "labels" => %{"nodes" => nodes}
+           }
+         }
+       }
+     }}
+  end
+
+  defp label_lookup_failed_response do
+    {:ok, %{"data" => %{"issue" => %{"team" => nil}}}}
+  end
+
+  defp label_create_response(success?, label_id) do
+    {:ok,
+     %{
+       "data" => %{
+         "issueLabelCreate" => %{
+           "success" => success?,
+           "issueLabel" => %{"id" => label_id}
+         }
+       }
+     }}
+  end
+
+  defp issue_update_response(success?) do
+    {:ok, %{"data" => %{"issueUpdate" => %{"success" => success?}}}}
   end
 
   defp start_test_endpoint(overrides) do

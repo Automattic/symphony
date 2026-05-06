@@ -321,6 +321,7 @@ defmodule SymphonyElixir.StatusDashboard do
              running: running,
              watching: Map.get(snapshot, :watching, []),
              retrying: retrying,
+             awaiting_clarification: Map.get(snapshot, :awaiting_clarification, []),
              skipped: Map.get(snapshot, :skipped, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
@@ -341,6 +342,7 @@ defmodule SymphonyElixir.StatusDashboard do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         watching = Map.get(snapshot, :watching, [])
+        awaiting_clarification = Map.get(snapshot, :awaiting_clarification, [])
         skipped = Map.get(snapshot, :skipped, [])
         rate_limits = Map.get(snapshot, :rate_limits)
         project_link_lines = format_project_link_lines()
@@ -358,7 +360,9 @@ defmodule SymphonyElixir.StatusDashboard do
         watching_rows = format_watching_rows(watching, watching_url_width)
         watching_to_backoff_spacer = if(watching == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
-        backoff_to_skipped_spacer = if(retrying == [], do: [], else: ["│"])
+        backoff_to_awaiting_spacer = if(retrying == [], do: [], else: ["│"])
+        awaiting_rows = format_awaiting_clarification_rows(awaiting_clarification, watching_url_width)
+        awaiting_to_skipped_spacer = if(awaiting_clarification == [], do: [], else: ["│"])
         skipped_rows = format_skipped_rows(skipped)
 
         ([
@@ -391,7 +395,10 @@ defmodule SymphonyElixir.StatusDashboard do
            watching_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
-           backoff_to_skipped_spacer ++
+           backoff_to_awaiting_spacer ++
+           [colorize("├─ Awaiting clarification", @ansi_bold), "│"] ++
+           awaiting_rows ++
+           awaiting_to_skipped_spacer ++
            [colorize("├─ Skipped (quality gate)", @ansi_bold), "│"] ++
            skipped_rows ++
            [closing_border()])
@@ -856,6 +863,31 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_skipped_rows(_skipped), do: format_skipped_rows([])
+
+  defp format_awaiting_clarification_rows(awaiting, url_width) when is_list(awaiting) do
+    if awaiting == [] do
+      ["│  " <> colorize("No issues awaiting clarification", @ansi_gray)]
+    else
+      awaiting
+      |> Enum.sort_by(&skipped_sort_key/1)
+      |> Enum.map(&format_awaiting_clarification_row(&1, url_width))
+    end
+  end
+
+  defp format_awaiting_clarification_rows(_awaiting, url_width), do: format_awaiting_clarification_rows([], url_width)
+
+  defp format_awaiting_clarification_row(entry, url_width) do
+    label = entry.identifier || entry.issue_id || "unknown"
+    round_count = Map.get(entry, :rounds_asked, 0)
+    url = entry.url || ""
+    url_part = if url == "", do: "", else: " " <> colorize(truncate(url, url_width), @ansi_dim)
+
+    "│  ? " <>
+      colorize(label, @ansi_cyan) <>
+      " " <>
+      colorize("round=#{round_count}", @ansi_yellow) <>
+      url_part
+  end
 
   defp skipped_sort_key(%{identifier: identifier}) when is_binary(identifier), do: identifier
   defp skipped_sort_key(%{issue_id: issue_id}), do: issue_id || ""

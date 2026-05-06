@@ -92,6 +92,304 @@ defmodule SymphonyElixir.QualityGateTest do
       assert result.skipped == []
     end
 
+    test "keeps legacy min_score behavior when clarification_floor is unset" do
+      config = config_enabled(min_score: 6)
+      Process.put(:quality_gate_stub_results, %{"ID-LEGACY" => {:ok, %{score: 5, reason: "almost"}}})
+
+      result = QualityGate.evaluate([issue("ID-LEGACY")], config, %{}, provider_module: StubProvider)
+
+      assert result.passed == []
+      assert result.awaiting_clarification == []
+      assert [%{kind: :scored, score: 5, reason: "almost"}] = result.skipped
+      assert %{awaiting_clarification?: false, rounds_asked: 0} = Map.fetch!(result.cache, "ID-LEGACY")
+    end
+
+    test "holds mid-band issues for clarification when clarification_floor is set" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+
+      Process.put(:quality_gate_stub_results, %{
+        "ID-MID" =>
+          {:ok,
+           %{
+             score: 5,
+             reason: "missing acceptance criteria",
+             questions: [
+               "What should the agent verify before opening a PR?",
+               "Which module owns this behavior?",
+               "What should stay out of scope?"
+             ]
+           }}
+      })
+
+      result = QualityGate.evaluate([issue("ID-MID")], config, %{}, provider_module: StubProvider)
+
+      assert result.passed == []
+      assert result.skipped == []
+
+      assert [
+               %{
+                 kind: :clarification,
+                 issue_id: "ID-MID",
+                 score: 5,
+                 reason: "missing acceptance criteria",
+                 rounds_asked: 1,
+                 max_rounds: 2,
+                 pass_threshold: 6,
+                 comment_posted?: false,
+                 questions: questions
+               }
+             ] = result.awaiting_clarification
+
+      assert length(questions) == 3
+      assert "Which module owns this behavior?" in questions
+
+      assert %{
+               passed?: false,
+               awaiting_clarification?: true,
+               rounds_asked: 1,
+               comment_posted?: false
+             } = Map.fetch!(result.cache, "ID-MID")
+    end
+
+    test "comment activity invalidates cached clarification and allows a passing re-score" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+      initial_issue = issue("ID-REPLY")
+
+      Process.put(:quality_gate_stub_results, %{
+        "ID-REPLY" =>
+          {:ok,
+           %{
+             score: 5,
+             reason: "needs answer",
+             questions: ["What is done?", "Where is it?", "What is excluded?"]
+           }}
+      })
+
+      first = QualityGate.evaluate([initial_issue], config, %{}, provider_module: StubProvider)
+      assert [%{rounds_asked: 1}] = first.awaiting_clarification
+
+      answered_issue =
+        issue("ID-REPLY",
+          comments: [
+            %{author: "Operator", body: "Acceptance criteria are now clear.", created_at: ~U[2026-05-05 04:00:00Z]}
+          ]
+        )
+
+      Process.put(:quality_gate_stub_results, %{"ID-REPLY" => {:ok, %{score: 8, reason: "clear now"}}})
+
+      second = QualityGate.evaluate([answered_issue], config, first.cache, provider_module: StubProvider)
+
+      assert [%Issue{id: "ID-REPLY"}] = second.passed
+      assert second.skipped == []
+      assert second.awaiting_clarification == []
+      assert %{passed?: true, awaiting_clarification?: false, rounds_asked: 0, reason: "clear now"} = Map.fetch!(second.cache, "ID-REPLY")
+    end
+
+    test "quality gate comments do not invalidate cached clarification by themselves" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+
+      cached_issue =
+        issue("ID-SELF",
+          comments: [
+            %{
+              author: "Symphony",
+              body: "Symphony quality gate: clarification requested (score 5 < pass_threshold 6; round 1/2).",
+              created_at: ~U[2026-05-05 04:00:00Z]
+            }
+          ]
+        )
+
+      cache = %{
+        "ID-SELF" => %{
+          updated_at: cached_issue.updated_at,
+          comment_signature: nil,
+          score: 5,
+          reason: "cached clarification",
+          passed?: false,
+          awaiting_clarification?: true,
+          questions: ["What is done?", "Where is it?", "What is excluded?"],
+          rounds_asked: 1,
+          max_rounds: 2,
+          pass_threshold: 6,
+          comment_posted?: true,
+          identifier: "RSM-ID-SELF",
+          title: "Title",
+          state: "Todo",
+          url: "https://linear.app/x/ID-SELF",
+          scored_at: ~U[2026-05-05 03:00:00Z]
+        }
+      }
+
+      Process.put(:quality_gate_stub_results, %{"ID-SELF" => {:ok, %{score: 9, reason: "should not be called"}}})
+
+      result = QualityGate.evaluate([cached_issue], config, cache, provider_module: StubProvider)
+
+      assert result.passed == []
+      assert [%{reason: "cached clarification", comment_posted?: true}] = result.awaiting_clarification
+    end
+
+    test "falls through to skip after max clarification rounds" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+
+      cache = %{
+        "ID-CAP" => %{
+          updated_at: ~U[2026-05-05 03:00:00Z],
+          comment_signature: "old",
+          score: 5,
+          reason: "still vague",
+          passed?: false,
+          awaiting_clarification?: true,
+          questions: ["What is done?", "Where is it?", "What is excluded?"],
+          rounds_asked: 2,
+          max_rounds: 2,
+          pass_threshold: 6,
+          comment_posted?: true,
+          identifier: "RSM-CAP",
+          title: "Title",
+          state: "Todo",
+          url: "https://linear.app/x/ID-CAP",
+          scored_at: ~U[2026-05-05 03:00:00Z]
+        }
+      }
+
+      issue =
+        issue("ID-CAP",
+          comments: [%{author: "Operator", body: "Still not enough detail.", created_at: ~U[2026-05-05 05:00:00Z]}]
+        )
+
+      Process.put(:quality_gate_stub_results, %{"ID-CAP" => {:ok, %{score: 5, reason: "still vague"}}})
+
+      result = QualityGate.evaluate([issue], config, cache, provider_module: StubProvider)
+
+      assert result.passed == []
+      assert result.awaiting_clarification == []
+      assert [%{kind: :scored, score: 5, rounds_asked: 2, max_rounds_reached?: true}] = result.skipped
+    end
+
+    test "scores below clarification_floor still skip without questions" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4)
+      Process.put(:quality_gate_stub_results, %{"ID-LOW" => {:ok, %{score: 3, reason: "too vague"}}})
+
+      result = QualityGate.evaluate([issue("ID-LOW")], config, %{}, provider_module: StubProvider)
+
+      assert result.passed == []
+      assert result.awaiting_clarification == []
+      assert [%{kind: :scored, score: 3, reason: "too vague"}] = result.skipped
+    end
+
+    test "invalid provider scores follow on_error" do
+      config = config_enabled(on_error: "skip")
+
+      Process.put(:quality_gate_stub_results, %{
+        "ID-BAD-SCORE" => {:ok, %{score: "bad", reason: "not numeric"}}
+      })
+
+      result = QualityGate.evaluate([issue("ID-BAD-SCORE")], config, %{}, provider_module: StubProvider)
+
+      assert result.passed == []
+      assert [%{kind: :error, error: {:invalid_score, "bad"}, reason: reason}] = result.skipped
+      assert reason =~ "invalid_score"
+      assert result.cache == %{}
+    end
+
+    test "malformed current cache entries are re-scored" do
+      config = config_enabled(min_score: 6)
+      cached_issue = issue("ID-WEIRD-CACHE")
+
+      cache = %{
+        "ID-WEIRD-CACHE" => %{
+          updated_at: cached_issue.updated_at,
+          comment_signature: nil
+        }
+      }
+
+      Process.put(:quality_gate_stub_results, %{
+        "ID-WEIRD-CACHE" => {:ok, %{score: 8, reason: "rescored"}}
+      })
+
+      result = QualityGate.evaluate([cached_issue], config, cache, provider_module: StubProvider)
+
+      assert [%Issue{id: "ID-WEIRD-CACHE"}] = result.passed
+      assert %{score: 8, reason: "rescored", passed?: true} = Map.fetch!(result.cache, "ID-WEIRD-CACHE")
+    end
+
+    test "normalizes malformed clarification questions with deterministic fallbacks" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4)
+
+      Process.put(:quality_gate_stub_results, %{
+        "ID-FEW-QUESTIONS" =>
+          {:ok,
+           %{
+             score: 5,
+             reason: "needs detail",
+             questions: [" Which file should change? ", "", 42, "Which file should change?"]
+           }},
+        "ID-BAD-QUESTIONS" =>
+          {:ok,
+           %{
+             score: 5,
+             reason: "needs detail",
+             questions: :not_a_list
+           }}
+      })
+
+      result =
+        QualityGate.evaluate([issue("ID-FEW-QUESTIONS"), issue("ID-BAD-QUESTIONS")], config, %{}, provider_module: StubProvider)
+
+      assert [
+               %{issue_id: "ID-FEW-QUESTIONS", questions: few_questions},
+               %{issue_id: "ID-BAD-QUESTIONS", questions: fallback_questions}
+             ] = result.awaiting_clarification
+
+      assert few_questions == [
+               "Which file should change?",
+               "What specific acceptance criteria should the agent satisfy before opening a PR?",
+               "Which files, modules, or product areas should the agent focus on?"
+             ]
+
+      assert fallback_questions == [
+               "What specific acceptance criteria should the agent satisfy before opening a PR?",
+               "Which files, modules, or product areas should the agent focus on?",
+               "What scope boundaries or out-of-scope cases should the agent avoid?"
+             ]
+    end
+
+    test "comment signatures ignore quality gate comments and tolerate malformed comments" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4)
+
+      issue =
+        issue("ID-MALFORMED-COMMENTS",
+          comments: [
+            %{body: " Operator answer without timestamp. "},
+            %{not_body: true},
+            %{body: "Symphony quality gate: skipped (score 3 < threshold 6).", created_at: ~U[2026-05-05 05:00:00Z]}
+          ]
+        )
+
+      Process.put(:quality_gate_stub_results, %{
+        "ID-MALFORMED-COMMENTS" => {:ok, %{score: 5, reason: "answer needs detail", questions: []}}
+      })
+
+      result = QualityGate.evaluate([issue], config, %{}, provider_module: StubProvider)
+
+      assert [%{issue_id: "ID-MALFORMED-COMMENTS"}] = result.awaiting_clarification
+      assert %{comment_signature: "1:" <> _hash} = Map.fetch!(result.cache, "ID-MALFORMED-COMMENTS")
+    end
+
+    test "comment activity falls back to nil for non-list issue comments" do
+      config = config_enabled(min_score: 6)
+      issue = issue("ID-NON-LIST-COMMENTS", comments: :not_a_list)
+
+      Process.put(:quality_gate_stub_results, %{
+        "ID-NON-LIST-COMMENTS" => {:ok, %{score: 8, reason: "clear"}}
+      })
+
+      result = QualityGate.evaluate([issue], config, %{}, provider_module: StubProvider)
+
+      assert [%Issue{id: "ID-NON-LIST-COMMENTS"}] = result.passed
+      assert %{comment_signature: nil} = Map.fetch!(result.cache, "ID-NON-LIST-COMMENTS")
+    end
+
     test "uses cache when issue updated_at has not changed" do
       config = config_enabled(min_score: 6)
       updated_at = ~U[2026-05-05 03:00:00Z]
@@ -253,6 +551,17 @@ defmodule SymphonyElixir.QualityGateTest do
       assert body =~ "edit the description"
     end
 
+    test "names the clarification cap when max rounds are exhausted" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+      entry = %{kind: :scored, score: 5, reason: "still vague", max_rounds_reached?: true, rounds_asked: 2}
+
+      body = QualityGate.skip_comment_body(entry, config)
+
+      assert body =~ "Asked 2 times; still below pass_threshold"
+      assert body =~ "Skipping until description is updated"
+      assert body =~ "still vague"
+    end
+
     test "explains LLM failures for error-based skips" do
       config = config_enabled(min_score: 6)
       entry = %{kind: :error, reason: "LLM call failed: :stub_boom"}
@@ -261,6 +570,30 @@ defmodule SymphonyElixir.QualityGateTest do
 
       assert body =~ "LLM call failed"
       assert body =~ "threshold 6"
+    end
+  end
+
+  describe "clarification_comment_body/2" do
+    test "renders a deterministic numbered question list" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4)
+
+      entry = %{
+        kind: :clarification,
+        score: 5,
+        reason: "missing targets",
+        questions: ["Which file should change?", "What should pass?", "What is out of scope?"],
+        rounds_asked: 1,
+        max_rounds: 2
+      }
+
+      body = QualityGate.clarification_comment_body(entry, config)
+
+      assert body =~ "Symphony quality gate: clarification requested"
+      assert body =~ "score 5 < pass_threshold 6"
+      assert body =~ "round 1/2"
+      assert body =~ "1. Which file should change?"
+      assert body =~ "3. What is out of scope?"
+      assert body =~ "1-2 sentences per question"
     end
   end
 
@@ -309,6 +642,39 @@ defmodule SymphonyElixir.QualityGateTest do
                %{kind: :scored, issue_id: "ID-NEW", score: 4},
                %{kind: :scored, issue_id: "ID-OLD", score: 3}
              ] = QualityGate.skipped_from_cache(cache)
+    end
+  end
+
+  describe "awaiting_clarification_from_cache/1" do
+    test "returns only awaiting clarification entries sorted by most-recently scored" do
+      cache = %{
+        "ID-PASS" => %{
+          passed?: true,
+          awaiting_clarification?: false,
+          scored_at: ~U[2026-05-05 03:00:00Z]
+        },
+        "ID-SKIP" => %{
+          passed?: false,
+          awaiting_clarification?: false,
+          scored_at: ~U[2026-05-05 03:00:00Z]
+        },
+        "ID-AWAIT" => %{
+          passed?: false,
+          awaiting_clarification?: true,
+          identifier: "RSM-AWAIT",
+          title: "Await",
+          state: "Todo",
+          url: nil,
+          score: 5,
+          reason: "needs answer",
+          rounds_asked: 2,
+          scored_at: ~U[2026-05-05 04:00:00Z]
+        }
+      }
+
+      assert [
+               %{kind: :clarification, issue_id: "ID-AWAIT", identifier: "RSM-AWAIT", rounds_asked: 2}
+             ] = QualityGate.awaiting_clarification_from_cache(cache)
     end
   end
 
@@ -400,6 +766,9 @@ defmodule SymphonyElixir.QualityGateTest do
       provider: Keyword.get(opts, :provider, "anthropic"),
       model: Keyword.get(opts, :model, "claude-haiku-4-5-20251001"),
       min_score: Keyword.get(opts, :min_score, 6),
+      pass_threshold: Keyword.get(opts, :pass_threshold),
+      clarification_floor: Keyword.get(opts, :clarification_floor),
+      max_clarification_rounds: Keyword.get(opts, :max_clarification_rounds, 2),
       on_error: Keyword.get(opts, :on_error, "pass")
     }
   end
@@ -413,6 +782,7 @@ defmodule SymphonyElixir.QualityGateTest do
       state: Keyword.get(opts, :state, "Todo"),
       url: Keyword.get(opts, :url, "https://linear.app/x/#{id}"),
       labels: Keyword.get(opts, :labels, []),
+      comments: Keyword.get(opts, :comments, []),
       updated_at: Keyword.get(opts, :updated_at, ~U[2026-05-05 03:00:00Z])
     }
   end

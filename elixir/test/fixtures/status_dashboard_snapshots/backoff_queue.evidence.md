@@ -26,6 +26,9 @@
 │  ↻ MT-452 attempt=6 in 8.100s error=worker crashed restarting cleanly
 │  ↻ MT-453 attempt=1 in 11.000s error=fourth queued retry should also render after removing the top-three limit
 │
+├─ Awaiting clarification
+│
+│  No issues awaiting clarification
 ├─ Skipped (quality gate)
 │
 │  No issues skipped this session

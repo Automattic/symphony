@@ -8,14 +8,21 @@ defmodule SymphonyElixir.QualityGate.Response do
 
   @doc """
   Parse a raw text response and return either `{:ok, %{score, reason}}` or
-  `{:error, reason}`.
+  `{:error, reason}`. When present, `questions` is normalized to a list of
+  non-blank strings.
 
   The score is coerced to an integer in the inclusive range 1..10. Any value
   outside that range, missing fields, or malformed JSON yields an error
   tuple suitable for the orchestrator's `on_error` handling.
   """
   @spec parse(String.t() | nil) ::
-          {:ok, %{score: 1..10, reason: String.t()}} | {:error, term()}
+          {:ok,
+           %{
+             required(:score) => 1..10,
+             required(:reason) => String.t(),
+             optional(:questions) => [String.t()]
+           }}
+          | {:error, term()}
   def parse(nil), do: {:error, :empty_response}
   def parse(""), do: {:error, :empty_response}
 
@@ -24,7 +31,11 @@ defmodule SymphonyElixir.QualityGate.Response do
          {:ok, decoded} <- decode_json(json),
          {:ok, score} <- coerce_score(Map.get(decoded, "score")),
          {:ok, reason} <- coerce_reason(Map.get(decoded, "reason")) do
-      {:ok, %{score: score, reason: reason}}
+      response =
+        %{score: score, reason: reason}
+        |> maybe_put_questions(coerce_questions(Map.get(decoded, "questions")))
+
+      {:ok, response}
     end
   end
 
@@ -130,4 +141,24 @@ defmodule SymphonyElixir.QualityGate.Response do
   end
 
   defp coerce_reason(_value), do: {:ok, "(no reason provided)"}
+
+  defp coerce_questions(questions) when is_list(questions) do
+    questions
+    |> Enum.flat_map(fn
+      question when is_binary(question) ->
+        case String.trim(question) do
+          "" -> []
+          trimmed -> [trimmed]
+        end
+
+      _question ->
+        []
+    end)
+    |> Enum.take(5)
+  end
+
+  defp coerce_questions(_questions), do: []
+
+  defp maybe_put_questions(response, []), do: response
+  defp maybe_put_questions(response, questions), do: Map.put(response, :questions, questions)
 end

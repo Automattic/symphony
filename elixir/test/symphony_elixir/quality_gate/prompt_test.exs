@@ -12,6 +12,8 @@ defmodule SymphonyElixir.QualityGate.PromptTest do
       assert instructions =~ "Clarity"
       assert instructions =~ "Sandbox dependency"
       assert instructions =~ ~s({"score":)
+      assert instructions =~ ~s("questions")
+      assert instructions =~ "1-2 sentences"
     end
   end
 
@@ -84,6 +86,30 @@ defmodule SymphonyElixir.QualityGate.PromptTest do
       }
 
       assert Prompt.user_prompt(issue) =~ "(none)"
+    end
+
+    test "includes recent comments when available" do
+      issue = %Issue{
+        id: "ID-COMMENTS",
+        identifier: "RSM-COMMENTS",
+        title: "Needs comments",
+        description: "Description",
+        labels: [],
+        state: "Todo",
+        comments: [
+          %{author: "Operator", body: "The answer is in this comment.", created_at: ~U[2026-05-05 04:00:00Z]},
+          %{body: "No timestamp here."},
+          :bad_comment
+        ]
+      }
+
+      prompt = Prompt.user_prompt(issue)
+
+      assert prompt =~ "Recent comments:"
+      assert prompt =~ "[Operator @ 2026-05-05T04:00:00Z]"
+      assert prompt =~ "The answer is in this comment."
+      assert prompt =~ "[Unknown @ unknown time]"
+      assert prompt =~ "No timestamp here."
     end
   end
 end

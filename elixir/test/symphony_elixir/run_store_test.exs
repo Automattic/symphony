@@ -105,6 +105,28 @@ defmodule SymphonyElixir.RunStoreTest do
     totals = %{input_tokens: 10, output_tokens: 4, total_tokens: 14, seconds_running: 10}
     assert :ok = RunStore.put_codex_totals(totals)
     assert totals == RunStore.get_codex_totals()
+
+    quality_gate_cache = %{
+      "issue-1" => %{
+        updated_at: started_at,
+        comment_signature: "comments",
+        score: 5,
+        reason: "needs answer",
+        passed?: false,
+        awaiting_clarification?: true,
+        questions: ["What should pass?", "Which module?", "What is out of scope?"],
+        rounds_asked: 1,
+        comment_posted?: true,
+        identifier: "RSM-1",
+        title: "Persist me",
+        state: "Todo",
+        url: "https://example.org/RSM-1",
+        scored_at: started_at
+      }
+    }
+
+    assert :ok = RunStore.put_quality_gate_cache(quality_gate_cache)
+    assert quality_gate_cache == RunStore.get_quality_gate_cache()
   end
 
   test "interrupt_running_runs marks stale running records as failures" do

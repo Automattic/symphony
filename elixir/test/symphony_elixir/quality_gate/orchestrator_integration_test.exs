@@ -15,6 +15,48 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     def score(_issue, _settings), do: {:ok, %{score: 3, reason: "vague"}}
   end
 
+  defmodule ClarificationProvider do
+    @behaviour SymphonyElixir.QualityGate.Provider
+
+    @impl true
+    def score(_issue, _settings) do
+      {:ok,
+       %{
+         score: 5,
+         reason: "missing acceptance criteria",
+         questions: [
+           "What should the agent verify before opening a PR?",
+           "Which module should the agent change?",
+           "What should stay out of scope?"
+         ]
+       }}
+    end
+  end
+
+  defmodule ReplyAwareProvider do
+    @behaviour SymphonyElixir.QualityGate.Provider
+
+    @impl true
+    def score(issue, _settings) do
+      answered? =
+        Enum.any?(issue.comments, fn
+          %{body: body} when is_binary(body) -> String.contains?(body, "Acceptance criteria are clear")
+          _comment -> false
+        end)
+
+      if answered? do
+        {:ok, %{score: 8, reason: "clear now"}}
+      else
+        {:ok,
+         %{
+           score: 5,
+           reason: "needs answer",
+           questions: ["What is done?", "Which module?", "What is out of scope?"]
+         }}
+      end
+    end
+  end
+
   defmodule ErroringProvider do
     @behaviour SymphonyElixir.QualityGate.Provider
 
@@ -77,6 +119,121 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     # Re-poll: comment is not posted again for unchanged updated_at
     send(pid, :run_poll_cycle)
     refute_receive {:memory_tracker_comment, "issue-skip-1", _}, 200
+  end
+
+  test "orchestrator holds mid-band issues, posts clarification, labels, and surfaces awaiting snapshot" do
+    issue = %Issue{
+      id: "issue-mid-1",
+      identifier: "MT-MID",
+      title: "Clarify me",
+      description: "Almost ready",
+      state: "Todo",
+      url: "https://example.org/issues/MT-MID",
+      labels: [],
+      updated_at: ~U[2026-05-05 03:00:00Z]
+    }
+
+    Application.put_env(:symphony_elixir, :quality_gate_anthropic_module, ClarificationProvider)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      quality_gate: %{
+        enabled: true,
+        provider: "anthropic",
+        model: "claude-haiku-4-5-20251001",
+        pass_threshold: 6,
+        clarification_floor: 4,
+        max_clarification_rounds: 2,
+        on_error: "pass"
+      }
+    )
+
+    name = Module.concat(__MODULE__, :ClarificationOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    send(pid, :run_poll_cycle)
+
+    assert_receive {:memory_tracker_comment, "issue-mid-1", body}, 500
+    assert body =~ "clarification requested"
+    assert body =~ "round 1/2"
+    assert body =~ "Questions:"
+    assert body =~ "1. What should the agent verify before opening a PR?"
+
+    assert_receive {:memory_tracker_label_added, "issue-mid-1", "awaiting-clarification"}, 500
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.running == []
+    assert snapshot.skipped == []
+
+    assert [%{kind: :clarification, issue_id: "issue-mid-1", identifier: "MT-MID", rounds_asked: 1}] =
+             snapshot.awaiting_clarification
+  end
+
+  test "orchestrator removes awaiting label when a clarified issue passes on the next poll" do
+    issue = %Issue{
+      id: "issue-reply-1",
+      identifier: "MT-REPLY",
+      title: "Clarify then pass",
+      description: "Almost ready",
+      state: "Todo",
+      url: "https://example.org/issues/MT-REPLY",
+      labels: [],
+      comments: [],
+      updated_at: ~U[2026-05-05 03:00:00Z]
+    }
+
+    Application.put_env(:symphony_elixir, :quality_gate_anthropic_module, ReplyAwareProvider)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      quality_gate: %{
+        enabled: true,
+        provider: "anthropic",
+        model: "claude-haiku-4-5-20251001",
+        pass_threshold: 6,
+        clarification_floor: 4,
+        max_clarification_rounds: 2,
+        on_error: "pass"
+      }
+    )
+
+    name = Module.concat(__MODULE__, :ClarifiedPassOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    send(pid, :run_poll_cycle)
+
+    assert_receive {:memory_tracker_comment, "issue-reply-1", body}, 500
+    assert body =~ "clarification requested"
+    assert_receive {:memory_tracker_label_added, "issue-reply-1", "awaiting-clarification"}, 500
+
+    answered_issue = %{
+      issue
+      | labels: ["awaiting-clarification"],
+        comments: [
+          %{
+            author: "Operator",
+            body: "Acceptance criteria are clear and the target module is listed.",
+            created_at: ~U[2026-05-05 04:00:00Z]
+          }
+        ]
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [answered_issue])
+
+    send(pid, :run_poll_cycle)
+
+    assert_receive {:memory_tracker_label_removed, "issue-reply-1", "awaiting-clarification"}, 500
+    refute_receive {:memory_tracker_comment, "issue-reply-1", _}, 200
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.awaiting_clarification == []
+    assert snapshot.skipped == []
   end
 
   test "orchestrator passes high-scoring issues through unchanged" do

@@ -4,19 +4,17 @@ defmodule SymphonyElixir.QualityGate do
   and the orchestrator's dispatch loop, asking an LLM to score each candidate
   for agent-readiness on a 1–10 scale.
 
-  Issues that score below the configured `min_score` are filtered out and
-  surfaced to the orchestrator as `skip_entry/0` records, so the dashboard
-  can render them and the caller can post a Linear comment explaining why
-  the issue was not queued.
+  Issues that score below the configured pass threshold are either held for
+  human clarification or filtered out and surfaced to the orchestrator as
+  `skip_entry/0` records.
 
   ### Caching
 
-  Scores are cached in-memory keyed by `{issue.id, issue.updated_at}`. The
-  cache value also remembers whether a Linear comment has already been
-  posted for the current `updated_at`, so subsequent poll cycles do not
-  re-evaluate or re-comment unchanged issues. Editing the issue description
-  bumps `updated_at` in Linear, which invalidates the cache and lets the
-  gate re-score and (if still below threshold) post a fresh comment.
+  Scores are cached keyed by `{issue.id, issue.updated_at, comment activity}`.
+  The cache value also remembers whether a Linear comment has already been
+  posted for the current key, so subsequent poll cycles do not re-evaluate or
+  re-comment unchanged issues. Editing the issue description or adding a
+  non-quality-gate comment invalidates the cache and lets the gate re-score.
 
   ### Errors
 
@@ -34,13 +32,24 @@ defmodule SymphonyElixir.QualityGate do
 
   @anthropic_provider "anthropic"
   @openai_provider "openai"
+  @clarification_comment_marker "Symphony quality gate: clarification requested"
+  @skip_comment_marker "Symphony quality gate: skipped"
+  @fallback_questions [
+    "What specific acceptance criteria should the agent satisfy before opening a PR?",
+    "Which files, modules, or product areas should the agent focus on?",
+    "What scope boundaries or out-of-scope cases should the agent avoid?"
+  ]
 
   @type cache :: %{optional(String.t()) => cache_entry()}
   @type cache_entry :: %{
           required(:updated_at) => DateTime.t() | nil,
+          required(:comment_signature) => String.t() | nil,
           required(:score) => integer() | nil,
           required(:reason) => String.t() | nil,
           required(:passed?) => boolean(),
+          required(:awaiting_clarification?) => boolean(),
+          required(:questions) => [String.t()],
+          required(:rounds_asked) => non_neg_integer(),
           required(:comment_posted?) => boolean(),
           required(:identifier) => String.t() | nil,
           required(:title) => String.t() | nil,
@@ -56,8 +65,12 @@ defmodule SymphonyElixir.QualityGate do
           required(:identifier) => String.t() | nil,
           required(:url) => String.t() | nil,
           required(:updated_at) => DateTime.t() | nil,
+          required(:comment_signature) => String.t() | nil,
           required(:reason) => String.t(),
           required(:score) => integer(),
+          optional(:rounds_asked) => non_neg_integer(),
+          optional(:max_rounds) => pos_integer(),
+          optional(:max_rounds_reached?) => boolean(),
           required(:comment_posted?) => boolean()
         }
 
@@ -68,19 +81,43 @@ defmodule SymphonyElixir.QualityGate do
           required(:identifier) => String.t() | nil,
           required(:url) => String.t() | nil,
           required(:updated_at) => DateTime.t() | nil,
+          required(:comment_signature) => String.t() | nil,
           required(:reason) => String.t(),
           required(:error) => term(),
           required(:comment_posted?) => boolean()
         }
 
-  @type skip_entry :: scored_skip() | error_skip()
+  @type clarification_entry :: %{
+          required(:kind) => :clarification,
+          required(:issue) => Issue.t(),
+          required(:issue_id) => String.t(),
+          required(:identifier) => String.t() | nil,
+          required(:url) => String.t() | nil,
+          required(:updated_at) => DateTime.t() | nil,
+          required(:comment_signature) => String.t() | nil,
+          required(:reason) => String.t(),
+          required(:score) => integer(),
+          required(:questions) => [String.t()],
+          required(:rounds_asked) => pos_integer(),
+          required(:max_rounds) => pos_integer(),
+          required(:pass_threshold) => pos_integer(),
+          required(:comment_posted?) => boolean()
+        }
 
-  @type result :: %{passed: [Issue.t()], skipped: [skip_entry()], cache: cache()}
+  @type skip_entry :: scored_skip() | error_skip()
+  @type gate_entry :: skip_entry() | clarification_entry()
+
+  @type result :: %{
+          passed: [Issue.t()],
+          skipped: [skip_entry()],
+          awaiting_clarification: [clarification_entry()],
+          cache: cache()
+        }
 
   @doc """
   Filter `issues` through the quality gate. Returns:
 
-      %{passed: [Issue.t()], skipped: [skip_entry()], cache: cache()}
+      %{passed: [Issue.t()], skipped: [skip_entry()], awaiting_clarification: [clarification_entry()], cache: cache()}
 
   When the gate is disabled (`config.enabled == false`), every issue passes
   unchanged and the cache is returned untouched.
@@ -99,22 +136,30 @@ defmodule SymphonyElixir.QualityGate do
     now = Keyword.get(opts, :now, DateTime.utc_now())
     provider_override = Keyword.get(opts, :provider_module)
 
-    {passed_rev, skipped_rev, new_cache} =
-      Enum.reduce(issues, {[], [], cache}, fn issue, {passed, skipped, cache_acc} ->
+    {passed_rev, skipped_rev, awaiting_rev, new_cache} =
+      Enum.reduce(issues, {[], [], [], cache}, fn issue, {passed, skipped, awaiting, cache_acc} ->
         case evaluate_issue(issue, config, cache_acc, now, provider_override) do
           {:pass, cache_next} ->
-            {[issue | passed], skipped, cache_next}
+            {[issue | passed], skipped, awaiting, cache_next}
 
           {:skip, entry, cache_next} ->
-            {passed, [entry | skipped], cache_next}
+            {passed, [entry | skipped], awaiting, cache_next}
+
+          {:awaiting_clarification, entry, cache_next} ->
+            {passed, skipped, [entry | awaiting], cache_next}
         end
       end)
 
-    %{passed: Enum.reverse(passed_rev), skipped: Enum.reverse(skipped_rev), cache: new_cache}
+    %{
+      passed: Enum.reverse(passed_rev),
+      skipped: Enum.reverse(skipped_rev),
+      awaiting_clarification: Enum.reverse(awaiting_rev),
+      cache: new_cache
+    }
   end
 
   def evaluate(issues, _config, cache, _opts) do
-    %{passed: issues, skipped: [], cache: cache}
+    %{passed: issues, skipped: [], awaiting_clarification: [], cache: cache}
   end
 
   @doc """
@@ -144,8 +189,8 @@ defmodule SymphonyElixir.QualityGate do
   @spec skipped_from_cache(cache()) :: [map()]
   def skipped_from_cache(cache) when is_map(cache) do
     cache
-    |> Enum.flat_map(fn
-      {issue_id, %{passed?: false} = entry} ->
+    |> Enum.flat_map(fn {issue_id, entry} ->
+      if Map.get(entry, :passed?) == false and Map.get(entry, :awaiting_clarification?) != true do
         [
           %{
             kind: :scored,
@@ -156,6 +201,36 @@ defmodule SymphonyElixir.QualityGate do
             url: entry.url,
             score: entry.score,
             reason: entry.reason,
+            scored_at: entry.scored_at
+          }
+        ]
+      else
+        []
+      end
+    end)
+    |> Enum.sort_by(& &1.scored_at, {:desc, DateTime})
+  end
+
+  @doc """
+  List cached entries currently waiting for human clarification. Sorted by
+  most-recently scored first.
+  """
+  @spec awaiting_clarification_from_cache(cache()) :: [map()]
+  def awaiting_clarification_from_cache(cache) when is_map(cache) do
+    cache
+    |> Enum.flat_map(fn
+      {issue_id, %{awaiting_clarification?: true} = entry} ->
+        [
+          %{
+            kind: :clarification,
+            issue_id: issue_id,
+            identifier: entry.identifier,
+            title: entry.title,
+            state: entry.state,
+            url: entry.url,
+            score: entry.score,
+            reason: entry.reason,
+            rounds_asked: Map.get(entry, :rounds_asked, 0),
             scored_at: entry.scored_at
           }
         ]
@@ -173,7 +248,7 @@ defmodule SymphonyElixir.QualityGate do
   subsequent poll cycles see `comment_posted?: true` for the same
   `updated_at` and do not double-post.
   """
-  @spec mark_comment_posted(cache(), skip_entry()) :: cache()
+  @spec mark_comment_posted(cache(), gate_entry()) :: cache()
   def mark_comment_posted(cache, %{issue_id: issue_id}) when is_binary(issue_id) do
     case Map.fetch(cache, issue_id) do
       {:ok, entry} -> Map.put(cache, issue_id, %{entry | comment_posted?: true})
@@ -201,10 +276,28 @@ defmodule SymphonyElixir.QualityGate do
   Format the body of the Linear comment posted when an issue is skipped.
   """
   @spec skip_comment_body(skip_entry(), Schema.QualityGate.t()) :: String.t()
-  def skip_comment_body(%{kind: :scored, score: score, reason: reason}, %Schema.QualityGate{min_score: min_score})
+  def skip_comment_body(
+        %{kind: :scored, score: score, reason: reason, max_rounds_reached?: true, rounds_asked: rounds_asked},
+        %Schema.QualityGate{} = config
+      )
       when is_integer(score) do
+    threshold = pass_threshold(config)
+
     """
-    Symphony quality gate: skipped (score #{score} < threshold #{min_score}).
+    Symphony quality gate: skipped (score #{score} < threshold #{threshold}).
+
+    Asked #{rounds_asked} times; still below pass_threshold. Skipping until description is updated.
+
+    Reason: #{reason}
+    """
+  end
+
+  def skip_comment_body(%{kind: :scored, score: score, reason: reason}, %Schema.QualityGate{} = config)
+      when is_integer(score) do
+    threshold = pass_threshold(config)
+
+    """
+    Symphony quality gate: skipped (score #{score} < threshold #{threshold}).
 
     Reason: #{reason}
 
@@ -214,9 +307,11 @@ defmodule SymphonyElixir.QualityGate do
     """
   end
 
-  def skip_comment_body(%{kind: :error, reason: reason}, %Schema.QualityGate{min_score: min_score}) do
+  def skip_comment_body(%{kind: :error, reason: reason}, %Schema.QualityGate{} = config) do
+    threshold = pass_threshold(config)
+
     """
-    Symphony quality gate: skipped (LLM call failed; threshold #{min_score}).
+    Symphony quality gate: skipped (LLM call failed; threshold #{threshold}).
 
     Reason: #{reason}
 
@@ -225,14 +320,43 @@ defmodule SymphonyElixir.QualityGate do
     """
   end
 
+  @doc """
+  Format the Linear comment posted when Symphony needs clarification before
+  dispatch.
+  """
+  @spec clarification_comment_body(clarification_entry(), Schema.QualityGate.t()) :: String.t()
+  def clarification_comment_body(%{score: score, reason: reason, questions: questions, rounds_asked: rounds_asked, max_rounds: max_rounds}, %Schema.QualityGate{} = config) do
+    threshold = pass_threshold(config)
+
+    formatted_questions =
+      questions
+      |> normalize_questions()
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {question, index} -> "#{index}. #{question}" end)
+
+    """
+    #{@clarification_comment_marker} (score #{score} < pass_threshold #{threshold}; round #{rounds_asked}/#{max_rounds}).
+
+    Reason: #{reason}
+
+    Questions:
+    #{formatted_questions}
+
+    Reply in Linear with 1-2 sentences per question. Symphony will re-evaluate this issue on the next poll.
+    """
+  end
+
   defp evaluate_issue(%Issue{id: issue_id, updated_at: updated_at} = issue, config, cache, now, provider_override)
        when is_binary(issue_id) do
-    case Map.get(cache, issue_id) do
-      %{updated_at: ^updated_at, passed?: true} ->
-        {:pass, cache}
+    comment_signature = comment_activity_signature(issue)
 
-      %{updated_at: ^updated_at, passed?: false} = entry ->
-        {:skip, build_skip_entry(issue, entry), cache}
+    case Map.get(cache, issue_id) do
+      entry when is_map(entry) ->
+        if cache_entry_current?(entry, updated_at, comment_signature) do
+          cached_decision(issue, entry, config, cache, now, provider_override)
+        else
+          score_and_record(issue, config, cache, now, provider_override)
+        end
 
       _stale_or_missing ->
         score_and_record(issue, config, cache, now, provider_override)
@@ -243,6 +367,17 @@ defmodule SymphonyElixir.QualityGate do
     Logger.warning("QualityGate received malformed issue=#{inspect(issue)}; passing through")
     {:pass, cache}
   end
+
+  defp cached_decision(_issue, %{passed?: true}, _config, cache, _now, _provider_override), do: {:pass, cache}
+
+  defp cached_decision(issue, %{awaiting_clarification?: true} = entry, _config, cache, _now, _provider_override),
+    do: {:awaiting_clarification, build_clarification_entry(issue, entry), cache}
+
+  defp cached_decision(issue, %{passed?: false} = entry, _config, cache, _now, _provider_override),
+    do: {:skip, build_skip_entry(issue, entry), cache}
+
+  defp cached_decision(issue, _entry, config, cache, now, provider_override),
+    do: score_and_record(issue, config, cache, now, provider_override)
 
   defp score_and_record(%Issue{} = issue, config, cache, now, provider_override) do
     case provider_settings(config) do
@@ -257,21 +392,75 @@ defmodule SymphonyElixir.QualityGate do
 
   defp invoke_provider(issue, config, cache, provider_module, settings, now) do
     case provider_module.score(issue, settings) do
-      {:ok, %{score: score, reason: reason}} when score >= config.min_score ->
-        Logger.info("QualityGate passed issue=#{issue.identifier || issue.id} score=#{score} threshold=#{config.min_score}")
+      {:ok, %{score: score, reason: reason} = response} ->
+        classify_score(issue, config, cache, now, score, reason, Map.get(response, :questions, []))
+
+      {:error, reason} ->
+        handle_provider_error(issue, config, cache, reason)
+    end
+  end
+
+  defp classify_score(issue, config, cache, now, score, reason, questions) when score >= 1 and score <= 10 do
+    threshold = pass_threshold(config)
+
+    cond do
+      score >= threshold ->
+        Logger.info("QualityGate passed issue=#{issue.identifier || issue.id} score=#{score} threshold=#{threshold}")
 
         cache_next = put_cache(cache, issue, score, reason, true, now)
         {:pass, cache_next}
 
-      {:ok, %{score: score, reason: reason}} ->
-        Logger.info("QualityGate skipped issue=#{issue.identifier || issue.id} score=#{score} threshold=#{config.min_score} reason=#{inspect(reason)}")
+      clarification_score?(score, config) ->
+        maybe_request_clarification(issue, config, cache, now, score, reason, questions)
+
+      true ->
+        Logger.info("QualityGate skipped issue=#{issue.identifier || issue.id} score=#{score} threshold=#{threshold} reason=#{inspect(reason)}")
 
         cache_next = put_cache(cache, issue, score, reason, false, now)
         entry = build_skip_entry(issue, Map.get(cache_next, issue.id))
         {:skip, entry, cache_next}
+    end
+  end
 
-      {:error, reason} ->
-        handle_provider_error(issue, config, cache, reason)
+  defp classify_score(issue, config, cache, _now, score, _reason, _questions) do
+    handle_provider_error(issue, config, cache, {:invalid_score, score})
+  end
+
+  defp maybe_request_clarification(issue, config, cache, now, score, reason, questions) do
+    threshold = pass_threshold(config)
+    rounds_asked = prior_rounds_asked(cache, issue.id)
+    max_rounds = max_clarification_rounds(config)
+
+    if rounds_asked >= max_rounds do
+      Logger.info("QualityGate skipped issue=#{issue.identifier || issue.id} score=#{score} threshold=#{threshold} rounds_asked=#{rounds_asked} reason=#{inspect(reason)}")
+
+      cache_next =
+        put_cache(cache, issue, score, reason, false, now,
+          rounds_asked: rounds_asked,
+          max_rounds: max_rounds,
+          pass_threshold: threshold,
+          max_rounds_reached?: true
+        )
+
+      entry = build_skip_entry(issue, Map.get(cache_next, issue.id))
+      {:skip, entry, cache_next}
+    else
+      next_round = rounds_asked + 1
+      normalized_questions = normalize_questions(questions)
+
+      Logger.info("QualityGate awaiting clarification issue=#{issue.identifier || issue.id} score=#{score} threshold=#{threshold} round=#{next_round}/#{max_rounds}")
+
+      cache_next =
+        put_cache(cache, issue, score, reason, false, now,
+          awaiting_clarification?: true,
+          questions: normalized_questions,
+          rounds_asked: next_round,
+          max_rounds: max_rounds,
+          pass_threshold: threshold
+        )
+
+      entry = build_clarification_entry(issue, Map.get(cache_next, issue.id))
+      {:awaiting_clarification, entry, cache_next}
     end
   end
 
@@ -287,12 +476,22 @@ defmodule SymphonyElixir.QualityGate do
     {:pass, cache}
   end
 
-  defp put_cache(cache, %Issue{} = issue, score, reason, passed?, now) do
+  defp put_cache(cache, %Issue{} = issue, score, reason, passed?, now, opts \\ []) do
+    awaiting_clarification? = Keyword.get(opts, :awaiting_clarification?, false)
+    rounds_asked = Keyword.get(opts, :rounds_asked, if(passed?, do: 0, else: prior_rounds_asked(cache, issue.id)))
+
     Map.put(cache, issue.id, %{
       updated_at: issue.updated_at,
+      comment_signature: comment_activity_signature(issue),
       score: score,
       reason: reason,
       passed?: passed?,
+      awaiting_clarification?: awaiting_clarification?,
+      questions: Keyword.get(opts, :questions, []),
+      rounds_asked: rounds_asked,
+      max_rounds: Keyword.get(opts, :max_rounds),
+      pass_threshold: Keyword.get(opts, :pass_threshold),
+      max_rounds_reached?: Keyword.get(opts, :max_rounds_reached?, false),
       comment_posted?: false,
       identifier: issue.identifier,
       title: issue.title,
@@ -310,8 +509,31 @@ defmodule SymphonyElixir.QualityGate do
       identifier: issue.identifier,
       url: issue.url,
       updated_at: issue.updated_at,
+      comment_signature: Map.get(entry, :comment_signature),
       score: score,
       reason: reason,
+      rounds_asked: Map.get(entry, :rounds_asked, 0),
+      max_rounds: Map.get(entry, :max_rounds),
+      max_rounds_reached?: Map.get(entry, :max_rounds_reached?, false),
+      comment_posted?: Map.get(entry, :comment_posted?, false)
+    }
+  end
+
+  defp build_clarification_entry(%Issue{} = issue, %{score: score, reason: reason} = entry) do
+    %{
+      kind: :clarification,
+      issue: issue,
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      url: issue.url,
+      updated_at: issue.updated_at,
+      comment_signature: Map.get(entry, :comment_signature),
+      score: score,
+      reason: reason,
+      questions: normalize_questions(Map.get(entry, :questions, [])),
+      rounds_asked: Map.get(entry, :rounds_asked, 1),
+      max_rounds: Map.get(entry, :max_rounds) || 1,
+      pass_threshold: Map.get(entry, :pass_threshold) || 1,
       comment_posted?: Map.get(entry, :comment_posted?, false)
     }
   end
@@ -324,11 +546,116 @@ defmodule SymphonyElixir.QualityGate do
       identifier: issue.identifier,
       url: issue.url,
       updated_at: issue.updated_at,
+      comment_signature: comment_activity_signature(issue),
       reason: "LLM call failed: #{inspect(error)}",
       error: error,
       comment_posted?: false
     }
   end
+
+  defp cache_entry_current?(entry, updated_at, comment_signature) when is_map(entry) do
+    Map.get(entry, :updated_at) == updated_at and Map.get(entry, :comment_signature) == comment_signature
+  end
+
+  defp pass_threshold(%Schema.QualityGate{pass_threshold: threshold}) when is_integer(threshold), do: threshold
+  defp pass_threshold(%Schema.QualityGate{min_score: threshold}) when is_integer(threshold), do: threshold
+
+  defp clarification_score?(score, %Schema.QualityGate{clarification_floor: floor} = config)
+       when is_integer(score) and is_integer(floor) do
+    score >= floor and score < pass_threshold(config)
+  end
+
+  defp clarification_score?(_score, _config), do: false
+
+  defp max_clarification_rounds(%Schema.QualityGate{max_clarification_rounds: rounds})
+       when is_integer(rounds) and rounds > 0,
+       do: rounds
+
+  defp prior_rounds_asked(cache, issue_id) when is_map(cache) and is_binary(issue_id) do
+    case Map.get(cache, issue_id) do
+      %{rounds_asked: rounds} when is_integer(rounds) and rounds >= 0 -> rounds
+      _entry -> 0
+    end
+  end
+
+  defp normalize_questions(questions) when is_list(questions) do
+    normalized =
+      questions
+      |> Enum.flat_map(fn
+        question when is_binary(question) ->
+          case String.trim(question) do
+            "" -> []
+            trimmed -> [trimmed]
+          end
+
+        _question ->
+          []
+      end)
+      |> Enum.uniq()
+      |> Enum.take(5)
+
+    normalized
+    |> fill_fallback_questions()
+    |> Enum.take(5)
+  end
+
+  defp normalize_questions(_questions), do: @fallback_questions
+
+  defp fill_fallback_questions(questions) when length(questions) >= 3, do: questions
+
+  defp fill_fallback_questions(questions) do
+    @fallback_questions
+    |> Enum.reject(&(&1 in questions))
+    |> Enum.reduce_while(questions, fn fallback, acc ->
+      next = acc ++ [fallback]
+
+      if length(next) >= 3 do
+        {:halt, next}
+      else
+        {:cont, next}
+      end
+    end)
+  end
+
+  defp comment_activity_signature(%Issue{comments: comments}) when is_list(comments) do
+    comments
+    |> Enum.reject(&quality_gate_comment?/1)
+    |> Enum.map(&comment_signature_part/1)
+    |> Enum.reject(&(&1 == ""))
+    |> case do
+      [] ->
+        nil
+
+      parts ->
+        payload = Enum.join(parts, "\n---\n")
+
+        digest =
+          :crypto.hash(:sha256, payload)
+          |> Base.encode16(case: :lower)
+
+        "#{length(parts)}:#{digest}"
+    end
+  end
+
+  defp comment_activity_signature(_issue), do: nil
+
+  defp quality_gate_comment?(%{body: body}) when is_binary(body) do
+    trimmed = String.trim(body)
+    String.starts_with?(trimmed, @clarification_comment_marker) or String.starts_with?(trimmed, @skip_comment_marker)
+  end
+
+  defp quality_gate_comment?(_comment), do: false
+
+  defp comment_signature_part(%{body: body} = comment) when is_binary(body) do
+    author = Map.get(comment, :author) || "Unknown"
+    created_at = comment_signature_datetime(Map.get(comment, :created_at))
+    "#{author}\n#{created_at}\n#{String.trim(body)}"
+  end
+
+  defp comment_signature_part(_comment), do: ""
+
+  defp comment_signature_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp comment_signature_datetime(_datetime), do: "unknown"
 
   defp api_key_for(@anthropic_provider) do
     case System.get_env("ANTHROPIC_API_KEY") do

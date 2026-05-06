@@ -48,14 +48,20 @@ agent:
     type: workspaceWrite
     networkAccess: true
 # Optional: score each candidate issue for agent-readiness with an LLM before
-# queuing it. Issues scoring below `min_score` are skipped, surfaced on the
-# dashboard's Skipped section, and a Linear comment is posted explaining why.
+# queuing it. Scores at or above `pass_threshold` dispatch. Scores below
+# `clarification_floor` skip. Scores in between ask Linear clarification
+# questions and add the `awaiting-clarification` label.
+# Existing configs may keep `min_score`; when `pass_threshold` is unset,
+# Symphony treats `min_score` as the pass threshold and clarification stays off
+# unless `clarification_floor` is set.
 # Provider API keys are read from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
 # quality_gate:
 #   enabled: true
 #   provider: anthropic        # or: openai
 #   model: claude-haiku-4-5-20251001
-#   min_score: 6               # 1-10; issues scoring below this are skipped
+#   pass_threshold: 6          # 1-10; scores >= this dispatch
+#   clarification_floor: 4     # optional; scores 4..5 ask clarification
+#   max_clarification_rounds: 2
 #   on_error: pass             # or: skip — behavior when the LLM call fails
 ---
 

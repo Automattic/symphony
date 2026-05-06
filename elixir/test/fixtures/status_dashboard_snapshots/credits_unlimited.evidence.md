@@ -22,6 +22,9 @@
 ├─ Backoff queue
 │
 │  No queued retries
+├─ Awaiting clarification
+│
+│  No issues awaiting clarification
 ├─ Skipped (quality gate)
 │
 │  No issues skipped this session

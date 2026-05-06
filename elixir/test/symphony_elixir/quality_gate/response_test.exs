@@ -46,6 +46,13 @@ defmodule SymphonyElixir.QualityGate.ResponseTest do
                Response.parse(~s({"score": 5}))
     end
 
+    test "normalizes optional clarifying questions" do
+      raw = ~s({"score": 5, "reason": "almost", "questions": ["  What should pass?  ", "", 123, "Which file?"]})
+
+      assert {:ok, %{score: 5, reason: "almost", questions: ["What should pass?", "Which file?"]}} =
+               Response.parse(raw)
+    end
+
     test "rejects empty input" do
       assert {:error, :empty_response} = Response.parse("")
       assert {:error, :empty_response} = Response.parse(nil)

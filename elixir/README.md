@@ -137,10 +137,12 @@ agent:
     denied_domains: []
 pr_review:
   mode: tracker
-  auto_reply: false
-  auto_request_review: false
-  github_user: null
-  bot_users: []
+  # The following keys are polling-mode only and are ignored while mode is tracker.
+  # mode: polling
+  # auto_reply: false
+  # auto_request_review: false
+  # github_user: null
+  # bot_users: []
 quality_gate:
   enabled: true
   provider: anthropic           # or: openai

@@ -84,19 +84,36 @@ defmodule SymphonyElixir.PrReviewPoller do
   @doc false
   @spec pending_reviewer_comments(String.t(), keyword()) :: [map()]
   def pending_reviewer_comments(issue_id, opts \\ []) do
-    if is_binary(issue_id) do
-      run_store = Keyword.get(opts, :run_store, RunStore)
+    run_store = Keyword.get(opts, :run_store, RunStore)
+    now = Keyword.get(opts, :now, DateTime.utc_now())
 
-      with {:ok, reviews} <- list_pr_reviews(run_store),
-           %{} = record <- Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
+    pending_reviewer_comments(issue_id, run_store, now)
+  end
+
+  defp pending_reviewer_comments(issue_id, run_store, now) when is_binary(issue_id) do
+    case list_pr_reviews(run_store) do
+      {:ok, reviews} ->
+        comments_from_review_record(reviews, issue_id, run_store, now)
+
+      {:error, reason} ->
+        record_pending_comment_lookup_error(run_store, issue_id, reason, now)
+        []
+    end
+  end
+
+  defp pending_reviewer_comments(_issue_id, _run_store, _now), do: []
+
+  defp comments_from_review_record(reviews, issue_id, run_store, now) do
+    case Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
+      %{} = record ->
+        clear_pending_comment_lookup_error(run_store, record, now)
+
         record
         |> Map.get(:pending_reviewer_comments, [])
         |> normalize_comments()
-      else
-        _ -> []
-      end
-    else
-      []
+
+      nil ->
+        []
     end
   end
 
@@ -156,16 +173,39 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp complete_reviewer_comment_record(record, comments, cursor, github, opts, now) do
     with {:ok, settings} <- poll_settings(opts),
+         :ok <- ensure_pending_comment_lookup_succeeded(record),
          {:ok, record} <- maybe_reply_to_comments(record, comments, settings, github, opts, now),
-         :ok <- maybe_request_review(record, comments, settings, github) do
-      update_review(opts, record, %{
-        last_addressed_comment_id: cursor,
-        last_addressed_comment_at: now,
-        pending_reviewer_comments: [],
-        pending_last_addressed_comment_id: nil,
-        replied_comment_ids: [],
-        updated_at: now
-      })
+         {:ok, record} <- advance_reviewer_comment_cursor(record, cursor, opts, now) do
+      maybe_request_review(record, comments, settings, github, opts, now)
+    end
+  end
+
+  defp ensure_pending_comment_lookup_succeeded(record) do
+    case Map.get(record, :pending_reviewer_comments_lookup_error) do
+      value when value in [nil, ""] -> :ok
+      reason -> {:error, {:pending_reviewer_comments_lookup_error, reason}}
+    end
+  end
+
+  defp advance_reviewer_comment_cursor(record, cursor, opts, now) do
+    attrs = %{
+      last_addressed_comment_id: cursor,
+      last_addressed_comment_at: now,
+      pending_reviewer_comments: [],
+      pending_last_addressed_comment_id: nil,
+      replied_comment_ids: [],
+      pending_reviewer_comments_lookup_error: nil,
+      pending_reviewer_comments_lookup_error_at: nil,
+      auto_reply_state_update_error: nil,
+      auto_reply_state_update_error_at: nil,
+      auto_request_review_error: nil,
+      auto_request_review_error_at: nil,
+      updated_at: now
+    }
+
+    case update_review(opts, record, attrs) do
+      :ok -> {:ok, Map.merge(record, attrs)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -838,6 +878,59 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  defp clear_pending_comment_lookup_error(run_store, record, now) do
+    if Map.get(record, :pending_reviewer_comments_lookup_error) in [nil, ""] do
+      :ok
+    else
+      issue_id = Map.get(record, :issue_id)
+
+      attrs = %{
+        pending_reviewer_comments_lookup_error: nil,
+        pending_reviewer_comments_lookup_error_at: nil,
+        updated_at: now
+      }
+
+      case update_review_direct(run_store, issue_id, attrs) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Failed to clear pending PR review comment lookup error issue_id=#{issue_id}: #{inspect(reason)}")
+      end
+    end
+  end
+
+  defp record_pending_comment_lookup_error(run_store, issue_id, reason, now) do
+    Logger.warning("Failed to load pending PR review comments issue_id=#{issue_id}: #{inspect(reason)}")
+
+    attrs = %{
+      pending_reviewer_comments_lookup_error: inspect(reason),
+      pending_reviewer_comments_lookup_error_at: now,
+      updated_at: now
+    }
+
+    case update_review_direct(run_store, issue_id, attrs) do
+      :ok ->
+        :ok
+
+      {:error, update_reason} ->
+        Logger.warning("Failed to record pending PR review comment lookup error issue_id=#{issue_id} reason=#{inspect(reason)}: #{inspect(update_reason)}")
+    end
+  end
+
+  defp update_review_direct(run_store, issue_id, attrs) when is_binary(issue_id) do
+    if function_exported?(run_store, :update_pr_review, 2) do
+      case run_store.update_pr_review(issue_id, attrs) do
+        :ok -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :update_pr_review_unavailable}
+    end
+  end
+
+  defp update_review_direct(_run_store, _issue_id, _attrs), do: {:error, :invalid_issue_id}
+
   defp persist_pr_review(run_store, record) do
     case run_store.put_pr_review(record) do
       :ok -> :ok
@@ -930,7 +1023,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp mark_inline_comment_replied(record, comment, opts, now) do
     case mark_comments_replied(record, [Map.get(comment, :id)], opts, now) do
       {:ok, updated_record} -> {:ok, updated_record}
-      {:error, reason} -> {:error, {:auto_reply_state_update_failed, Map.get(comment, :id), reason}}
+      {:error, reason} -> handle_auto_reply_state_update_failure(record, [comment], opts, now, reason)
     end
   end
 
@@ -940,8 +1033,14 @@ defmodule SymphonyElixir.PrReviewPoller do
     summary_comment = %{id: "pr-review-summary", kind: "comment"}
 
     case github.reply_to_comment(Map.get(record, :pr_url), summary_comment, addressed_comment_summary_reply(comments), cwd: Map.get(record, :workspace_path)) do
-      :ok -> mark_comments_replied(record, Enum.map(comments, &Map.get(&1, :id)), opts, now)
-      {:error, reason} -> {:error, {:auto_reply_failed, "pr-review-summary", reason}}
+      :ok ->
+        case mark_comments_replied(record, Enum.map(comments, &Map.get(&1, :id)), opts, now) do
+          {:ok, updated_record} -> {:ok, updated_record}
+          {:error, reason} -> handle_auto_reply_state_update_failure(record, comments, opts, now, reason)
+        end
+
+      {:error, reason} ->
+        {:error, {:auto_reply_failed, "pr-review-summary", reason}}
     end
   end
 
@@ -962,6 +1061,29 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  defp handle_auto_reply_state_update_failure(record, comments, opts, now, reason) do
+    ids = comments |> Enum.map(&Map.get(&1, :id)) |> Enum.filter(&is_binary/1)
+    issue_id = Map.get(record, :issue_id)
+
+    Logger.error("Auto reply posted but failed to persist replied_comment_ids issue_id=#{issue_id} comment_ids=#{inspect(ids)}; retries may duplicate GitHub replies: #{inspect(reason)}")
+
+    attrs = %{
+      auto_reply_state_update_error: inspect({ids, reason}),
+      auto_reply_state_update_error_at: now,
+      updated_at: now
+    }
+
+    case update_review(opts, record, attrs) do
+      :ok ->
+        :ok
+
+      {:error, update_reason} ->
+        Logger.error("Failed to record auto reply state update error issue_id=#{issue_id} comment_ids=#{inspect(ids)}: #{inspect(update_reason)}")
+    end
+
+    {:error, {:auto_reply_state_update_failed, List.first(ids), reason}}
+  end
+
   defp replied_comment_ids(record) when is_map(record) do
     record
     |> Map.get(:replied_comment_ids, [])
@@ -969,15 +1091,39 @@ defmodule SymphonyElixir.PrReviewPoller do
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp maybe_request_review(_record, [], _settings, _github), do: :ok
+  defp maybe_request_review(_record, [], _settings, _github, _opts, _now), do: :ok
 
-  defp maybe_request_review(record, comments, settings, github) do
+  defp maybe_request_review(record, comments, settings, github, opts, now) do
     if Map.get(settings.pr_review, :auto_request_review, false) do
       comments
       |> reviewers_for_request(settings)
       |> request_review(record, github)
+      |> handle_request_review_result(record, opts, now)
     else
       :ok
+    end
+  end
+
+  defp handle_request_review_result(:ok, _record, _opts, _now), do: :ok
+
+  defp handle_request_review_result({:error, reason}, record, opts, now) do
+    issue_id = Map.get(record, :issue_id)
+
+    Logger.warning("Failed to request follow-up PR review issue_id=#{issue_id}: #{inspect(reason)}")
+
+    attrs = %{
+      auto_request_review_error: inspect(reason),
+      auto_request_review_error_at: now,
+      updated_at: now
+    }
+
+    case update_review(opts, record, attrs) do
+      :ok ->
+        :ok
+
+      {:error, update_reason} ->
+        Logger.warning("Failed to record follow-up PR review request error issue_id=#{issue_id}: #{inspect(update_reason)}")
+        :ok
     end
   end
 

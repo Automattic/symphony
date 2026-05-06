@@ -174,9 +174,10 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp complete_reviewer_comment_record(record, comments, cursor, github, opts, now) do
     with {:ok, settings} <- poll_settings(opts),
          :ok <- ensure_pending_comment_lookup_succeeded(record),
+         {:ok, record} <- maybe_backfill_review_issue_details(record, opts, now),
          {:ok, record} <- maybe_reply_to_comments(record, comments, settings, github, opts, now),
-         {:ok, record} <- advance_reviewer_comment_cursor(record, cursor, opts, now),
-         :ok <- maybe_request_review(record, comments, settings, github, opts, now) do
+         {:ok, record} <- advance_reviewer_comment_cursor(record, cursor, opts, now) do
+      maybe_request_review(record, comments, settings, github, opts, now)
       emit_rework_pushed(record, comments, cursor, now)
     end
   end
@@ -264,6 +265,18 @@ defmodule SymphonyElixir.PrReviewPoller do
 
             false
         end
+    end
+  end
+
+  defp discover_review_record(%Issue{} = issue, _runs, %{workspace_path: workspace_path} = existing, now)
+       when is_binary(workspace_path) and workspace_path != "" do
+    attrs =
+      existing
+      |> missing_review_detail_attrs(issue)
+      |> maybe_put_updated_at(now)
+
+    if map_size(attrs) > 0 do
+      Map.merge(existing, attrs)
     end
   end
 
@@ -979,6 +992,87 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  defp maybe_backfill_review_issue_details(record, opts, now) do
+    if present?(Map.get(record, :issue_title)) do
+      {:ok, record}
+    else
+      record
+      |> fetch_review_issue(opts)
+      |> backfill_review_issue_details(record, opts, now)
+    end
+  end
+
+  defp fetch_review_issue(record, opts) do
+    tracker = Keyword.get(opts, :tracker, Tracker)
+    issue_id = Map.get(record, :issue_id)
+
+    with issue_id when is_binary(issue_id) and issue_id != "" <- issue_id,
+         {:ok, issues} <- tracker.fetch_issue_states_by_ids([issue_id]),
+         %Issue{} = issue <- Enum.find(issues, &(&1.id == issue_id)) do
+      {:ok, issue}
+    else
+      nil -> :missing
+      "" -> :missing
+      {:error, reason} -> {:error, reason}
+      _other -> :missing
+    end
+  end
+
+  defp backfill_review_issue_details({:ok, %Issue{} = issue}, record, opts, now) do
+    attrs =
+      record
+      |> missing_issue_detail_attrs(issue)
+      |> maybe_put_updated_at(now)
+
+    if map_size(attrs) > 0 do
+      case update_review(opts, record, attrs) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.debug("Failed to backfill PR review issue details issue_id=#{Map.get(record, :issue_id)}: #{inspect(reason)}")
+      end
+
+      {:ok, Map.merge(record, attrs)}
+    else
+      {:ok, record}
+    end
+  end
+
+  defp backfill_review_issue_details(:missing, record, _opts, _now), do: {:ok, record}
+
+  defp backfill_review_issue_details({:error, reason}, record, _opts, _now) do
+    Logger.debug("Failed to fetch PR review issue details issue_id=#{Map.get(record, :issue_id)}: #{inspect(reason)}")
+    {:ok, record}
+  end
+
+  defp missing_issue_detail_attrs(record, %Issue{} = issue) do
+    %{}
+    |> maybe_put_missing(:issue_identifier, record, issue.identifier)
+    |> maybe_put_missing(:issue_title, record, issue.title)
+    |> maybe_put_missing(:issue_url, record, issue.url)
+  end
+
+  defp missing_review_detail_attrs(record, %Issue{} = issue) do
+    record
+    |> missing_issue_detail_attrs(issue)
+    |> maybe_put_missing(:pr_url, record, first_pr_url(issue))
+  end
+
+  defp maybe_put_missing(attrs, key, record, value) do
+    if present?(Map.get(record, key)) or not present?(value) do
+      attrs
+    else
+      Map.put(attrs, key, value)
+    end
+  end
+
+  defp maybe_put_updated_at(attrs, _now) when map_size(attrs) == 0, do: attrs
+  defp maybe_put_updated_at(attrs, now), do: Map.put(attrs, :updated_at, now)
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(_value), do: false
+
   defp maybe_reply_to_comments(record, [], _settings, _github, _opts, _now), do: {:ok, record}
 
   defp maybe_reply_to_comments(record, comments, settings, github, opts, now) do
@@ -1252,7 +1346,7 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp maybe_emit_reviewer_commented(_record, _attrs, _action, _now), do: :ok
 
-  defp emit_rework_pushed(_record, [], nil, _now), do: :ok
+  defp emit_rework_pushed(_record, [], _cursor, _now), do: :ok
 
   defp emit_rework_pushed(record, comments, cursor, now) do
     Notifications.emit_event(

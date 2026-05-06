@@ -499,6 +499,51 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     refute_receive {:notification_event, %Event{event: "reviewer_commented"}}, 50
   end
 
+  test "backfills legacy issue title before reviewer_commented notification" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      now
+      |> review_record()
+      |> Map.delete(:issue_title)
+      |> RunStore.put_pr_review()
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Please refactor this before merge.",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-1",
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:notification_event,
+                    %Event{
+                      event: "reviewer_commented",
+                      issue_title: "Review manager"
+                    }},
+                   500
+
+    assert [%{issue_title: "Review manager"}] = RunStore.list_pr_reviews()
+  end
+
   test "plain reviewer comments still respect cooldown" do
     now = ~U[2026-05-01 09:00:00Z]
     latest_comment_at = DateTime.add(now, -10, :minute)
@@ -692,6 +737,60 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     refute_receive {:notification_event, %Event{event: "rework_pushed"}}, 50
   end
 
+  test "backfills legacy issue title before rework_pushed notification" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      now
+      |> review_record(%{
+        status: "rework_requested",
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+      |> Map.delete(:issue_title)
+      |> RunStore.put_pr_review()
+
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
+    assert :ok =
+             PrReviewPoller.complete_pending_reviewer_comments(
+               "issue-1780",
+               tracker: FakeTracker,
+               github: ActionGitHub,
+               now: now
+             )
+
+    assert_receive {:notification_event,
+                    %Event{
+                      event: "rework_pushed",
+                      issue_title: "Review manager"
+                    }},
+                   500
+
+    assert [%{issue_title: "Review manager", last_addressed_comment_id: "comment-1"}] = RunStore.list_pr_reviews()
+  end
+
+  test "does not emit rework_pushed when no reviewer comments are completed" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: []
+      })
+
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    refute_receive {:notification_event, %Event{event: "rework_pushed"}}, 50
+    assert [%{last_addressed_comment_id: "comment-1", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+  end
+
   test "pending reviewer comment lookup errors are recorded and block cursor completion" do
     now = ~U[2026-05-01 09:00:00Z]
 
@@ -796,7 +895,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [%{last_addressed_comment_id: "comment-2", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
   end
 
-  test "auto reply does not duplicate successful replies when request review fails before cursor advancement" do
+  test "auto reply does not duplicate successful replies when request review fails after cursor advancement" do
     now = ~U[2026-05-01 09:00:00Z]
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -820,6 +919,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       })
 
     Application.put_env(:symphony_elixir, :pr_review_test_request_review_failures, 1)
+    assert :ok = SymphonyElixir.Notifications.subscribe()
 
     log =
       capture_log([level: :warning], fn ->
@@ -832,6 +932,13 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "pr-review-summary"}, _summary_body}
 
     assert_receive {:github_request_review_failed, "https://github.com/example/repo/pull/1780", ["human-reviewer", "maintainer"]}
+
+    assert_receive {:notification_event,
+                    %Event{
+                      event: "rework_pushed",
+                      metadata: %{comment_count: 2, latest_comment_id: "comment-2"}
+                    }},
+                   500
 
     assert [
              %{

@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
 
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -14,6 +15,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.polling.interval_ms == 30_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    assert config.tracker.team == nil
+    assert config.tracker.labels == []
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
     assert config.pr_review.mode == "tracker"
@@ -43,12 +46,82 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "tracker.active_states"
 
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+    System.delete_env("LINEAR_API_KEY")
+
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: "token",
-      tracker_project_slug: nil
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_team: "RSM"
     )
 
-    assert {:error, :missing_linear_project_slug} = Config.validate!()
+    assert {:error, :missing_linear_api_token} = Config.validate!()
+    restore_env("LINEAR_API_KEY", previous_linear_api_key)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil,
+      tracker_team: nil,
+      tracker_labels: []
+    )
+
+    assert {:error, :missing_linear_scoping_filter} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: "",
+      tracker_team: "  ",
+      tracker_labels: ["", "  "]
+    )
+
+    assert {:error, :missing_linear_scoping_filter} = Config.validate!()
+    assert Config.settings!().tracker.project_slug == nil
+    assert Config.settings!().tracker.team == nil
+    assert Config.settings!().tracker.labels == []
+
+    tracker =
+      %TrackerConfig{
+        project_slug: "project",
+        team: "RSM",
+        labels: ["backend"]
+      }
+      |> TrackerConfig.changeset(%{
+        project_slug: nil,
+        team: nil,
+        labels: nil
+      })
+      |> Ecto.Changeset.apply_changes()
+
+    assert tracker.project_slug == nil
+    assert tracker.team == nil
+    assert tracker.labels == []
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil,
+      tracker_team: nil,
+      tracker_labels: ["", " backend ", "infra", " "]
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.labels == ["backend", "infra"]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: "RSM"
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.team == "RSM"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: nil,
+      tracker_labels: ["backend"]
+    )
+
+    assert :ok = Config.validate!()
+    assert Config.settings!().tracker.labels == ["backend"]
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",

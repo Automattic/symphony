@@ -573,49 +573,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute issue.assigned_to_worker
   end
 
-  test "linear client filters candidate pickup by configured assignee" do
+  test "linear client sends configured assignee in candidate filter" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_assignee: "user-1")
 
     graphql_fun = fn query, variables ->
       send(self(), {:candidate_query, query, variables})
 
-      {:ok,
-       %{
-         "data" => %{
-           "issues" => %{
-             "nodes" => [
-               %{
-                 "id" => "issue-1",
-                 "identifier" => "MT-1",
-                 "title" => "Assigned here",
-                 "state" => %{"name" => "Todo"},
-                 "assignee" => %{"id" => "user-1"},
-                 "labels" => %{"nodes" => []},
-                 "inverseRelations" => %{"nodes" => []}
-               },
-               %{
-                 "id" => "issue-2",
-                 "identifier" => "MT-2",
-                 "title" => "Assigned elsewhere",
-                 "state" => %{"name" => "Todo"},
-                 "assignee" => %{"id" => "user-2"},
-                 "labels" => %{"nodes" => []},
-                 "inverseRelations" => %{"nodes" => []}
-               },
-               %{
-                 "id" => "issue-3",
-                 "identifier" => "MT-3",
-                 "title" => "Unassigned",
-                 "state" => %{"name" => "Todo"},
-                 "assignee" => nil,
-                 "labels" => %{"nodes" => []},
-                 "inverseRelations" => %{"nodes" => []}
-               }
-             ],
-             "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
-           }
-         }
-       }}
+      {:ok, linear_page_response([raw_linear_issue("issue-1", "MT-1", "user-1")])}
     end
 
     assert {:ok, issues} = Client.fetch_candidate_issues_for_test(graphql_fun)
@@ -623,54 +587,160 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Enum.map(issues, & &1.identifier) == ["MT-1"]
     assert Enum.all?(issues, & &1.assigned_to_worker)
 
-    assert_receive {:candidate_query, query,
-                    %{
-                      projectSlug: "project",
-                      stateNames: ["Todo", "In Progress"],
-                      first: 50,
-                      relationFirst: 50
-                    }}
+    assert_receive {:candidate_query, query, variables}
 
     assert query =~ "SymphonyLinearPoll"
+    assert query =~ "$filter: IssueFilter!"
+    assert query =~ "issues(filter: $filter"
+
+    assert variables == %{
+             filter: %{
+               "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+               "project" => %{"slugId" => %{"eq" => "project"}},
+               "assignee" => %{"id" => %{"in" => ["user-1"]}}
+             },
+             first: 50,
+             relationFirst: 50,
+             attachmentFirst: 20,
+             after: nil
+           }
   end
 
-  test "linear client resolves assignee me before filtering candidate pickup" do
+  test "linear client resolves assignee me before sending candidate filter" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_assignee: "me")
 
-    graphql_fun = fn query, _variables ->
+    graphql_fun = fn query, variables ->
       if query =~ "SymphonyLinearViewer" do
+        send(self(), {:viewer_query, variables})
         {:ok, %{"data" => %{"viewer" => %{"id" => "user-2"}}}}
       else
-        {:ok,
-         %{
-           "data" => %{
-             "issues" => %{
-               "nodes" => [
-                 %{
-                   "id" => "issue-1",
-                   "identifier" => "MT-1",
-                   "title" => "Assigned elsewhere",
-                   "state" => %{"name" => "Todo"},
-                   "assignee" => %{"id" => "user-1"}
-                 },
-                 %{
-                   "id" => "issue-2",
-                   "identifier" => "MT-2",
-                   "title" => "Assigned to viewer",
-                   "state" => %{"name" => "Todo"},
-                   "assignee" => %{"id" => "user-2"}
-                 }
-               ],
-               "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
-             }
-           }
-         }}
+        send(self(), {:candidate_query, variables})
+        {:ok, linear_page_response([raw_linear_issue("issue-2", "MT-2", "user-2")])}
       end
     end
 
     assert {:ok, issues} = Client.fetch_candidate_issues_for_test(graphql_fun)
 
     assert Enum.map(issues, & &1.identifier) == ["MT-2"]
+
+    assert_receive {:viewer_query, %{}}
+    assert_receive {:candidate_query, variables}
+    assert get_in(variables, [:filter, "assignee", "id", "in"]) == ["user-2"]
+  end
+
+  test "linear client sends team key in candidate filter" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: "RSM"
+    )
+
+    variables = capture_candidate_variables!()
+
+    assert variables.filter == %{
+             "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+             "team" => %{"key" => %{"eq" => "RSM"}}
+           }
+
+    refute Map.has_key?(variables.filter, "project")
+    refute Map.has_key?(variables.filter, "labels")
+    refute Map.has_key?(variables.filter, "assignee")
+  end
+
+  test "linear client sends team id in candidate filter for UUID team" do
+    team_id = "a42df4c4-7416-4a08-8fb2-97087043169f"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: team_id
+    )
+
+    variables = capture_candidate_variables!()
+
+    assert variables.filter == %{
+             "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+             "team" => %{"id" => %{"eq" => team_id}}
+           }
+  end
+
+  test "linear client sends single and multiple labels with OR semantics" do
+    for labels <- [["backend"], ["backend", "infra"]] do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_project_slug: nil,
+        tracker_labels: labels
+      )
+
+      variables = capture_candidate_variables!()
+
+      assert variables.filter == %{
+               "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+               "labels" => %{"some" => %{"name" => %{"in" => labels}}}
+             }
+    end
+  end
+
+  test "linear client omits empty labels from candidate filter" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: "RSM",
+      tracker_labels: []
+    )
+
+    variables = capture_candidate_variables!()
+
+    refute Map.has_key?(variables.filter, "labels")
+    refute Enum.any?(variables.filter, fn {_key, value} -> is_nil(value) end)
+  end
+
+  test "linear client combines configured candidate filter dimensions" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_team: "RSM",
+      tracker_labels: ["backend"],
+      tracker_assignee: "user-1"
+    )
+
+    variables = capture_candidate_variables!()
+
+    assert variables.filter == %{
+             "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+             "project" => %{"slugId" => %{"eq" => "project"}},
+             "team" => %{"key" => %{"eq" => "RSM"}},
+             "labels" => %{"some" => %{"name" => %{"in" => ["backend"]}}},
+             "assignee" => %{"id" => %{"in" => ["user-1"]}}
+           }
+  end
+
+  test "linear client repeats candidate filter while paginating" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_team: "RSM",
+      tracker_labels: ["backend"]
+    )
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:candidate_page, query, variables})
+
+      case variables.after do
+        nil ->
+          {:ok,
+           linear_page_response([raw_linear_issue("issue-1", "MT-1")], %{
+             "hasNextPage" => true,
+             "endCursor" => "cursor-1"
+           })}
+
+        "cursor-1" ->
+          {:ok, linear_page_response([raw_linear_issue("issue-2", "MT-2")])}
+      end
+    end
+
+    assert {:ok, issues} = Client.fetch_candidate_issues_for_test(graphql_fun)
+    assert Enum.map(issues, & &1.identifier) == ["MT-1", "MT-2"]
+
+    assert_receive {:candidate_page, query, first_variables}
+    assert_receive {:candidate_page, ^query, second_variables}
+
+    assert first_variables[:after] == nil
+    assert second_variables[:after] == "cursor-1"
+    assert first_variables.filter == second_variables.filter
   end
 
   test "linear client pagination merge helper preserves issue ordering" do
@@ -2523,6 +2593,42 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   defp configure_git_user!(repo) do
     git!(repo, ["config", "user.name", "Test User"])
     git!(repo, ["config", "user.email", "test@example.com"])
+  end
+
+  defp capture_candidate_variables! do
+    graphql_fun = fn query, variables ->
+      send(self(), {:candidate_query, query, variables})
+      {:ok, linear_page_response([])}
+    end
+
+    assert {:ok, []} = Client.fetch_candidate_issues_for_test(graphql_fun)
+    assert_receive {:candidate_query, query, variables}
+    assert query =~ "SymphonyLinearPoll"
+
+    variables
+  end
+
+  defp linear_page_response(nodes, page_info \\ %{"hasNextPage" => false, "endCursor" => nil}) do
+    %{
+      "data" => %{
+        "issues" => %{
+          "nodes" => nodes,
+          "pageInfo" => page_info
+        }
+      }
+    }
+  end
+
+  defp raw_linear_issue(id, identifier, assignee_id \\ nil) do
+    %{
+      "id" => id,
+      "identifier" => identifier,
+      "title" => identifier,
+      "state" => %{"name" => "Todo"},
+      "assignee" => assignee_id && %{"id" => assignee_id},
+      "labels" => %{"nodes" => []},
+      "inverseRelations" => %{"nodes" => []}
+    }
   end
 
   defp git!(repo, args) do

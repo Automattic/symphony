@@ -383,7 +383,14 @@ Fields:
   - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
-  - REQUIRED for dispatch when `tracker.kind == "linear"`.
+  - OPTIONAL when `tracker.kind == "linear"`.
+  - At least one of `project_slug`, `team`, or non-empty `labels` is REQUIRED
+    for dispatch when `tracker.kind == "linear"`.
+- `team` (string)
+  - OPTIONAL Linear team key or team ID.
+- `labels` (list of strings)
+  - OPTIONAL Linear label names. Candidate issue polling treats multiple labels
+    with OR semantics.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
@@ -668,7 +675,8 @@ Validation checks:
 - Workflow file can be loaded and parsed.
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
-- `tracker.project_slug` is present when REQUIRED by the selected tracker kind.
+- At least one of `tracker.project_slug`, `tracker.team`, or non-empty
+  `tracker.labels` is present when `tracker.kind == "linear"`.
 - `codex.command` is present and non-empty.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
@@ -680,7 +688,11 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.kind`: string, REQUIRED, currently `linear`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
+- `tracker.project_slug`: string, OPTIONAL when `tracker.kind=linear`
+- `tracker.team`: optional Linear team key or team ID when `tracker.kind=linear`
+- `tracker.labels`: optional list of Linear label names when `tracker.kind=linear`
+- At least one of `tracker.project_slug`, `tracker.team`, or non-empty
+  `tracker.labels` is REQUIRED when `tracker.kind=linear`
 - `tracker.assignee`: optional string or `$VAR`, canonical env `LINEAR_ASSIGNEE` when
   `tracker.kind=linear`; `"me"` resolves the current Linear viewer
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
@@ -1310,12 +1322,18 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - `tracker.kind == "linear"`
 - GraphQL endpoint (default `https://api.linear.app/graphql`)
 - Auth token sent in `Authorization` header
-- `tracker.project_slug` maps to Linear project `slugId`
-- Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
+- `tracker.project_slug` maps to Linear project `slugId` when set
+- `tracker.team` maps to Linear team `key` or `id`, chosen by whether the value
+  has UUID shape
+- `tracker.labels` maps to `labels: { some: { name: { in: [...] } } }`
+- Candidate issue queries build one GraphQL `IssueFilter` variable dynamically,
+  omitting unconfigured keys instead of sending null operands.
 - If `tracker.assignee` is set, `fetch_candidate_issues()` returns only issues whose Linear
-  assignee matches the configured value. The special value `"me"` resolves the current viewer ID.
-- Issue-state refresh still returns requested issues that no longer match `tracker.assignee`, with
-  normalized `assigned_to_worker=false`, so reassignment can stop active workers.
+  assignee matches the configured value by adding `assignee: { id: { in: [...] } }`
+  to the server-side candidate filter. The special value `"me"` resolves the current viewer ID.
+- Issue-state refresh still uses the by-id query without an assignee filter and returns requested
+  issues that no longer match `tracker.assignee`, with normalized `assigned_to_worker=false`, so
+  reassignment can stop active workers.
 - Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
 - Pagination REQUIRED for candidate issues
 - Page size default: `50`
@@ -1346,7 +1364,7 @@ RECOMMENDED error categories:
 
 - `unsupported_tracker_kind`
 - `missing_tracker_api_key`
-- `missing_tracker_project_slug`
+- `missing_linear_scoping_filter`
 - `linear_api_request` (transport failures)
 - `linear_api_status` (non-200 HTTP)
 - `linear_graphql_errors`

@@ -155,12 +155,17 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
+      settings.tracker.kind == "linear" and not linear_scoping_filter_configured?(settings.tracker) ->
+        {:error, :missing_linear_scoping_filter}
 
       true ->
         :ok
     end
+  end
+
+  defp linear_scoping_filter_configured?(tracker) do
+    is_binary(tracker.project_slug) or is_binary(tracker.team) or
+      (is_list(tracker.labels) and tracker.labels != [])
   end
 
   defp default_server_port(settings) do

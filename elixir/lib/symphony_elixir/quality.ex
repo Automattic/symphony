@@ -244,12 +244,14 @@ defmodule SymphonyElixir.Quality do
   defp duration_seconds(_started_at, _ended_at), do: 0
 
   defp tests_run_signal(running_entry, opts) do
-    with {:ok, events} <- transcript_evidence_events(running_entry, opts) do
-      events
-      |> Enum.flat_map(&command_strings/1)
-      |> Enum.any?(&String.match?(&1, @test_run_command))
-    else
-      _ -> nil
+    case transcript_evidence_events(running_entry, opts) do
+      {:ok, events} ->
+        events
+        |> Enum.flat_map(&command_strings/1)
+        |> Enum.any?(&String.match?(&1, @test_run_command))
+
+      _ ->
+        nil
     end
   end
 

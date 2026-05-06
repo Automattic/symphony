@@ -106,7 +106,9 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..."
+  project_slug: "..." # optional when team or labels is set
+  team: "RSM"
+  labels: ["backend"]
   assignee: null
 workspace:
   root: ~/code/workspaces
@@ -209,8 +211,10 @@ Notes:
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - Set `tracker.assignee` to a Linear user ID, or `me` to use the current API token's Linear viewer,
   when you want one Symphony process to pick up only issues assigned to that user. If unset, all
-  active issues in the configured project are eligible. `tracker.assignee` reads from
+  active issues in the configured Linear scope are eligible. `tracker.assignee` reads from
   `LINEAR_ASSIGNEE` when unset or when value is `$LINEAR_ASSIGNEE`.
+- `tracker.project_slug` is optional. Linear tracker configs must set at least one of
+  `tracker.project_slug`, `tracker.team`, or a non-empty `tracker.labels` list.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` and `workspace.repo` resolve `$VAR`
   before path handling. For Codex, `agent.command` stays a shell command string and any `$VAR`

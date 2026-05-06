@@ -104,6 +104,38 @@ defmodule SymphonyElixir.RunStoreTest do
     assert :ok = RunStore.delete_pr_review("issue-1")
     assert [] = RunStore.list_pr_reviews()
 
+    assert :ok =
+             RunStore.put_ci_check(%{
+               issue_id: "issue-1",
+               issue_identifier: "RSM-1",
+               pr_url: "https://github.com/example/repo/pull/1",
+               commit_sha: "abc123",
+               status: "dispatch_requested",
+               ci_retry_count: 1,
+               updated_at: started_at
+             })
+
+    assert :ok =
+             RunStore.update_ci_check("issue-1", %{
+               status: "green",
+               ci_retry_count: 0,
+               updated_at: due_at
+             })
+
+    assert [
+             %{
+               issue_id: "issue-1",
+               pr_url: "https://github.com/example/repo/pull/1",
+               commit_sha: "abc123",
+               status: "green",
+               ci_retry_count: 0,
+               updated_at: ^due_at
+             }
+           ] = RunStore.list_ci_checks()
+
+    assert :ok = RunStore.delete_ci_check("issue-1")
+    assert [] = RunStore.list_ci_checks()
+
     totals = %{input_tokens: 10, output_tokens: 4, total_tokens: 14, seconds_running: 10}
     assert :ok = RunStore.put_codex_totals(totals)
     assert totals == RunStore.get_codex_totals()

@@ -10,6 +10,7 @@ defmodule SymphonyElixir.PromptBuilder do
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
     reviewer_comments = normalize_reviewer_comments(Keyword.get(opts, :reviewer_comments, []))
+    ci_failure = normalize_ci_failure(Keyword.get(opts, :ci_failure))
 
     template =
       Workflow.current()
@@ -21,13 +22,15 @@ defmodule SymphonyElixir.PromptBuilder do
       %{
         "attempt" => Keyword.get(opts, :attempt),
         "issue" => issue |> Map.from_struct() |> to_solid_map(),
-        "reviewer_comments" => to_solid_value(reviewer_comments)
+        "reviewer_comments" => to_solid_value(reviewer_comments),
+        "ci_failure" => to_solid_value(ci_failure)
       },
       @render_opts
     )
     |> IO.iodata_to_binary()
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
     |> append_reviewer_comments(reviewer_comments)
+    |> append_ci_failure(ci_failure)
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
@@ -80,6 +83,30 @@ defmodule SymphonyElixir.PromptBuilder do
 
   defp append_reviewer_comments(prompt, comments) when is_list(comments) do
     prompt <> "\n\n" <> reviewer_comments_section(comments)
+  end
+
+  defp append_ci_failure(prompt, nil), do: prompt
+
+  defp append_ci_failure(prompt, ci_failure) when is_map(ci_failure) do
+    prompt <> "\n\n" <> ci_failure_section(ci_failure)
+  end
+
+  defp ci_failure_section(ci_failure) do
+    failed_checks =
+      ci_failure
+      |> Map.get(:failed_checks, [])
+      |> Enum.map_join(", ", fn %{name: name} -> name end)
+
+    [
+      "CI failure:",
+      "",
+      "Failed checks: #{blank_fallback(failed_checks, "unknown")}",
+      "Commit SHA: #{blank_fallback(Map.get(ci_failure, :commit_sha), "unknown")}",
+      "",
+      "Failed log excerpt:",
+      blank_fallback(Map.get(ci_failure, :log_excerpt), "No failed log output was available.")
+    ]
+    |> Enum.join("\n")
   end
 
   defp reviewer_comments_section(comments) do
@@ -145,6 +172,56 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp normalize_reviewer_comment(_comment), do: %{body: ""}
+
+  defp normalize_ci_failure(ci_failure) when is_map(ci_failure) do
+    failed_checks =
+      ci_failure
+      |> Map.get(:failed_checks, Map.get(ci_failure, "failed_checks", []))
+      |> normalize_ci_checks()
+
+    log_excerpt = string_field(ci_failure, :log_excerpt) || ""
+    commit_sha = string_field(ci_failure, :commit_sha)
+
+    if failed_checks == [] and String.trim(log_excerpt) == "" and is_nil(commit_sha) do
+      nil
+    else
+      %{
+        failed_checks: failed_checks,
+        commit_sha: commit_sha,
+        log_excerpt: log_excerpt
+      }
+    end
+  end
+
+  defp normalize_ci_failure(_ci_failure), do: nil
+
+  defp normalize_ci_checks(checks) when is_list(checks) do
+    checks
+    |> Enum.map(&normalize_ci_check/1)
+    |> Enum.reject(fn %{name: name} -> name == "" end)
+  end
+
+  defp normalize_ci_checks(_checks), do: []
+
+  defp normalize_ci_check(check) when is_map(check) do
+    %{
+      name: string_field(check, :name) || "",
+      conclusion: string_field(check, :conclusion),
+      run_id: string_field(check, :run_id)
+    }
+  end
+
+  defp normalize_ci_check(check) when is_binary(check), do: %{name: check}
+  defp normalize_ci_check(_check), do: %{name: ""}
+
+  defp blank_fallback(value, fallback) when is_binary(value) do
+    case String.trim(value) do
+      "" -> fallback
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_fallback(_value, fallback), do: fallback
 
   defp string_field(map, key) when is_map(map) and is_atom(key) do
     case Map.get(map, key) || Map.get(map, to_string(key)) do

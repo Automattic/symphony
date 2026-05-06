@@ -6,7 +6,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.{Config, Notifications, RunStore, Tracker, Workspace}
+  alias SymphonyElixir.{CiPoller, Config, Notifications, RunStore, Tracker, Workspace}
   alias SymphonyElixir.GitHub.PullRequest
   alias SymphonyElixir.Linear.Issue
 
@@ -435,13 +435,17 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp maybe_transition_rework(record, attrs, settings, opts, now) do
     latest_activity_at = action_activity_at(attrs)
+    issue_id = Map.get(record, :issue_id)
 
     cond do
+      CiPoller.ci_owned_issue?(issue_id, Keyword.take(opts, [:run_store])) ->
+        complete_review_update(opts, record, Map.merge(attrs, %{status: "ci_owned"}), {:ci_owned, issue_id, :rework})
+
       handled_activity?(record, latest_activity_at) ->
-        complete_review_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), :rework})
+        complete_review_update(opts, record, attrs, {:already_handled, issue_id, :rework})
 
       !cooldown_elapsed?(latest_activity_at, now, settings.pr_review.cooldown_minutes) ->
-        complete_review_update(opts, record, Map.merge(attrs, %{status: "cooling_down"}), {:cooling_down, Map.get(record, :issue_id)})
+        complete_review_update(opts, record, Map.merge(attrs, %{status: "cooling_down"}), {:cooling_down, issue_id})
 
       true ->
         transition_issue_for_action(record, attrs, opts, now, "rework")

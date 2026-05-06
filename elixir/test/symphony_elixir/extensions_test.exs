@@ -201,12 +201,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, ^issue} = SymphonyElixir.Tracker.enrich_issue(issue)
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+    assert :ok = SymphonyElixir.Tracker.add_label("issue-1", "ci-failed")
+    assert :ok = SymphonyElixir.Tracker.remove_label("issue-1", "ci-failed")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
+    assert_receive {:memory_tracker_add_label, "issue-1", "ci-failed"}
+    assert_receive {:memory_tracker_remove_label, "issue-1", "ci-failed"}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
+    assert :ok = Memory.add_label("issue-1", "quiet")
+    assert :ok = Memory.remove_label("issue-1", "quiet")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
@@ -329,6 +335,276 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => [%{"id" => "label-1", "name" => "ci-failed", "team" => %{"id" => "team-1"}}]}
+           }
+         }},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.add_label("issue-1", "CI-Failed")
+    assert_receive {:graphql_called, label_lookup_query, %{issueId: "issue-1", labelName: "ci-failed"}}
+    assert label_lookup_query =~ "issueLabels"
+    assert_receive {:graphql_called, add_label_query, %{issueId: "issue-1", labelIds: ["label-1"]}}
+    assert add_label_query =~ "addedLabelIds"
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => [%{"id" => "label-1", "name" => "ci-failed"}]}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.remove_label("issue-1", "ci-failed")
+    assert_receive {:graphql_called, _remove_lookup_query, %{issueId: "issue-1", labelName: "ci-failed"}}
+    assert_receive {:graphql_called, remove_label_query, %{issueId: "issue-1", labelIds: ["label-1"]}}
+    assert remove_label_query =~ "removedLabelIds"
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }}
+      ]
+    )
+
+    assert :ok = Adapter.remove_label("issue-1", "ci-failed")
+  end
+
+  test "linear adapter creates missing labels and validates label mutation failures" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{
+               "team" => %{"id" => "team-1"},
+               "labels" => %{"nodes" => [%{"id" => "ignored", "name" => nil}, :bad]}
+             },
+             "issueLabels" => %{"nodes" => [%{"id" => "other", "name" => "ci-failed", "team" => %{"id" => "other-team"}}, :bad]}
+           }
+         }},
+        {:ok, %{"data" => %{"issueLabelCreate" => %{"success" => true, "issueLabel" => %{"id" => "label-2"}}}}},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      ]
+    )
+
+    assert :ok = Adapter.add_label("issue-1", " ci-failed ")
+    assert_receive {:graphql_called, _lookup_query, %{issueId: "issue-1", labelName: "ci-failed"}}
+    assert_receive {:graphql_called, create_label_query, %{name: "ci-failed", teamId: "team-1"}}
+    assert create_label_query =~ "issueLabelCreate"
+    assert_receive {:graphql_called, _add_label_query, %{issueId: "issue-1", labelIds: ["label-2"]}}
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => [%{"id" => "label-1", "name" => "ci-failed", "team" => %{"id" => "team-1"}}]}
+           }
+         }},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => false}}}}
+      ]
+    )
+
+    assert {:error, :label_add_failed} = Adapter.add_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => [%{"id" => "label-1", "name" => "ci-failed", "team" => %{"id" => "team-1"}}]}
+           }
+         }},
+        {:error, :boom}
+      ]
+    )
+
+    assert {:error, :boom} = Adapter.add_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => [%{"id" => "label-1", "name" => "ci-failed", "team" => %{"id" => "team-1"}}]}
+           }
+         }},
+        {:ok, %{"data" => %{}}}
+      ]
+    )
+
+    assert {:error, :label_add_failed} = Adapter.add_label("issue-1", "ci-failed")
+
+    assert {:error, :invalid_label} = Adapter.add_label("issue-1", " ")
+    assert {:error, :invalid_label} = Adapter.add_label(:bad, "ci-failed")
+  end
+
+  test "linear adapter reports label lookup, create, and remove failures" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Process.put({FakeLinearClient, :graphql_results}, [{:error, :lookup_failed}])
+    assert {:error, :lookup_failed} = Adapter.add_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }},
+        {:ok, %{"data" => %{"issueLabelCreate" => %{"success" => false}}}}
+      ]
+    )
+
+    assert {:error, :label_create_failed} = Adapter.add_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }},
+        {:ok, %{"data" => %{"issueLabelCreate" => %{"success" => true, "issueLabel" => %{}}}}}
+      ]
+    )
+
+    assert {:error, :label_create_failed} = Adapter.add_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{}},
+             "issueLabels" => %{}
+           }
+         }},
+        {:ok, %{"data" => %{"issueLabelCreate" => %{"success" => true, "issueLabel" => %{"id" => "label-3"}}}}},
+        :unexpected
+      ]
+    )
+
+    assert {:error, :label_add_failed} = Adapter.add_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }},
+        {:error, :create_failed}
+      ]
+    )
+
+    assert {:error, :create_failed} = Adapter.add_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => []}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }},
+        {:ok, %{"data" => %{}}}
+      ]
+    )
+
+    assert {:error, :label_create_failed} = Adapter.add_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => [%{"id" => "label-1", "name" => "ci-failed"}]}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }},
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => false}}}}
+      ]
+    )
+
+    assert {:error, :label_remove_failed} = Adapter.remove_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => [%{"id" => "label-1", "name" => "ci-failed"}]}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }},
+        {:error, :remove_failed}
+      ]
+    )
+
+    assert {:error, :remove_failed} = Adapter.remove_label("issue-1", "ci-failed")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "issue" => %{"team" => %{"id" => "team-1"}, "labels" => %{"nodes" => [%{"id" => "label-1", "name" => "ci-failed"}]}},
+             "issueLabels" => %{"nodes" => []}
+           }
+         }},
+        :unexpected
+      ]
+    )
+
+    assert {:error, :label_remove_failed} = Adapter.remove_label("issue-1", "ci-failed")
+    assert {:error, :invalid_label} = Adapter.remove_label(:bad, "ci-failed")
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

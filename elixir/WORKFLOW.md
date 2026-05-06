@@ -27,6 +27,15 @@ pr_review:
   # Optional polling-mode self/bot filter for GitHub comment triggers.
   # github_user: null
   # bot_users: []
+# Optional polling-mode CI handling. Requires `pr_review.mode: polling`; omitted
+# or disabled keeps the current review-only loop with no CI-related gh calls.
+# ci:
+#   enabled: true
+#   poll_interval_ms: 30000
+#   log_excerpt_lines: 200
+#   flaky_retry: true
+#   max_retries: 3
+#   escalation_state: In Review
 observability:
   transcript_buffer_size: 200
 workspace:
@@ -79,10 +88,10 @@ agent:
 #   channels:
 #     - kind: slack
 #       webhook_url: $SLACK_WEBHOOK_URL
-#       events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded]
+#       events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, ci_failed, ci_escalated]
 #     - kind: webhook
 #       url: $NOTIFY_WEBHOOK_URL
-#       events: [run_failed, budget_exceeded]
+#       events: [run_failed, budget_exceeded, ci_failed, ci_escalated]
 #       headers:
 #         Authorization: $NOTIFY_AUTH_HEADER
 #   redact_titles: false

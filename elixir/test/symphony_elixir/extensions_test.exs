@@ -494,6 +494,76 @@ defmodule SymphonyElixir.ExtensionsTest do
              json_response(conn, 202)
   end
 
+  test "phoenix observability api exposes filtered quality runs and session reports" do
+    now = DateTime.utc_now()
+    yesterday = DateTime.add(now, -1, :day)
+
+    assert :ok =
+             RunStore.put_eval_log(%{
+               eval_id: "eval-api-1",
+               run_id: "run-api-1",
+               issue_id: "issue-api-1",
+               issue_identifier: "RSM-API-1",
+               issue_labels: ["bug"],
+               outcome: "pr_opened",
+               status: "success",
+               agent_kind: "codex",
+               tokens: %{input_tokens: 20, output_tokens: 10, total_tokens: 30},
+               duration_seconds: 45,
+               tests_run: true,
+               workspace_path: "/tmp/workspaces/RSM-API-1",
+               session_id: "session-api-1",
+               logged_at: now,
+               date: DateTime.to_date(now)
+             })
+
+    assert :ok =
+             RunStore.put_eval_log(%{
+               eval_id: "eval-api-2",
+               run_id: "run-api-2",
+               issue_id: "issue-api-2",
+               issue_identifier: "RSM-API-2",
+               issue_labels: ["feature"],
+               outcome: "error",
+               status: "failure",
+               error: "boom",
+               agent_kind: "claude",
+               tokens: %{input_tokens: 5, output_tokens: 5, total_tokens: 10},
+               duration_seconds: 5,
+               tests_run: false,
+               session_id: "session-api-2",
+               logged_at: yesterday,
+               date: DateTime.to_date(yesterday)
+             })
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :QualityApiOrchestrator), snapshot_timeout_ms: 5)
+
+    payload =
+      build_conn()
+      |> get("/api/v1/runs?outcome=pr_opened&agent=codex&date_from=#{Date.to_iso8601(DateTime.to_date(now))}")
+      |> json_response(200)
+
+    assert payload["count"] == 1
+    assert [%{"issue_identifier" => "RSM-API-1", "outcome" => "pr_opened", "agent_kind" => "codex"}] = payload["runs"]
+
+    export_conn = get(build_conn(), "/api/v1/runs?export=json")
+
+    assert Plug.Conn.get_resp_header(export_conn, "content-disposition") == [
+             ~s(attachment; filename="symphony-quality-runs.json")
+           ]
+
+    assert json_response(export_conn, 200)["count"] == 2
+
+    report =
+      build_conn()
+      |> get("/api/v1/runs/session-api-1/report")
+      |> json_response(200)
+
+    assert report["session_id"] == "session-api-1"
+    assert report["metrics"]["pr_opened_rate"] == 1.0
+    assert [%{"run_id" => "run-api-1"}] = report["runs"]
+  end
+
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
@@ -502,6 +572,9 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(get(build_conn(), "/api/v1/refresh"), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
+    assert json_response(post(build_conn(), "/api/v1/runs", %{}), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/", %{}), 405) ==
@@ -622,6 +695,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Dashboard"
+    assert html =~ ~s(href="/quality")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-WATCH"
     assert html =~ "MT-RETRY"
@@ -688,6 +762,61 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
     end)
+  end
+
+  test "quality liveview renders metrics, recent eval logs, and filters" do
+    now = DateTime.utc_now()
+
+    assert :ok =
+             RunStore.put_eval_log(%{
+               eval_id: "eval-live-1",
+               run_id: "run-live-1",
+               issue_id: "issue-live-1",
+               issue_identifier: "RSM-LIVE-1",
+               issue_labels: ["bug"],
+               outcome: "pr_opened",
+               status: "success",
+               agent_kind: "codex",
+               tokens: %{input_tokens: 30, output_tokens: 20, total_tokens: 50},
+               duration_seconds: 90,
+               tests_run: true,
+               session_id: "session-live-1",
+               logged_at: now,
+               date: DateTime.to_date(now)
+             })
+
+    assert :ok =
+             RunStore.put_eval_log(%{
+               eval_id: "eval-live-2",
+               run_id: "run-live-2",
+               issue_id: "issue-live-2",
+               issue_identifier: "RSM-LIVE-2",
+               issue_labels: ["feature"],
+               outcome: "error",
+               status: "failure",
+               agent_kind: "claude",
+               tokens: %{input_tokens: 10, output_tokens: 5, total_tokens: 15},
+               duration_seconds: 30,
+               tests_run: false,
+               logged_at: now,
+               date: DateTime.to_date(now)
+             })
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :QualityLiveOrchestrator), snapshot_timeout_ms: 5)
+
+    {:ok, _view, html} = live(build_conn(), "/quality?agent=codex&outcome=pr_opened")
+
+    assert html =~ "Quality Dashboard"
+    assert html =~ "PR-opened rate"
+    assert html =~ "Avg tokens"
+    assert html =~ "Tests-run rate"
+    assert html =~ "Error rate"
+    assert html =~ "RSM-LIVE-1"
+    refute html =~ "RSM-LIVE-2"
+    assert html =~ ~s(name="agent")
+    assert html =~ ~s(name="outcome")
+    assert html =~ ~s(href="/")
+    assert html =~ "/api/v1/runs?export=json"
   end
 
   test "dashboard liveview omits watching PR link when pull request URL is unavailable" do

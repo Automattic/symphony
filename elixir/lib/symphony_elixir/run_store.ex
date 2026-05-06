@@ -12,13 +12,17 @@ defmodule SymphonyElixir.RunStore do
   @retry_table :symphony_run_store_retries
   @totals_table :symphony_run_store_totals
   @pr_review_table :symphony_run_store_pr_reviews
+  @eval_logs_table :symphony_run_store_eval_logs
+  @eval_log_attributes [:eval_id, :outcome, :agent_kind, :issue_label, :date, :record]
+  @eval_log_indexes [:outcome, :agent_kind, :issue_label, :date]
   @tables [
-    {@runs_table, [:run_id, :record]},
-    {@retry_table, [:issue_id, :record]},
-    {@totals_table, [:key, :record]},
-    {@pr_review_table, [:issue_id, :record]}
+    {@runs_table, [:run_id, :record], []},
+    {@retry_table, [:issue_id, :record], []},
+    {@totals_table, [:key, :record], []},
+    {@pr_review_table, [:issue_id, :record], []},
+    {@eval_logs_table, @eval_log_attributes, [type: :bag, index: @eval_log_indexes]}
   ]
-  @data_tables [@runs_table, @retry_table, @totals_table, @pr_review_table]
+  @data_tables Enum.map(@tables, fn {table, _attributes, _opts} -> table end)
   @codex_totals_key :codex_totals
 
   defmodule State do
@@ -203,6 +207,30 @@ defmodule SymphonyElixir.RunStore do
     end
   end
 
+  @spec put_eval_log(map()) :: :ok | {:error, term()}
+  def put_eval_log(%{eval_id: eval_id} = record) when is_binary(eval_id) do
+    with :ok <- ensure_started() do
+      durable_transaction(fn ->
+        write_eval_log_records(eval_id, normalize_eval_log_record(record))
+      end)
+    end
+  end
+
+  def put_eval_log(_record), do: {:error, :invalid_eval_log_record}
+
+  @spec list_eval_logs(keyword()) :: [map()] | {:error, term()}
+  def list_eval_logs(opts \\ []) when is_list(opts) do
+    with :ok <- ensure_started() do
+      transaction(fn ->
+        @eval_logs_table
+        |> all_eval_log_records()
+        |> filter_eval_logs(opts)
+        |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :logged_at)), :desc)
+        |> limit_eval_logs(Keyword.get(opts, :limit, 50))
+      end)
+    end
+  end
+
   @spec clear() :: :ok | {:error, term()}
   def clear do
     with :ok <- ensure_started() do
@@ -321,14 +349,21 @@ defmodule SymphonyElixir.RunStore do
     end
   end
 
-  defp ensure_table({table, attributes}, :ok) do
+  defp ensure_table({table, attributes, opts}, :ok) do
     if table in :mnesia.system_info(:tables) do
-      {:cont, :ok}
+      case ensure_table_indexes(table, Keyword.get(opts, :index, [])) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
     else
-      case :mnesia.create_table(table,
-             attributes: attributes,
-             disc_copies: [node()],
-             type: :set
+      create_opts =
+        opts
+        |> Keyword.put_new(:type, :set)
+        |> Keyword.merge(attributes: attributes, disc_copies: [node()])
+
+      case :mnesia.create_table(
+             table,
+             create_opts
            ) do
         {:atomic, :ok} -> {:cont, :ok}
         {:aborted, {:already_exists, ^table}} -> {:cont, :ok}
@@ -336,6 +371,37 @@ defmodule SymphonyElixir.RunStore do
       end
     end
   end
+
+  defp ensure_table_indexes(_table, []), do: :ok
+
+  defp ensure_table_indexes(table, indexes) when is_list(indexes) do
+    current_indexes = :mnesia.table_info(table, :index)
+    attributes = :mnesia.table_info(table, :attributes)
+
+    indexes
+    |> Enum.reject(&index_present?(&1, current_indexes, attributes))
+    |> Enum.reduce_while(:ok, fn index, :ok ->
+      case :mnesia.add_table_index(table, index) do
+        {:atomic, :ok} -> {:cont, :ok}
+        {:aborted, {:already_exists, ^table, ^index}} -> {:cont, :ok}
+        {:aborted, {:already_exists, ^index}} -> {:cont, :ok}
+        {:aborted, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp index_present?(index, current_indexes, attributes) do
+    index in current_indexes or attribute_position(index, attributes) in current_indexes
+  end
+
+  defp attribute_position(index, attributes) when is_atom(index) and is_list(attributes) do
+    case Enum.find_index(attributes, &(&1 == index)) do
+      nil -> nil
+      zero_based -> zero_based + 2
+    end
+  end
+
+  defp attribute_position(index, _attributes), do: index
 
   defp wait_for_tables do
     case :mnesia.wait_for_tables(@data_tables, 5_000) do
@@ -424,9 +490,116 @@ defmodule SymphonyElixir.RunStore do
     |> Enum.map(fn {^table, _key, record} -> record end)
   end
 
+  defp all_eval_log_records(table) do
+    :mnesia.match_object({table, :_, :_, :_, :_, :_, :_})
+    |> Enum.map(fn {^table, _eval_id, _outcome, _agent_kind, _issue_label, _date, record} -> record end)
+    |> Enum.uniq_by(&Map.get(&1, :eval_id))
+  end
+
   defp normalize_record(record) when is_map(record) do
     Map.new(record)
   end
+
+  defp normalize_eval_log_record(record) when is_map(record) do
+    record
+    |> normalize_record()
+    |> Map.put_new(:issue_labels, [])
+    |> Map.update!(:issue_labels, &normalize_issue_labels/1)
+    |> Map.put_new(:logged_at, DateTime.utc_now())
+    |> Map.put_new_lazy(:date, fn -> eval_log_date(Map.get(record, :logged_at)) end)
+    |> Map.update!(:date, &eval_log_date/1)
+    |> Map.put_new(:outcome, "unknown")
+    |> Map.put_new(:agent_kind, "unknown")
+  end
+
+  defp normalize_issue_labels(labels) when is_list(labels) do
+    labels
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_issue_labels(_labels), do: []
+
+  defp eval_log_date(%Date{} = date), do: date
+  defp eval_log_date(%DateTime{} = datetime), do: DateTime.to_date(datetime)
+  defp eval_log_date(_value), do: Date.utc_today()
+
+  defp eval_log_issue_label_index_values(%{issue_labels: labels}) when is_list(labels) and labels != [],
+    do: labels
+
+  defp eval_log_issue_label_index_values(_record), do: [nil]
+
+  defp write_eval_log_records(eval_id, normalized) do
+    :mnesia.delete({@eval_logs_table, eval_id})
+
+    normalized
+    |> eval_log_issue_label_index_values()
+    |> Enum.each(&write_eval_log_record(eval_id, normalized, &1))
+
+    :ok
+  end
+
+  defp write_eval_log_record(eval_id, normalized, issue_label) do
+    :mnesia.write({
+      @eval_logs_table,
+      eval_id,
+      normalized.outcome,
+      normalized.agent_kind,
+      issue_label,
+      normalized.date,
+      normalized
+    })
+  end
+
+  defp filter_eval_logs(records, opts) do
+    Enum.filter(records, fn record ->
+      eval_log_matches?(record, opts)
+    end)
+  end
+
+  defp eval_log_matches?(record, opts) do
+    matches_value?(Map.get(record, :outcome), Keyword.get(opts, :outcome)) and
+      matches_value?(Map.get(record, :agent_kind), Keyword.get(opts, :agent_kind)) and
+      matches_issue_label?(Map.get(record, :issue_labels, []), Keyword.get(opts, :issue_label)) and
+      matches_date_range?(Map.get(record, :date), Keyword.get(opts, :date_from), Keyword.get(opts, :date_to)) and
+      matches_value?(Map.get(record, :session_id), Keyword.get(opts, :session_id))
+  end
+
+  defp matches_value?(_value, nil), do: true
+  defp matches_value?(value, value), do: true
+  defp matches_value?(_value, _filter), do: false
+
+  defp matches_issue_label?(_labels, nil), do: true
+  defp matches_issue_label?(labels, issue_label) when is_list(labels), do: issue_label in labels
+  defp matches_issue_label?(_labels, _issue_label), do: false
+
+  defp matches_date_range?(%Date{} = date, date_from, date_to) do
+    after_from? =
+      case date_from do
+        %Date{} = from -> Date.compare(date, from) in [:gt, :eq]
+        _ -> true
+      end
+
+    before_to? =
+      case date_to do
+        %Date{} = to -> Date.compare(date, to) in [:lt, :eq]
+        _ -> true
+      end
+
+    after_from? and before_to?
+  end
+
+  defp matches_date_range?(_date, _date_from, _date_to), do: true
+
+  defp limit_eval_logs(records, :all), do: records
+
+  defp limit_eval_logs(records, limit) when is_integer(limit) and limit >= 0 do
+    Enum.take(records, limit)
+  end
+
+  defp limit_eval_logs(records, _limit), do: records
 
   defp interrupt_running_records(error, now) do
     @runs_table

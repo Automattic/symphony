@@ -25,14 +25,19 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through(:browser)
 
     live("/", DashboardLive, :index)
+    live("/quality", QualityLive, :index)
     live("/issues/:identifier/transcript", TranscriptLive, :show)
   end
 
   scope "/", SymphonyElixirWeb do
     get("/api/v1/state", ObservabilityApiController, :state)
+    get("/api/v1/runs", ObservabilityApiController, :runs)
+    get("/api/v1/runs/:session_id/report", ObservabilityApiController, :quality_report)
 
     match(:*, "/", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/state", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/runs", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/runs/:session_id/report", ObservabilityApiController, :method_not_allowed)
     post("/api/v1/refresh", ObservabilityApiController, :refresh)
     match(:*, "/api/v1/refresh", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/:issue_identifier", ObservabilityApiController, :issue)

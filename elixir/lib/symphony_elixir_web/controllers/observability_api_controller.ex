@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   use Phoenix.Controller, formats: [:json]
 
   alias Plug.Conn
+  alias SymphonyElixir.Quality
   alias SymphonyElixirWeb.{Endpoint, Presenter}
 
   @spec state(Conn.t(), map()) :: Conn.t()
@@ -21,6 +22,33 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
       {:error, :issue_not_found} ->
         error_response(conn, 404, "issue_not_found", "Issue not found")
+    end
+  end
+
+  @spec runs(Conn.t(), map()) :: Conn.t()
+  def runs(conn, params) do
+    case Quality.runs_payload(params) do
+      {:ok, payload} ->
+        conn
+        |> maybe_put_export_header(params)
+        |> json(payload)
+
+      {:error, reason} ->
+        error_response(conn, 400, "invalid_runs_filter", inspect(reason))
+    end
+  end
+
+  @spec quality_report(Conn.t(), map()) :: Conn.t()
+  def quality_report(conn, %{"session_id" => session_id} = params) do
+    case Quality.session_report(session_id, params) do
+      {:ok, payload} ->
+        json(conn, payload)
+
+      {:error, :session_not_found} ->
+        error_response(conn, 404, "session_not_found", "Session not found")
+
+      {:error, reason} ->
+        error_response(conn, 400, "invalid_runs_filter", inspect(reason))
     end
   end
 
@@ -52,6 +80,12 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     |> put_status(status)
     |> json(%{error: %{code: code, message: message}})
   end
+
+  defp maybe_put_export_header(conn, %{"export" => "json"}) do
+    put_resp_header(conn, "content-disposition", ~s(attachment; filename="symphony-quality-runs.json"))
+  end
+
+  defp maybe_put_export_header(conn, _params), do: conn
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator

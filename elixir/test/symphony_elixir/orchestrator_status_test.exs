@@ -1641,6 +1641,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                attempt: 4,
                due_at: due_at,
                error: "agent exited: :boom",
+               reason: :stuck,
+               elapsed_ms: 12_345,
                worker_host: "worker-a",
                workspace_path: "/tmp/workspaces/MT-501"
              })
@@ -1656,6 +1658,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                identifier: "MT-501",
                attempt: 4,
                error: "agent exited: :boom",
+               reason: :stuck,
+               elapsed_ms: 12_345,
                worker_host: "worker-a",
                workspace_path: "/tmp/workspaces/MT-501",
                due_in_ms: due_in_ms
@@ -1674,9 +1678,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                issue_id: "issue-persisted-retry",
                identifier: "MT-501",
                attempt: 4,
-               error: "agent exited: :boom"
+               error: "agent exited: :boom",
+               reason: :stuck,
+               elapsed_ms: 12_345
              }
            ] = restarted_snapshot.retrying
+
+    assert %{
+             reason: :stuck,
+             elapsed_ms: 12_345
+           } = :sys.get_state(restarted_pid).retry_attempts["issue-persisted-retry"]
 
     GenServer.stop(restarted_pid)
   end
@@ -1971,7 +1982,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       tracker_api_token: nil,
       workspace_root: workspace_root,
       agent_stall_timeout_ms: 0,
-      hook_after_run: "printf after >> #{marker}",
+      hook_after_run: "sleep 1; printf after >> #{marker}",
       watchdog: %{enabled: true, tick_interval_ms: 60_000, no_progress_threshold_ms: 1_000}
     )
 
@@ -2027,6 +2038,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert :ok = SymphonyElixir.Notifications.subscribe()
 
     send(pid, :watchdog_tick)
+    snapshot_started_at_ms = System.monotonic_time(:millisecond)
 
     assert_receive :agent_stop_session_called
     assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :shutdown}
@@ -2035,6 +2047,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              wait_for_snapshot(pid, fn snapshot ->
                snapshot.running == [] and length(snapshot.retrying) == 1
              end)
+
+    assert System.monotonic_time(:millisecond) - snapshot_started_at_ms < 800
 
     state = :sys.get_state(pid)
 
@@ -2047,7 +2061,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = state.retry_attempts[issue.id]
 
     assert elapsed_ms >= 1_000
-    assert File.read!(marker) == "after"
+    assert wait_for_file_contents(marker, "after", 1_500)
 
     assert %{status: "timeout", error: "stuck for " <> _} =
              wait_for_run_record(&(&1.run_id == run_id))
@@ -3012,6 +3026,26 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       true ->
         Process.sleep(5)
         do_wait_for_run_record(predicate, deadline_ms)
+    end
+  end
+
+  defp wait_for_file_contents(path, expected, timeout_ms) when is_binary(path) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_file_contents(path, expected, deadline_ms)
+  end
+
+  defp do_wait_for_file_contents(path, expected, deadline_ms) do
+    case File.read(path) do
+      {:ok, ^expected} ->
+        true
+
+      _ ->
+        if System.monotonic_time(:millisecond) >= deadline_ms do
+          flunk("timed out waiting for file #{path} to contain #{inspect(expected)}")
+        else
+          Process.sleep(5)
+          do_wait_for_file_contents(path, expected, deadline_ms)
+        end
     end
   end
 

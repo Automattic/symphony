@@ -1772,11 +1772,23 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp run_after_run_cleanup(%{workspace_path: workspace} = running_entry)
        when is_binary(workspace) and workspace != "" do
-    Workspace.run_after_run_hook(
-      workspace,
-      Map.get(running_entry, :issue) || Map.get(running_entry, :identifier),
-      Map.get(running_entry, :worker_host)
-    )
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           Workspace.run_after_run_hook(
+             workspace,
+             Map.get(running_entry, :issue) || Map.get(running_entry, :identifier),
+             Map.get(running_entry, :worker_host)
+           )
+         end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Unable to start async after_run cleanup while restarting stuck issue issue_identifier=#{Map.get(running_entry, :identifier)} session_id=#{running_entry_session_id(running_entry)} reason=#{inspect(reason)}"
+        )
+
+        :ok
+    end
   end
 
   defp run_after_run_cleanup(_running_entry), do: :ok

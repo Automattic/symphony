@@ -213,6 +213,21 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
 - Use the in-execution clarification escape hatch when planning cannot derive unambiguous acceptance criteria from the issue description and comments; halting is required, not optional, in that case.
 
+## Command and output hygiene
+
+- For long-running validation commands (`make all`, `mix test`, `mix dialyzer`,
+  dependency installs), use longer tool waits such as `yield_time_ms: 30000` to
+  `60000`. Avoid tight `write_stdin` polling; if a command is still running,
+  wait at least 30 seconds before polling again unless there is a specific
+  reason to expect immediate failure output.
+- In sandboxed Elixir runs, prefer
+  `HEX_HOME=/private/tmp/symphony-hex-home make all` for the full gate so Hex
+  and Dialyzer cache writes stay inside a writable location.
+- Keep tool output focused by default. For broad searches, diffs, and file
+  reads, start with targeted `rg` queries, `sed -n` ranges, and modest
+  `max_output_tokens` caps. Raise output caps only after narrowing the command
+  to the exact file or hunk needed.
+
 ## Related skills
 
 - `linear`: interact with Linear.
@@ -354,6 +369,8 @@ Use this only when planning reaches a fundamentally unclear specification and th
 5.  Run validation/tests required for the scope.
     - Mandatory gate: execute all ticket-provided `Validation`/`Test Plan`/ `Testing` requirements when present; treat unmet items as incomplete work.
     - Prefer a targeted proof that directly demonstrates the behavior you changed.
+    - For the full Elixir gate in a sandboxed workspace, prefer `HEX_HOME=/private/tmp/symphony-hex-home make all`.
+    - For long-running validation, use long waits and sparse polling so progress-only terminal output does not create many tiny transcript events.
     - You may make temporary local proof edits to validate assumptions (for example: tweak a local build input for `make`, or hardcode a UI account / response path) when this increases confidence.
     - Revert every temporary proof edit before commit/push.
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.

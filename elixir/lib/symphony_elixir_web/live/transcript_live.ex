@@ -24,7 +24,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     socket =
       case payload do
         {:ok, payload} ->
-          {entries, last_agent_text_entry, next_seq} = coalesce_entries(payload.events)
+          {entries, last_agent_text_entry, last_command_progress_entry, next_seq} = coalesce_entries(payload.events)
 
           socket
           |> assign(:error, nil)
@@ -34,6 +34,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
           |> assign(:event_count, length(entries))
           |> assign(:next_sequence, next_seq)
           |> assign(:last_agent_text_entry, last_agent_text_entry)
+          |> assign(:last_command_progress_entry, last_command_progress_entry)
           |> stream(:events, entries)
 
         {:error, reason} ->
@@ -45,6 +46,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
           |> assign(:event_count, 0)
           |> assign(:next_sequence, 1)
           |> assign(:last_agent_text_entry, nil)
+          |> assign(:last_command_progress_entry, nil)
           |> stream(:events, [])
       end
 
@@ -59,26 +61,41 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   def handle_info({:transcript_event, event}, socket) when is_map(event) do
     kind = event_kind(event)
     last = socket.assigns.last_agent_text_entry
+    last_progress = socket.assigns.last_command_progress_entry
 
-    if kind == "agent-text" and not is_nil(last) do
-      new_text = agent_text(event) || ""
-      merged = %{last | summary: last.summary <> new_text}
+    cond do
+      kind == "agent-text" and not is_nil(last) ->
+        new_text = agent_text(event) || ""
+        merged = %{last | summary: last.summary <> new_text}
 
-      {:noreply,
-       socket
-       |> assign(:last_agent_text_entry, merged)
-       |> stream_insert(:events, merged)}
-    else
-      sequence = socket.assigns.next_sequence
-      entry = transcript_entry(event, sequence)
-      last_agent = if kind == "agent-text", do: entry, else: nil
+        {:noreply,
+         socket
+         |> assign(:last_agent_text_entry, merged)
+         |> assign(:last_command_progress_entry, nil)
+         |> stream_insert(:events, merged)}
 
-      {:noreply,
-       socket
-       |> assign(:event_count, socket.assigns.event_count + 1)
-       |> assign(:next_sequence, sequence + 1)
-       |> assign(:last_agent_text_entry, last_agent)
-       |> stream_insert(:events, entry)}
+      command_progress_event?(event) and not is_nil(last_progress) ->
+        merged = merge_command_progress_entry(last_progress, event)
+
+        {:noreply,
+         socket
+         |> assign(:last_agent_text_entry, nil)
+         |> assign(:last_command_progress_entry, merged)
+         |> stream_insert(:events, merged)}
+
+      true ->
+        sequence = socket.assigns.next_sequence
+        entry = transcript_entry(event, sequence)
+        last_agent = if kind == "agent-text", do: entry, else: nil
+        last_progress = if command_progress_event?(event), do: entry, else: nil
+
+        {:noreply,
+         socket
+         |> assign(:event_count, socket.assigns.event_count + 1)
+         |> assign(:next_sequence, sequence + 1)
+         |> assign(:last_agent_text_entry, last_agent)
+         |> assign(:last_command_progress_entry, last_progress)
+         |> stream_insert(:events, entry)}
     end
   end
 
@@ -184,6 +201,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   defp transcript_entry(event, sequence) do
     kind = event_kind(event)
+    progress_count = command_progress_dot_count(event)
 
     %{
       id: "event-#{sequence}",
@@ -192,7 +210,8 @@ defmodule SymphonyElixirWeb.TranscriptLive do
       label: event_label(kind),
       name: event_name(event),
       timestamp: event_timestamp(event),
-      summary: event_summary(event, kind),
+      summary: progress_summary(progress_count) || event_summary(event, kind),
+      progress_count: progress_count,
       raw: event |> inspect(pretty: true, limit: :infinity) |> truncate(@raw_limit)
     }
   end
@@ -367,6 +386,51 @@ defmodule SymphonyElixirWeb.TranscriptLive do
       map_path(event, [:payload, :payload, "params", "msg", "content"])
   end
 
+  defp command_progress_event?(event), do: is_integer(command_progress_dot_count(event))
+
+  defp merge_command_progress_entry(entry, event) do
+    progress_count = Map.get(entry, :progress_count, 0) + command_progress_dot_count(event)
+
+    %{entry | progress_count: progress_count, summary: progress_summary(progress_count)}
+  end
+
+  defp command_progress_dot_count(event) do
+    method = event_method(event) |> downcase_value()
+
+    if command_output_delta_method?(method) do
+      event
+      |> command_output_delta()
+      |> dot_progress_count()
+    end
+  end
+
+  defp command_output_delta_method?("item/commandexecution/outputdelta"), do: true
+  defp command_output_delta_method?("exec_command_output_delta"), do: true
+  defp command_output_delta_method?(method), do: String.contains?(method, "commandexecution/outputdelta")
+
+  defp command_output_delta(event) do
+    map_path(event, [:payload, "params", "outputDelta"]) ||
+      map_path(event, [:payload, :params, :outputDelta]) ||
+      map_path(event, [:payload, "payload", "params", "outputDelta"]) ||
+      map_path(event, [:payload, :payload, "params", "outputDelta"]) ||
+      map_path(event, ["payload", "params", "outputDelta"]) ||
+      map_path(event, ["payload", "payload", "params", "outputDelta"])
+  end
+
+  defp dot_progress_count(value) when is_binary(value) do
+    compact = String.replace(value, ~r/\s+/, "")
+
+    if compact != "" and String.match?(compact, ~r/^\.+$/) do
+      String.length(compact)
+    end
+  end
+
+  defp dot_progress_count(_value), do: nil
+
+  defp progress_summary(nil), do: nil
+  defp progress_summary(1), do: "command output streaming: 1 progress dot"
+  defp progress_summary(count), do: "command output streaming: #{count} progress dots"
+
   defp inline_inspect(value) do
     value
     |> inspect(pretty: false, limit: 20)
@@ -414,27 +478,37 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   defp map_value(_value, _keys), do: nil
 
   defp coalesce_entries(events) do
-    {entries_rev, last_agent, seq} =
-      Enum.reduce(events, {[], nil, 1}, fn event, {acc_rev, last_agent, seq} ->
-        kind = event_kind(event)
+    {entries_rev, last_agent, last_progress, seq} =
+      Enum.reduce(events, {[], nil, nil, 1}, &coalesce_entry/2)
 
-        case {kind, last_agent} do
-          {"agent-text", %{} = prev} ->
-            new_text = agent_text(event) || ""
-            merged = %{prev | summary: prev.summary <> new_text}
-            {[merged | tl(acc_rev)], merged, seq}
+    {Enum.reverse(entries_rev), last_agent, last_progress, seq}
+  end
 
-          {"agent-text", nil} ->
-            entry = transcript_entry(event, seq)
-            {[entry | acc_rev], entry, seq + 1}
+  defp coalesce_entry(event, {acc_rev, last_agent, last_progress, seq}) do
+    kind = event_kind(event)
 
-          _ ->
-            entry = transcript_entry(event, seq)
-            {[entry | acc_rev], nil, seq + 1}
-        end
-      end)
+    cond do
+      kind == "agent-text" and not is_nil(last_agent) ->
+        new_text = agent_text(event) || ""
+        merged = %{last_agent | summary: last_agent.summary <> new_text}
+        {[merged | tl(acc_rev)], merged, nil, seq}
 
-    {Enum.reverse(entries_rev), last_agent, seq}
+      kind == "agent-text" ->
+        entry = transcript_entry(event, seq)
+        {[entry | acc_rev], entry, nil, seq + 1}
+
+      command_progress_event?(event) and not is_nil(last_progress) ->
+        merged = merge_command_progress_entry(last_progress, event)
+        {[merged | tl(acc_rev)], nil, merged, seq}
+
+      true ->
+        entry = transcript_entry(event, seq)
+        {[entry | acc_rev], nil, command_progress_entry(event, entry), seq + 1}
+    end
+  end
+
+  defp command_progress_entry(event, entry) do
+    if command_progress_event?(event), do: entry
   end
 
   defp error_message(reason), do: Map.get(@error_messages, reason, "An unexpected error occurred.")

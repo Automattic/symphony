@@ -713,6 +713,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Operations Dashboard"
     assert html =~ "Dispatch active"
     assert html =~ "Pause Dispatch"
+    assert html =~ ~s(class="secondary pause-dispatch-button")
     assert html =~ ~s(href="/quality")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-WATCH"

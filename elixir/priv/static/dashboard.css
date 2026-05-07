@@ -80,6 +80,39 @@ button.secondary:hover {
   box-shadow: none;
 }
 
+button.pause-dispatch-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-color: #e5c16c;
+  background: #fff7e8;
+  color: #7a4b00;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+button.pause-dispatch-button::before {
+  content: "";
+  width: 0.56rem;
+  height: 0.78rem;
+  border-radius: 1px;
+  background:
+    linear-gradient(
+      to right,
+      currentColor 0 30%,
+      transparent 30% 58%,
+      currentColor 58% 100%
+    );
+  opacity: 0.86;
+}
+
+button.pause-dispatch-button:hover {
+  border-color: #c98600;
+  background: #fff1d1;
+  color: #623b00;
+}
+
 .danger-button {
   background: var(--danger);
   border-color: var(--danger);

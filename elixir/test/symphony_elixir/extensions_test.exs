@@ -422,6 +422,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
+             "pause" => %{
+               "paused" => false,
+               "reason" => nil,
+               "paused_at" => nil
+             },
              "budget" => %{
                "per_issue_limit" => 500,
                "daily_limit" => 1_000,
@@ -706,6 +711,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Dashboard"
+    assert html =~ "Dispatch active"
+    assert html =~ "Pause Dispatch"
     assert html =~ ~s(href="/quality")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-WATCH"
@@ -722,6 +729,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Live"
     assert html =~ "Offline"
     assert Regex.scan(~r/<th>Links<\/th>/, html) |> length() == 2
+    assert html =~ "<th>Control</th>"
+    assert html =~ "Stop"
     assert html =~ ~s(<td class="links-cell">)
     assert html =~ ~s(<div class="link-actions">)
     assert html =~ "thread-h…"
@@ -772,6 +781,55 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
+    end)
+  end
+
+  test "dashboard liveview renders persisted pause reason and timestamp" do
+    orchestrator_name = Module.concat(__MODULE__, :PausedDashboardOrchestrator)
+    paused_at = ~U[2026-05-06 08:30:00Z]
+    snapshot = Map.put(static_snapshot(), :pause, %{paused: true, reason: "deploy window", paused_at: paused_at})
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "Dispatch paused"
+    assert html =~ "deploy window"
+    assert html =~ "2026-05-06T08:30:00Z"
+    assert html =~ "Resume Dispatch"
+  end
+
+  test "dashboard liveview disarms armed pause control after timeout" do
+    Application.put_env(:symphony_elixir, :dashboard_control_confirm_timeout_ms, 5)
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :dashboard_control_confirm_timeout_ms)
+    end)
+
+    orchestrator_name = Module.concat(__MODULE__, :DisarmDashboardOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    assert view
+           |> element("button", "Pause Dispatch")
+           |> render_click() =~ "Confirm Pause"
+
+    assert_eventually(fn ->
+      html = render(view)
+      String.contains?(html, "Pause Dispatch") and not String.contains?(html, "Confirm Pause")
     end)
   end
 

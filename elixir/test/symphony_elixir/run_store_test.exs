@@ -131,6 +131,33 @@ defmodule SymphonyElixir.RunStoreTest do
     assert quality_gate_cache == RunStore.get_quality_gate_cache()
   end
 
+  test "persists dispatch pause state across run store restart" do
+    assert %{paused: false, reason: nil, paused_at: nil} = RunStore.get_paused()
+
+    assert :ok = RunStore.set_paused(true, "overnight deploy")
+
+    assert %{paused: true, reason: "overnight deploy", paused_at: %DateTime{} = paused_at} =
+             RunStore.get_paused()
+
+    pid = Process.whereis(RunStore)
+    GenServer.stop(pid)
+    {:ok, restarted_pid} = RunStore.start_link([])
+
+    assert %{paused: true, reason: "overnight deploy", paused_at: ^paused_at} =
+             RunStore.get_paused()
+
+    assert :ok = RunStore.set_paused(true, "ignored because already paused")
+
+    assert %{paused: true, reason: "overnight deploy", paused_at: ^paused_at} =
+             RunStore.get_paused()
+
+    assert :ok = RunStore.set_paused(false, nil)
+    assert %{paused: false, reason: nil, paused_at: nil} = RunStore.get_paused()
+
+    GenServer.stop(restarted_pid)
+    {:ok, _pid} = RunStore.start_link([])
+  end
+
   test "interrupt_running_runs marks stale running records as failures" do
     now = DateTime.utc_now()
 

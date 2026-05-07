@@ -338,6 +338,10 @@ defmodule SymphonyElixir.PrReviewPoller do
     Logger.warning("PR review transition error update failed issue_id=#{issue_id} action=#{action} reason=#{inspect(reason)}: #{inspect(update_reason)}")
   end
 
+  defp log_poll_action_warning({:state_transition_deferred, issue_id, action, _target_state}) do
+    Logger.info("PR review transition deferred while dispatch is paused issue_id=#{issue_id} action=#{action}")
+  end
+
   defp log_poll_action_warning({:update_error, issue_id, reason}) do
     Logger.warning("PR review update error issue_id=#{issue_id}: #{inspect(reason)}")
   end
@@ -480,16 +484,37 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp transition_issue_for_action(record, attrs, opts, now, action) do
-    tracker = Keyword.get(opts, :tracker, Tracker)
     issue_id = Map.get(record, :issue_id)
 
-    case tracker.update_issue_state(issue_id, @active_state) do
-      :ok ->
-        complete_transition_action(record, attrs, opts, now, action)
+    if dispatch_paused?(opts) do
+      defer_transition_action(record, attrs, opts, now, action)
+    else
+      tracker = Keyword.get(opts, :tracker, Tracker)
 
-      {:error, reason} ->
-        record_transition_error(record, attrs, opts, now, action, reason)
+      case tracker.update_issue_state(issue_id, @active_state) do
+        :ok ->
+          complete_transition_action(record, attrs, opts, now, action)
+
+        {:error, reason} ->
+          record_transition_error(record, attrs, opts, now, action, reason)
+      end
     end
+  end
+
+  defp defer_transition_action(record, attrs, opts, now, action) do
+    complete_review_update(
+      opts,
+      record,
+      Map.merge(attrs, %{
+        status: "#{action}_deferred",
+        target_issue_state: @active_state,
+        last_action: nil,
+        last_action_at: nil,
+        error: nil,
+        updated_at: now
+      }),
+      {:state_transition_deferred, Map.get(record, :issue_id), action_atom(action), @active_state}
+    )
   end
 
   defp complete_transition_action(record, attrs, opts, now, action) do
@@ -989,6 +1014,19 @@ defmodule SymphonyElixir.PrReviewPoller do
     case update_review(opts, record, attrs) do
       :ok -> success_action
       {:error, reason} -> {:update_error, Map.get(record, :issue_id), reason}
+    end
+  end
+
+  defp dispatch_paused?(opts) do
+    run_store = Keyword.get(opts, :run_store, RunStore)
+
+    if function_exported?(run_store, :get_paused, 0) do
+      case run_store.get_paused() do
+        %{paused: true} -> true
+        _ -> false
+      end
+    else
+      false
     end
   end
 

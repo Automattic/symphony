@@ -30,6 +30,7 @@ defmodule SymphonyElixirWeb.Presenter do
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           run_history: Enum.map(Map.get(snapshot, :run_history, []), &run_history_payload/1),
           codex_totals: normalize_codex_totals(Map.get(snapshot, :codex_totals)),
+          pause: normalize_pause(Map.get(snapshot, :pause)),
           budget: normalize_budget(Map.get(snapshot, :budget)),
           rate_limits: snapshot.rate_limits
         }
@@ -262,6 +263,18 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp normalize_codex_totals(_totals), do: @empty_codex_totals
+
+  defp normalize_pause(pause) when is_map(pause) do
+    %{
+      paused: Map.get(pause, :paused, false),
+      reason: Map.get(pause, :reason),
+      paused_at: iso8601(Map.get(pause, :paused_at))
+    }
+  end
+
+  defp normalize_pause(_pause) do
+    %{paused: false, reason: nil, paused_at: nil}
+  end
 
   defp normalize_budget(budget) when is_map(budget) do
     %{

@@ -150,7 +150,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <%= if @pending_control == :pause do %>
                   <button type="button" class="danger-button" phx-click="pause-dispatch">Confirm Pause</button>
                 <% else %>
-                  <button type="button" class="secondary" phx-click="arm-pause">Pause Dispatch</button>
+                  <button type="button" class="secondary pause-dispatch-button" phx-click="arm-pause">Pause Dispatch</button>
                 <% end %>
               <% end %>
             </div>

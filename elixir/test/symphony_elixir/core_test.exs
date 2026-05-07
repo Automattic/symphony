@@ -1216,6 +1216,43 @@ defmodule SymphonyElixir.CoreTest do
     assert PromptBuilder.build_prompt(issue, extra_prompt: nil) == "Ticket MT-702"
   end
 
+  test "prompt builder ignores captured learnings in phase one" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "MT-LEARN",
+      title: "Do not inject learnings",
+      description: "Phase one captures only",
+      state: "Todo",
+      url: "https://example.org/issues/MT-LEARN",
+      labels: []
+    }
+
+    before_prompt = PromptBuilder.build_prompt(issue)
+
+    assert :ok =
+             RunStore.put_learnings(
+               [
+                 %{
+                   id: "learning-prompt-test",
+                   repo: "github.com/example/repo",
+                   rule: "Always use this captured rule.",
+                   tags: ["prompt-builder", "phase-one"],
+                   evidence_quote: "Reviewer asked for this.",
+                   evidence_issue_identifier: "MT-LEARN",
+                   evidence_issue_url: "https://example.org/issues/MT-LEARN",
+                   evidence_pr_number: 1,
+                   evidence_run_id: "run-prompt-test",
+                   created_at: DateTime.utc_now()
+                 }
+               ],
+               500
+             )
+
+    assert PromptBuilder.build_prompt(issue) == before_prompt
+    refute before_prompt =~ "Always use this captured rule"
+  end
+
   test "prompt builder renders unaddressed reviewer comments with inline context" do
     write_workflow_file!(
       Workflow.workflow_file_path(),

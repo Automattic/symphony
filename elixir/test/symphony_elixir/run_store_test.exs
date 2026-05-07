@@ -296,6 +296,48 @@ defmodule SymphonyElixir.RunStoreTest do
     end
   end
 
+  test "persists learnings and prunes oldest records per repo" do
+    now = DateTime.utc_now()
+
+    records =
+      for index <- 1..3 do
+        %{
+          id: "learning-#{index}",
+          repo: "github.com/example/repo",
+          rule: "Prefer the established helper #{index}.",
+          tags: ["review-feedback", "repo-patterns"],
+          evidence_quote: "Use the helper.",
+          evidence_issue_identifier: "RSM-#{index}",
+          evidence_issue_url: "https://linear.example.test/acme/RSM-#{index}",
+          evidence_pr_number: index,
+          evidence_run_id: "run-#{index}",
+          created_at: DateTime.add(now, index, :second)
+        }
+      end
+
+    assert :ok = RunStore.put_learnings(records, 2)
+
+    assert [
+             %{id: "learning-3", evidence_pr_number: 3},
+             %{id: "learning-2", evidence_pr_number: 2}
+           ] = RunStore.list_learnings()
+
+    assert [%{id: "learning-3"}] = RunStore.list_learnings(tag: "review-feedback", limit: 1)
+    assert [] = RunStore.list_learnings(repo: "github.com/other/repo")
+
+    pid = Process.whereis(RunStore)
+    GenServer.stop(pid)
+    {:ok, restarted_pid} = RunStore.start_link([])
+
+    assert [
+             %{id: "learning-3"},
+             %{id: "learning-2"}
+           ] = RunStore.list_learnings(repo: "github.com/example/repo")
+
+    GenServer.stop(restarted_pid)
+    {:ok, _pid} = RunStore.start_link([])
+  end
+
   defp attribute_position(attributes, field) do
     Enum.find_index(attributes, &(&1 == field)) + 2
   end

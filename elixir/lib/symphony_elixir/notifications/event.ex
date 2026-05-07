@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Notifications.Event do
     "pr_opened",
     "awaiting_review",
     "run_failed",
+    "run_stuck",
     "issue_completed",
     "budget_exceeded",
     "reviewer_commented",

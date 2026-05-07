@@ -257,10 +257,17 @@ Notes:
   either budget is configured with a command that may not report token usage. Per-issue exhausted
   runs are rehydrated from run history across restarts while the current limit still applies; raising
   or removing the per-issue limit lets the issue dispatch again.
+- `watchdog` is enabled by default and protects running agent sessions from silent no-progress stalls.
+  It checks running agents every `watchdog.tick_interval_ms` (default: `60000`) and compares the
+  current time with the latest transcript event timestamp. When no event has arrived for
+  `watchdog.no_progress_threshold_ms` (default: `600000`), Symphony stops the agent session, runs
+  `hooks.after_run`, records the run as timed out, emits `run_stuck`, and schedules a retry through
+  the normal retry queue/backoff. Set `watchdog.enabled: false` to keep the timer active while
+  disabling automatic termination.
 - The optional `notifications` block is disabled by default. When enabled, Symphony emits semantic
   lifecycle events to configured Slack incoming webhooks and generic JSON webhooks without blocking
   the orchestrator. Supported v1 events are `pr_opened`, `awaiting_review`, `run_failed`,
-  `issue_completed`, `budget_exceeded`, `reviewer_commented`, and `rework_pushed`. Per-channel `events` filters limit delivery; omitting
+  `run_stuck`, `issue_completed`, `budget_exceeded`, `reviewer_commented`, and `rework_pushed`. Per-channel `events` filters limit delivery; omitting
   `events` sends all supported events to that channel. `redact_titles: true` suppresses issue and PR
   titles while preserving identifiers and URLs. Slack and webhook URL/header values support the same
   `$VAR` environment reference convention used by other secret-backed settings.

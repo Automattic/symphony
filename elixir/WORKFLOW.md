@@ -29,6 +29,10 @@ pr_review:
   # bot_users: []
 observability:
   transcript_buffer_size: 200
+watchdog:
+  enabled: true
+  tick_interval_ms: 60000
+  no_progress_threshold_ms: 600000
 # Operator controls are exposed in the dashboard. For CLI fallback tasks
 # (`mix symphony.pause`, `mix symphony.resume`, `mix symphony.stop`), start
 # Symphony as a named node, for example:
@@ -92,10 +96,10 @@ agent:
 #   channels:
 #     - kind: slack
 #       webhook_url: $SLACK_WEBHOOK_URL
-#       events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, reviewer_commented, rework_pushed]
+#       events: [pr_opened, awaiting_review, run_failed, run_stuck, issue_completed, budget_exceeded, reviewer_commented, rework_pushed]
 #     - kind: webhook
 #       url: $NOTIFY_WEBHOOK_URL
-#       events: [run_failed, budget_exceeded]
+#       events: [run_failed, run_stuck, budget_exceeded]
 #       headers:
 #         Authorization: $NOTIFY_AUTH_HEADER
 #   redact_titles: false

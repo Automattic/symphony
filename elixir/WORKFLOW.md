@@ -38,6 +38,10 @@ pr_review:
 #   escalation_state: In Review
 observability:
   transcript_buffer_size: 200
+watchdog:
+  enabled: true
+  tick_interval_ms: 60000
+  no_progress_threshold_ms: 600000
 # Operator controls are exposed in the dashboard. For CLI fallback tasks
 # (`mix symphony.pause`, `mix symphony.resume`, `mix symphony.stop`), start
 # Symphony as a named node, for example:
@@ -85,6 +89,16 @@ agent:
 #   clarification_floor: 4     # optional; scores 4..5 ask clarification
 #   max_clarification_rounds: 2
 #   on_error: pass             # or: skip — behavior when the LLM call fails
+# Optional: after a tracked PR is merged in polling mode, run one capture-only
+# LLM reflection and store 0-3 repo-specific learnings with evidence quotes.
+# Captured records are visible at /learnings but are not injected into prompts.
+# Provider API keys are read from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+# learnings:
+#   enabled: false
+#   provider: anthropic
+#   model: claude-haiku-4-5-20251001
+#   max_total_per_repo: 500
+#   max_per_run: 3
 # Optional: run a narrow fresh-context LLM self-review after validation and
 # diff review, before pushing. Disabled by default. Provider API keys are read
 # from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
@@ -101,10 +115,10 @@ agent:
 #   channels:
 #     - kind: slack
 #       webhook_url: $SLACK_WEBHOOK_URL
-#       events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, reviewer_commented, rework_pushed, ci_failed, ci_escalated]
+#       events: [pr_opened, awaiting_review, run_failed, run_stuck, issue_completed, budget_exceeded, reviewer_commented, rework_pushed, ci_failed, ci_escalated]
 #     - kind: webhook
 #       url: $NOTIFY_WEBHOOK_URL
-#       events: [run_failed, budget_exceeded, ci_failed, ci_escalated]
+#       events: [run_failed, run_stuck, budget_exceeded, ci_failed, ci_escalated]
 #       headers:
 #         Authorization: $NOTIFY_AUTH_HEADER
 #   redact_titles: false

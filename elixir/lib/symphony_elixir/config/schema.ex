@@ -160,6 +160,27 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Watchdog do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: true)
+      field(:tick_interval_ms, :integer, default: 60_000)
+      field(:no_progress_threshold_ms, :integer, default: 600_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled, :tick_interval_ms, :no_progress_threshold_ms], empty_values: [])
+      |> validate_number(:tick_interval_ms, greater_than: 0)
+      |> validate_number(:no_progress_threshold_ms, greater_than: 0)
+    end
+  end
+
   defmodule Workspace do
     @moduledoc false
     use Ecto.Schema
@@ -633,6 +654,44 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Learnings do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @type t :: %__MODULE__{}
+
+    @primary_key false
+    @providers ["anthropic", "openai"]
+    @fields [:enabled, :provider, :model, :max_total_per_repo, :max_per_run]
+
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:provider, :string, default: "anthropic")
+      field(:model, :string, default: "claude-haiku-4-5-20251001")
+      field(:max_total_per_repo, :integer, default: 500)
+      field(:max_per_run, :integer, default: 3)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, @fields, empty_values: [])
+      |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
+      |> validate_number(:max_total_per_repo, greater_than: 0)
+      |> validate_number(:max_per_run, greater_than_or_equal_to: 0, less_than_or_equal_to: 3)
+      |> validate_required_when_enabled()
+    end
+
+    defp validate_required_when_enabled(changeset) do
+      if get_field(changeset, :enabled) do
+        validate_required(changeset, [:provider, :model, :max_total_per_repo, :max_per_run], message: "is required when learnings.enabled is true")
+      else
+        changeset
+      end
+    end
+  end
+
   defmodule SelfReview do
     @moduledoc false
     use Ecto.Schema
@@ -769,6 +828,7 @@ defmodule SymphonyElixir.Config.Schema do
   embedded_schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:watchdog, Watchdog, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
@@ -779,6 +839,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:ci, Ci, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:learnings, Learnings, on_replace: :update, defaults_to_struct: true)
     embeds_one(:self_review, SelfReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Notifications, on_replace: :update, defaults_to_struct: true)
   end
@@ -948,6 +1009,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast(attrs, [])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
+    |> cast_embed(:watchdog, with: &Watchdog.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
@@ -959,6 +1021,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:ci, with: &Ci.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
+    |> cast_embed(:learnings, with: &Learnings.changeset/2)
     |> cast_embed(:self_review, with: &SelfReview.changeset/2)
     |> cast_embed(:notifications, with: &Notifications.changeset/2)
   end

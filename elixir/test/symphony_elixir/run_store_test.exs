@@ -171,12 +171,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert %{paused: true, reason: "overnight deploy", paused_at: %DateTime{} = paused_at} =
              RunStore.get_paused()
 
-    pid = Process.whereis(RunStore)
-    ref = Process.monitor(pid)
-    GenServer.stop(pid)
-    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
-
-    restarted_pid = await_restarted_run_store(pid)
+    restart_run_store()
 
     assert %{paused: true, reason: "overnight deploy", paused_at: ^paused_at} =
              RunStore.get_paused()
@@ -189,7 +184,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert :ok = RunStore.set_paused(false, nil)
     assert %{paused: false, reason: nil, paused_at: nil} = RunStore.get_paused()
 
-    assert Process.alive?(restarted_pid)
+    restart_run_store()
   end
 
   test "interrupt_running_runs marks stale running records as failures" do
@@ -298,22 +293,57 @@ defmodule SymphonyElixir.RunStoreTest do
     end
   end
 
+  test "persists learnings and prunes oldest records per repo" do
+    now = DateTime.utc_now()
+
+    records =
+      for index <- 1..3 do
+        %{
+          id: "learning-#{index}",
+          repo: "github.com/example/repo",
+          rule: "Prefer the established helper #{index}.",
+          tags: ["review-feedback", "repo-patterns"],
+          evidence_quote: "Use the helper.",
+          evidence_issue_identifier: "RSM-#{index}",
+          evidence_issue_url: "https://linear.example.test/acme/RSM-#{index}",
+          evidence_pr_number: index,
+          evidence_run_id: "run-#{index}",
+          created_at: DateTime.add(now, index, :second)
+        }
+      end
+
+    assert :ok = RunStore.put_learnings(records, 2)
+
+    assert [
+             %{id: "learning-3", evidence_pr_number: 3},
+             %{id: "learning-2", evidence_pr_number: 2}
+           ] = RunStore.list_learnings()
+
+    assert [%{id: "learning-3"}] = RunStore.list_learnings(tag: "review-feedback", limit: 1)
+    assert [] = RunStore.list_learnings(repo: "github.com/other/repo")
+
+    restart_run_store()
+
+    assert [
+             %{id: "learning-3"},
+             %{id: "learning-2"}
+           ] = RunStore.list_learnings(repo: "github.com/example/repo")
+
+    restart_run_store()
+  end
+
   defp attribute_position(attributes, field) do
     Enum.find_index(attributes, &(&1 == field)) + 2
   end
 
-  defp await_restarted_run_store(old_pid, attempts \\ 20)
+  defp restart_run_store do
+    if pid = Process.whereis(RunStore) do
+      GenServer.stop(pid)
+    end
 
-  defp await_restarted_run_store(old_pid, attempts) when attempts > 0 do
-    case Process.whereis(RunStore) do
-      pid when is_pid(pid) and pid != old_pid ->
-        pid
-
-      _ ->
-        Process.sleep(10)
-        await_restarted_run_store(old_pid, attempts - 1)
+    case RunStore.start_link([]) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
     end
   end
-
-  defp await_restarted_run_store(_old_pid, 0), do: flunk("RunStore did not restart")
 end

@@ -1,0 +1,52 @@
+services:
+  symphony:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        SYMPHONY_UID: ${SYMPHONY_UID:-1000}
+        SYMPHONY_GID: ${SYMPHONY_GID:-1000}
+    image: symphony:local
+    command:
+      - --logs-root
+      - /workspace/logs
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+      - /workspace/WORKFLOW.md
+    ports:
+      - "4000:4000"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      LINEAR_API_KEY: ${LINEAR_API_KEY:-}
+      LINEAR_ASSIGNEE: ${LINEAR_ASSIGNEE:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - type: bind
+        source: ${SYMPHONY_WORKFLOW:?Set SYMPHONY_WORKFLOW to the host path for WORKFLOW.md}
+        target: /workspace/WORKFLOW.md
+        read_only: true
+      - type: bind
+        source: ${SYMPHONY_REPO:?Set SYMPHONY_REPO to the host repository path}
+        target: /workspace/repo
+      - type: volume
+        source: symphony-logs
+        target: /workspace/logs
+      - type: volume
+        source: symphony-workspaces
+        target: /workspace/workspaces
+      - type: volume
+        source: symphony-codex-home
+        target: /home/symphony/.codex
+      - type: volume
+        source: symphony-claude-home
+        target: /home/symphony/.claude
+
+volumes:
+  symphony-claude-home:
+  symphony-codex-home:
+  symphony-logs:
+  symphony-workspaces:

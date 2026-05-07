@@ -35,6 +35,10 @@ help with the setup:
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
+If you prefer a containerized runtime, see [docker/README.md](docker/README.md). The Docker setup
+runs the existing Elixir implementation against your own mounted workflow, repository, credentials,
+and agent command.
+
 The reference implementation also includes opt-in UI verification orchestration for parallel
 worktree runs: Symphony can allocate a per-issue port, expose it as
 `SYMPHONY_VERIFICATION_PORT`, start a configured dev server, health-check it, and tear it down when

@@ -1,0 +1,7 @@
+.git
+**/_build
+**/cover
+**/deps
+**/log
+**/.elixir_ls
+**/erl_crash.dump

@@ -39,6 +39,7 @@ defmodule SymphonyElixir.Learnings.Reflection do
 
   @type source :: %{
           required(:issue_identifier) => String.t() | nil,
+          required(:issue_url) => String.t() | nil,
           required(:issue_title) => String.t(),
           required(:issue_description) => String.t(),
           required(:issue_comments) => [map()],
@@ -106,10 +107,17 @@ defmodule SymphonyElixir.Learnings.Reflection do
     issue = Map.get(source, :issue)
     pr_url = string_field(activity, :pr_url) || string_field(record, :pr_url)
 
+    issue_identifier =
+      present_optional(issue_field(issue, :identifier)) ||
+        present_optional(string_field(record, :issue_identifier))
+
+    issue_url = present_optional(issue_field(issue, :url)) || present_optional(string_field(record, :issue_url))
+
     with {:ok, repo, pr_number} <- pr_coordinates(pr_url) do
       {:ok,
        %{
-         issue_identifier: issue_field(issue, :identifier) || string_field(record, :issue_identifier),
+         issue_identifier: issue_identifier,
+         issue_url: issue_url,
          issue_title: present(issue_field(issue, :title) || string_field(record, :issue_title)),
          issue_description: present(issue_field(issue, :description)),
          issue_comments: issue_comments(issue),
@@ -261,7 +269,8 @@ defmodule SymphonyElixir.Learnings.Reflection do
       Map.merge(entry, %{
         id: new_id(),
         repo: source.repo,
-        evidence_issue_identifier: source.issue_identifier || "unknown",
+        evidence_issue_identifier: source.issue_identifier,
+        evidence_issue_url: source.issue_url,
         evidence_pr_number: source.pr_number,
         evidence_run_id: source.run_id,
         created_at: now
@@ -360,11 +369,14 @@ defmodule SymphonyElixir.Learnings.Reflection do
 
   defp truncate(value, max_chars \\ @max_field_chars)
 
-  defp truncate(value, max_chars) when is_binary(value) and byte_size(value) > max_chars do
-    binary_part(value, 0, max_chars) <> "\n[truncated]"
+  defp truncate(value, max_chars) when is_binary(value) and is_integer(max_chars) and max_chars >= 0 do
+    if String.length(value) > max_chars do
+      String.slice(value, 0, max_chars) <> "\n[truncated]"
+    else
+      value
+    end
   end
 
-  defp truncate(value, _max_chars) when is_binary(value), do: value
   defp truncate(value, max_chars), do: value |> inspect() |> truncate(max_chars)
 
   defp blank_fallback(value, fallback \\ "(none)")
@@ -381,6 +393,16 @@ defmodule SymphonyElixir.Learnings.Reflection do
   defp present(value) when is_binary(value), do: value
   defp present(nil), do: ""
   defp present(value), do: to_string(value)
+
+  defp present_optional(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present_optional(nil), do: nil
+  defp present_optional(value), do: value |> to_string() |> present_optional()
 
   defp string_field(map, key) when is_map(map) and is_atom(key) do
     case Map.get(map, key) || Map.get(map, to_string(key)) do

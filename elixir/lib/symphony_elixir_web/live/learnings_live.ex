@@ -175,8 +175,8 @@ defmodule SymphonyElixirWeb.LearningsLive do
 
   defp pr_href(_entry), do: nil
 
-  defp linear_href(%{evidence_issue_identifier: identifier}) when is_binary(identifier) and identifier != "" do
-    "https://linear.app/a8c/issue/#{identifier}"
+  defp linear_href(%{evidence_issue_url: url}) when is_binary(url) and url != "" do
+    url
   end
 
   defp linear_href(_entry), do: nil

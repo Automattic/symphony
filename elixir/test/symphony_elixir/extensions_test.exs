@@ -902,9 +902,22 @@ defmodule SymphonyElixir.ExtensionsTest do
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Prefer the existing helper.",
                    evidence_issue_identifier: "RSM-LIVE-1",
+                   evidence_issue_url: "https://linear.example.test/acme/RSM-LIVE-1",
                    evidence_pr_number: 12,
                    evidence_run_id: "run-live-1",
                    created_at: now
+                 },
+                 %{
+                   id: "learning-live-3",
+                   repo: "github.com/example/repo",
+                   rule: "Do not reconstruct Linear links without canonical issue URLs.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Avoid workspace-specific Linear URL assumptions.",
+                   evidence_issue_identifier: "RSM-LIVE-3",
+                   evidence_issue_url: nil,
+                   evidence_pr_number: 14,
+                   evidence_run_id: "run-live-3",
+                   created_at: DateTime.add(now, -30, :second)
                  },
                  %{
                    id: "learning-live-2",
@@ -913,6 +926,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    tags: ["docs", "workflow-config"],
                    evidence_quote: "Update docs too.",
                    evidence_issue_identifier: "RSM-LIVE-2",
+                   evidence_issue_url: "https://linear.example.test/acme/RSM-LIVE-2",
                    evidence_pr_number: 13,
                    evidence_run_id: "run-live-2",
                    created_at: DateTime.add(now, -60, :second)
@@ -928,9 +942,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Learnings"
     assert html =~ "Prefer existing dashboard helpers."
     assert html =~ "Prefer the existing helper."
+    assert html =~ "Do not reconstruct Linear links without canonical issue URLs."
     assert html =~ "github.com/example/repo"
     assert html =~ ~s(href="https://github.com/example/repo/pull/12" target="_blank")
-    assert html =~ ~s(href="https://linear.app/a8c/issue/RSM-LIVE-1" target="_blank")
+    assert html =~ ~s(href="https://linear.example.test/acme/RSM-LIVE-1" target="_blank")
+    refute html =~ "https://linear.app/a8c/issue/RSM-LIVE-3"
     assert html =~ ~s(name="repo")
     assert html =~ ~s(name="tag")
     assert html =~ ~s(href="/quality")

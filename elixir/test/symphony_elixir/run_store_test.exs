@@ -308,6 +308,7 @@ defmodule SymphonyElixir.RunStoreTest do
           tags: ["review-feedback", "repo-patterns"],
           evidence_quote: "Use the helper.",
           evidence_issue_identifier: "RSM-#{index}",
+          evidence_issue_url: "https://linear.example.test/acme/RSM-#{index}",
           evidence_pr_number: index,
           evidence_run_id: "run-#{index}",
           created_at: DateTime.add(now, index, :second)

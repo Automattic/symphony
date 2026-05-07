@@ -1240,6 +1240,7 @@ defmodule SymphonyElixir.CoreTest do
                    tags: ["prompt-builder", "phase-one"],
                    evidence_quote: "Reviewer asked for this.",
                    evidence_issue_identifier: "MT-LEARN",
+                   evidence_issue_url: "https://example.org/issues/MT-LEARN",
                    evidence_pr_number: 1,
                    evidence_run_id: "run-prompt-test",
                    created_at: DateTime.utc_now()

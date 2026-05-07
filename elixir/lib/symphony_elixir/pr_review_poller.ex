@@ -395,7 +395,7 @@ defmodule SymphonyElixir.PrReviewPoller do
       :merged ->
         record
         |> maybe_capture_learnings(activity, settings, opts, now)
-        |> cleanup_review(opts, now, "closed")
+        |> cleanup_review(opts, now, "merged")
 
       :closed ->
         cleanup_review(record, opts, now, "closed")
@@ -632,7 +632,8 @@ defmodule SymphonyElixir.PrReviewPoller do
         issue = learning_reflection_issue(started_record, opts)
 
         result =
-          Reflection.capture(
+          capture_learnings_safely(
+            started_record,
             %{record: started_record, activity: activity, issue: issue},
             learnings,
             opts_for_reflection(opts, now)
@@ -646,6 +647,29 @@ defmodule SymphonyElixir.PrReviewPoller do
         Logger.warning("Failed to mark learning reflection started issue_id=#{Map.get(record, :issue_id)}: #{inspect(reason)}")
         record
     end
+  end
+
+  defp capture_learnings_safely(record, source, learnings, opts) do
+    Reflection.capture(source, learnings, opts)
+  rescue
+    exception ->
+      stacktrace = __STACKTRACE__
+      log_learning_reflection_crash(record, :error, exception, stacktrace)
+      {:error, {:capture_crashed, :error, exception}}
+  catch
+    kind, reason ->
+      stacktrace = __STACKTRACE__
+      log_learning_reflection_crash(record, kind, reason, stacktrace)
+      {:error, {:capture_crashed, kind, reason}}
+  end
+
+  defp log_learning_reflection_crash(record, kind, reason, stacktrace) do
+    issue_id = Map.get(record, :issue_id)
+
+    Logger.error(
+      "Learning reflection crashed issue_id=#{issue_id}: " <>
+        Exception.format(kind, reason, stacktrace)
+    )
   end
 
   defp opts_for_reflection(opts, now) do

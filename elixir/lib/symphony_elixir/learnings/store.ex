@@ -13,7 +13,8 @@ defmodule SymphonyElixir.Learnings.Store do
           required(:rule) => String.t(),
           required(:tags) => [String.t()],
           required(:evidence_quote) => String.t(),
-          required(:evidence_issue_identifier) => String.t(),
+          required(:evidence_issue_identifier) => String.t() | nil,
+          optional(:evidence_issue_url) => String.t() | nil,
           required(:evidence_pr_number) => non_neg_integer() | nil,
           required(:evidence_run_id) => String.t() | nil,
           required(:created_at) => DateTime.t()

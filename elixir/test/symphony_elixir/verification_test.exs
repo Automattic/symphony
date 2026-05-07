@@ -130,12 +130,14 @@ defmodule SymphonyElixir.VerificationTest do
 
     assert Process.alive?(pid)
     assert :ok = DevServer.stop(pid)
+    refute Process.alive?(pid)
 
     assert %{status: "dev_server_started", dev_server_os_pid: os_pid} =
              RunStore.list_verification_allocations()
              |> Enum.find(&(&1.run_id == run_id))
 
-    refute os_pid_alive_after_wait?(os_pid)
+    assert is_integer(os_pid)
+    refute http_server_responding_after_wait?("http://127.0.0.1:#{port}/")
   end
 
   test "dev server returns verification_failed when health check times out" do
@@ -314,15 +316,24 @@ defmodule SymphonyElixir.VerificationTest do
     port
   end
 
-  defp os_pid_alive_after_wait?(pid, attempts \\ 50)
-  defp os_pid_alive_after_wait?(_pid, 0), do: true
+  defp http_server_responding_after_wait?(url, attempts \\ 50)
+  defp http_server_responding_after_wait?(_url, 0), do: true
 
-  defp os_pid_alive_after_wait?(pid, attempts) do
-    if PortPool.os_pid_alive?(pid) do
+  defp http_server_responding_after_wait?(url, attempts) do
+    if http_ok?(url) do
       Process.sleep(100)
-      os_pid_alive_after_wait?(pid, attempts - 1)
+      http_server_responding_after_wait?(url, attempts - 1)
     else
       false
     end
+  end
+
+  defp http_ok?(url) do
+    case Req.get(url, receive_timeout: 100, retry: false) do
+      {:ok, %{status: 200}} -> true
+      _response -> false
+    end
+  rescue
+    _exception -> false
   end
 end

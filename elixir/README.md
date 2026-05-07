@@ -82,6 +82,7 @@ If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 Optional flags:
 
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
+- `--host` pins the Phoenix observability service to a specific host
 - `--port` pins the Phoenix observability service to a specific port
 
 Symphony also keeps an OTP-native durable run store next to the configured log file

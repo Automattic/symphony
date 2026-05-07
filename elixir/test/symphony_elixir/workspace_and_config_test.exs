@@ -1437,7 +1437,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.agent.stall_timeout_ms == 300_000
     assert config.agent.command_timeout_ms == 600_000
     assert config.server.port == nil
+    assert config.server.host == "127.0.0.1"
     assert Config.server_port() == 0
+    assert Config.server_host() == "127.0.0.1"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_command: "codex --config 'model=\"gpt-5.5\"' app-server"
@@ -1457,6 +1459,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), server_port: 4123)
     assert Config.server_port() == 4123
+
+    write_workflow_file!(Workflow.workflow_file_path(), server_host: "0.0.0.0")
+    assert Config.server_host() == "0.0.0.0"
+
+    Application.put_env(:symphony_elixir, :server_host_override, "localhost")
+    assert Config.server_host() == "localhost"
+    Application.delete_env(:symphony_elixir, :server_host_override)
 
     write_workflow_file!(Workflow.workflow_file_path(), observability_enabled: false)
     assert Config.server_port() == nil

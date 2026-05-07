@@ -172,8 +172,11 @@ defmodule SymphonyElixir.RunStoreTest do
              RunStore.get_paused()
 
     pid = Process.whereis(RunStore)
+    ref = Process.monitor(pid)
     GenServer.stop(pid)
-    {:ok, restarted_pid} = RunStore.start_link([])
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
+
+    restarted_pid = await_restarted_run_store(pid)
 
     assert %{paused: true, reason: "overnight deploy", paused_at: ^paused_at} =
              RunStore.get_paused()
@@ -186,8 +189,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert :ok = RunStore.set_paused(false, nil)
     assert %{paused: false, reason: nil, paused_at: nil} = RunStore.get_paused()
 
-    GenServer.stop(restarted_pid)
-    {:ok, _pid} = RunStore.start_link([])
+    assert Process.alive?(restarted_pid)
   end
 
   test "interrupt_running_runs marks stale running records as failures" do
@@ -299,4 +301,19 @@ defmodule SymphonyElixir.RunStoreTest do
   defp attribute_position(attributes, field) do
     Enum.find_index(attributes, &(&1 == field)) + 2
   end
+
+  defp await_restarted_run_store(old_pid, attempts \\ 20)
+
+  defp await_restarted_run_store(old_pid, attempts) when attempts > 0 do
+    case Process.whereis(RunStore) do
+      pid when is_pid(pid) and pid != old_pid ->
+        pid
+
+      _ ->
+        Process.sleep(10)
+        await_restarted_run_store(old_pid, attempts - 1)
+    end
+  end
+
+  defp await_restarted_run_store(_old_pid, 0), do: flunk("RunStore did not restart")
 end

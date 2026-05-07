@@ -1,0 +1,22 @@
+name: docker-compose
+
+on:
+  pull_request:
+    paths:
+      - ".dockerignore"
+      - ".github/workflows/docker-compose.yml"
+      - "docker/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".dockerignore"
+      - ".github/workflows/docker-compose.yml"
+      - "docker/**"
+
+jobs:
+  validate-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - run: SYMPHONY_WORKFLOW="$PWD/elixir/WORKFLOW.md" SYMPHONY_REPO="$PWD" docker compose -f docker/docker-compose.yml config

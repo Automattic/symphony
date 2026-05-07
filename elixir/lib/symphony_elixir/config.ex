@@ -101,6 +101,14 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec server_host() :: String.t()
+  def server_host do
+    case Application.get_env(:symphony_elixir, :server_host_override) do
+      host when is_binary(host) and host != "" -> host
+      _ -> settings!().server.host
+    end
+  end
+
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
     with {:ok, settings} <- settings() do

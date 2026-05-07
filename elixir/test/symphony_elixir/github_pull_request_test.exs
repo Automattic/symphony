@@ -8,11 +8,13 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
 
     runner = fn
       ["pr", "view", ^pr_url, "--json", fields], opts ->
-        assert fields == "number,state,reviewDecision,updatedAt,comments,reviews,title,url"
+        assert fields == "number,state,reviewDecision,updatedAt,comments,reviews,title,body,url"
         assert opts[:stderr_to_stdout]
 
         {Jason.encode!(%{
            "number" => 42,
+           "title" => "Ship review polling",
+           "body" => "PR body",
            "state" => "OPEN",
            "reviewDecision" => "APPROVED",
            "updatedAt" => "2026-05-01T10:00:00Z",
@@ -50,6 +52,9 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert {:ok, activity} = PullRequest.fetch_activity(pr_url, gh_runner: runner)
 
     assert activity.pr_url == pr_url
+    assert activity.pr_number == 42
+    assert activity.pr_title == "Ship review polling"
+    assert activity.pr_description == "PR body"
     assert activity.state == "OPEN"
     assert activity.review_decision == "APPROVED"
     assert activity.latest_activity_at == ~U[2026-05-01 10:00:00Z]

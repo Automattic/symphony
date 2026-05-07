@@ -82,20 +82,31 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def ensure_symphony_started! do
+    ensure_application_started()
+  end
+
+  def ensure_application_started do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) ->
+        :ok
+
+      _ ->
+        do_ensure_application_started()
+    end
+  end
+
+  defp do_ensure_application_started do
     case Application.ensure_all_started(:symphony_elixir) do
       {:ok, _started} -> :ok
-      {:error, {:already_started, _app}} -> :ok
+      {:error, {:symphony_elixir, {:already_started, _pid}}} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
       {:error, reason} -> raise "failed to start symphony_elixir test application: #{inspect(reason)}"
     end
   end
 
   def stop_default_http_server do
     with supervisor when is_pid(supervisor) <- Process.whereis(SymphonyElixir.Supervisor),
-         {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) <-
-           Enum.find(Supervisor.which_children(supervisor), fn
-             {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
-             _child -> false
-           end) do
+         {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) <- find_default_http_server(supervisor) do
       :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.HttpServer)
 
       if Process.alive?(pid) do
@@ -106,6 +117,13 @@ defmodule SymphonyElixir.TestSupport do
     else
       _ -> :ok
     end
+  end
+
+  defp find_default_http_server(supervisor) do
+    Enum.find(Supervisor.which_children(supervisor), fn
+      {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+      _child -> false
+    end)
   end
 
   def stop_verification_port_pool do
@@ -176,6 +194,7 @@ defmodule SymphonyElixir.TestSupport do
           server_port: nil,
           server_host: nil,
           quality_gate: nil,
+          learnings: nil,
           self_review: nil,
           notifications: nil,
           prompt: @workflow_prompt
@@ -238,6 +257,7 @@ defmodule SymphonyElixir.TestSupport do
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     quality_gate = Keyword.get(config, :quality_gate)
+    learnings = Keyword.get(config, :learnings)
     self_review = Keyword.get(config, :self_review)
     notifications = Keyword.get(config, :notifications)
     prompt = Keyword.get(config, :prompt)
@@ -302,6 +322,7 @@ defmodule SymphonyElixir.TestSupport do
         verification_yaml(verification),
         server_yaml(server_port, server_host),
         quality_gate_yaml(quality_gate),
+        learnings_yaml(learnings),
         self_review_yaml(self_review),
         notifications_yaml(notifications),
         "---",
@@ -498,6 +519,27 @@ defmodule SymphonyElixir.TestSupport do
     case fields do
       [] -> nil
       lines -> Enum.join(["quality_gate:" | lines], "\n")
+    end
+  end
+
+  defp learnings_yaml(nil), do: nil
+
+  defp learnings_yaml(opts) when is_list(opts) or is_map(opts) do
+    config = map_from(opts)
+
+    fields =
+      [
+        kv("enabled", Map.get(config, :enabled)),
+        kv("provider", Map.get(config, :provider)),
+        kv("model", Map.get(config, :model)),
+        kv("max_total_per_repo", Map.get(config, :max_total_per_repo)),
+        kv("max_per_run", Map.get(config, :max_per_run))
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case fields do
+      [] -> nil
+      lines -> Enum.join(["learnings:" | lines], "\n")
     end
   end
 

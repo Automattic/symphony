@@ -278,7 +278,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
-  test "auto-detects repo from HTTPS origin URL" do
+  test "auto-detects repo from HTTPS origin URLs" do
     with_fake_gh_and_git(
       """
       #!/bin/sh
@@ -289,6 +289,11 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+        printf '101\n'
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "close" ]; then
         exit 0
       fi
 
@@ -297,7 +302,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       """
       #!/bin/sh
       if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
-        printf 'https://github.com/alice/project.git\n'
+        printf 'https://github.com/octocat/widgets.git\n'
         exit 0
       fi
 
@@ -305,10 +310,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       exit 0
       """,
       fn log_path ->
-        BeforeRemove.run([])
+        capture_task_output(fn ->
+          BeforeRemove.run([])
+        end)
 
         log = File.read!(log_path)
-        assert log =~ "pr list --repo alice/project --head feature/https-origin"
+
+        assert log =~ "pr list --repo octocat/widgets --head feature/https-origin"
+        assert log =~ "pr close 101 --repo octocat/widgets"
       end
     )
   end
@@ -332,18 +341,21 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       """
       #!/bin/sh
       if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
-        printf 'git@github.com\n'
+        printf 'git@github.com-octocat/widgets.git\n'
         exit 0
       fi
 
-      printf 'feature/default-repo\n'
+      printf 'feature/malformed-origin\n'
       exit 0
       """,
       fn log_path ->
-        BeforeRemove.run([])
+        capture_task_output(fn ->
+          BeforeRemove.run([])
+        end)
 
         log = File.read!(log_path)
-        assert log =~ "pr list --repo chihsuan/symphony --head feature/default-repo"
+
+        assert log =~ "pr list --repo chihsuan/symphony --head feature/malformed-origin"
       end
     )
   end

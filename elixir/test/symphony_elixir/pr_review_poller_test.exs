@@ -55,6 +55,26 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     end
   end
 
+  defmodule FakeLearningProvider do
+    @spec review(map(), map()) :: {:ok, String.t()}
+    def review(request, settings) do
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+      send(recipient, {:learning_reflection, request, settings})
+
+      {:ok, Application.get_env(:symphony_elixir, :learning_test_response, ~s({"learnings":[]}))}
+    end
+  end
+
+  defmodule CrashingLearningProvider do
+    @spec review(map(), map()) :: no_return()
+    def review(request, settings) do
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+      send(recipient, {:learning_reflection, request, settings})
+
+      raise "learning provider crashed"
+    end
+  end
+
   defmodule FailingGitHub do
     @spec fetch_activity(String.t(), keyword()) :: {:error, term()}
     def fetch_activity(pr_url, _opts) do
@@ -288,6 +308,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       Application.delete_env(:symphony_elixir, :pr_review_test_pause)
       Application.delete_env(:symphony_elixir, :pr_review_test_request_review_failures)
       Application.delete_env(:symphony_elixir, :pr_review_test_reply_failures)
+      Application.delete_env(:symphony_elixir, :learning_test_response)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -1337,13 +1358,13 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              RunStore.list_pr_reviews()
   end
 
-  test "cleans up workspace and tracking when PR is closed or stale" do
+  test "cleans up workspace and tracking when PR is merged or stale" do
     now = ~U[2026-05-01 09:00:00Z]
     Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
     Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
     :ok = put_review(now)
 
-    assert {:ok, %{actions: [{:cleanup, "issue-1780", "closed"}]}} =
+    assert {:ok, %{actions: [{:cleanup, "issue-1780", "merged"}]}} =
              PrReviewPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
@@ -1370,6 +1391,226 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [] = RunStore.list_pr_reviews()
   end
 
+  test "does not run learning reflection when learnings are disabled" do
+    now = ~U[2026-05-01 09:00:00Z]
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
+    :ok = put_review(now, %{run_id: "run-1780"})
+
+    assert {:ok, %{actions: [{:cleanup, "issue-1780", "merged"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               workspace: FakeWorkspace,
+               provider_module: FakeLearningProvider,
+               now: now
+             )
+
+    refute_receive {:learning_reflection, _, _}, 50
+    assert [] = RunStore.list_learnings()
+  end
+
+  test "captures learnings once when a tracked PR is merged" do
+    previous_key = System.get_env("ANTHROPIC_API_KEY")
+    System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    on_exit(fn -> restore_env("ANTHROPIC_API_KEY", previous_key) end)
+
+    now = ~U[2026-05-01 09:00:00Z]
+    transcript_path = Path.join(System.tmp_dir!(), "learning-transcript-#{System.unique_integer([:positive])}.jsonl")
+    File.write!(transcript_path, Jason.encode!(%{event: "tool", command: "mix test"}) <> "\n")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      learnings: %{
+        enabled: true,
+        provider: "anthropic",
+        model: "claude-haiku-4-5-20251001",
+        max_total_per_repo: 10,
+        max_per_run: 2
+      }
+    )
+
+    issue =
+      in_review_issue(
+        updated_at: now,
+        comments: [%{author: "Operator", body: "Remember to update docs.", created_at: now}]
+      )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(now,
+        state: "MERGED",
+        comments: [
+          %{
+            kind: "review",
+            author: "reviewer",
+            body: "Prefer the existing StatusDashboard helpers.",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-1"
+          },
+          %{
+            kind: "comment",
+            author: "reviewer",
+            body: String.duplicate("a", 7_999) <> "🔥tail",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-1"
+          }
+        ]
+      )
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :learning_test_response,
+      ~s({"learnings":[{"rule":"Prefer existing StatusDashboard helpers before adding new formatting paths.","tags":["dashboard","repo-patterns"],"evidence_quote":"Prefer the existing StatusDashboard helpers."},{"rule":"Document every new workflow config block in both examples.","tags":["docs","workflow-config"],"evidence_quote":"Remember to update docs."},{"rule":"Do not persist more than two records in this test.","tags":["limit","test-only"],"evidence_quote":"third"}]})
+    )
+
+    :ok = put_review(now, %{run_id: "run-1780", transcript_path: transcript_path})
+
+    assert {:ok, %{actions: [{:cleanup, "issue-1780", "merged"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               workspace: FakeWorkspace,
+               provider_module: FakeLearningProvider,
+               now: now
+             )
+
+    assert_receive {:learning_reflection, request, settings}
+    refute_receive {:learning_reflection, _, _}, 50
+
+    assert settings.model == "claude-haiku-4-5-20251001"
+    assert request.system =~ "Return ONLY strict JSON"
+    assert request.user =~ "Repository:\ngithub.com/example/repo"
+    assert request.user =~ "Prefer the existing StatusDashboard helpers."
+    assert request.user =~ "[truncated]"
+    assert request.user =~ "mix test"
+    assert Jason.encode!(request)
+
+    learnings = RunStore.list_learnings()
+    assert length(learnings) == 2
+
+    assert %{
+             repo: "github.com/example/repo",
+             tags: ["docs", "workflow-config"],
+             evidence_quote: "Remember to update docs.",
+             evidence_issue_identifier: "RSM-1780",
+             evidence_issue_url: "https://linear.app/a8c/issue/RSM-1780",
+             evidence_pr_number: 1780,
+             evidence_run_id: "run-1780",
+             created_at: ^now
+           } =
+             Enum.find(learnings, &(Map.get(&1, :rule) == "Document every new workflow config block in both examples."))
+
+    assert %{
+             tags: ["dashboard", "repo-patterns"],
+             evidence_quote: "Prefer the existing StatusDashboard helpers."
+           } =
+             Enum.find(
+               learnings,
+               &(Map.get(&1, :rule) == "Prefer existing StatusDashboard helpers before adding new formatting paths.")
+             )
+  end
+
+  test "records crashed learning reflection and continues cleanup" do
+    previous_key = System.get_env("ANTHROPIC_API_KEY")
+    System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    on_exit(fn -> restore_env("ANTHROPIC_API_KEY", previous_key) end)
+
+    now = ~U[2026-05-01 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      learnings: %{enabled: true, provider: "anthropic", model: "claude-haiku-4-5-20251001"}
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
+    Application.put_env(:symphony_elixir, :pr_review_test_delete_failures, ["issue-1780"])
+
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      "issue-1780" => review_record(now, %{run_id: "run-1780"})
+    })
+
+    log =
+      capture_log([level: :error], fn ->
+        assert {:ok, %{actions: [{:cleanup_error, "issue-1780", :disk_full}]}} =
+                 PrReviewPoller.poll_once(
+                   tracker: FakeTracker,
+                   run_store: StatefulRunStore,
+                   github: FakeGitHub,
+                   workspace: FakeWorkspace,
+                   provider_module: CrashingLearningProvider,
+                   now: now
+                 )
+      end)
+
+    assert_receive {:learning_reflection, _, _}
+    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert log =~ "Learning reflection crashed issue_id=issue-1780"
+    assert log =~ "learning provider crashed"
+
+    assert [
+             %{
+               status: "cleanup_pending",
+               learning_reflected_at: ^now,
+               learning_reflection_count: 0,
+               learning_reflection_error: error,
+               workspace_removed_at: ^now
+             }
+           ] = StatefulRunStore.list_pr_reviews()
+
+    assert error =~ "capture_crashed"
+    assert error =~ "learning provider crashed"
+  end
+
+  test "logs and discards malformed learning reflection output" do
+    previous_key = System.get_env("ANTHROPIC_API_KEY")
+    System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    on_exit(fn -> restore_env("ANTHROPIC_API_KEY", previous_key) end)
+
+    now = ~U[2026-05-01 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      learnings: %{enabled: true, provider: "anthropic", model: "claude-haiku-4-5-20251001"}
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
+    Application.put_env(:symphony_elixir, :learning_test_response, "not json")
+    :ok = put_review(now, %{run_id: "run-1780"})
+
+    log =
+      capture_log([level: :warning], fn ->
+        assert {:ok, %{actions: [{:cleanup, "issue-1780", "merged"}]}} =
+                 PrReviewPoller.poll_once(
+                   tracker: FakeTracker,
+                   github: FakeGitHub,
+                   workspace: FakeWorkspace,
+                   provider_module: FakeLearningProvider,
+                   now: now
+                 )
+      end)
+
+    assert_receive {:learning_reflection, _, _}
+    assert log =~ "Learning reflection malformed LLM output"
+    assert [] = RunStore.list_learnings()
+  end
+
   test "does not remove workspace again when review delete fails after cleanup" do
     now = ~U[2026-05-01 09:00:00Z]
     Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
@@ -1394,7 +1635,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [%{status: "cleanup_pending", workspace_removed_at: ^now}] =
              StatefulRunStore.list_pr_reviews()
 
-    assert {:ok, %{actions: [{:cleanup, "issue-1780", "closed"}]}} =
+    assert {:ok, %{actions: [{:cleanup, "issue-1780", "merged"}]}} =
              PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
@@ -1433,7 +1674,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [%{status: "cleanup_pending", workspace_removed_at: ^now}] =
              StatefulRunStore.list_pr_reviews()
 
-    assert {:ok, %{actions: [{:cleanup, "issue-1780", "closed"}]}} =
+    assert {:ok, %{actions: [{:cleanup, "issue-1780", "merged"}]}} =
              PrReviewPoller.poll_once(
                tracker: FakeTracker,
                run_store: StatefulRunStore,
@@ -1727,6 +1968,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       state: "In Review",
       url: "https://linear.app/a8c/issue/#{identifier}",
       pr_urls: [pr_url],
+      comments: Keyword.get(opts, :comments, []),
       updated_at: updated_at
     }
   end
@@ -1748,6 +1990,9 @@ defmodule SymphonyElixir.PrReviewPollerTest do
   defp open_activity(latest_activity_at, opts \\ []) do
     %{
       pr_url: "https://github.com/example/repo/pull/1780",
+      pr_number: Keyword.get(opts, :pr_number, 1780),
+      pr_title: Keyword.get(opts, :pr_title, "Ship review manager"),
+      pr_description: Keyword.get(opts, :pr_description, "PR body"),
       state: Keyword.get(opts, :state, "OPEN"),
       review_decision: Keyword.get(opts, :review_decision),
       latest_activity_at: latest_activity_at,

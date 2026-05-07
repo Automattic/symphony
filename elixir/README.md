@@ -325,12 +325,17 @@ Notes:
   `hooks.after_run`, and the supervised `verification.dev_server.start_cmd`. Symphony does not set
   `PORT`; wire the value explicitly for the tool you run, for example
   `PORT=$SYMPHONY_VERIFICATION_PORT pnpm dev`, `pnpm dev --port $SYMPHONY_VERIFICATION_PORT`, or
-  `PORT=$SYMPHONY_VERIFICATION_PORT mix phx.server`.
+  `PORT=$SYMPHONY_VERIFICATION_PORT mix phx.server`. The port range is global to the Symphony
+  process, including SSH worker pools; size it for total concurrently dispatched verification runs,
+  not per-worker-host concurrency.
 - When `verification.dev_server.start_cmd` is set, Symphony starts it in the issue workspace after
   `hooks.before_run` and before the first agent turn, polls `health_check_url` until HTTP 200 or
   `health_timeout_ms`, then stops the process group with `stop_signal` and escalates to SIGKILL
-  after `stop_timeout_ms`. A hook-started dev server still works, but it is outside Symphony's
-  supervision and health gate; such hook scripts must manage their own backgrounding and cleanup.
+  after `stop_timeout_ms`. The supervised path requires `python3` or `python` on the host so
+  Symphony can call `setsid()` before executing the shell command; without Python, verification
+  startup fails with `verification_failed` before any agent turn runs. A hook-started dev server
+  still works, but it is outside Symphony's supervision and health gate; such hook scripts must
+  manage their own backgrounding and cleanup.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - Set `tracker.assignee` to a Linear user ID, or `me` to use the current API token's Linear viewer,
   when you want one Symphony process to pick up only issues assigned to that user. If unset, all

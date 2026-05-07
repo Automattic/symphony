@@ -446,6 +446,9 @@ Fields:
   - Default: `[4000, 4099]`.
   - The implementation allocates the first free port in the inclusive range for each dispatched
     issue.
+  - The range is global to the Symphony process across all worker hosts. Operators using SSH worker
+    pools should size the range for total verification-enabled concurrency, not per-host
+    concurrency.
 - `dev_server.start_cmd` (string, OPTIONAL)
   - Long-lived shell command run in the issue workspace after `hooks.before_run` and before the
     first agent turn.
@@ -453,6 +456,9 @@ Fields:
   - The implementation MUST NOT auto-set `PORT`; operators explicitly wire the Symphony port into
     their tool, for example `PORT=$SYMPHONY_VERIFICATION_PORT pnpm dev` or
     `pnpm dev --port $SYMPHONY_VERIFICATION_PORT`.
+  - The supervised process-group launcher requires `python3` or `python` so the child command can
+    be started via `setsid()`; if no Python executable is available, the run fails with
+    `verification_failed` before the first agent turn.
 - `dev_server.health_check_url` (string, REQUIRED when `start_cmd` is set)
   - Supports `$SYMPHONY_VERIFICATION_PORT` and `${SYMPHONY_VERIFICATION_PORT}` substitution.
   - The dev server is considered healthy only on HTTP `200`.

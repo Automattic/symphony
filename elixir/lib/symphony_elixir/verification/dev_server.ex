@@ -79,10 +79,11 @@ defmodule SymphonyElixir.Verification.DevServer do
     workspace = Keyword.fetch!(opts, :workspace)
     config = Keyword.fetch!(opts, :config)
     env = Keyword.get(opts, :env, [])
+    launcher = Keyword.get(opts, :launcher, &launcher_executable/0)
     owner = Keyword.get(opts, :owner)
     owner_ref = if is_pid(owner), do: Process.monitor(owner)
 
-    case start_process(config.start_cmd, workspace, env) do
+    case start_process(config.start_cmd, workspace, env, launcher) do
       {:ok, port_handle, metadata} ->
         state = %__MODULE__{
           run_id: run_id,
@@ -151,8 +152,9 @@ defmodule SymphonyElixir.Verification.DevServer do
     :ok
   end
 
-  defp start_process(command, workspace, env) when is_binary(command) and is_binary(workspace) do
-    case launcher_executable() do
+  defp start_process(command, workspace, env, launcher)
+       when is_binary(command) and is_binary(workspace) and is_function(launcher, 0) do
+    case launcher.() do
       {:ok, executable, args, launcher_env, process_group?} ->
         port =
           Port.open(
@@ -173,7 +175,13 @@ defmodule SymphonyElixir.Verification.DevServer do
           )
 
         metadata = launcher_metadata(port, process_group?)
-        {:ok, port, metadata}
+
+        if metadata.process_group? do
+          {:ok, port, metadata}
+        else
+          close_port(port)
+          {:error, :process_group_unavailable}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -188,12 +196,8 @@ defmodule SymphonyElixir.Verification.DevServer do
       python = System.find_executable("python") ->
         {:ok, python, ["-c", python_launcher()], [], true}
 
-      shell = System.find_executable("sh") ->
-        Logger.warning("Python not found; verification dev server process-group isolation is unavailable")
-        {:ok, shell, ["-lc", "eval \"exec $#{@launcher_command_env}\""], [], false}
-
       true ->
-        {:error, :shell_not_found}
+        {:error, :python_not_found}
     end
   end
 

@@ -160,6 +160,54 @@ defmodule SymphonyElixir.VerificationTest do
              )
   end
 
+  test "dev server fails fast when process-group isolation is unavailable" do
+    port = free_tcp_port()
+    shell = System.find_executable("sh") || System.find_executable("bash")
+    assert is_binary(shell)
+
+    config = %DevServerConfig{
+      start_cmd: "sleep 1",
+      health_check_url: "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/healthz",
+      health_timeout_ms: 50,
+      stop_signal: "TERM",
+      stop_timeout_ms: 100
+    }
+
+    assert {:error, {:verification_failed, :process_group_unavailable}} =
+             DevServer.start(
+               run_id: "no-process-group-run",
+               port: port,
+               workspace: System.tmp_dir!(),
+               config: config,
+               env: Verification.env(%{port: port}),
+               owner: self(),
+               launcher: fn -> {:ok, shell, ["-lc", "sleep 1"], [], false} end
+             )
+  end
+
+  test "dev server reports verification_failed when Python is unavailable" do
+    port = free_tcp_port()
+
+    config = %DevServerConfig{
+      start_cmd: "sleep 1",
+      health_check_url: "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/healthz",
+      health_timeout_ms: 50,
+      stop_signal: "TERM",
+      stop_timeout_ms: 100
+    }
+
+    assert {:error, {:verification_failed, :python_not_found}} =
+             DevServer.start(
+               run_id: "python-not-found-run",
+               port: port,
+               workspace: System.tmp_dir!(),
+               config: config,
+               env: Verification.env(%{port: port}),
+               owner: self(),
+               launcher: fn -> {:error, :python_not_found} end
+             )
+  end
+
   test "agent runner aborts before first turn when verification health check fails" do
     test_root =
       Path.join(

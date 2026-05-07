@@ -91,19 +91,15 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp maybe_set_logs_root(opts, deps) do
-    case Keyword.get_values(opts, :logs_root) do
-      [] ->
-        :ok
+    with_last_opt(opts, :logs_root, fn raw ->
+      logs_root = String.trim(raw)
 
-      values ->
-        logs_root = values |> List.last() |> String.trim()
-
-        if logs_root == "" do
-          {:error, usage_message()}
-        else
-          :ok = deps.set_logs_root.(Path.expand(logs_root))
-        end
-    end
+      if logs_root == "" do
+        {:error, usage_message()}
+      else
+        :ok = deps.set_logs_root.(Path.expand(logs_root))
+      end
+    end)
   end
 
   defp require_guardrails_acknowledgement(opts) do
@@ -153,34 +149,31 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp maybe_set_server_host(opts, deps) do
-    case Keyword.get_values(opts, :host) do
-      [] ->
-        :ok
+    with_last_opt(opts, :host, fn raw ->
+      host = String.trim(raw)
 
-      values ->
-        host = values |> List.last() |> String.trim()
-
-        if host == "" do
-          {:error, usage_message()}
-        else
-          :ok = deps.set_server_host_override.(host)
-        end
-    end
+      if host == "" do
+        {:error, usage_message()}
+      else
+        :ok = deps.set_server_host_override.(host)
+      end
+    end)
   end
 
   defp maybe_set_server_port(opts, deps) do
-    case Keyword.get_values(opts, :port) do
-      [] ->
-        :ok
+    with_last_opt(opts, :port, fn port ->
+      if is_integer(port) and port >= 0 do
+        :ok = deps.set_server_port_override.(port)
+      else
+        {:error, usage_message()}
+      end
+    end)
+  end
 
-      values ->
-        port = List.last(values)
-
-        if is_integer(port) and port >= 0 do
-          :ok = deps.set_server_port_override.(port)
-        else
-          {:error, usage_message()}
-        end
+  defp with_last_opt(opts, key, fun) do
+    case Keyword.get_values(opts, key) do
+      [] -> :ok
+      values -> fun.(List.last(values))
     end
   end
 

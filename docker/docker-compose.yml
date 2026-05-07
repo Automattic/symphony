@@ -3,6 +3,9 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        SYMPHONY_UID: ${SYMPHONY_UID:-1000}
+        SYMPHONY_GID: ${SYMPHONY_GID:-1000}
     image: symphony:local
     command:
       - --logs-root
@@ -37,10 +40,10 @@ services:
         target: /workspace/workspaces
       - type: volume
         source: symphony-codex-home
-        target: /root/.codex
+        target: /home/symphony/.codex
       - type: volume
         source: symphony-claude-home
-        target: /root/.claude
+        target: /home/symphony/.claude
 
 volumes:
   symphony-claude-home:

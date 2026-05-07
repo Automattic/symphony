@@ -26,8 +26,18 @@ The Compose file mounts these paths into the container:
 | `SYMPHONY_REPO` env var | `/workspace/repo` | Repository Symphony should operate on |
 | `symphony-workspaces` volume | `/workspace/workspaces` | Per-issue workspaces |
 | `symphony-logs` volume | `/workspace/logs` | Logs and durable run store |
-| `symphony-codex-home` volume | `/root/.codex` | Codex settings, auth, cache, and session state |
-| `symphony-claude-home` volume | `/root/.claude` | Claude settings, auth, cache, and session state |
+| `symphony-codex-home` volume | `/home/symphony/.codex` | Codex settings, auth, cache, and session state |
+| `symphony-claude-home` volume | `/home/symphony/.claude` | Claude settings, auth, cache, and session state |
+
+The container runs as a non-root `symphony` user (UID/GID `1000` by default). Files written into
+the bind-mounted host repo and into the named volumes are owned by that UID. On Linux, override
+the defaults to match your host user so cleanup does not require `sudo`:
+
+```bash
+SYMPHONY_UID=$(id -u) SYMPHONY_GID=$(id -g) \
+SYMPHONY_WORKFLOW=... SYMPHONY_REPO=... \
+docker compose -f docker/docker-compose.yml up --build
+```
 
 Use container paths in the workflow. A typical Docker-oriented workflow starts with:
 
@@ -73,16 +83,16 @@ For example, mount selected host inputs on top of the writable container volumes
 services:
   symphony:
     volumes:
-      - ${HOME}/.codex/config.toml:/root/.codex/config.toml:ro
-      - ${HOME}/.codex/auth.json:/root/.codex/auth.json:ro
-      - ${HOME}/.codex/AGENTS.md:/root/.codex/AGENTS.md:ro
-      - ${HOME}/.codex/skills:/root/.codex/skills:ro
-      - ${HOME}/.claude/settings.json:/root/.claude/settings.json:ro
-      - ${HOME}/.claude/CLAUDE.md:/root/.claude/CLAUDE.md:ro
-      - ${HOME}/.claude/commands:/root/.claude/commands:ro
-      - ${HOME}/.claude/skills:/root/.claude/skills:ro
-      - ${HOME}/.config/gh:/root/.config/gh:ro
-      - ${HOME}/.ssh:/root/.ssh:ro
+      - ${HOME}/.codex/config.toml:/home/symphony/.codex/config.toml:ro
+      - ${HOME}/.codex/auth.json:/home/symphony/.codex/auth.json:ro
+      - ${HOME}/.codex/AGENTS.md:/home/symphony/.codex/AGENTS.md:ro
+      - ${HOME}/.codex/skills:/home/symphony/.codex/skills:ro
+      - ${HOME}/.claude/settings.json:/home/symphony/.claude/settings.json:ro
+      - ${HOME}/.claude/CLAUDE.md:/home/symphony/.claude/CLAUDE.md:ro
+      - ${HOME}/.claude/commands:/home/symphony/.claude/commands:ro
+      - ${HOME}/.claude/skills:/home/symphony/.claude/skills:ro
+      - ${HOME}/.config/gh:/home/symphony/.config/gh:ro
+      - ${HOME}/.ssh:/home/symphony/.ssh:ro
 ```
 
 Run with both files:
@@ -135,6 +145,6 @@ For example, SSH-backed repository access can be mounted when needed:
 
 ```bash
 docker compose -f docker/docker-compose.yml run --rm \
-  -v "$HOME/.ssh:/root/.ssh:ro" \
+  -v "$HOME/.ssh:/home/symphony/.ssh:ro" \
   symphony
 ```

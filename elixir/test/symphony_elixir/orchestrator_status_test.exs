@@ -126,6 +126,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.session_id == "thread-live-turn-live"
     assert snapshot_entry.turn_count == 1
     assert snapshot_entry.last_codex_timestamp == now
+    assert snapshot_entry.last_event_at == now
 
     assert snapshot_entry.last_codex_message == %{
              event: :notification,
@@ -1640,6 +1641,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                attempt: 4,
                due_at: due_at,
                error: "agent exited: :boom",
+               reason: :stuck,
+               elapsed_ms: 12_345,
                worker_host: "worker-a",
                workspace_path: "/tmp/workspaces/MT-501"
              })
@@ -1655,6 +1658,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                identifier: "MT-501",
                attempt: 4,
                error: "agent exited: :boom",
+               reason: :stuck,
+               elapsed_ms: 12_345,
                worker_host: "worker-a",
                workspace_path: "/tmp/workspaces/MT-501",
                due_in_ms: due_in_ms
@@ -1673,9 +1678,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                issue_id: "issue-persisted-retry",
                identifier: "MT-501",
                attempt: 4,
-               error: "agent exited: :boom"
+               error: "agent exited: :boom",
+               reason: :stuck,
+               elapsed_ms: 12_345
              }
            ] = restarted_snapshot.retrying
+
+    assert %{
+             reason: :stuck,
+             elapsed_ms: 12_345
+           } = :sys.get_state(restarted_pid).retry_attempts["issue-persisted-retry"]
 
     GenServer.stop(restarted_pid)
   end
@@ -1957,10 +1969,230 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert next_poll_in_ms <= 50
   end
 
-  test "orchestrator restarts stalled workers with retry backoff" do
+  test "watchdog restarts stuck workers with retry backoff, cleanup, and notification" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-watchdog-stuck-test-#{System.unique_integer([:positive])}"
+      )
+
+    marker = Path.join(workspace_root, "after_run.marker")
+
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
-      agent_stall_timeout_ms: 1_000
+      workspace_root: workspace_root,
+      agent_stall_timeout_ms: 0,
+      hook_after_run: "sleep 1; printf after >> #{marker}",
+      watchdog: %{enabled: true, tick_interval_ms: 60_000, no_progress_threshold_ms: 1_000}
+    )
+
+    issue = %Issue{
+      id: "issue-watchdog-stuck",
+      identifier: "MT-WATCHDOG",
+      title: "Watchdog stuck",
+      description: "Restart a stuck worker",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-WATCHDOG"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(workspace)
+
+    orchestrator_name = Module.concat(__MODULE__, :WatchdogStuckOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      terminate_task_supervisor_children()
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      File.rm_rf(workspace_root)
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.add(DateTime.utc_now(), -2, :second)
+    last_event_at = DateTime.add(DateTime.utc_now(), -1_000, :millisecond)
+    run_id = "run-watchdog-stuck"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        workspace_path: workspace,
+        session_id: "thread-watchdog-turn-stuck",
+        last_codex_timestamp: last_event_at,
+        last_codex_event: :notification,
+        last_event_at: last_event_at,
+        agent_module: StopSessionAgent,
+        agent_session: %{recipient: self()},
+        turn_count: 1,
+        retry_attempt: 2
+      })
+
+    put_running_run!(issue, run_id, started_at, %{
+      workspace_path: workspace,
+      session_id: "thread-watchdog-turn-stuck"
+    })
+
+    put_running_entry(pid, issue, running_entry)
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
+    send(pid, :watchdog_tick)
+    snapshot_started_at_ms = System.monotonic_time(:millisecond)
+
+    assert_receive :agent_stop_session_called
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :shutdown}
+
+    assert %{running: [], retrying: [%{issue_id: "issue-watchdog-stuck"}]} =
+             wait_for_snapshot(pid, fn snapshot ->
+               snapshot.running == [] and length(snapshot.retrying) == 1
+             end)
+
+    assert System.monotonic_time(:millisecond) - snapshot_started_at_ms < 800
+
+    state = :sys.get_state(pid)
+
+    assert %{
+             attempt: 3,
+             identifier: "MT-WATCHDOG",
+             error: "stuck for " <> _,
+             reason: :stuck,
+             elapsed_ms: elapsed_ms
+           } = state.retry_attempts[issue.id]
+
+    assert elapsed_ms >= 1_000
+    assert wait_for_file_contents(marker, "after", 1_500)
+
+    assert %{status: "timeout", error: "stuck for " <> _} =
+             wait_for_run_record(&(&1.run_id == run_id))
+
+    assert_receive {:notification_event,
+                    %SymphonyElixir.Notifications.Event{
+                      event: "run_stuck",
+                      issue_identifier: "MT-WATCHDOG",
+                      session_id: "thread-watchdog-turn-stuck",
+                      attempt: 3,
+                      metadata: %{reason: "stuck", elapsed_ms: event_elapsed_ms}
+                    }},
+                   500
+
+    assert event_elapsed_ms >= 1_000
+  end
+
+  test "watchdog does not restart workers after a recent transcript event" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      agent_stall_timeout_ms: 0,
+      watchdog: %{enabled: true, tick_interval_ms: 60_000, no_progress_threshold_ms: 1_000}
+    )
+
+    issue = %Issue{
+      id: "issue-watchdog-fresh",
+      identifier: "MT-FRESH",
+      title: "Watchdog fresh event",
+      description: "Keep a progressing worker running",
+      state: "In Progress"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :WatchdogFreshOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    old_event_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    run_id = "run-watchdog-fresh"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        session_id: "thread-watchdog-turn-fresh",
+        last_codex_timestamp: old_event_at,
+        last_codex_event: :notification,
+        last_event_at: old_event_at
+      })
+
+    put_running_entry(pid, issue, running_entry)
+
+    update = %{
+      event: :notification,
+      payload: %{"method" => "tool/call", "params" => %{"name" => "bash"}},
+      timestamp: DateTime.utc_now()
+    }
+
+    send(pid, {:codex_worker_update, issue.id, update})
+    send(pid, :watchdog_tick)
+    Process.sleep(50)
+
+    state = :sys.get_state(pid)
+    assert Map.has_key?(state.running, issue.id)
+    refute Map.has_key?(state.retry_attempts, issue.id)
+    assert Process.alive?(worker_pid)
+
+    Process.demonitor(worker_ref, [:flush])
+    Process.exit(worker_pid, :shutdown)
+  end
+
+  test "disabled watchdog tick is a no-op" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      agent_stall_timeout_ms: 0,
+      watchdog: %{enabled: false, tick_interval_ms: 60_000, no_progress_threshold_ms: 1}
+    )
+
+    issue = %Issue{
+      id: "issue-watchdog-disabled",
+      identifier: "MT-DISABLED",
+      title: "Watchdog disabled",
+      description: "Do not restart while disabled",
+      state: "In Progress"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :WatchdogDisabledOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    old_event_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    run_id = "run-watchdog-disabled"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        session_id: "thread-watchdog-turn-disabled",
+        last_codex_timestamp: old_event_at,
+        last_codex_event: :notification,
+        last_event_at: old_event_at
+      })
+
+    put_running_entry(pid, issue, running_entry)
+
+    send(pid, :watchdog_tick)
+    Process.sleep(50)
+
+    state = :sys.get_state(pid)
+    assert Map.has_key?(state.running, issue.id)
+    refute Map.has_key?(state.retry_attempts, issue.id)
+    assert Process.alive?(worker_pid)
+
+    Process.demonitor(worker_ref, [:flush])
+    Process.exit(worker_pid, :shutdown)
+  end
+
+  test "orchestrator restarts first-turn stalled workers with retry backoff" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      agent_stall_timeout_ms: 1_000,
+      watchdog: %{enabled: true, tick_interval_ms: 60_000, no_progress_threshold_ms: 1_000}
     )
 
     issue_id = "issue-stall"
@@ -1990,8 +2222,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       issue: %Issue{id: issue_id, identifier: "MT-STALL", state: "In Progress"},
       session_id: "thread-stall-turn-stall",
       last_codex_message: nil,
-      last_codex_timestamp: stale_activity_at,
-      last_codex_event: :notification,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      last_event_at: stale_activity_at,
       started_at: stale_activity_at
     }
 
@@ -2019,6 +2252,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert is_integer(due_at_ms)
     assert due_at_ms >= tick_sent_at_ms + 9_000
     assert due_at_ms <= tick_sent_at_ms + 10_500
+
+    send(pid, :watchdog_tick)
+    Process.sleep(50)
+
+    assert %{attempt: 1, error: "stalled for " <> _} = :sys.get_state(pid).retry_attempts[issue_id]
   end
 
   test "status dashboard renders offline marker to terminal" do
@@ -2788,6 +3026,26 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       true ->
         Process.sleep(5)
         do_wait_for_run_record(predicate, deadline_ms)
+    end
+  end
+
+  defp wait_for_file_contents(path, expected, timeout_ms) when is_binary(path) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_file_contents(path, expected, deadline_ms)
+  end
+
+  defp do_wait_for_file_contents(path, expected, deadline_ms) do
+    case File.read(path) do
+      {:ok, ^expected} ->
+        true
+
+      _ ->
+        if System.monotonic_time(:millisecond) >= deadline_ms do
+          flunk("timed out waiting for file #{path} to contain #{inspect(expected)}")
+        else
+          Process.sleep(5)
+          do_wait_for_file_contents(path, expected, deadline_ms)
+        end
     end
   end
 

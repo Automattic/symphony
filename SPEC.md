@@ -197,6 +197,7 @@ Examples:
 - concurrency limits
 - optional per-issue and per-day token budget limits
 - coding-agent executable/args/timeouts
+- running-agent no-progress watchdog timing
 - workspace hooks
 
 #### 4.1.4 Workspace
@@ -235,6 +236,9 @@ Fields:
 - `codex_app_server_pid` (string or null)
 - `last_codex_event` (string/enum or null)
 - `last_codex_timestamp` (timestamp or null)
+- `last_event_at` (timestamp or null)
+  - Updated for every transcript event and initialized when runtime dispatch metadata is received.
+  - Used by no-progress watchdog detection.
 - `last_codex_message` (summarized payload)
 - `codex_input_tokens` (integer)
 - `codex_output_tokens` (integer)
@@ -260,6 +264,8 @@ Fields:
 - `error` (string or null)
 - `worker_host` (string or null)
 - `workspace_path` (string or null)
+- `reason` (string/enum or null)
+- `elapsed_ms` (integer or null)
 
 #### 4.1.8 Orchestrator Runtime State
 
@@ -289,7 +295,8 @@ the durable store SHOULD record:
 - issue ID, identifier, title, tracker state, attempt number, start/end time, error
 - workspace path, worker host, session ID, transcript path when available
 - per-run token totals and runtime seconds
-- retry queue rows with issue ID, attempt, due time, error, worker host, and workspace path
+- retry queue rows with issue ID, attempt, due time, error, reason/elapsed metadata, worker host,
+  and workspace path
 - aggregate token/runtime totals
 - budget-exhausted run status for issues stopped without retry by token budget enforcement
 
@@ -568,6 +575,22 @@ fields locally if they want stricter startup checks.
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
 
+#### 5.3.8 `watchdog` (object)
+
+Fields:
+
+- `enabled` (boolean)
+  - Default: `true`
+  - When `false`, watchdog ticks still run but do not terminate sessions.
+- `tick_interval_ms` (positive integer)
+  - Default: `60000` (1 minute)
+  - Controls how often the orchestrator evaluates running-agent no-progress state.
+- `no_progress_threshold_ms` (positive integer)
+  - Default: `600000` (10 minutes)
+  - If a running agent has not emitted a transcript event since this threshold, terminate the
+    agent session, run `after_run`, record the run as timed out, emit a `run_stuck` semantic event,
+    and schedule retry through the normal retry queue/backoff.
+
 ### 5.4 Prompt Template Contract
 
 The Markdown body of `WORKFLOW.md` is the per-issue prompt template.
@@ -718,6 +741,9 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
+- `watchdog.enabled`: boolean, default `true`
+- `watchdog.tick_interval_ms`: integer, default `60000`
+- `watchdog.no_progress_threshold_ms`: integer, default `600000`
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
 - `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
@@ -816,8 +842,12 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - `Reconciliation State Refresh`
   - Stop runs whose issue states are terminal or no longer active.
 
-- `Stall Timeout`
-  - Kill worker and schedule retry.
+- `First-Turn Stall Timeout`
+  - Kill a worker that has not emitted its first coding-agent event and schedule retry.
+
+- `Watchdog Tick`
+  - Detect running agents with no transcript event for the configured no-progress threshold.
+  - Stop the wedged agent session, run `after_run`, emit `run_stuck`, and schedule retry.
 
 ### 7.4 Idempotency and Recovery Rules
 
@@ -934,13 +964,13 @@ Note:
 
 ### 8.5 Active Run Reconciliation
 
-Reconciliation runs every tick and has two parts.
+Reconciliation runs every poll tick and has two reconciliation parts plus an independent watchdog
+tick.
 
-Part A: Stall detection
+Part A: First-turn stall detection
 
-- For each running issue, compute `elapsed_ms` since:
-  - `last_codex_timestamp` if any event has been seen, else
-  - `started_at`
+- For each running issue that has not emitted any coding-agent event, compute `elapsed_ms` since
+  `started_at`.
 - If `elapsed_ms > codex.stall_timeout_ms`, terminate the worker and queue a retry.
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
 
@@ -952,6 +982,15 @@ Part B: Tracker state refresh
   - If tracker state is still active: update the in-memory issue snapshot.
   - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.
+
+Part C: No-progress watchdog
+
+- Independently of the poll tick, a watchdog tick runs every `watchdog.tick_interval_ms`.
+- If `watchdog.enabled == false`, the tick performs no session termination.
+- For each running issue, compute `elapsed_ms` since `last_event_at`.
+- If `elapsed_ms >= watchdog.no_progress_threshold_ms`, terminate the agent session, run
+  `after_run`, record the run as `timeout`, emit `run_stuck`, and queue a retry through the normal
+  retry helper/backoff path.
 
 ### 8.6 Startup Terminal Workspace Cleanup
 
@@ -1274,7 +1313,8 @@ Timeouts:
 
 - `codex.read_timeout_ms`: request/response timeout during startup and sync requests
 - `codex.turn_timeout_ms`: total turn stream timeout
-- `codex.stall_timeout_ms`: enforced by orchestrator based on event inactivity
+- `codex.stall_timeout_ms`: enforced by orchestrator for runs that have not emitted a first event
+- `watchdog.no_progress_threshold_ms`: enforced by orchestrator based on last transcript event time
 
 Error mapping (RECOMMENDED normalized categories):
 
@@ -2052,6 +2092,26 @@ function reconcile_running_issues(state):
   return state
 ```
 
+```text
+function watchdog_tick(state):
+  if watchdog.enabled is false:
+    return state
+
+  for each (issue_id, running_entry) in state.running:
+    elapsed_ms = now_utc() - running_entry.last_event_at
+    if elapsed_ms >= watchdog.no_progress_threshold_ms:
+      agent.stop_session(running_entry.agent_session)
+      run_hook_best_effort("after_run", running_entry.workspace_path)
+      emit_event("run_stuck", issue_id, {elapsed_ms})
+      state = terminate_running_issue(state, issue_id, status="timeout")
+      state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
+        reason: "stuck",
+        elapsed_ms: elapsed_ms
+      })
+
+  return state
+```
+
 ### 16.4 Dispatch One Issue
 
 ```text
@@ -2306,7 +2366,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Retry queue entries include attempt, due time, identifier, and error
 - Completed issues in non-active, non-terminal states appear as watching rows
 - Terminal completed issues are removed from watching rows
-- Stall detection kills stalled sessions and schedules retry
+- First-turn stall detection kills never-started sessions and schedules retry
+- Watchdog no-progress detection stops stuck sessions, runs `after_run`, emits `run_stuck`, and
+  schedules retry
 - Slot exhaustion requeues retries with explicit error reason
 - If a snapshot API is implemented, it returns running rows, watching rows, retry rows, token totals,
   and rate limits

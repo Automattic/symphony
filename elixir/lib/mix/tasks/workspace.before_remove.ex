@@ -64,8 +64,6 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
     end
   end
 
-  defp parse_repo_from_origin(_), do: nil
-
   defp split_origin_url("git@" <> rest) do
     case String.split(rest, ":", parts: 2) do
       [host, path] -> {:ok, host, path}

@@ -80,7 +80,7 @@ defmodule SymphonyElixirWeb.Presenter do
                state: running.state,
                session_id: running.session_id,
                started_at: iso8601(running.started_at),
-               last_event_at: iso8601(running.last_codex_timestamp),
+               last_event_at: iso8601(Map.get(running, :last_event_at) || running.last_codex_timestamp),
                turn_count: Map.get(running, :turn_count, 0),
                tokens: %{
                  input_tokens: running.codex_input_tokens,
@@ -163,7 +163,7 @@ defmodule SymphonyElixirWeb.Presenter do
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
       started_at: iso8601(entry.started_at),
-      last_event_at: iso8601(entry.last_codex_timestamp),
+      last_event_at: iso8601(Map.get(entry, :last_event_at) || entry.last_codex_timestamp),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
@@ -207,7 +207,7 @@ defmodule SymphonyElixirWeb.Presenter do
       started_at: iso8601(running.started_at),
       last_event: running.last_codex_event,
       last_message: summarize_message(running.last_codex_message),
-      last_event_at: iso8601(running.last_codex_timestamp),
+      last_event_at: iso8601(Map.get(running, :last_event_at) || running.last_codex_timestamp),
       tokens: %{
         input_tokens: running.codex_input_tokens,
         output_tokens: running.codex_output_tokens,

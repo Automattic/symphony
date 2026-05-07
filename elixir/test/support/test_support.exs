@@ -27,6 +27,7 @@ defmodule SymphonyElixir.TestSupport do
           write_workflow_file!: 1,
           write_workflow_file!: 2,
           restore_env: 2,
+          ensure_symphony_started!: 0,
           stop_default_http_server: 0,
           stop_verification_port_pool: 0
         ]
@@ -42,6 +43,7 @@ defmodule SymphonyElixir.TestSupport do
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
+        ensure_symphony_started!()
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         :ok = SymphonyElixir.RunStore.clear()
         stop_verification_port_pool()
@@ -79,22 +81,30 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
+  def ensure_symphony_started! do
+    case Application.ensure_all_started(:symphony_elixir) do
+      {:ok, _started} -> :ok
+      {:error, {:already_started, _app}} -> :ok
+      {:error, reason} -> raise "failed to start symphony_elixir test application: #{inspect(reason)}"
+    end
+  end
+
   def stop_default_http_server do
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
-           {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
-           _child -> false
-         end) do
-      {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+    with supervisor when is_pid(supervisor) <- Process.whereis(SymphonyElixir.Supervisor),
+         {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) <-
+           Enum.find(Supervisor.which_children(supervisor), fn
+             {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+             _child -> false
+           end) do
+      :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.HttpServer)
 
-        if Process.alive?(pid) do
-          Process.exit(pid, :normal)
-        end
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
 
-        :ok
-
-      _ ->
-        :ok
+      :ok
+    else
+      _ -> :ok
     end
   end
 

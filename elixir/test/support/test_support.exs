@@ -23,11 +23,16 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          ensure_symphony_started!: 0,
+          stop_default_http_server: 0,
+          stop_verification_port_pool: 0
+        ]
 
       setup do
-        SymphonyElixir.TestSupport.ensure_application_started()
-
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -38,11 +43,14 @@ defmodule SymphonyElixir.TestSupport do
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
+        ensure_symphony_started!()
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         :ok = SymphonyElixir.RunStore.clear()
+        stop_verification_port_pool()
         stop_default_http_server()
 
         on_exit(fn ->
+          stop_verification_port_pool()
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
@@ -73,18 +81,26 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
+  def ensure_symphony_started! do
+    ensure_application_started()
+  end
+
   def ensure_application_started do
     case Process.whereis(SymphonyElixir.Supervisor) do
       pid when is_pid(pid) ->
         :ok
 
       _ ->
-        case Application.ensure_all_started(:symphony_elixir) do
-          {:ok, _started} -> :ok
-          {:error, {:symphony_elixir, {:already_started, _pid}}} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-          {:error, reason} -> raise "failed to start symphony_elixir application: #{inspect(reason)}"
-        end
+        do_ensure_application_started()
+    end
+  end
+
+  defp do_ensure_application_started do
+    case Application.ensure_all_started(:symphony_elixir) do
+      {:ok, _started} -> :ok
+      {:error, {:symphony_elixir, {:already_started, _pid}}} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, reason} -> raise "failed to start symphony_elixir test application: #{inspect(reason)}"
     end
   end
 
@@ -108,6 +124,15 @@ defmodule SymphonyElixir.TestSupport do
       {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
       _child -> false
     end)
+  end
+
+  def stop_verification_port_pool do
+    case Process.whereis(SymphonyElixir.Verification.PortPool) do
+      pid when is_pid(pid) -> GenServer.stop(pid)
+      _ -> :ok
+    end
+  catch
+    :exit, _reason -> :ok
   end
 
   defp workflow_content(overrides) do
@@ -165,6 +190,7 @@ defmodule SymphonyElixir.TestSupport do
           pr_review_auto_reply: nil,
           pr_review_auto_request_review: nil,
           ci: nil,
+          verification: nil,
           server_port: nil,
           server_host: nil,
           quality_gate: nil,
@@ -227,6 +253,7 @@ defmodule SymphonyElixir.TestSupport do
     pr_review_auto_reply = Keyword.get(config, :pr_review_auto_reply)
     pr_review_auto_request_review = Keyword.get(config, :pr_review_auto_request_review)
     ci = Keyword.get(config, :ci)
+    verification = Keyword.get(config, :verification)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     quality_gate = Keyword.get(config, :quality_gate)
@@ -292,6 +319,7 @@ defmodule SymphonyElixir.TestSupport do
           pr_review_auto_request_review
         ),
         ci_yaml(ci),
+        verification_yaml(verification),
         server_yaml(server_port, server_host),
         quality_gate_yaml(quality_gate),
         learnings_yaml(learnings),
@@ -419,6 +447,44 @@ defmodule SymphonyElixir.TestSupport do
     case fields do
       [] -> nil
       lines -> Enum.join(["ci:" | lines], "\n")
+    end
+  end
+
+  defp verification_yaml(nil), do: nil
+
+  defp verification_yaml(opts) when is_list(opts) or is_map(opts) do
+    config = map_from(opts)
+    port_allocation = map_from(Map.get(config, :port_allocation) || %{})
+    dev_server = map_from(Map.get(config, :dev_server) || %{})
+
+    fields =
+      [
+        kv("enabled", Map.get(config, :enabled)),
+        nested_yaml("port_allocation", [
+          kv("range", Map.get(port_allocation, :range))
+        ]),
+        nested_yaml("dev_server", [
+          kv("start_cmd", Map.get(dev_server, :start_cmd)),
+          kv("health_check_url", Map.get(dev_server, :health_check_url)),
+          kv("health_timeout_ms", Map.get(dev_server, :health_timeout_ms)),
+          kv("stop_signal", Map.get(dev_server, :stop_signal)),
+          kv("stop_timeout_ms", Map.get(dev_server, :stop_timeout_ms))
+        ])
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case fields do
+      [] -> nil
+      lines -> Enum.join(["verification:" | lines], "\n")
+    end
+  end
+
+  defp nested_yaml(name, fields) do
+    fields = Enum.reject(fields, &is_nil/1)
+
+    case fields do
+      [] -> nil
+      lines -> Enum.join(["  #{name}:" | Enum.map(lines, &"  #{&1}")], "\n")
     end
   end
 

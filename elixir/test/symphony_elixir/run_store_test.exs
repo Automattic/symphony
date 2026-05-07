@@ -136,6 +136,40 @@ defmodule SymphonyElixir.RunStoreTest do
     assert :ok = RunStore.delete_ci_check("issue-1")
     assert [] = RunStore.list_ci_checks()
 
+    assert :ok =
+             RunStore.put_verification_allocation(%{
+               run_id: "run-1",
+               issue_id: "issue-1",
+               issue_identifier: "RSM-1",
+               port: 4010,
+               status: "allocated",
+               allocated_at: started_at,
+               updated_at: started_at
+             })
+
+    assert :ok =
+             RunStore.update_verification_allocation("run-1", %{
+               status: "dev_server_started",
+               dev_server_os_pid: 12_345,
+               dev_server_pgid: 12_345,
+               updated_at: due_at
+             })
+
+    assert [
+             %{
+               run_id: "run-1",
+               issue_id: "issue-1",
+               issue_identifier: "RSM-1",
+               port: 4010,
+               status: "dev_server_started",
+               dev_server_os_pid: 12_345,
+               updated_at: ^due_at
+             }
+           ] = RunStore.list_verification_allocations()
+
+    assert :ok = RunStore.delete_verification_allocation("run-1")
+    assert [] = RunStore.list_verification_allocations()
+
     totals = %{input_tokens: 10, output_tokens: 4, total_tokens: 14, seconds_running: 10}
     assert :ok = RunStore.put_codex_totals(totals)
     assert totals == RunStore.get_codex_totals()
@@ -171,7 +205,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert %{paused: true, reason: "overnight deploy", paused_at: %DateTime{} = paused_at} =
              RunStore.get_paused()
 
-    restart_run_store()
+    restarted_pid = restart_run_store()
 
     assert %{paused: true, reason: "overnight deploy", paused_at: ^paused_at} =
              RunStore.get_paused()
@@ -184,6 +218,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert :ok = RunStore.set_paused(false, nil)
     assert %{paused: false, reason: nil, paused_at: nil} = RunStore.get_paused()
 
+    if Process.alive?(restarted_pid), do: GenServer.stop(restarted_pid)
     restart_run_store()
   end
 

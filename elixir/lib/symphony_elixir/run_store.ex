@@ -13,6 +13,7 @@ defmodule SymphonyElixir.RunStore do
   @totals_table :symphony_run_store_totals
   @pr_review_table :symphony_run_store_pr_reviews
   @ci_check_table :symphony_run_store_ci_checks
+  @verification_allocation_table :symphony_run_store_verification_allocations
   @eval_logs_table :symphony_run_store_eval_logs
   @pause_table :symphony_run_store_pause
   @learnings_table :symphony_run_store_learnings
@@ -26,6 +27,7 @@ defmodule SymphonyElixir.RunStore do
     {@totals_table, [:key, :record], []},
     {@pr_review_table, [:issue_id, :record], []},
     {@ci_check_table, [:issue_id, :record], []},
+    {@verification_allocation_table, [:run_id, :record], []},
     {@pause_table, [:key, :record], []},
     {@eval_logs_table, @eval_log_attributes, [type: :bag, index: @eval_log_indexes]},
     {@learnings_table, @learning_attributes, [index: @learning_indexes]}
@@ -278,6 +280,52 @@ defmodule SymphonyElixir.RunStore do
         @ci_check_table
         |> all_records()
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :updated_at)), :desc)
+      end)
+    end
+  end
+
+  @spec put_verification_allocation(map()) :: :ok | {:error, term()}
+  def put_verification_allocation(%{run_id: run_id, port: port} = record)
+      when is_binary(run_id) and is_integer(port) do
+    with :ok <- ensure_started() do
+      durable_transaction(fn ->
+        :mnesia.write({@verification_allocation_table, run_id, normalize_record(record)})
+        :ok
+      end)
+    end
+  end
+
+  def put_verification_allocation(_record), do: {:error, :invalid_verification_allocation_record}
+
+  @spec update_verification_allocation(String.t(), map()) :: :ok | {:error, term()}
+  def update_verification_allocation(run_id, attrs) when is_binary(run_id) and is_map(attrs) do
+    with :ok <- ensure_started() do
+      update_verification_allocation_record(run_id, attrs)
+      |> unwrap_nested_error()
+    end
+  end
+
+  def update_verification_allocation(_run_id, _attrs), do: {:error, :invalid_verification_allocation_record}
+
+  @spec delete_verification_allocation(String.t()) :: :ok | {:error, term()}
+  def delete_verification_allocation(run_id) when is_binary(run_id) do
+    with :ok <- ensure_started() do
+      durable_transaction(fn ->
+        :mnesia.delete({@verification_allocation_table, run_id})
+        :ok
+      end)
+    end
+  end
+
+  def delete_verification_allocation(_run_id), do: {:error, :invalid_run_id}
+
+  @spec list_verification_allocations() :: [map()] | {:error, term()}
+  def list_verification_allocations do
+    with :ok <- ensure_started() do
+      transaction(fn ->
+        @verification_allocation_table
+        |> all_records()
+        |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :allocated_at)), :asc)
       end)
     end
   end
@@ -582,6 +630,19 @@ defmodule SymphonyElixir.RunStore do
 
         [] ->
           {:error, :ci_check_not_found}
+      end
+    end)
+  end
+
+  defp update_verification_allocation_record(run_id, attrs) do
+    durable_transaction(fn ->
+      case :mnesia.read(@verification_allocation_table, run_id) do
+        [{@verification_allocation_table, ^run_id, record}] ->
+          :mnesia.write({@verification_allocation_table, run_id, Map.merge(record, normalize_record(attrs))})
+          :ok
+
+        [] ->
+          {:error, :verification_allocation_not_found}
       end
     end)
   end

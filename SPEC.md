@@ -361,6 +361,7 @@ Top-level keys:
 - `tracker`
 - `polling`
 - `workspace`
+- `verification`
 - `hooks`
 - `routing`
 - `agent`
@@ -432,7 +433,47 @@ Fields:
   - When `strategy == worktree`, fetches `origin` in the primary clone before preparing an issue
     workspace.
 
-#### 5.3.3a `pr_review` (object)
+#### 5.3.3a `verification` (object)
+
+Opt-in orchestration for UI verification runs that need a per-issue dev-server port.
+
+Fields:
+
+- `enabled` (boolean)
+  - Default: `false`.
+  - When false or omitted, no verification port allocation or dev-server supervision is active.
+- `port_allocation.range` (two-integer list)
+  - Default: `[4000, 4099]`.
+  - The implementation allocates the first free port in the inclusive range for each dispatched
+    issue.
+  - The range is global to the Symphony process across all worker hosts. Operators using SSH worker
+    pools should size the range for total verification-enabled concurrency, not per-host
+    concurrency.
+- `dev_server.start_cmd` (string, OPTIONAL)
+  - Long-lived shell command run in the issue workspace after `hooks.before_run` and before the
+    first agent turn.
+  - The command receives `SYMPHONY_VERIFICATION_PORT` in its environment.
+  - The implementation MUST NOT auto-set `PORT`; operators explicitly wire the Symphony port into
+    their tool, for example `PORT=$SYMPHONY_VERIFICATION_PORT pnpm dev` or
+    `pnpm dev --port $SYMPHONY_VERIFICATION_PORT`.
+  - The supervised process-group launcher requires `python3` or `python` so the child command can
+    be started via `setsid()`; if no Python executable is available, the run fails with
+    `verification_failed` before the first agent turn.
+- `dev_server.health_check_url` (string, REQUIRED when `start_cmd` is set)
+  - Supports `$SYMPHONY_VERIFICATION_PORT` and `${SYMPHONY_VERIFICATION_PORT}` substitution.
+  - The dev server is considered healthy only on HTTP `200`.
+- `dev_server.health_timeout_ms` (integer)
+  - Default: `30000`.
+- `dev_server.stop_signal` (string)
+  - Default: `TERM`.
+- `dev_server.stop_timeout_ms` (integer)
+  - Default: `10000`.
+
+Allocation records are durable run-store data so restart reconciliation can preserve ports while a
+previously started dev-server process is still alive and reclaim them once that process is verified
+gone.
+
+#### 5.3.3b `pr_review` (object)
 
 Fields:
 
@@ -729,6 +770,13 @@ not require recognizing or validating extension fields unless that extension is 
 - `workspace.strategy`: `clone` or `worktree`, default `clone`
 - `workspace.repo`: path to the primary clone when `workspace.strategy == worktree`
 - `workspace.fetch_before_dispatch`: boolean, default `true`
+- `verification.enabled`: boolean, default `false`
+- `verification.port_allocation.range`: two-integer inclusive range, default `[4000, 4099]`
+- `verification.dev_server.start_cmd`: shell command or null
+- `verification.dev_server.health_check_url`: URL template or null
+- `verification.dev_server.health_timeout_ms`: integer, default `30000`
+- `verification.dev_server.stop_signal`: signal name, default `TERM`
+- `verification.dev_server.stop_timeout_ms`: integer, default `10000`
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null
@@ -1086,6 +1134,9 @@ Execution contract:
   `cwd`.
 - On POSIX systems, `sh -lc <script>` (or a stricter equivalent such as `bash -lc <script>`) is a
   conforming default.
+- When verification is enabled for the run, `hooks.before_run` and `hooks.after_run` receive
+  `SYMPHONY_VERIFICATION_PORT` in their environment. If a project starts its dev server from a hook
+  instead of `verification.dev_server.start_cmd`, it is responsible for backgrounding and cleanup.
 - Hook timeout uses `hooks.timeout_ms`; default: `60000 ms`.
 - Log hook start, failures, and timeouts.
 
@@ -2116,8 +2167,19 @@ function watchdog_tick(state):
 
 ```text
 function dispatch_issue(issue, state, attempt):
+  run_id = new_run_id(issue.id)
+  verification = null
+  if config.verification.enabled:
+    verification = verification_port_pool.allocate(issue, run_id, config.verification.port_allocation.range)
+    if verification exhausted:
+      log_warning("verification port range exhausted")
+      return schedule_retry(state, issue.id, next_attempt(attempt), {
+        identifier: issue.identifier,
+        error: "verification port allocation exhausted"
+      })
+
   worker = spawn_worker(
-    fn -> run_agent_attempt(issue, attempt, parent_orchestrator_pid) end
+    fn -> run_agent_attempt(issue, attempt, parent_orchestrator_pid, verification) end
   )
 
   if worker spawn failed:
@@ -2159,12 +2221,29 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
   if workspace failed:
     fail_worker("workspace error")
 
-  if run_hook("before_run", workspace.path) failed:
+  hook_env = verification_env(verification)
+
+  if run_hook("before_run", workspace.path, env=hook_env) failed:
     fail_worker("before_run hook error")
+
+  dev_server = null
+  if verification and config.verification.dev_server.start_cmd:
+    dev_server = dev_server.start(
+      command=config.verification.dev_server.start_cmd,
+      cwd=workspace.path,
+      env=hook_env,
+      process_group=true
+    )
+    if dev_server failed health check:
+      run_hook_best_effort("after_run", workspace.path, env=hook_env)
+      verification_port_pool.release(verification)
+      fail_worker("verification_failed")
 
   session = app_server.start_session(workspace=workspace.path)
   if session failed:
-    run_hook_best_effort("after_run", workspace.path)
+    run_hook_best_effort("after_run", workspace.path, env=hook_env)
+    dev_server.stop_best_effort(dev_server)
+    verification_port_pool.release(verification)
     fail_worker("agent session startup error")
 
   max_turns = config.agent.max_turns
@@ -2174,7 +2253,9 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
     prompt = build_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns)
     if prompt failed:
       app_server.stop_session(session)
-      run_hook_best_effort("after_run", workspace.path)
+      run_hook_best_effort("after_run", workspace.path, env=hook_env)
+      dev_server.stop_best_effort(dev_server)
+      verification_port_pool.release(verification)
       fail_worker("prompt error")
 
     turn_result = app_server.run_turn(
@@ -2186,13 +2267,17 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
 
     if turn_result failed:
       app_server.stop_session(session)
-      run_hook_best_effort("after_run", workspace.path)
+      run_hook_best_effort("after_run", workspace.path, env=hook_env)
+      dev_server.stop_best_effort(dev_server)
+      verification_port_pool.release(verification)
       fail_worker("agent turn error")
 
     refreshed_issue = tracker.fetch_issue_states_by_ids([issue.id])
     if refreshed_issue failed:
       app_server.stop_session(session)
-      run_hook_best_effort("after_run", workspace.path)
+      run_hook_best_effort("after_run", workspace.path, env=hook_env)
+      dev_server.stop_best_effort(dev_server)
+      verification_port_pool.release(verification)
       fail_worker("issue state refresh error")
 
     issue = refreshed_issue[0] or issue
@@ -2206,7 +2291,9 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
     turn_number = turn_number + 1
 
   app_server.stop_session(session)
-  run_hook_best_effort("after_run", workspace.path)
+  run_hook_best_effort("after_run", workspace.path, env=hook_env)
+  dev_server.stop_best_effort(dev_server)
+  verification_port_pool.release(verification)
 
   exit_normal()
 ```
@@ -2216,6 +2303,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
 ```text
 on_worker_exit(issue_id, reason, state):
   running_entry = state.running.remove(issue_id)
+  verification_port_pool.release(running_entry.verification)
   state = add_runtime_seconds_to_totals(state, running_entry)
 
   if reason == normal:

@@ -126,6 +126,7 @@ defmodule SymphonyElixirWeb.QualityLive do
               <colgroup>
                 <col style="width: 10rem;" />
                 <col style="width: 9rem;" />
+                <col style="width: 11rem;" />
                 <col style="width: 7rem;" />
                 <col style="width: 9rem;" />
                 <col style="width: 8rem;" />
@@ -136,6 +137,7 @@ defmodule SymphonyElixirWeb.QualityLive do
                 <tr>
                   <th>Issue</th>
                   <th>Outcome</th>
+                  <th>Status</th>
                   <th>Agent</th>
                   <th>Tokens</th>
                   <th>Tests run</th>
@@ -153,7 +155,10 @@ defmodule SymphonyElixirWeb.QualityLive do
                   </td>
                   <td>
                     <span class={outcome_badge_class(entry.outcome)}><%= outcome_label(entry.outcome) %></span>
-                    <span :if={entry.error_kind} class="error-kind-label"><%= entry.error_kind %></span>
+                  </td>
+                  <td>
+                    <span class={status_badge_class(entry.status)}><%= status_label(entry.status) %></span>
+                    <span :if={entry.error} class="quality-reason" title={entry.error}><%= entry.error %></span>
                   </td>
                   <td><%= entry.agent_kind || "unknown" %></td>
                   <td class="numeric"><%= format_int(get_in(entry, [:tokens, :total_tokens])) %></td>
@@ -196,6 +201,22 @@ defmodule SymphonyElixirWeb.QualityLive do
   defp outcome_label("error"), do: "Error"
   defp outcome_label(outcome) when is_binary(outcome), do: outcome
   defp outcome_label(_outcome), do: "Unknown"
+
+  defp status_badge_class("success"), do: "state-badge state-badge-success"
+  defp status_badge_class("timeout"), do: "state-badge state-badge-warning"
+  defp status_badge_class("budget_exhausted"), do: "state-badge state-badge-warning"
+  defp status_badge_class("failure"), do: "state-badge state-badge-danger"
+  defp status_badge_class(_status), do: "state-badge"
+
+  defp status_label("budget_exhausted"), do: "Budget exhausted"
+
+  defp status_label(status) when is_binary(status) do
+    status
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp status_label(_status), do: "Unknown"
 
   defp tests_run_label(true), do: "Yes"
   defp tests_run_label(false), do: "No"

@@ -552,6 +552,12 @@ pre,
   color: var(--danger);
 }
 
+.state-badge-success {
+  background: var(--accent-soft);
+  border-color: rgba(16, 163, 127, 0.18);
+  color: var(--accent-ink);
+}
+
 .issue-id {
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -660,15 +666,18 @@ pre,
 
 .quality-table {
   table-layout: fixed;
-  min-width: 860px;
+  min-width: 980px;
 }
 
-.error-kind-label {
+.quality-reason {
   display: block;
   font-size: 0.72rem;
   color: var(--muted);
   margin-top: 0.15rem;
   letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-copy-btn {

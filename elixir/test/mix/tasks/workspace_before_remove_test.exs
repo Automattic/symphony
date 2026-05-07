@@ -92,10 +92,10 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         log = File.read!(log_path)
 
         assert log =~
-                 "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
+                 "pr list --repo chihsuan/symphony --head feature/workpad --state open --json number --jq .[].number"
 
-        assert log =~ "pr close 101 --repo openai/symphony"
-        assert log =~ "pr close 102 --repo openai/symphony"
+        assert log =~ "pr close 101 --repo chihsuan/symphony"
+        assert log =~ "pr close 102 --repo chihsuan/symphony"
       end
     )
   end
@@ -115,9 +115,9 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       log = File.read!(log_path)
 
       assert log =~ "auth status"
-      assert log =~ "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
-      assert log =~ "pr close 101 --repo openai/symphony"
-      assert log =~ "pr close 102 --repo openai/symphony"
+      assert log =~ "pr list --repo chihsuan/symphony --head feature/workpad --state open --json number --jq .[].number"
+      assert log =~ "pr close 101 --repo chihsuan/symphony"
+      assert log =~ "pr close 102 --repo chihsuan/symphony"
 
       {second_output, error_output} =
         capture_task_output(fn ->
@@ -161,8 +161,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         assert error_output =~ "Failed to close PR #102 for branch feature/no-output: exit 17"
         refute error_output =~ "output="
         log = File.read!(log_path)
-        assert log =~ "pr list --repo openai/symphony --head feature/no-output --state open --json number --jq .[].number"
-        assert log =~ "pr close 102 --repo openai/symphony"
+        assert log =~ "pr list --repo chihsuan/symphony --head feature/no-output --state open --json number --jq .[].number"
+        assert log =~ "pr close 102 --repo chihsuan/symphony"
       end
     )
   end
@@ -195,7 +195,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         assert log =~ "auth status"
 
         assert log =~
-                 "pr list --repo openai/symphony --head feature/list-fails --state open --json number --jq .[].number"
+                 "pr list --repo chihsuan/symphony --head feature/list-fails --state open --json number --jq .[].number"
 
         refute log =~ "pr close"
       end
@@ -230,6 +230,50 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         log = File.read!(log_path)
         assert log == ""
         refute log =~ "pr list"
+      end
+    )
+  end
+
+  test "auto-detects repo from `git remote get-url origin`" do
+    with_fake_gh_and_git(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+        printf '101\n'
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "close" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      """
+      #!/bin/sh
+      if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
+        printf 'git@github.com:bobthebuilder/things.git\n'
+        exit 0
+      fi
+
+      printf 'feature/auto-detect\n'
+      exit 0
+      """,
+      fn log_path ->
+        capture_task_output(fn ->
+          BeforeRemove.run([])
+        end)
+
+        log = File.read!(log_path)
+
+        assert log =~ "pr list --repo bobthebuilder/things --head feature/auto-detect"
+        assert log =~ "pr close 101 --repo bobthebuilder/things"
       end
     )
   end

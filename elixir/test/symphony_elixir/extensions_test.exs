@@ -713,6 +713,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Operations Dashboard"
     assert html =~ "Dispatch active"
     assert html =~ "Pause Dispatch"
+    assert html =~ ~s(class="secondary pause-dispatch-button")
     assert html =~ ~s(href="/quality")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-WATCH"
@@ -844,7 +845,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                issue_identifier: "RSM-LIVE-1",
                issue_labels: ["bug"],
                outcome: "pr_opened",
-               status: "success",
+               status: "stopped",
+               error: "agent stopped by orchestrator",
+               error_kind: "failure",
                agent_kind: "codex",
                tokens: %{input_tokens: 30, output_tokens: 20, total_tokens: 50},
                duration_seconds: 90,
@@ -882,6 +885,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Error rate"
     assert html =~ "RSM-LIVE-1"
     refute html =~ "RSM-LIVE-2"
+    assert html =~ "Status"
+    assert html =~ "Stopped"
+    assert html =~ "agent stopped by orchestrator"
+    refute html =~ "failure"
     assert html =~ ~s(name="agent")
     assert html =~ ~s(name="outcome")
     assert html =~ ~s(href="/")

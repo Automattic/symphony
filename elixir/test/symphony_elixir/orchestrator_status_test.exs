@@ -2371,7 +2371,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert plain =~ ~r/No watched issues\r?\n│\s*\r?\n├─ Backoff queue/
   end
 
-  test "status dashboard shows watching PR links when available" do
+  test "status dashboard shows watching PR and Linear links when available" do
     snapshot_data =
       {:ok,
        %{
@@ -2391,12 +2391,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          rate_limits: nil
        }}
 
-    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0, 180)
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
     assert plain =~ "PR / LINEAR URL"
     assert plain =~ "https://github.com/example/repo/pull/42"
-    refute plain =~ "https://linear.app/example/issue/MT-PR"
+    assert plain =~ "https://linear.app/example/issue/MT-PR"
   end
 
   test "status dashboard adds a spacer line before backoff queue when agents are active" do

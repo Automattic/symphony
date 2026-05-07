@@ -80,6 +80,39 @@ button.secondary:hover {
   box-shadow: none;
 }
 
+button.pause-dispatch-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-color: #e5c16c;
+  background: #fff7e8;
+  color: #7a4b00;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+button.pause-dispatch-button::before {
+  content: "";
+  width: 0.56rem;
+  height: 0.78rem;
+  border-radius: 1px;
+  background:
+    linear-gradient(
+      to right,
+      currentColor 0 30%,
+      transparent 30% 58%,
+      currentColor 58% 100%
+    );
+  opacity: 0.86;
+}
+
+button.pause-dispatch-button:hover {
+  border-color: #c98600;
+  background: #fff1d1;
+  color: #623b00;
+}
+
 .danger-button {
   background: var(--danger);
   border-color: var(--danger);
@@ -519,6 +552,12 @@ pre,
   color: var(--danger);
 }
 
+.state-badge-success {
+  background: var(--accent-soft);
+  border-color: rgba(16, 163, 127, 0.18);
+  color: var(--accent-ink);
+}
+
 .issue-id {
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -627,15 +666,18 @@ pre,
 
 .quality-table {
   table-layout: fixed;
-  min-width: 860px;
+  min-width: 980px;
 }
 
-.error-kind-label {
+.quality-reason {
   display: block;
   font-size: 0.72rem;
   color: var(--muted);
   margin-top: 0.15rem;
   letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-copy-btn {

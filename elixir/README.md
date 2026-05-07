@@ -163,6 +163,12 @@ quality_gate:
   clarification_floor: 4        # 4..5 asks Linear clarification questions
   max_clarification_rounds: 2   # then skip until the description is updated
   on_error: pass                # or: skip
+self_review:
+  enabled: false                # opt in to a pre-push LLM self-review
+  provider: anthropic           # or: openai
+  model: claude-haiku-4-5-20251001
+  diff_max_lines: 600
+  max_rounds: 1                 # v1 only supports one correction round
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -320,6 +326,36 @@ quality_gate:
   is stricter — when the LLM call fails, the issue is skipped for the
   cycle and retried on the next poll. In both cases the cache is *not*
   updated on failure, so a transient outage automatically retries.
+
+## Self-review
+
+The optional `self_review` block adds a conservative pre-push LLM gate after
+the agent completes validation and reviews `git diff origin/main..HEAD`.
+It is disabled by default. When enabled, the workflow prompt tells the agent to
+pause before `git push`; Symphony then reviews the committed diff, changed
+paths, commit subjects/bodies, and issue acceptance criteria using the same
+Anthropic/OpenAI provider modules as `quality_gate`.
+
+```yaml
+self_review:
+  enabled: true
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  diff_max_lines: 600
+  max_rounds: 1
+```
+
+- The self-review prompt only permits blocking findings in
+  `acceptance_criteria`, `commit_message`, or `scope_creep`.
+- Style, design, speculative risk, and subjective test-coverage opinions are
+  discarded and cannot block a push.
+- Diffs over `diff_max_lines` are truncated to the first N lines, the gate still
+  runs, and Symphony logs a warning naming the line cap.
+- Malformed LLM output or provider failures fail open as `approve`.
+- On `request_changes`, Symphony injects the findings into one additional
+  agent pass. After the follow-up pass, Symphony prompts the agent to push
+  regardless and includes a `Known limitations from self-review` PR body block
+  when the final non-blocking pass still reports findings.
 
 ## Web dashboard
 

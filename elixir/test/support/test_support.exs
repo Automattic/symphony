@@ -146,6 +146,7 @@ defmodule SymphonyElixir.TestSupport do
           server_port: nil,
           server_host: nil,
           quality_gate: nil,
+          self_review: nil,
           notifications: nil,
           prompt: @workflow_prompt
         ],
@@ -204,6 +205,7 @@ defmodule SymphonyElixir.TestSupport do
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     quality_gate = Keyword.get(config, :quality_gate)
+    self_review = Keyword.get(config, :self_review)
     notifications = Keyword.get(config, :notifications)
     prompt = Keyword.get(config, :prompt)
 
@@ -264,6 +266,7 @@ defmodule SymphonyElixir.TestSupport do
         ),
         server_yaml(server_port, server_host),
         quality_gate_yaml(quality_gate),
+        self_review_yaml(self_review),
         notifications_yaml(notifications),
         "---",
         prompt
@@ -385,6 +388,27 @@ defmodule SymphonyElixir.TestSupport do
     case fields do
       [] -> nil
       lines -> Enum.join(["quality_gate:" | lines], "\n")
+    end
+  end
+
+  defp self_review_yaml(nil), do: nil
+
+  defp self_review_yaml(opts) when is_list(opts) or is_map(opts) do
+    config = map_from(opts)
+
+    fields =
+      [
+        kv("enabled", Map.get(config, :enabled)),
+        kv("provider", Map.get(config, :provider)),
+        kv("model", Map.get(config, :model)),
+        kv("diff_max_lines", Map.get(config, :diff_max_lines)),
+        kv("max_rounds", Map.get(config, :max_rounds))
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case fields do
+      [] -> nil
+      lines -> Enum.join(["self_review:" | lines], "\n")
     end
   end
 

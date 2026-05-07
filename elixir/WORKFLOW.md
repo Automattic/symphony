@@ -72,6 +72,15 @@ agent:
 #   clarification_floor: 4     # optional; scores 4..5 ask clarification
 #   max_clarification_rounds: 2
 #   on_error: pass             # or: skip — behavior when the LLM call fails
+# Optional: run a narrow fresh-context LLM self-review after validation and
+# diff review, before pushing. Disabled by default. Provider API keys are read
+# from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+# self_review:
+#   enabled: false
+#   provider: anthropic
+#   model: claude-haiku-4-5-20251001
+#   diff_max_lines: 600
+#   max_rounds: 1
 # Optional semantic event notifications. Omit the block or keep enabled false
 # for no outbound notification HTTP calls.
 # notifications:
@@ -315,6 +324,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
       - incomplete hunks, half-finished removals, or reverted-only placeholders.
     - Only push after this review is clean.
     - Record `diff reviewed — clean` in the workpad before each push.
+    - If `self_review.enabled: true` is configured in `WORKFLOW.md`, stop before `git push` after validation and diff review are complete. Symphony will run the pre-push self-review and inject the next continuation prompt. Follow that prompt exactly; when instructed to push regardless, proceed even if the self-review still lists known limitations.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
     - Ensure the PR body is reviewer-facing and includes:

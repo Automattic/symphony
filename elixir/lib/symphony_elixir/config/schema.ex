@@ -587,6 +587,47 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule SelfReview do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @type t :: %__MODULE__{}
+
+    @primary_key false
+    @providers ["anthropic", "openai"]
+    @fields [:enabled, :provider, :model, :diff_max_lines, :max_rounds]
+
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:provider, :string, default: "anthropic")
+      field(:model, :string, default: "claude-haiku-4-5-20251001")
+      field(:diff_max_lines, :integer, default: 600)
+      field(:max_rounds, :integer, default: 1)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, @fields, empty_values: [])
+      |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
+      |> validate_number(:diff_max_lines, greater_than: 0)
+      |> validate_number(:max_rounds, equal_to: 1, message: "only supports 1 in v1")
+      |> validate_required_when_enabled()
+    end
+
+    defp validate_required_when_enabled(changeset) do
+      if get_field(changeset, :enabled) do
+        changeset
+        |> validate_required([:provider, :model, :diff_max_lines, :max_rounds],
+          message: "is required when self_review.enabled is true"
+        )
+      else
+        changeset
+      end
+    end
+  end
+
   defmodule Notifications do
     @moduledoc false
     use Ecto.Schema
@@ -689,6 +730,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:pr_review, PrReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:self_review, SelfReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Notifications, on_replace: :update, defaults_to_struct: true)
   end
 
@@ -867,6 +909,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:pr_review, with: &PrReview.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
+    |> cast_embed(:self_review, with: &SelfReview.changeset/2)
     |> cast_embed(:notifications, with: &Notifications.changeset/2)
   end
 

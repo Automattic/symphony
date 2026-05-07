@@ -4,7 +4,17 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue, Notifications, PromptBuilder, PrReviewPoller, Tracker, Workspace}
+
+  alias SymphonyElixir.{
+    Config,
+    Linear.Issue,
+    Notifications,
+    PromptBuilder,
+    PrReviewPoller,
+    SelfReview,
+    Tracker,
+    Workspace
+  }
 
   @type worker_host :: String.t() | nil
 
@@ -113,7 +123,10 @@ defmodule SymphonyElixir.AgentRunner do
         issue: issue,
         codex_update_recipient: codex_update_recipient,
         opts: opts,
-        issue_state_fetcher: issue_state_fetcher
+        issue_state_fetcher: issue_state_fetcher,
+        worker_host: worker_host,
+        self_review: initial_self_review_state(),
+        next_prompt: nil
       }
 
       try do
@@ -133,7 +146,8 @@ defmodule SymphonyElixir.AgentRunner do
       issue_state_fetcher: issue_state_fetcher
     } = run_context
 
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    prompt = run_context.next_prompt || build_turn_prompt(issue, opts, turn_number, max_turns)
+    run_context = %{run_context | next_prompt: nil}
 
     with {:ok, turn_session} <-
            agent_module.run_turn(
@@ -146,15 +160,8 @@ defmodule SymphonyElixir.AgentRunner do
 
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
-
-          do_run_codex_turns(
-            agent_module,
-            app_session,
-            %{run_context | issue: refreshed_issue},
-            turn_number + 1,
-            max_turns
-          )
+          run_context = %{run_context | issue: refreshed_issue}
+          continue_active_issue(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns)
 
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
@@ -168,6 +175,130 @@ defmodule SymphonyElixir.AgentRunner do
           {:error, reason}
       end
     end
+  end
+
+  defp continue_active_issue(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns) do
+    case maybe_self_review_next_turn(run_context, turn_number, max_turns) do
+      {:self_review_turn, next_context} ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} with self-review guidance turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(agent_module, app_session, next_context, turn_number + 1, max_turns)
+
+      {:normal_continuation, next_context} ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(
+          agent_module,
+          app_session,
+          next_context,
+          turn_number + 1,
+          max_turns
+        )
+
+      :normal_continuation ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(
+          agent_module,
+          app_session,
+          run_context,
+          turn_number + 1,
+          max_turns
+        )
+    end
+  end
+
+  defp initial_self_review_state, do: %{phase: :not_run, request_change_rounds: 0}
+
+  defp maybe_self_review_next_turn(run_context, turn_number, max_turns) do
+    config = Config.settings!().self_review
+
+    if self_review_enabled?(config) do
+      self_review_next_turn(run_context, config, turn_number, max_turns)
+    else
+      :normal_continuation
+    end
+  end
+
+  defp self_review_enabled?(%SymphonyElixir.Config.Schema.SelfReview{enabled: true}), do: true
+  defp self_review_enabled?(_config), do: false
+
+  defp self_review_next_turn(%{self_review: %{phase: :not_run}} = run_context, config, _turn_number, _max_turns) do
+    result = evaluate_self_review(run_context, config)
+
+    cond do
+      SelfReview.request_changes?(result) and correction_round_available?(run_context, config) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{
+               phase: :awaiting_correction,
+               findings: result.findings,
+               request_change_rounds: next_request_change_round(run_context)
+             },
+             next_prompt: SelfReview.request_changes_prompt(result)
+         }}
+
+      SelfReview.fail_open?(result) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{phase: :complete, request_change_rounds: request_change_rounds(run_context)},
+             next_prompt: SelfReview.fail_open_prompt(result)
+         }}
+
+      SelfReview.request_changes?(result) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{
+               phase: :complete,
+               final_findings: result.findings,
+               request_change_rounds: request_change_rounds(run_context)
+             },
+             next_prompt: SelfReview.push_prompt(result)
+         }}
+
+      true ->
+        {:normal_continuation,
+         %{
+           run_context
+           | self_review: %{phase: :complete, request_change_rounds: request_change_rounds(run_context)}
+         }}
+    end
+  end
+
+  defp self_review_next_turn(%{self_review: %{phase: :awaiting_correction}} = run_context, config, _turn_number, _max_turns) do
+    result = evaluate_self_review(run_context, config)
+
+    {:self_review_turn,
+     %{
+       run_context
+       | self_review: %{
+           phase: :complete,
+           final_findings: result.findings,
+           request_change_rounds: request_change_rounds(run_context)
+         },
+         next_prompt: SelfReview.push_prompt(result)
+     }}
+  end
+
+  defp self_review_next_turn(_run_context, _config, _turn_number, _max_turns), do: :normal_continuation
+
+  defp correction_round_available?(run_context, config) do
+    request_change_rounds(run_context) < config.max_rounds
+  end
+
+  defp next_request_change_round(run_context), do: request_change_rounds(run_context) + 1
+
+  defp request_change_rounds(%{self_review: %{request_change_rounds: rounds}}) when is_integer(rounds), do: rounds
+
+  defp evaluate_self_review(%{issue: issue, workspace: workspace, opts: opts, worker_host: worker_host}, config) do
+    provider_module = Keyword.get(opts, :self_review_provider_module)
+    review_opts = [worker_host: worker_host]
+    review_opts = if provider_module, do: Keyword.put(review_opts, :provider_module, provider_module), else: review_opts
+
+    SelfReview.evaluate(issue, workspace, config, review_opts)
   end
 
   defp agent_module do

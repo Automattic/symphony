@@ -2,6 +2,18 @@ defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
   alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
 
+  defmodule SelfReviewSequenceProvider do
+    def review(request, _settings) do
+      recipient = Application.fetch_env!(:symphony_elixir, :agent_runner_self_review_recipient)
+      count = Application.get_env(:symphony_elixir, :agent_runner_self_review_count, 0) + 1
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_count, count)
+      send(recipient, {:self_review_call, count, request})
+
+      responses = Application.fetch_env!(:symphony_elixir, :agent_runner_self_review_responses)
+      {:ok, Enum.at(responses, count - 1) || List.last(responses)}
+    end
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -1858,6 +1870,286 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner injects self-review findings once and then pushes with known limitations" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-self-review-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+      System.cmd("git", ["-C", template_repo, "update-ref", "refs/remotes/origin/main", "HEAD"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEX_SELF_REVIEW_TRACE:-/tmp/codex-self-review.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-self-review"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-2"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          6)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-3"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          7)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-4"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE", trace_file)
+      System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_recipient, self())
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_count, 0)
+
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_responses, [
+        ~s({"verdict":"request_changes","findings":[{"severity":"blocking","category":"acceptance_criteria","description":"The diff does not implement the configured gate.","evidence":"self_review:"}]}),
+        ~s({"verdict":"request_changes","findings":[{"severity":"blocking","category":"scope_creep","description":"The final diff still changes unrelated files.","evidence":"diff --git a/unrelated"}]})
+      ])
+
+      on_exit(fn ->
+        System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
+        System.delete_env("ANTHROPIC_API_KEY")
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_recipient)
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_count)
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_responses)
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: template_repo,
+        workspace_fetch_before_dispatch: false,
+        agent_command: "#{codex_binary} app-server",
+        max_turns: 4,
+        self_review: %{
+          enabled: true,
+          provider: "anthropic",
+          model: "claude-haiku-4-5-20251001",
+          diff_max_lines: 600,
+          max_rounds: 1
+        },
+        prompt: "Initial prompt {{ issue.identifier }}"
+      )
+
+      parent = self()
+
+      state_fetcher = fn [_issue_id] ->
+        attempt = Process.get(:agent_self_review_fetch_count, 0) + 1
+        Process.put(:agent_self_review_fetch_count, attempt)
+        send(parent, {:issue_state_fetch, attempt})
+
+        state = if attempt < 4, do: "In Progress", else: "Done"
+
+        {:ok,
+         [
+           %Issue{
+             id: "issue-self-review-runner",
+             identifier: "MT-SR-RUNNER",
+             title: "Self-review runner",
+             description: "Ship the gate",
+             state: state
+           }
+         ]}
+      end
+
+      issue = %Issue{
+        id: "issue-self-review-runner",
+        identifier: "MT-SR-RUNNER",
+        title: "Self-review runner",
+        description: "Ship the gate",
+        state: "In Progress"
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: state_fetcher,
+                 issue_enricher: no_op_issue_enricher(),
+                 self_review_provider_module: SelfReviewSequenceProvider
+               )
+
+      assert_receive {:self_review_call, 1, _request}
+      assert_receive {:self_review_call, 2, _request}
+      refute_receive {:self_review_call, 3, _request}, 50
+
+      assert_receive {:issue_state_fetch, 1}
+      assert_receive {:issue_state_fetch, 2}
+      assert_receive {:issue_state_fetch, 3}
+      assert_receive {:issue_state_fetch, 4}
+
+      turn_texts =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.map(fn payload ->
+          get_in(payload, ["params", "input"])
+          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+        end)
+
+      assert length(turn_texts) == 4
+      assert Enum.at(turn_texts, 0) =~ "Initial prompt MT-SR-RUNNER"
+      assert Enum.at(turn_texts, 1) =~ "Pre-push self-review requested changes"
+      assert Enum.at(turn_texts, 1) =~ "The diff does not implement the configured gate."
+      assert Enum.at(turn_texts, 2) =~ "Push regardless now"
+      assert Enum.at(turn_texts, 2) =~ "Known limitations from self-review"
+      assert Enum.at(turn_texts, 2) =~ "The final diff still changes unrelated files."
+      assert Enum.at(turn_texts, 3) =~ "Continuation guidance:"
+      refute Enum.at(turn_texts, 3) =~ "Pre-push self-review"
+    after
+      System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner treats happy-path self-review approval as normal continuation" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-self-review-approve-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = self_review_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_self_review_fake_codex!(codex_binary)
+      System.put_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE", trace_file)
+      System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_recipient, self())
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_count, 0)
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_responses, [~s({"verdict":"approve","findings":[]})])
+
+      on_exit(fn ->
+        System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
+        System.delete_env("ANTHROPIC_API_KEY")
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_recipient)
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_count)
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_responses)
+      end)
+
+      write_self_review_workflow!(codex_binary, max_turns: 2)
+
+      assert :ok =
+               AgentRunner.run(self_review_issue(), nil,
+                 workspace_path: repo,
+                 issue_state_fetcher: self_review_state_fetcher(self(), 2),
+                 issue_enricher: no_op_issue_enricher(),
+                 self_review_provider_module: SelfReviewSequenceProvider
+               )
+
+      assert_receive {:self_review_call, 1, _request}
+      refute_receive {:self_review_call, 2, _request}, 50
+
+      assert_receive {:issue_state_fetch, 1}
+      assert_receive {:issue_state_fetch, 2}
+
+      turn_texts = self_review_turn_texts!(trace_file)
+
+      assert length(turn_texts) == 2
+      assert Enum.at(turn_texts, 0) =~ "Initial prompt MT-SR-RUNNER"
+      assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
+      refute Enum.at(turn_texts, 1) =~ "Pre-push self-review approved"
+      refute Enum.at(turn_texts, 1) =~ "Known limitations from self-review"
+    after
+      System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner surfaces sanitized fail-open self-review limitations" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-self-review-fail-open-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = self_review_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_self_review_fake_codex!(codex_binary)
+      System.put_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE", trace_file)
+      System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_recipient, self())
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_count, 0)
+      Application.put_env(:symphony_elixir, :agent_runner_self_review_responses, ["not json"])
+
+      on_exit(fn ->
+        System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
+        System.delete_env("ANTHROPIC_API_KEY")
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_recipient)
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_count)
+        Application.delete_env(:symphony_elixir, :agent_runner_self_review_responses)
+      end)
+
+      write_self_review_workflow!(codex_binary, max_turns: 2)
+
+      assert :ok =
+               AgentRunner.run(self_review_issue(), nil,
+                 workspace_path: repo,
+                 issue_state_fetcher: self_review_state_fetcher(self(), 2),
+                 issue_enricher: no_op_issue_enricher(),
+                 self_review_provider_module: SelfReviewSequenceProvider
+               )
+
+      assert_receive {:self_review_call, 1, _request}
+      refute_receive {:self_review_call, 2, _request}, 50
+
+      turn_texts = self_review_turn_texts!(trace_file)
+
+      assert length(turn_texts) == 2
+      assert Enum.at(turn_texts, 1) =~ "Pre-push self-review did not complete"
+      assert Enum.at(turn_texts, 1) =~ "Known limitations from self-review"
+      assert Enum.at(turn_texts, 1) =~ "Self-review did not run: parse_error."
+      refute Enum.at(turn_texts, 1) =~ "not json"
+    after
+      System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner stops continuing once agent.max_turns is reached" do
     test_root =
       Path.join(
@@ -2331,5 +2623,113 @@ defmodule SymphonyElixir.CoreTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp self_review_repo!(test_root) do
+    repo = Path.join(test_root, "source")
+
+    File.mkdir_p!(repo)
+    File.write!(Path.join(repo, "README.md"), "# test")
+    System.cmd("git", ["-C", repo, "init", "-b", "main"])
+    System.cmd("git", ["-C", repo, "config", "user.name", "Test User"])
+    System.cmd("git", ["-C", repo, "config", "user.email", "test@example.com"])
+    System.cmd("git", ["-C", repo, "add", "README.md"])
+    System.cmd("git", ["-C", repo, "commit", "-m", "initial"])
+    System.cmd("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", "HEAD"])
+
+    repo
+  end
+
+  defp write_self_review_fake_codex!(codex_binary) do
+    File.write!(codex_binary, """
+    #!/bin/sh
+    trace_file="${SYMP_TEST_CODEX_SELF_REVIEW_TRACE:-/tmp/codex-self-review.trace}"
+    count=0
+
+    while IFS= read -r line; do
+      count=$((count + 1))
+      printf 'JSON:%s\\n' "$line" >> "$trace_file"
+      case "$count" in
+        1)
+          printf '%s\\n' '{"id":1,"result":{}}'
+          ;;
+        2)
+          ;;
+        3)
+          printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-self-review"}}}'
+          ;;
+        4)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-1"}}}'
+          printf '%s\\n' '{"method":"turn/completed"}'
+          ;;
+        5)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-2"}}}'
+          printf '%s\\n' '{"method":"turn/completed"}'
+          ;;
+        6)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-3"}}}'
+          printf '%s\\n' '{"method":"turn/completed"}'
+          ;;
+        7)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-4"}}}'
+          printf '%s\\n' '{"method":"turn/completed"}'
+          ;;
+      esac
+    done
+    """)
+
+    File.chmod!(codex_binary, 0o755)
+  end
+
+  defp write_self_review_workflow!(codex_binary, opts) do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.dirname(codex_binary),
+      agent_command: "#{codex_binary} app-server",
+      max_turns: Keyword.fetch!(opts, :max_turns),
+      self_review: %{
+        enabled: true,
+        provider: "anthropic",
+        model: "claude-haiku-4-5-20251001",
+        diff_max_lines: 600,
+        max_rounds: 1
+      },
+      prompt: Keyword.get(opts, :prompt, "Initial prompt {{ issue.identifier }}")
+    )
+  end
+
+  defp self_review_state_fetcher(parent, terminal_attempt) do
+    fn [_issue_id] ->
+      attempt = Process.get(:agent_self_review_fetch_count, 0) + 1
+      Process.put(:agent_self_review_fetch_count, attempt)
+      send(parent, {:issue_state_fetch, attempt})
+
+      state = if attempt < terminal_attempt, do: "In Progress", else: "Done"
+
+      {:ok, [self_review_issue(state)]}
+    end
+  end
+
+  defp self_review_issue(state \\ "In Progress") do
+    %Issue{
+      id: "issue-self-review-runner",
+      identifier: "MT-SR-RUNNER",
+      title: "Self-review runner",
+      description: "Ship the gate",
+      state: state
+    }
+  end
+
+  defp self_review_turn_texts!(trace_file) do
+    trace_file
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+    |> Enum.map(&String.trim_leading(&1, "JSON:"))
+    |> Enum.map(&Jason.decode!/1)
+    |> Enum.filter(&(&1["method"] == "turn/start"))
+    |> Enum.map(fn payload ->
+      get_in(payload, ["params", "input"])
+      |> Enum.map_join("\n", &Map.get(&1, "text", ""))
+    end)
   end
 end

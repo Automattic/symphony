@@ -15,13 +15,31 @@ defmodule SymphonyElixir.QualityGate.OpenAI do
   @impl true
   def score(issue, %{model: model, api_key: api_key} = settings)
       when is_binary(model) and is_binary(api_key) do
+    %{
+      system: Prompt.system_instructions(),
+      user: Prompt.user_prompt(issue),
+      max_tokens: @default_max_tokens
+    }
+    |> review(settings)
+    |> case do
+      {:ok, text} -> Response.parse(text)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def score(_issue, _settings), do: {:error, :missing_provider_credentials}
+
+  @spec review(map(), SymphonyElixir.QualityGate.Provider.settings()) ::
+          {:ok, String.t()} | {:error, term()}
+  def review(%{system: system, user: user} = request, %{model: model, api_key: api_key} = settings)
+      when is_binary(system) and is_binary(user) and is_binary(model) and is_binary(api_key) do
     payload = %{
       "model" => model,
-      "max_tokens" => @default_max_tokens,
+      "max_tokens" => Map.get(request, :max_tokens, @default_max_tokens),
       "response_format" => %{"type" => "json_object"},
       "messages" => [
-        %{"role" => "system", "content" => Prompt.system_instructions()},
-        %{"role" => "user", "content" => Prompt.user_prompt(issue)}
+        %{"role" => "system", "content" => system},
+        %{"role" => "user", "content" => user}
       ]
     }
 
@@ -34,13 +52,13 @@ defmodule SymphonyElixir.QualityGate.OpenAI do
     request_fun = Map.get(settings, :request_fun) || (&default_post/3)
 
     case request_fun.(payload, headers, timeout_ms) do
-      {:ok, %{status: 200, body: body}} -> Response.parse(extract_text(body))
+      {:ok, %{status: 200, body: body}} -> {:ok, extract_text(body)}
       {:ok, %{status: status, body: body}} -> {:error, {:provider_http_status, status, body}}
       {:error, reason} -> {:error, {:provider_request_failed, reason}}
     end
   end
 
-  def score(_issue, _settings), do: {:error, :missing_provider_credentials}
+  def review(_request, _settings), do: {:error, :missing_provider_credentials}
 
   defp default_post(payload, headers, timeout_ms) do
     Req.post(@endpoint,

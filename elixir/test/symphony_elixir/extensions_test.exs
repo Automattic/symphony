@@ -1053,6 +1053,24 @@ defmodule SymphonyElixir.ExtensionsTest do
       timestamp: DateTime.utc_now()
     }
 
+    buffered_progress_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/commandExecution/outputDelta",
+        "params" => %{"outputDelta" => "."}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    buffered_progress_continuation_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/commandExecution/outputDelta",
+        "params" => %{"outputDelta" => "...."}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
     snapshot =
       update_in(static_snapshot().running, fn [running] ->
         [
@@ -1060,9 +1078,11 @@ defmodule SymphonyElixir.ExtensionsTest do
           |> Map.put(:transcript_buffer, [
             buffered_agent_event,
             buffered_tool_call_event,
+            buffered_progress_event,
+            buffered_progress_continuation_event,
             buffered_tool_result_event
           ])
-          |> Map.put(:transcript_buffer_size, 3)
+          |> Map.put(:transcript_buffer_size, 5)
         ]
       end)
 
@@ -1094,6 +1114,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "linear_graphql"
     assert html =~ "transcript-event-tool-call"
     assert html =~ "Tool result"
+    assert html =~ "command output streaming: 5 progress dots"
     assert html =~ "buffered command output"
     assert html =~ "transcript-event-tool-result"
 
@@ -1112,6 +1133,31 @@ defmodule SymphonyElixir.ExtensionsTest do
       live_html = render(view)
 
       live_html =~ "mix test" and live_html =~ "transcript-event-tool-call"
+    end)
+
+    live_progress_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/commandExecution/outputDelta",
+        "params" => %{"outputDelta" => "."}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    live_progress_continuation_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/commandExecution/outputDelta",
+        "params" => %{"outputDelta" => "."}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-http", live_progress_event)
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-http", live_progress_continuation_event)
+
+    assert_eventually(fn ->
+      render(view) =~ "command output streaming: 2 progress dots"
     end)
   end
 

@@ -489,6 +489,12 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
+In sandboxed Codex workspaces, prefer a writable Hex cache location for the full gate:
+
+```bash
+HEX_HOME=/private/tmp/symphony-hex-home make all
+```
+
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
 resources and launch a real `codex app-server` session:
 

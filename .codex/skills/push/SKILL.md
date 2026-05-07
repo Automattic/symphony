@@ -26,7 +26,9 @@ description:
 ## Steps
 
 1. Identify current branch and confirm remote state.
-2. Run local validation (`make -C elixir all`) before pushing.
+2. Run local validation before pushing. In sandboxed Codex workspaces, prefer
+   `HEX_HOME=/private/tmp/symphony-hex-home make -C elixir all` so Hex and
+   Dialyzer cache writes stay in a writable location.
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
 4. If push is not clean/rejected:
@@ -62,7 +64,7 @@ description:
 branch=$(git branch --show-current)
 
 # Minimal validation gate
-make -C elixir all
+HEX_HOME=/private/tmp/symphony-hex-home make -C elixir all
 
 # Initial push: respect the current origin remote.
 git push -u origin HEAD

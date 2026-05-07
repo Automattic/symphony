@@ -85,9 +85,9 @@ Optional flags:
 - `--port` pins the Phoenix observability service to a specific port
 
 Symphony also keeps an OTP-native durable run store next to the configured log file
-(`run_store/`). It persists run history, retry queue entries, session metadata, and aggregate token
-totals so retry backoff and observability data survive process restarts. The same store persists
-the operator dispatch pause flag, including its reason and timestamp.
+(`run_store/`). It persists run history, retry queue entries, session metadata, captured learnings,
+and aggregate token totals so retry backoff and observability data survive process restarts. The
+same store persists the operator dispatch pause flag, including its reason and timestamp.
 
 ## Operator Controls
 
@@ -148,6 +148,14 @@ moves the Linear issue back to `In Progress`, and injects the CI failure context
 agent prompt. After `ci.max_retries` dispatched attempts, Symphony transitions the issue to
 `ci.escalation_state` and emits a CI escalation notification event.
 
+Run learnings are controlled by the optional `learnings` block and are disabled by default. When
+`learnings.enabled: true` and `pr_review.mode: polling`, a merged tracked PR triggers one LLM
+reflection call through the same Anthropic/OpenAI provider modules used by the quality gate. Valid
+JSON responses write up to `max_per_run` records with an evidence quote into the durable run store,
+pruned by `max_total_per_repo` per repository. Phase 1 is capture-only: learnings appear read-only
+at `/learnings` and are not injected into agent prompts. Provider API keys are read from
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+
 Minimal example:
 
 ```md
@@ -196,6 +204,12 @@ ci:
   # flaky_retry: true
   # max_retries: 3
   # escalation_state: In Review
+learnings:
+  enabled: false
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  max_total_per_repo: 500
+  max_per_run: 3
 notifications:
   enabled: false
   # redact_titles: true

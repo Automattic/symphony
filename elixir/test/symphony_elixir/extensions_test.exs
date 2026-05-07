@@ -888,6 +888,54 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "/api/v1/runs?export=json"
   end
 
+  test "learnings liveview renders records and filters by repo and tag" do
+    now = DateTime.utc_now()
+
+    assert :ok =
+             RunStore.put_learnings(
+               [
+                 %{
+                   id: "learning-live-1",
+                   repo: "github.com/example/repo",
+                   rule: "Prefer existing dashboard helpers.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Prefer the existing helper.",
+                   evidence_issue_identifier: "RSM-LIVE-1",
+                   evidence_pr_number: 12,
+                   evidence_run_id: "run-live-1",
+                   created_at: now
+                 },
+                 %{
+                   id: "learning-live-2",
+                   repo: "github.com/other/repo",
+                   rule: "Keep unrelated records filterable.",
+                   tags: ["docs", "workflow-config"],
+                   evidence_quote: "Update docs too.",
+                   evidence_issue_identifier: "RSM-LIVE-2",
+                   evidence_pr_number: 13,
+                   evidence_run_id: "run-live-2",
+                   created_at: DateTime.add(now, -60, :second)
+                 }
+               ],
+               500
+             )
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :LearningsLiveOrchestrator), snapshot_timeout_ms: 5)
+
+    {:ok, _view, html} = live(build_conn(), "/learnings?repo=github.com/example/repo&tag=dashboard")
+
+    assert html =~ "Learnings"
+    assert html =~ "Prefer existing dashboard helpers."
+    assert html =~ "Prefer the existing helper."
+    assert html =~ "github.com/example/repo"
+    assert html =~ ~s(href="https://github.com/example/repo/pull/12" target="_blank")
+    assert html =~ ~s(href="https://linear.app/a8c/issue/RSM-LIVE-1" target="_blank")
+    assert html =~ ~s(name="repo")
+    assert html =~ ~s(name="tag")
+    assert html =~ ~s(href="/quality")
+    refute html =~ "Keep unrelated records filterable."
+  end
+
   test "dashboard liveview omits watching PR link when pull request URL is unavailable" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardNoPrOrchestrator)
 

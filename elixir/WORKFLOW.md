@@ -85,6 +85,16 @@ agent:
 #   clarification_floor: 4     # optional; scores 4..5 ask clarification
 #   max_clarification_rounds: 2
 #   on_error: pass             # or: skip — behavior when the LLM call fails
+# Optional: after a tracked PR is merged in polling mode, run one capture-only
+# LLM reflection and store 0-3 repo-specific learnings with evidence quotes.
+# Captured records are visible at /learnings but are not injected into prompts.
+# Provider API keys are read from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+# learnings:
+#   enabled: false
+#   provider: anthropic
+#   model: claude-haiku-4-5-20251001
+#   max_total_per_repo: 500
+#   max_per_run: 3
 # Optional: run a narrow fresh-context LLM self-review after validation and
 # diff review, before pushing. Disabled by default. Provider API keys are read
 # from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.

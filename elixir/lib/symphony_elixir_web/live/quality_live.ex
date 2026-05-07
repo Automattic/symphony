@@ -38,6 +38,7 @@ defmodule SymphonyElixirWeb.QualityLive do
 
           <div class="status-stack">
             <a class="action-pill hero-action" href="/">Dashboard</a>
+            <a class="action-pill hero-action" href="/learnings">Learnings</a>
             <a class="action-pill hero-action" href={runs_export_href(@payload.filters)}>JSON</a>
           </div>
         </div>

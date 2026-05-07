@@ -18,6 +18,9 @@ defmodule SymphonyElixir.GitHub.PullRequest do
 
   @type activity :: %{
           pr_url: String.t(),
+          pr_number: non_neg_integer() | nil,
+          pr_title: String.t() | nil,
+          pr_description: String.t() | nil,
           state: String.t() | nil,
           review_decision: String.t() | nil,
           latest_activity_at: DateTime.t() | nil,
@@ -151,6 +154,9 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       {:ok,
        %{
          pr_url: Map.get(pr, "url") || pr_url,
+         pr_number: Map.get(pr, "number"),
+         pr_title: Map.get(pr, "title"),
+         pr_description: Map.get(pr, "body"),
          state: Map.get(pr, "state"),
          review_decision: Map.get(pr, "reviewDecision"),
          latest_activity_at: latest_activity_at,
@@ -192,7 +198,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       "view",
       pr_url,
       "--json",
-      "number,state,reviewDecision,updatedAt,comments,reviews,title,url"
+      "number,state,reviewDecision,updatedAt,comments,reviews,title,body,url"
     ]
 
     with {:ok, output} <- run_gh(args, opts),

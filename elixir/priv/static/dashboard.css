@@ -424,6 +424,10 @@ pre,
   min-width: 820px;
 }
 
+.learnings-table {
+  min-width: 980px;
+}
+
 .data-table th {
   padding: 0 0.5rem 0.75rem 0;
   text-align: left;
@@ -547,6 +551,31 @@ pre,
 
 .links-cell {
   white-space: normal;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card-muted);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.learning-evidence {
+  margin: 0;
+  color: #353740;
+  line-height: 1.45;
 }
 
 .action-pill {

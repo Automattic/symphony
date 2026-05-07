@@ -104,6 +104,7 @@ defmodule SymphonyElixir.TestSupport do
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
+          watchdog: nil,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           workspace_strategy: "clone",
           workspace_repo: nil,
@@ -165,6 +166,7 @@ defmodule SymphonyElixir.TestSupport do
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
+    watchdog = Keyword.get(config, :watchdog)
     workspace_root = Keyword.get(config, :workspace_root)
     workspace_strategy = Keyword.get(config, :workspace_strategy)
     workspace_repo = Keyword.get(config, :workspace_repo)
@@ -228,6 +230,7 @@ defmodule SymphonyElixir.TestSupport do
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
+        watchdog_yaml(watchdog),
         "workspace:",
         "  root: #{yaml_value(workspace_root)}",
         "  strategy: #{yaml_value(workspace_strategy)}",
@@ -334,6 +337,20 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents_per_host: #{yaml_value(max_concurrent_agents_per_host)}"
     ]
     |> Enum.reject(&(&1 in [nil, false]))
+    |> Enum.join("\n")
+  end
+
+  defp watchdog_yaml(nil), do: nil
+
+  defp watchdog_yaml(opts) when is_list(opts) or is_map(opts) do
+    config = Map.new(opts)
+
+    [
+      "watchdog:",
+      "  enabled: #{yaml_value(Map.get(config, :enabled))}",
+      "  tick_interval_ms: #{yaml_value(Map.get(config, :tick_interval_ms))}",
+      "  no_progress_threshold_ms: #{yaml_value(Map.get(config, :no_progress_threshold_ms))}"
+    ]
     |> Enum.join("\n")
   end
 

@@ -151,6 +151,7 @@ defmodule SymphonyElixir.NotificationsTest do
              "pr_opened",
              "awaiting_review",
              "run_failed",
+             "run_stuck",
              "issue_completed",
              "budget_exceeded",
              "reviewer_commented",
@@ -330,6 +331,7 @@ defmodule SymphonyElixir.NotificationsTest do
     for {event_name, expected_title} <- [
           {"pr_opened", "PR opened"},
           {"awaiting_review", "Awaiting review"},
+          {"run_stuck", "Run stuck"},
           {"issue_completed", "Issue completed"},
           {"budget_exceeded", "Budget exceeded"},
           {"ci_failed", "CI failed"},

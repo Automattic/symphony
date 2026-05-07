@@ -1436,6 +1436,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.agent.read_timeout_ms == 5_000
     assert config.agent.stall_timeout_ms == 300_000
     assert config.agent.command_timeout_ms == 600_000
+    assert config.watchdog.enabled
+    assert config.watchdog.tick_interval_ms == 60_000
+    assert config.watchdog.no_progress_threshold_ms == 600_000
     assert config.server.port == nil
     assert Config.server_port() == 0
 
@@ -1567,6 +1570,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), agent_command_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "agent.command_timeout_ms"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      watchdog: %{enabled: true, tick_interval_ms: 0, no_progress_threshold_ms: "bad"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "watchdog.tick_interval_ms"
+    assert message =~ "watchdog.no_progress_threshold_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), workspace_strategy: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()

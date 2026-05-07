@@ -12,6 +12,7 @@ defmodule SymphonyElixir.RunStore do
   @retry_table :symphony_run_store_retries
   @totals_table :symphony_run_store_totals
   @pr_review_table :symphony_run_store_pr_reviews
+  @ci_check_table :symphony_run_store_ci_checks
   @eval_logs_table :symphony_run_store_eval_logs
   @pause_table :symphony_run_store_pause
   @eval_log_attributes [:eval_id, :outcome, :agent_kind, :issue_label, :date, :record]
@@ -21,6 +22,7 @@ defmodule SymphonyElixir.RunStore do
     {@retry_table, [:issue_id, :record], []},
     {@totals_table, [:key, :record], []},
     {@pr_review_table, [:issue_id, :record], []},
+    {@ci_check_table, [:issue_id, :record], []},
     {@pause_table, [:key, :record], []},
     {@eval_logs_table, @eval_log_attributes, [type: :bag, index: @eval_log_indexes]}
   ]
@@ -225,6 +227,51 @@ defmodule SymphonyElixir.RunStore do
     with :ok <- ensure_started() do
       transaction(fn ->
         @pr_review_table
+        |> all_records()
+        |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :updated_at)), :desc)
+      end)
+    end
+  end
+
+  @spec put_ci_check(map()) :: :ok | {:error, term()}
+  def put_ci_check(%{issue_id: issue_id} = record) when is_binary(issue_id) do
+    with :ok <- ensure_started() do
+      durable_transaction(fn ->
+        :mnesia.write({@ci_check_table, issue_id, normalize_record(record)})
+        :ok
+      end)
+    end
+  end
+
+  def put_ci_check(_record), do: {:error, :invalid_ci_check_record}
+
+  @spec update_ci_check(String.t(), map()) :: :ok | {:error, term()}
+  def update_ci_check(issue_id, attrs) when is_binary(issue_id) and is_map(attrs) do
+    with :ok <- ensure_started() do
+      update_ci_check_record(issue_id, attrs)
+      |> unwrap_nested_error()
+    end
+  end
+
+  def update_ci_check(_issue_id, _attrs), do: {:error, :invalid_ci_check_record}
+
+  @spec delete_ci_check(String.t()) :: :ok | {:error, term()}
+  def delete_ci_check(issue_id) when is_binary(issue_id) do
+    with :ok <- ensure_started() do
+      durable_transaction(fn ->
+        :mnesia.delete({@ci_check_table, issue_id})
+        :ok
+      end)
+    end
+  end
+
+  def delete_ci_check(_issue_id), do: {:error, :invalid_issue_id}
+
+  @spec list_ci_checks() :: [map()] | {:error, term()}
+  def list_ci_checks do
+    with :ok <- ensure_started() do
+      transaction(fn ->
+        @ci_check_table
         |> all_records()
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :updated_at)), :desc)
       end)
@@ -480,6 +527,19 @@ defmodule SymphonyElixir.RunStore do
 
         [] ->
           {:error, :pr_review_not_found}
+      end
+    end)
+  end
+
+  defp update_ci_check_record(issue_id, attrs) do
+    durable_transaction(fn ->
+      case :mnesia.read(@ci_check_table, issue_id) do
+        [{@ci_check_table, ^issue_id, record}] ->
+          :mnesia.write({@ci_check_table, issue_id, Map.merge(record, normalize_record(attrs))})
+          :ok
+
+        [] ->
+          {:error, :ci_check_not_found}
       end
     end)
   end

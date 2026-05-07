@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Config.Schema.Ci, as: CiConfig
   alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
 
   defmodule SelfReviewSequenceProvider do
@@ -38,6 +39,12 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.bot_users == []
     assert config.pr_review.auto_reply == false
     assert config.pr_review.auto_request_review == false
+    assert config.ci.enabled == false
+    assert config.ci.poll_interval_ms == nil
+    assert config.ci.log_excerpt_lines == 200
+    assert config.ci.flaky_retry == true
+    assert config.ci.max_retries == 3
+    assert config.ci.escalation_state == "In Review"
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -50,6 +57,36 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      ci: %{
+        enabled: true,
+        poll_interval_ms: 15_000,
+        log_excerpt_lines: 50,
+        flaky_retry: false,
+        max_retries: 1,
+        escalation_state: "Blocked"
+      }
+    )
+
+    assert %{
+             enabled: true,
+             poll_interval_ms: 15_000,
+             log_excerpt_lines: 50,
+             flaky_retry: false,
+             max_retries: 1,
+             escalation_state: "Blocked"
+           } = Config.settings!().ci
+
+    write_workflow_file!(Workflow.workflow_file_path(), ci: %{escalation_state: ""})
+    assert Config.settings!().ci.escalation_state == "In Review"
+
+    ci_config =
+      %CiConfig{}
+      |> CiConfig.changeset(%{escalation_state: nil})
+      |> Ecto.Changeset.apply_changes()
+
+    assert ci_config.escalation_state == "In Review"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -419,6 +456,7 @@ defmodule SymphonyElixir.CoreTest do
     tracker_children = SymphonyElixir.Application.child_specs_for_runtime(%{})
 
     refute SymphonyElixir.PrReviewPoller in tracker_children
+    refute SymphonyElixir.CiPoller in tracker_children
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -429,6 +467,16 @@ defmodule SymphonyElixir.CoreTest do
 
     assert SymphonyElixir.Orchestrator in polling_children
     assert SymphonyElixir.PrReviewPoller in polling_children
+    refute SymphonyElixir.CiPoller in polling_children
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      ci: %{enabled: true}
+    )
+
+    ci_children = SymphonyElixir.Application.child_specs_for_runtime(%{})
+    assert SymphonyElixir.CiPoller in ci_children
   end
 
   test "linear issue state reconciliation fetch with no running issues is a no-op" do
@@ -1234,6 +1282,56 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Reviewer:\nPR-level note."
 
     assert PromptBuilder.build_prompt(issue, reviewer_comments: :not_a_list) == "Ticket MT-704"
+  end
+
+  test "prompt builder normalizes sparse ci failure context" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "MT-705",
+      title: "Sparse CI failure",
+      description: "Prompt builder should tolerate sparse CI failure context",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-705",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        ci_failure: %{
+          failed_checks: "Unit Tests",
+          commit_sha: "",
+          log_excerpt: ""
+        }
+      )
+
+    assert prompt =~ "Ticket MT-705"
+    assert prompt =~ "Failed checks: unknown"
+    assert prompt =~ "Commit SHA: unknown"
+    assert prompt =~ "No failed log output was available."
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        ci_failure: %{
+          failed_checks: ["Unit Tests", %{name: "Lint"}, %{name: ""}, 123],
+          commit_sha: "abc123",
+          log_excerpt: "mix test failed"
+        }
+      )
+
+    assert prompt =~ "Failed checks: Unit Tests, Lint"
+    assert prompt =~ "Commit SHA: abc123"
+    assert prompt =~ "mix test failed"
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        ci_failure: %{
+          failed_checks: [%{name: "Unit Tests"}],
+          log_excerpt: "mix test failed"
+        }
+      )
+
+    assert prompt =~ "Commit SHA: unknown"
   end
 
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do

@@ -26,6 +26,8 @@ defmodule SymphonyElixir.TestSupport do
         only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
 
       setup do
+        SymphonyElixir.TestSupport.ensure_application_started()
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -71,23 +73,41 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
-  def stop_default_http_server do
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
-           {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
-           _child -> false
-         end) do
-      {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
-
-        if Process.alive?(pid) do
-          Process.exit(pid, :normal)
-        end
-
+  def ensure_application_started do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) ->
         :ok
 
       _ ->
-        :ok
+        case Application.ensure_all_started(:symphony_elixir) do
+          {:ok, _started} -> :ok
+          {:error, {:symphony_elixir, {:already_started, _pid}}} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, reason} -> raise "failed to start symphony_elixir application: #{inspect(reason)}"
+        end
     end
+  end
+
+  def stop_default_http_server do
+    with supervisor when is_pid(supervisor) <- Process.whereis(SymphonyElixir.Supervisor),
+         {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) <- find_default_http_server(supervisor) do
+      :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.HttpServer)
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
+  defp find_default_http_server(supervisor) do
+    Enum.find(Supervisor.which_children(supervisor), fn
+      {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+      _child -> false
+    end)
   end
 
   defp workflow_content(overrides) do

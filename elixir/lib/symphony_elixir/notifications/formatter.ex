@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Notifications.Formatter do
 
   alias SymphonyElixir.Notifications.Event
 
-  @pr_url_events ["pr_opened", "awaiting_review", "run_failed", "reviewer_commented", "rework_pushed"]
+  @pr_url_events ["pr_opened", "awaiting_review", "run_failed", "reviewer_commented", "rework_pushed", "ci_failed", "ci_escalated"]
 
   @spec webhook_payload(Event.t(), keyword()) :: map()
   def webhook_payload(%Event{} = event, opts \\ []) do
@@ -154,11 +154,15 @@ defmodule SymphonyElixir.Notifications.Formatter do
   defp event_title("run_failed"), do: "Run failed"
   defp event_title("issue_completed"), do: "Issue completed"
   defp event_title("budget_exceeded"), do: "Budget exceeded"
+  defp event_title("ci_failed"), do: "CI failed"
+  defp event_title("ci_escalated"), do: "CI escalated"
   defp event_title("reviewer_commented"), do: "Reviewer commented"
   defp event_title("rework_pushed"), do: "Rework pushed"
   defp event_title(event), do: event
 
   defp event_color("run_failed"), do: "danger"
+  defp event_color("ci_failed"), do: "danger"
+  defp event_color("ci_escalated"), do: "warning"
   defp event_color("budget_exceeded"), do: "warning"
   defp event_color("issue_completed"), do: "good"
   defp event_color(_event), do: "#2f80ed"

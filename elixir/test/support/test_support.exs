@@ -143,6 +143,7 @@ defmodule SymphonyElixir.TestSupport do
           pr_review_bot_users: nil,
           pr_review_auto_reply: nil,
           pr_review_auto_request_review: nil,
+          ci: nil,
           server_port: nil,
           server_host: nil,
           quality_gate: nil,
@@ -202,6 +203,7 @@ defmodule SymphonyElixir.TestSupport do
     pr_review_bot_users = Keyword.get(config, :pr_review_bot_users)
     pr_review_auto_reply = Keyword.get(config, :pr_review_auto_reply)
     pr_review_auto_request_review = Keyword.get(config, :pr_review_auto_request_review)
+    ci = Keyword.get(config, :ci)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
     quality_gate = Keyword.get(config, :quality_gate)
@@ -264,6 +266,7 @@ defmodule SymphonyElixir.TestSupport do
           pr_review_auto_reply,
           pr_review_auto_request_review
         ),
+        ci_yaml(ci),
         server_yaml(server_port, server_host),
         quality_gate_yaml(quality_gate),
         self_review_yaml(self_review),
@@ -355,6 +358,28 @@ defmodule SymphonyElixir.TestSupport do
     ]
     |> Enum.reject(&(&1 in [nil, false]))
     |> Enum.join("\n")
+  end
+
+  defp ci_yaml(nil), do: nil
+
+  defp ci_yaml(opts) when is_list(opts) or is_map(opts) do
+    config = map_from(opts)
+
+    fields =
+      [
+        kv("enabled", Map.get(config, :enabled)),
+        kv("poll_interval_ms", Map.get(config, :poll_interval_ms)),
+        kv("log_excerpt_lines", Map.get(config, :log_excerpt_lines)),
+        kv("flaky_retry", Map.get(config, :flaky_retry)),
+        kv("max_retries", Map.get(config, :max_retries)),
+        kv("escalation_state", Map.get(config, :escalation_state))
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case fields do
+      [] -> nil
+      lines -> Enum.join(["ci:" | lines], "\n")
+    end
   end
 
   defp server_yaml(nil, nil), do: nil

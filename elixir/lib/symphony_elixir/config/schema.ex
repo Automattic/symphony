@@ -494,6 +494,52 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Ci do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    @default_log_excerpt_lines 200
+    @default_max_retries 3
+
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:poll_interval_ms, :integer)
+      field(:log_excerpt_lines, :integer, default: @default_log_excerpt_lines)
+      field(:flaky_retry, :boolean, default: true)
+      field(:max_retries, :integer, default: @default_max_retries)
+      field(:escalation_state, :string, default: "In Review")
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [:enabled, :poll_interval_ms, :log_excerpt_lines, :flaky_retry, :max_retries, :escalation_state],
+        empty_values: []
+      )
+      |> normalize_escalation_state()
+      |> validate_number(:poll_interval_ms, greater_than: 0)
+      |> validate_number(:log_excerpt_lines, greater_than: 0)
+      |> validate_number(:max_retries, greater_than_or_equal_to: 0)
+    end
+
+    defp normalize_escalation_state(changeset) do
+      update_change(changeset, :escalation_state, fn
+        value when is_binary(value) ->
+          case String.trim(value) do
+            "" -> "In Review"
+            trimmed -> trimmed
+          end
+
+        _value ->
+          "In Review"
+      end)
+    end
+  end
+
   defmodule Server do
     @moduledoc false
     use Ecto.Schema
@@ -649,7 +695,9 @@ defmodule SymphonyElixir.Config.Schema do
         "issue_completed",
         "budget_exceeded",
         "reviewer_commented",
-        "rework_pushed"
+        "rework_pushed",
+        "ci_failed",
+        "ci_escalated"
       ]
 
       embedded_schema do
@@ -728,6 +776,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_many(:routing, Routing, on_replace: :delete)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:pr_review, PrReview, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:ci, Ci, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:self_review, SelfReview, on_replace: :update, defaults_to_struct: true)
@@ -907,6 +956,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> validate_unique_routing_labels()
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:pr_review, with: &PrReview.changeset/2)
+    |> cast_embed(:ci, with: &Ci.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
     |> cast_embed(:self_review, with: &SelfReview.changeset/2)

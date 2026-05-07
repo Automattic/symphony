@@ -88,6 +88,53 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert activity.state == "MERGED"
   end
 
+  test "fetch_ci_status reads status rollup and failed GitHub Actions run ids" do
+    pr_url = "https://github.com/org/repo/pull/17"
+
+    runner = fn
+      ["pr", "view", ^pr_url, "--json", fields], opts ->
+        assert fields == "number,state,title,url,headRefOid,statusCheckRollup"
+        assert opts[:stderr_to_stdout]
+
+        {Jason.encode!(%{
+           "state" => "OPEN",
+           "title" => "Fix CI",
+           "url" => pr_url,
+           "headRefOid" => "abc123",
+           "statusCheckRollup" => [
+             %{
+               "name" => "test",
+               "status" => "COMPLETED",
+               "conclusion" => "FAILURE",
+               "detailsUrl" => "https://github.com/org/repo/actions/runs/987/jobs/654",
+               "workflowName" => "CI"
+             }
+           ]
+         }), 0}
+    end
+
+    assert {:ok, status} = PullRequest.fetch_ci_status(pr_url, gh_runner: runner)
+    assert status.pr_url == pr_url
+    assert status.pr_title == "Fix CI"
+    assert status.commit_sha == "abc123"
+    assert [%{name: "test", conclusion: "FAILURE", run_id: "987"}] = status.checks
+  end
+
+  test "fetch_failed_log and rerun_failed use gh run commands" do
+    runner = fn
+      ["run", "view", "987", "--log-failed"], opts ->
+        assert opts[:stderr_to_stdout]
+        {"failed log", 0}
+
+      ["run", "rerun", "987", "--failed"], opts ->
+        assert opts[:stderr_to_stdout]
+        {"", 0}
+    end
+
+    assert {:ok, "failed log"} = PullRequest.fetch_failed_log("987", gh_runner: runner)
+    assert :ok = PullRequest.rerun_failed("987", gh_runner: runner)
+  end
+
   test "reply_to_comment posts inline replies and request_review re-requests reviewers" do
     pr_url = "https://github.example.com/org/repo/pull/42"
 

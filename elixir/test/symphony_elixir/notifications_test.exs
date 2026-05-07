@@ -154,7 +154,9 @@ defmodule SymphonyElixir.NotificationsTest do
              "issue_completed",
              "budget_exceeded",
              "reviewer_commented",
-             "rework_pushed"
+             "rework_pushed",
+             "ci_failed",
+             "ci_escalated"
            ]
 
     assert Event.known_event?(" RUN_FAILED ")
@@ -330,6 +332,8 @@ defmodule SymphonyElixir.NotificationsTest do
           {"awaiting_review", "Awaiting review"},
           {"issue_completed", "Issue completed"},
           {"budget_exceeded", "Budget exceeded"},
+          {"ci_failed", "CI failed"},
+          {"ci_escalated", "CI escalated"},
           {"custom_event", "custom_event"}
         ] do
       event = %Event{

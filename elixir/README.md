@@ -139,6 +139,15 @@ beyond `stale_days`. `cooldown_minutes`, `stale_days`, comment bot filters, and 
 flags are polling-only settings; polling mode defaults them to 10 minutes, 7 days, no ignored users,
 and no GitHub replies or review re-requests when omitted.
 
+CI polling is controlled by the optional `ci` block and is disabled by default. When
+`pr_review.mode: polling` and `ci.enabled: true` are both set, Symphony starts a `CiPoller` process
+that polls GitHub Actions status through `gh pr view --json statusCheckRollup`. Failed checks are
+rerun once with `gh run rerun --failed` by default before any agent dispatch. If the rerun also
+fails, Symphony stores a truncated failed-job log excerpt, emits a CI failure notification event,
+moves the Linear issue back to `In Progress`, and injects the CI failure context into the first
+agent prompt. After `ci.max_retries` dispatched attempts, Symphony transitions the issue to
+`ci.escalation_state` and emits a CI escalation notification event.
+
 Minimal example:
 
 ```md
@@ -180,16 +189,23 @@ pr_review:
   # auto_request_review: false
   # github_user: null
   # bot_users: []
+ci:
+  enabled: false
+  # poll_interval_ms: 30000
+  # log_excerpt_lines: 200
+  # flaky_retry: true
+  # max_retries: 3
+  # escalation_state: In Review
 notifications:
   enabled: false
   # redact_titles: true
   # channels:
   #   - kind: slack
   #     webhook_url: $SLACK_WEBHOOK_URL
-  #     events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, reviewer_commented, rework_pushed]
+  #     events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, reviewer_commented, rework_pushed, ci_failed, ci_escalated]
   #   - kind: webhook
   #     url: $NOTIFY_WEBHOOK_URL
-  #     events: [run_failed, budget_exceeded]
+  #     events: [run_failed, budget_exceeded, ci_failed, ci_escalated]
   #     headers:
   #       Authorization: $NOTIFY_AUTH_HEADER
 quality_gate:
@@ -257,13 +273,17 @@ Notes:
   either budget is configured with a command that may not report token usage. Per-issue exhausted
   runs are rehydrated from run history across restarts while the current limit still applies; raising
   or removing the per-issue limit lets the issue dispatch again.
+- The optional `ci` block is disabled by default. `poll_interval_ms` falls back to
+  `polling.interval_ms` when omitted, `log_excerpt_lines` defaults to 200, `flaky_retry` defaults to
+  true, `max_retries` defaults to 3, and `escalation_state` defaults to `In Review`.
 - The optional `notifications` block is disabled by default. When enabled, Symphony emits semantic
   lifecycle events to configured Slack incoming webhooks and generic JSON webhooks without blocking
   the orchestrator. Supported v1 events are `pr_opened`, `awaiting_review`, `run_failed`,
-  `issue_completed`, `budget_exceeded`, `reviewer_commented`, and `rework_pushed`. Per-channel `events` filters limit delivery; omitting
-  `events` sends all supported events to that channel. `redact_titles: true` suppresses issue and PR
-  titles while preserving identifiers and URLs. Slack and webhook URL/header values support the same
-  `$VAR` environment reference convention used by other secret-backed settings.
+  `issue_completed`, `budget_exceeded`, `reviewer_commented`, `rework_pushed`, `ci_failed`, and
+  `ci_escalated`. Per-channel `events` filters limit delivery; omitting `events` sends all supported
+  events to that channel. `redact_titles: true` suppresses issue and PR titles while preserving
+  identifiers and URLs. Slack and webhook URL/header values support the same `$VAR` environment
+  reference convention used by other secret-backed settings.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

@@ -24,6 +24,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
+          SymphonyElixir.CiPoller,
           SymphonyElixir.PrReviewPoller,
           SymphonyElixir.Quality,
           SymphonyElixir.QualityGate.Anthropic,

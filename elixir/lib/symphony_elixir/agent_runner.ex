@@ -6,6 +6,7 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
 
   alias SymphonyElixir.{
+    CiPoller,
     Config,
     Linear.Issue,
     Notifications,
@@ -328,7 +329,12 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns) do
-    PromptBuilder.build_prompt(issue, put_reviewer_comments(issue, opts))
+    PromptBuilder.build_prompt(
+      issue,
+      opts
+      |> put_reviewer_comments(issue)
+      |> put_ci_failure(issue)
+    )
   end
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
@@ -343,7 +349,7 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
-  defp put_reviewer_comments(issue, opts) when is_list(opts) do
+  defp put_reviewer_comments(opts, issue) when is_list(opts) do
     if Keyword.has_key?(opts, :reviewer_comments) do
       opts
     else
@@ -356,6 +362,20 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp pending_reviewer_comments(_issue), do: []
+
+  defp put_ci_failure(opts, issue) when is_list(opts) do
+    if Keyword.has_key?(opts, :ci_failure) do
+      opts
+    else
+      Keyword.put(opts, :ci_failure, pending_ci_failure(issue))
+    end
+  end
+
+  defp pending_ci_failure(%Issue{id: issue_id}) when is_binary(issue_id) do
+    CiPoller.pending_ci_failure(issue_id)
+  end
+
+  defp pending_ci_failure(_issue), do: nil
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do

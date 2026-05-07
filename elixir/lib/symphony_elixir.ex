@@ -57,6 +57,7 @@ defmodule SymphonyElixir.Application do
            SymphonyElixir.RunStore,
            SymphonyElixir.Orchestrator,
            pr_review_child_spec(),
+           ci_child_spec(),
            SymphonyElixir.HttpServer,
            SymphonyElixir.StatusDashboard
          ])
@@ -68,6 +69,14 @@ defmodule SymphonyElixir.Application do
     case SymphonyElixir.Config.settings!().pr_review.mode do
       "polling" -> SymphonyElixir.PrReviewPoller
       _mode -> nil
+    end
+  end
+
+  defp ci_child_spec do
+    settings = SymphonyElixir.Config.settings!()
+
+    if settings.pr_review.mode == "polling" and settings.ci.enabled do
+      SymphonyElixir.CiPoller
     end
   end
 

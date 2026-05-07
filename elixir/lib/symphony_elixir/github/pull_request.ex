@@ -25,6 +25,23 @@ defmodule SymphonyElixir.GitHub.PullRequest do
           comments: [comment()]
         }
 
+  @type ci_check :: %{
+          optional(:name) => String.t() | nil,
+          optional(:status) => String.t() | nil,
+          optional(:conclusion) => String.t() | nil,
+          optional(:details_url) => String.t() | nil,
+          optional(:workflow_name) => String.t() | nil,
+          optional(:run_id) => String.t() | nil
+        }
+
+  @type ci_status :: %{
+          pr_url: String.t(),
+          pr_title: String.t() | nil,
+          state: String.t() | nil,
+          commit_sha: String.t() | nil,
+          checks: [ci_check()]
+        }
+
   @spec fetch_activity(term(), keyword()) :: {:ok, activity()} | {:error, term()}
   def fetch_activity(pr_url, opts \\ []) do
     if is_binary(pr_url) and is_list(opts) do
@@ -33,6 +50,36 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       {:error, :invalid_pr_url}
     end
   end
+
+  @spec fetch_ci_status(term(), keyword()) :: {:ok, ci_status()} | {:error, term()}
+  def fetch_ci_status(pr_url, opts \\ []) do
+    if is_binary(pr_url) and is_list(opts) do
+      do_fetch_ci_status(pr_url, opts)
+    else
+      {:error, :invalid_pr_url}
+    end
+  end
+
+  def fetch_failed_log(run_id, opts \\ [])
+
+  @spec fetch_failed_log(String.t() | integer(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def fetch_failed_log(run_id, opts) when (is_binary(run_id) or is_integer(run_id)) and is_list(opts) do
+    run_gh(["run", "view", to_string(run_id), "--log-failed"], opts)
+  end
+
+  def fetch_failed_log(_run_id, _opts), do: {:error, :invalid_run_id}
+
+  def rerun_failed(run_id, opts \\ [])
+
+  @spec rerun_failed(String.t() | integer(), keyword()) :: :ok | {:error, term()}
+  def rerun_failed(run_id, opts) when (is_binary(run_id) or is_integer(run_id)) and is_list(opts) do
+    case run_gh(["run", "rerun", to_string(run_id), "--failed"], opts) do
+      {:ok, _output} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def rerun_failed(_run_id, _opts), do: {:error, :invalid_run_id}
 
   @spec reply_to_comment(String.t(), comment(), String.t(), keyword()) :: :ok | {:error, term()}
   def reply_to_comment(pr_url, comment, body, opts \\ []) do
@@ -110,6 +157,32 @@ defmodule SymphonyElixir.GitHub.PullRequest do
          latest_review_activity_at: latest_review_activity_at,
          comments: comments
        }}
+    end
+  end
+
+  defp do_fetch_ci_status(pr_url, opts) do
+    args = [
+      "pr",
+      "view",
+      pr_url,
+      "--json",
+      "number,state,title,url,headRefOid,statusCheckRollup"
+    ]
+
+    with {:ok, output} <- run_gh(args, opts),
+         {:ok, pr} when is_map(pr) <- Jason.decode(output) do
+      {:ok,
+       %{
+         pr_url: Map.get(pr, "url") || pr_url,
+         pr_title: Map.get(pr, "title"),
+         state: Map.get(pr, "state"),
+         commit_sha: normalize_id(Map.get(pr, "headRefOid")),
+         checks: normalize_status_check_rollup(Map.get(pr, "statusCheckRollup"))
+       }}
+    else
+      {:ok, _decoded} -> {:error, :invalid_pr_payload}
+      {:error, %Jason.DecodeError{} = error} -> {:error, {:invalid_pr_payload, Exception.message(error)}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -200,6 +273,36 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   end
 
   defp review_comments(_pr), do: []
+
+  defp normalize_status_check_rollup(checks) when is_list(checks) do
+    Enum.map(checks, &normalize_status_check/1)
+  end
+
+  defp normalize_status_check_rollup(_checks), do: []
+
+  defp normalize_status_check(check) when is_map(check) do
+    details_url = Map.get(check, "detailsUrl") || Map.get(check, "targetUrl")
+
+    %{
+      name: normalize_id(Map.get(check, "name") || Map.get(check, "context") || Map.get(check, "workflowName")),
+      status: normalize_id(Map.get(check, "status")),
+      conclusion: normalize_id(Map.get(check, "conclusion")),
+      details_url: normalize_id(details_url),
+      workflow_name: normalize_id(Map.get(check, "workflowName")),
+      run_id: run_id_from_details_url(details_url)
+    }
+  end
+
+  defp normalize_status_check(_check), do: %{}
+
+  defp run_id_from_details_url(url) when is_binary(url) do
+    case Regex.run(~r{/actions/runs/(\d+)}, url) do
+      [_full, run_id] -> run_id
+      _ -> nil
+    end
+  end
+
+  defp run_id_from_details_url(_url), do: nil
 
   defp normalize_inline_comment(comment) when is_map(comment) do
     %{

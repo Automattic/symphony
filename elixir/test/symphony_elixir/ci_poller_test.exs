@@ -28,18 +28,6 @@ defmodule SymphonyElixir.CiPollerTest do
       send(recipient, {:issue_state_update, issue_id, state_name})
       :ok
     end
-
-    def add_label(issue_id, label_name) do
-      recipient = Application.fetch_env!(:symphony_elixir, :ci_test_recipient)
-      send(recipient, {:add_label, issue_id, label_name})
-      :ok
-    end
-
-    def remove_label(issue_id, label_name) do
-      recipient = Application.fetch_env!(:symphony_elixir, :ci_test_recipient)
-      send(recipient, {:remove_label, issue_id, label_name})
-      :ok
-    end
   end
 
   defmodule FakeGitHub do
@@ -103,6 +91,16 @@ defmodule SymphonyElixir.CiPollerTest do
     def delete_ci_check(_issue_id), do: :ok
   end
 
+  defmodule FailingTransitionTracker do
+    def fetch_issues_by_states(_states), do: {:ok, []}
+
+    def update_issue_state(issue_id, state_name) do
+      recipient = Application.fetch_env!(:symphony_elixir, :ci_test_recipient)
+      send(recipient, {:issue_state_update, issue_id, state_name})
+      {:error, :linear_unavailable}
+    end
+  end
+
   setup do
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :ci_test_issues)
@@ -150,7 +148,6 @@ defmodule SymphonyElixir.CiPollerTest do
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
 
     refute_receive {:issue_state_update, _, _}
-    refute_receive {:add_label, _, _}
     refute_receive {:memory_tracker_comment, _, _}
   end
 
@@ -166,7 +163,6 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert_receive {:rerun_failed, "987"}
     refute_receive {:issue_state_update, _, _}
-    refute_receive {:add_label, _, _}
 
     assert [%{status: "rerun_requested", rerun_attempted_shas: ["abc123"], ci_retry_count: 0}] =
              RunStore.list_ci_checks()
@@ -185,7 +181,6 @@ defmodule SymphonyElixir.CiPollerTest do
     assert_receive {:rerun_failed, "987"}
     assert_receive {:rerun_failed, "654"}
     refute_receive {:issue_state_update, _, _}
-    refute_receive {:add_label, _, _}
 
     assert [%{status: "rerun_requested", rerun_attempted_shas: ["abc123"], rerun_run_ids: ["987", "654"], ci_retry_count: 0}] =
              RunStore.list_ci_checks()
@@ -198,6 +193,7 @@ defmodule SymphonyElixir.CiPollerTest do
     Application.put_env(:symphony_elixir, :ci_test_statuses, [failed_status("abc123"), failed_status("abc123"), failed_status("abc123")])
     Application.put_env(:symphony_elixir, :ci_test_failed_log, Enum.map_join(1..5, "\n", &"line #{&1}") <> "\nERROR: specs failed\nstack")
     put_run(issue, now)
+    Notifications.subscribe()
 
     assert {:ok, %{actions: [{:rerun_requested, "issue-2401", "987"}]}} =
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
@@ -205,10 +201,10 @@ defmodule SymphonyElixir.CiPollerTest do
     assert {:ok, %{actions: [{:state_transitioned, "issue-2401", :ci_failure, "In Progress"}]}} =
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
 
-    assert_receive {:add_label, "issue-2401", "ci-failed"}
     assert_receive {:ci_failure_at_transition, "issue-2401", %{commit_sha: "abc123", log_excerpt: transition_log_excerpt}}
     assert_receive {:issue_state_update, "issue-2401", "In Progress"}
     assert_receive {:fetch_failed_log, "987"}
+    assert_receive {:notification_event, %{event: "ci_failed", state: "In Progress", metadata: %{retry_count: 1}}}
     assert transition_log_excerpt =~ "ERROR: specs failed"
 
     assert %{
@@ -225,8 +221,6 @@ defmodule SymphonyElixir.CiPollerTest do
     assert prompt =~ "Failed checks: specs"
     assert prompt =~ "Commit SHA: abc123"
     assert prompt =~ "ERROR: specs failed"
-
-    Application.put_env(:symphony_elixir, :ci_test_issues, [%{issue | labels: ["ci-failed"]}])
 
     assert {:ok, %{actions: [{:already_handled, "issue-2401", "abc123"}]}} =
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 2, :minute))
@@ -260,7 +254,6 @@ defmodule SymphonyElixir.CiPollerTest do
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
 
     assert_receive {:fetch_failed_log, "987"}
-    refute_receive {:add_label, _, _}
     refute_receive {:issue_state_update, _, _}
 
     assert [%{status: "poll_error", ci_retry_count: 0, dispatched_shas: [], error: "{:failed_log_unavailable, \"987\", :log_not_ready}"}] =
@@ -291,14 +284,13 @@ defmodule SymphonyElixir.CiPollerTest do
     assert {:ok, %{actions: [{:update_error, "issue-2401", {:update_ci_check_failed, :write_failed}}]}} =
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, run_store: FailingUpdateRunStore, now: DateTime.add(now, 1, :minute))
 
-    refute_receive {:add_label, _, _}
     refute_receive {:issue_state_update, _, _}
     refute_receive {:notification_event, %{event: "ci_failed"}}
   end
 
   test "max retries escalates instead of dispatching again" do
     now = ~U[2026-05-06 09:00:00Z]
-    issue = %{in_review_issue() | labels: ["ci-failed"]}
+    issue = in_review_issue()
     Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
     Application.put_env(:symphony_elixir, :ci_test_status, failed_status("def456"))
 
@@ -319,7 +311,6 @@ defmodule SymphonyElixir.CiPollerTest do
                workspace_path: "/tmp/workspaces/RSM-2401",
                status: "dispatch_requested",
                ci_retry_count: 1,
-               ci_failed_label_confirmed: true,
                rerun_attempted_shas: ["def456"],
                dispatched_shas: ["abc123"],
                updated_at: now
@@ -330,16 +321,15 @@ defmodule SymphonyElixir.CiPollerTest do
     assert {:ok, %{actions: [{:escalated, "issue-2401", "In Review"}]}} =
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
 
-    assert_receive {:add_label, "issue-2401", "needs-human-ci-help"}
     assert_receive {:issue_state_update, "issue-2401", "In Review"}
-    assert_receive {:notification_event, %{event: "ci_escalated", metadata: %{max_retries: 1}}}
+    assert_receive {:notification_event, %{event: "ci_escalated", state: "In Review", metadata: %{max_retries: 1, escalation_state: "In Review"}}}
 
     assert [%{status: "escalated", ci_retry_count: 1}] = RunStore.list_ci_checks()
   end
 
-  test "green ci removes labels and resets retry state" do
+  test "green ci resets retry state without Linear label writes" do
     now = ~U[2026-05-06 09:00:00Z]
-    issue = %{in_review_issue() | labels: ["ci-failed", "needs-human-ci-help"]}
+    issue = in_review_issue()
     Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
     Application.put_env(:symphony_elixir, :ci_test_status, green_status("def456"))
     put_run(issue, now)
@@ -353,7 +343,6 @@ defmodule SymphonyElixir.CiPollerTest do
                workspace_path: "/tmp/workspaces/RSM-2401",
                status: "dispatch_requested",
                ci_retry_count: 2,
-               ci_failed_label_confirmed: true,
                dispatched_shas: ["abc123"],
                rerun_attempted_shas: ["abc123"],
                updated_at: now
@@ -361,9 +350,6 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert {:ok, %{actions: [{:green, "issue-2401"}]}} =
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
-
-    assert_receive {:remove_label, "issue-2401", "ci-failed"}
-    assert_receive {:remove_label, "issue-2401", "needs-human-ci-help"}
 
     assert [
              %{
@@ -374,6 +360,53 @@ defmodule SymphonyElixir.CiPollerTest do
                ci_failure: nil
              }
            ] = RunStore.list_ci_checks()
+  end
+
+  test "Linear transition errors use CI poll backoff" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [])
+    Application.put_env(:symphony_elixir, :ci_test_status, failed_status("abc123"))
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/RSM-2401",
+               status: "rerun_requested",
+               consecutive_errors: 2,
+               ci_retry_count: 0,
+               rerun_attempted_shas: ["abc123"],
+               dispatched_shas: [],
+               updated_at: now
+             })
+
+    poll_time = DateTime.add(now, 1, :minute)
+
+    assert {:ok, %{actions: [{:state_transition_error, "issue-2401", :dispatch, :linear_unavailable}]}} =
+             CiPoller.poll_once(
+               tracker: FailingTransitionTracker,
+               github: FakeGitHub,
+               poll_interval_ms: 1_000,
+               now: poll_time
+             )
+
+    assert_receive {:issue_state_update, "issue-2401", "In Progress"}
+
+    assert [%{status: "state_transition_error", consecutive_errors: 3, next_poll_at: next_poll_at}] =
+             RunStore.list_ci_checks()
+
+    assert DateTime.diff(next_poll_at, poll_time, :millisecond) == 1_000
+
+    assert {:ok, %{actions: [{:backing_off, "issue-2401", ^next_poll_at}]}} =
+             CiPoller.poll_once(
+               tracker: FailingTransitionTracker,
+               github: FakeGitHub,
+               poll_interval_ms: 1_000,
+               now: DateTime.add(poll_time, 999, :millisecond)
+             )
   end
 
   test "pr review poller yields rework ownership while ci owns the issue" do

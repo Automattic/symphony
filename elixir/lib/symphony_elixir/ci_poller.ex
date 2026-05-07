@@ -12,8 +12,6 @@ defmodule SymphonyElixir.CiPoller do
 
   @in_review_state "In Review"
   @active_state "In Progress"
-  @ci_failed_label "ci-failed"
-  @human_help_label "needs-human-ci-help"
   @closed_pr_states ["CLOSED", "MERGED"]
   @github_error_backoff_threshold 3
   @max_github_error_backoff_ms 300_000
@@ -127,8 +125,6 @@ defmodule SymphonyElixir.CiPoller do
     tracker = Keyword.get(opts, :tracker, Tracker)
 
     with {:ok, discovered} <- discover_ci_checks(run_store, tracker, now),
-         {:ok, checks} <- list_ci_checks(run_store),
-         :ok <- sync_manual_label_clears(checks, run_store, tracker, now),
          {:ok, checks} <- list_ci_checks(run_store) do
       actions = Enum.map(checks, &process_ci_check(&1, settings, opts, now))
 
@@ -201,55 +197,6 @@ defmodule SymphonyElixir.CiPoller do
   end
 
   defp discover_ci_check_record(_issue, _runs, _existing, _now), do: nil
-
-  defp sync_manual_label_clears([], _run_store, _tracker, _now), do: :ok
-
-  defp sync_manual_label_clears(records, run_store, tracker, now) do
-    issue_ids =
-      records
-      |> Enum.map(&Map.get(&1, :issue_id))
-      |> Enum.filter(&is_binary/1)
-      |> Enum.uniq()
-
-    case tracker.fetch_issue_states_by_ids(issue_ids) do
-      {:ok, issues} ->
-        labels_by_issue = Map.new(issues, fn %Issue{id: id} = issue -> {id, Issue.label_names(issue)} end)
-
-        Enum.each(records, fn record ->
-          maybe_reset_manual_label_clear(record, Map.get(labels_by_issue, Map.get(record, :issue_id), []), run_store, now)
-        end)
-
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Failed to refresh CI issue labels: #{inspect(reason)}")
-        :ok
-    end
-  end
-
-  defp maybe_reset_manual_label_clear(record, labels, run_store, now) when is_list(labels) do
-    retry_count = ci_retry_count(record)
-
-    if retry_count > 0 and Map.get(record, :ci_failed_label_confirmed) == true and not label_present?(labels, @ci_failed_label) do
-      issue_id = Map.get(record, :issue_id)
-
-      attrs = %{
-        status: "watching",
-        ci_retry_count: 0,
-        dispatched_shas: [],
-        ci_failure: nil,
-        ci_failed_label_confirmed: false,
-        updated_at: now
-      }
-
-      case update_ci_check(run_store, record, attrs) do
-        :ok -> :ok
-        {:error, reason} -> Logger.warning("Failed to reset CI retry count after manual label clear issue_id=#{issue_id}: #{inspect(reason)}")
-      end
-    end
-  end
-
-  defp maybe_reset_manual_label_clear(_record, _labels, _run_store, _now), do: :ok
 
   defp process_ci_check(record, settings, opts, now) when is_map(record) do
     case backoff_active_until(record, now) do
@@ -390,7 +337,6 @@ defmodule SymphonyElixir.CiPoller do
           status: "dispatch_requested",
           target_issue_state: @active_state,
           ci_retry_count: retry_count,
-          ci_failed_label_confirmed: true,
           failed_checks: failed_checks,
           log_excerpt: log_excerpt,
           ci_failure: ci_failure,
@@ -403,11 +349,11 @@ defmodule SymphonyElixir.CiPoller do
 
     case complete_ci_update(opts, record, attrs, :ok) do
       :ok ->
-        with :ok <- tracker.add_label(issue_id, @ci_failed_label),
-             :ok <- tracker.update_issue_state(issue_id, @active_state) do
-          emit_ci_failed(record, ci_status, failed_checks, retry_count)
-          {:state_transitioned, issue_id, :ci_failure, @active_state}
-        else
+        case tracker.update_issue_state(issue_id, @active_state) do
+          :ok ->
+            emit_ci_failed(record, ci_status, failed_checks, retry_count, @active_state)
+            {:state_transitioned, issue_id, :ci_failure, @active_state}
+
           {:error, reason} ->
             record_transition_error(record, ci_status, failed_checks, opts, now, "dispatch", reason)
         end
@@ -450,112 +396,75 @@ defmodule SymphonyElixir.CiPoller do
       tracker: tracker
     } = context
 
-    with :ok <- tracker.add_label(issue_id, @human_help_label),
-         :ok <- tracker.update_issue_state(issue_id, escalation_state) do
-      ci_failure = ci_failure_context(ci_status, failed_checks, log_excerpt)
+    case tracker.update_issue_state(issue_id, escalation_state) do
+      :ok ->
+        ci_failure = ci_failure_context(ci_status, failed_checks, log_excerpt)
 
-      attrs =
-        ci_status_attrs(
-          record,
-          ci_status,
-          %{
-            status: "escalated",
-            target_issue_state: escalation_state,
-            failed_checks: failed_checks,
-            log_excerpt: log_excerpt,
-            ci_failure: ci_failure,
-            last_action: "escalate",
-            last_action_at: now
-          },
-          now
-        )
+        attrs =
+          ci_status_attrs(
+            record,
+            ci_status,
+            %{
+              status: "escalated",
+              target_issue_state: escalation_state,
+              failed_checks: failed_checks,
+              log_excerpt: log_excerpt,
+              ci_failure: ci_failure,
+              last_action: "escalate",
+              last_action_at: now
+            },
+            now
+          )
 
-      case complete_ci_update(opts, record, attrs, {:escalated, issue_id, escalation_state}) do
-        {:escalated, ^issue_id, ^escalation_state} = action ->
-          emit_ci_escalated(record, ci_status, failed_checks, settings)
-          action
+        case complete_ci_update(opts, record, attrs, {:escalated, issue_id, escalation_state}) do
+          {:escalated, ^issue_id, ^escalation_state} = action ->
+            emit_ci_escalated(record, ci_status, failed_checks, settings, escalation_state)
+            action
 
-        {:update_error, _issue_id, _reason} = error ->
-          error
-      end
-    else
+          {:update_error, _issue_id, _reason} = error ->
+            error
+        end
+
       {:error, reason} ->
         record_transition_error(record, ci_status, failed_checks, opts, now, "escalate", reason)
     end
   end
 
   defp mark_ci_green(record, ci_status, opts, now) do
-    tracker = Keyword.get(opts, :tracker, Tracker)
     issue_id = Map.get(record, :issue_id)
 
-    case maybe_remove_ci_labels(record, tracker, issue_id) do
-      :ok ->
-        attrs =
-          ci_status_attrs(
-            record,
-            ci_status,
-            %{
-              status: "green",
-              ci_retry_count: 0,
-              ci_failed_label_confirmed: false,
-              failed_checks: [],
-              log_excerpt: nil,
-              ci_failure: nil,
-              rerun_attempted_shas: [],
-              dispatched_shas: [],
-              last_action: "green",
-              last_action_at: now
-            },
-            now
-          )
+    attrs =
+      ci_status_attrs(
+        record,
+        ci_status,
+        %{
+          status: "green",
+          ci_retry_count: 0,
+          failed_checks: [],
+          log_excerpt: nil,
+          ci_failure: nil,
+          rerun_attempted_shas: [],
+          dispatched_shas: [],
+          last_action: "green",
+          last_action_at: now
+        },
+        now
+      )
 
-        complete_ci_update(opts, record, attrs, {:green, issue_id})
-
-      {:error, reason} ->
-        record_transition_error(record, ci_status, [], opts, now, "green", reason)
-    end
-  end
-
-  defp maybe_remove_ci_labels(record, tracker, issue_id) do
-    if ci_label_cleanup_needed?(record) do
-      remove_ci_labels(tracker, issue_id)
-    else
-      :ok
-    end
-  end
-
-  defp remove_ci_labels(tracker, issue_id) do
-    case tracker.remove_label(issue_id, @ci_failed_label) do
-      :ok -> tracker.remove_label(issue_id, @human_help_label)
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp ci_label_cleanup_needed?(record) do
-    ci_retry_count(record) > 0 or
-      Map.get(record, :ci_failed_label_confirmed) == true or
-      Map.get(record, :status) in ["dispatch_requested", "escalated", "state_transition_error"]
+    complete_ci_update(opts, record, attrs, {:green, issue_id})
   end
 
   defp cleanup_ci(record, opts, now, reason) do
-    tracker = Keyword.get(opts, :tracker, Tracker)
     run_store = Keyword.get(opts, :run_store, RunStore)
     issue_id = Map.get(record, :issue_id)
 
-    with :ok <- tracker.remove_label(issue_id, @ci_failed_label),
-         :ok <- tracker.remove_label(issue_id, @human_help_label) do
-      case delete_ci_check(run_store, issue_id) do
-        :ok ->
-          {:cleanup, issue_id, reason}
+    case delete_ci_check(run_store, issue_id) do
+      :ok ->
+        {:cleanup, issue_id, reason}
 
-        {:error, delete_reason} ->
-          attrs = %{status: "cleanup_error", error: inspect(delete_reason), updated_at: now}
-          complete_ci_update(opts, record, attrs, {:cleanup_error, issue_id, delete_reason})
-      end
-    else
-      {:error, label_reason} ->
-        attrs = %{status: "cleanup_error", error: inspect(label_reason), updated_at: now}
-        complete_ci_update(opts, record, attrs, {:cleanup_error, issue_id, label_reason})
+      {:error, delete_reason} ->
+        attrs = %{status: "cleanup_error", error: inspect(delete_reason), updated_at: now}
+        complete_ci_update(opts, record, attrs, {:cleanup_error, issue_id, delete_reason})
     end
   end
 
@@ -637,10 +546,8 @@ defmodule SymphonyElixir.CiPoller do
         ci_status,
         %{
           status: "state_transition_error",
-          error: inspect(reason),
           failed_checks: failed_checks,
           ci_retry_count: ci_retry_count(record),
-          ci_failed_label_confirmed: Map.get(record, :ci_failed_label_confirmed, false),
           dispatched_shas: string_list(Map.get(record, :dispatched_shas, [])),
           ci_failure: Map.get(record, :ci_failure),
           log_excerpt: Map.get(record, :log_excerpt),
@@ -649,6 +556,7 @@ defmodule SymphonyElixir.CiPoller do
         },
         now
       )
+      |> Map.merge(error_backoff_attrs(record, reason, opts, now))
 
     case update_ci_check(Keyword.get(opts, :run_store, RunStore), record, attrs) do
       :ok ->
@@ -810,34 +718,34 @@ defmodule SymphonyElixir.CiPoller do
 
   defp normalize_ci_failure(_ci_failure), do: nil
 
-  defp emit_ci_failed(record, ci_status, failed_checks, retry_count) do
+  defp emit_ci_failed(record, ci_status, failed_checks, retry_count, target_state) do
     Notifications.emit_event(
       :ci_failed,
-      notification_attrs(record, ci_status, failed_checks, "CI failed; dispatching agent", %{
+      notification_attrs(record, ci_status, failed_checks, target_state, "CI failed; dispatching agent", %{
         retry_count: retry_count
       })
     )
   end
 
-  defp emit_ci_escalated(record, ci_status, failed_checks, settings) do
+  defp emit_ci_escalated(record, ci_status, failed_checks, settings, target_state) do
     Notifications.emit_event(
       :ci_escalated,
-      notification_attrs(record, ci_status, failed_checks, "CI failed after #{settings.ci.max_retries} agent dispatches; escalation required", %{
+      notification_attrs(record, ci_status, failed_checks, target_state, "CI failed after #{settings.ci.max_retries} agent dispatches; escalation required", %{
         retry_count: ci_retry_count(record),
         max_retries: settings.ci.max_retries,
-        escalation_state: settings.ci.escalation_state
+        escalation_state: target_state
       })
     )
   end
 
-  defp notification_attrs(record, ci_status, failed_checks, reason, metadata) do
+  defp notification_attrs(record, ci_status, failed_checks, target_state, reason, metadata) do
     %{
       issue_id: Map.get(record, :issue_id),
       issue_identifier: Map.get(record, :issue_identifier),
       issue_url: Map.get(record, :issue_url),
       pr_url: Map.get(ci_status, :pr_url) || Map.get(record, :pr_url),
       pr_title: Map.get(ci_status, :pr_title),
-      state: Map.get(record, :target_issue_state),
+      state: target_state,
       reason: reason,
       metadata:
         Map.merge(metadata, %{
@@ -854,7 +762,7 @@ defmodule SymphonyElixir.CiPoller do
   defp dispatched_for_sha?(record, sha), do: sha in string_list(Map.get(record, :dispatched_shas, []))
 
   defp ci_owned_record?(record) do
-    ci_retry_count(record) > 0 or Map.get(record, :status) in ["dispatch_requested", "escalated"]
+    ci_retry_count(record) > 0 or Map.get(record, :status) in ["dispatch_requested", "escalated", "state_transition_error"]
   end
 
   defp ci_retry_count(record) when is_map(record) do
@@ -863,17 +771,6 @@ defmodule SymphonyElixir.CiPoller do
       _ -> 0
     end
   end
-
-  defp label_present?(labels, label_name) do
-    normalized = normalize_label(label_name)
-
-    labels
-    |> Enum.map(&normalize_label/1)
-    |> Enum.member?(normalized)
-  end
-
-  defp normalize_label(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
-  defp normalize_label(_value), do: ""
 
   defp first_pr_url(%Issue{pr_urls: [url | _rest]}) when is_binary(url), do: url
   defp first_pr_url(_issue), do: nil
@@ -905,9 +802,13 @@ defmodule SymphonyElixir.CiPoller do
   end
 
   defp list_ci_checks(run_store) do
-    case run_store.list_ci_checks() do
-      checks when is_list(checks) -> {:ok, checks}
-      {:error, reason} -> {:error, reason}
+    if function_exported?(run_store, :list_ci_checks, 0) do
+      case run_store.list_ci_checks() do
+        checks when is_list(checks) -> {:ok, checks}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :ci_checks_unsupported}
     end
   end
 
@@ -941,10 +842,14 @@ defmodule SymphonyElixir.CiPoller do
   defp normalize_status(_value), do: nil
 
   defp poll_error_attrs(record, reason, opts, now) do
+    %{status: "poll_error"}
+    |> Map.merge(error_backoff_attrs(record, reason, opts, now))
+  end
+
+  defp error_backoff_attrs(record, reason, opts, now) do
     consecutive_errors = consecutive_errors(record) + 1
 
     attrs = %{
-      status: "poll_error",
       error: inspect(reason),
       consecutive_errors: consecutive_errors,
       updated_at: now

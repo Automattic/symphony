@@ -143,10 +143,10 @@ CI polling is controlled by the optional `ci` block and is disabled by default. 
 `pr_review.mode: polling` and `ci.enabled: true` are both set, Symphony starts a `CiPoller` process
 that polls GitHub Actions status through `gh pr view --json statusCheckRollup`. Failed checks are
 rerun once with `gh run rerun --failed` by default before any agent dispatch. If the rerun also
-fails, Symphony stores a truncated failed-job log excerpt, labels the Linear issue `ci-failed`, moves
-it back to `In Progress`, and injects the CI failure context into the first agent prompt. After
-`ci.max_retries` dispatched attempts, Symphony labels the issue `needs-human-ci-help`, transitions it
-to `ci.escalation_state`, and emits a CI escalation notification event.
+fails, Symphony stores a truncated failed-job log excerpt, emits a CI failure notification event,
+moves the Linear issue back to `In Progress`, and injects the CI failure context into the first
+agent prompt. After `ci.max_retries` dispatched attempts, Symphony transitions the issue to
+`ci.escalation_state` and emits a CI escalation notification event.
 
 Minimal example:
 

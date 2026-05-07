@@ -11,6 +11,25 @@ _In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Line
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
 
+## How Symphony works
+
+Symphony treats Linear as the source of work, then runs each issue through an isolated agent loop. It
+claims eligible Linear issues, creates a fresh workspace for each one, launches Codex in that
+workspace with the repository's workflow prompt, and keeps the run moving until there is a pull
+request with validation evidence. Review state, blockers, and final landing status are reflected
+back in Linear so operators can manage the work queue instead of supervising every Codex turn.
+
+```text
+Linear issue -> Symphony -> workspace -> Codex -> pull request -> Linear status
+```
+
+Glossary: a `workflow` is the repo-owned policy and prompt that tells Symphony what to run; a `run`
+is one attempt to make progress on a Linear issue; a `workspace` is the isolated checkout or
+worktree for that run; a `tracker` is the system Symphony polls for work, currently Linear in the
+reference implementation; a `quality gate` is the optional pre-dispatch check that decides whether
+an issue is clear enough for an agent; and `harness engineering` is the practice of preparing a
+codebase with scripts, tests, docs, and guardrails so coding agents can work safely.
+
 ## Running Symphony
 
 ### Requirements
@@ -43,6 +62,21 @@ The reference implementation also includes opt-in UI verification orchestration 
 worktree runs: Symphony can allocate a per-issue port, expose it as
 `SYMPHONY_VERIFICATION_PORT`, start a configured dev server, health-check it, and tear it down when
 the run ends.
+
+## Where to read next
+
+- [SPEC.md](SPEC.md): the full Symphony specification, useful if you are implementing your own
+  runtime.
+- [elixir/README.md](elixir/README.md): getting started with the experimental Elixir reference
+  implementation.
+- [elixir/docs/configuration.md](elixir/docs/configuration.md): the full configuration reference
+  for `WORKFLOW.md`, CLI flags, defaults, and supported values.
+- [elixir/docs/logging.md](elixir/docs/logging.md),
+  [elixir/docs/quality_gate_security.md](elixir/docs/quality_gate_security.md), and
+  [elixir/docs/token_accounting.md](elixir/docs/token_accounting.md): operational deep-dives.
+- [elixir/WORKFLOW.md](elixir/WORKFLOW.md): the example in-repo workflow contract and agent prompt.
+- [elixir/AGENTS.md](elixir/AGENTS.md): maintainer notes for agents working on the Elixir
+  implementation.
 
 ---
 

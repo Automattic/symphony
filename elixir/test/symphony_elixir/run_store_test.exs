@@ -171,9 +171,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert %{paused: true, reason: "overnight deploy", paused_at: %DateTime{} = paused_at} =
              RunStore.get_paused()
 
-    pid = Process.whereis(RunStore)
-    GenServer.stop(pid)
-    {:ok, restarted_pid} = RunStore.start_link([])
+    restart_run_store()
 
     assert %{paused: true, reason: "overnight deploy", paused_at: ^paused_at} =
              RunStore.get_paused()
@@ -186,8 +184,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert :ok = RunStore.set_paused(false, nil)
     assert %{paused: false, reason: nil, paused_at: nil} = RunStore.get_paused()
 
-    GenServer.stop(restarted_pid)
-    {:ok, _pid} = RunStore.start_link([])
+    restart_run_store()
   end
 
   test "interrupt_running_runs marks stale running records as failures" do
@@ -325,20 +322,28 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [%{id: "learning-3"}] = RunStore.list_learnings(tag: "review-feedback", limit: 1)
     assert [] = RunStore.list_learnings(repo: "github.com/other/repo")
 
-    pid = Process.whereis(RunStore)
-    GenServer.stop(pid)
-    {:ok, restarted_pid} = RunStore.start_link([])
+    restart_run_store()
 
     assert [
              %{id: "learning-3"},
              %{id: "learning-2"}
            ] = RunStore.list_learnings(repo: "github.com/example/repo")
 
-    GenServer.stop(restarted_pid)
-    {:ok, _pid} = RunStore.start_link([])
+    restart_run_store()
   end
 
   defp attribute_position(attributes, field) do
     Enum.find_index(attributes, &(&1 == field)) + 2
+  end
+
+  defp restart_run_store do
+    if pid = Process.whereis(RunStore) do
+      GenServer.stop(pid)
+    end
+
+    case RunStore.start_link([]) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
   end
 end

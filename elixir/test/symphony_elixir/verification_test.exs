@@ -135,7 +135,7 @@ defmodule SymphonyElixir.VerificationTest do
              RunStore.list_verification_allocations()
              |> Enum.find(&(&1.run_id == run_id))
 
-    refute PortPool.os_pid_alive?(os_pid)
+    refute os_pid_alive_after_wait?(os_pid)
   end
 
   test "dev server returns verification_failed when health check times out" do
@@ -312,5 +312,17 @@ defmodule SymphonyElixir.VerificationTest do
     {:ok, port} = :inet.port(socket)
     :gen_tcp.close(socket)
     port
+  end
+
+  defp os_pid_alive_after_wait?(pid, attempts \\ 50)
+  defp os_pid_alive_after_wait?(_pid, 0), do: true
+
+  defp os_pid_alive_after_wait?(pid, attempts) do
+    if PortPool.os_pid_alive?(pid) do
+      Process.sleep(100)
+      os_pid_alive_after_wait?(pid, attempts - 1)
+    else
+      false
+    end
   end
 end

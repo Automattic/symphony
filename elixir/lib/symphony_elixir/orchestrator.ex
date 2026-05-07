@@ -50,6 +50,8 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :watchdog_timer_ref,
+      :watchdog_token,
       running: %{},
       completed: MapSet.new(),
       completed_run_metadata: %{},
@@ -99,6 +101,8 @@ defmodule SymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
+      watchdog_timer_ref: nil,
+      watchdog_token: nil,
       claimed: claimed,
       retry_attempts: retry_attempts,
       completed_run_metadata: completed_run_metadata,
@@ -115,6 +119,7 @@ defmodule SymphonyElixir.Orchestrator do
     mark_interrupted_runs()
     run_terminal_workspace_cleanup()
     state = schedule_tick(state, 0)
+    state = schedule_watchdog_tick(state, config.watchdog.tick_interval_ms)
 
     {:ok, state}
   end
@@ -162,6 +167,29 @@ defmodule SymphonyElixir.Orchestrator do
     state = %{state | poll_check_in_progress: false}
 
     notify_dashboard()
+    {:noreply, state}
+  end
+
+  def handle_info({:watchdog_tick, watchdog_token}, %{watchdog_token: watchdog_token} = state)
+      when is_reference(watchdog_token) do
+    state =
+      state
+      |> refresh_runtime_config()
+      |> maybe_run_watchdog()
+      |> schedule_watchdog_tick(watchdog_tick_interval_ms())
+
+    {:noreply, state}
+  end
+
+  def handle_info({:watchdog_tick, _watchdog_token}, state), do: {:noreply, state}
+
+  def handle_info(:watchdog_tick, state) do
+    state =
+      state
+      |> refresh_runtime_config()
+      |> maybe_run_watchdog()
+      |> schedule_watchdog_tick(watchdog_tick_interval_ms())
+
     {:noreply, state}
   end
 
@@ -225,12 +253,15 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       running_entry ->
+        last_event_at = Map.get(running_entry, :last_event_at) || Map.get(running_entry, :started_at) || DateTime.utc_now()
+
         updated_running_entry =
           running_entry
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
           |> maybe_put_runtime_value(:agent_module, runtime_info[:agent_module])
           |> maybe_put_runtime_value(:agent_session, runtime_info[:agent_session])
+          |> Map.put(:last_event_at, last_event_at)
 
         persist_running_entry(updated_running_entry)
         notify_dashboard()
@@ -593,6 +624,14 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
+        if Keyword.get(opts, :stop_agent_session, false) do
+          stop_agent_session_for_stuck_issue(running_entry)
+        end
+
+        if Keyword.get(opts, :run_after_run_hook, false) do
+          run_after_run_cleanup(running_entry)
+        end
+
         Verification.release(Map.get(running_entry, :verification), Keyword.get(opts, :error, "agent stopped by orchestrator"))
 
         worker_host = Map.get(running_entry, :worker_host)
@@ -634,7 +673,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    elapsed_ms = stall_elapsed_ms(running_entry, now)
+    elapsed_ms = first_turn_stall_elapsed_ms(running_entry, now)
 
     if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
       identifier = Map.get(running_entry, :identifier, issue_id)
@@ -658,9 +697,11 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp stall_elapsed_ms(running_entry, now) do
+  defp first_turn_stall_elapsed_ms(%{last_codex_timestamp: %DateTime{}}, _now), do: nil
+
+  defp first_turn_stall_elapsed_ms(running_entry, now) do
     running_entry
-    |> last_activity_timestamp()
+    |> first_turn_started_at()
     |> case do
       %DateTime{} = timestamp ->
         max(0, DateTime.diff(now, timestamp, :millisecond))
@@ -670,11 +711,97 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp last_activity_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
+  defp first_turn_started_at(running_entry) when is_map(running_entry) do
+    Map.get(running_entry, :started_at)
   end
 
-  defp last_activity_timestamp(_running_entry), do: nil
+  defp first_turn_started_at(_running_entry), do: nil
+
+  defp maybe_run_watchdog(%State{} = state) do
+    config = Config.settings!().watchdog
+
+    cond do
+      config.enabled != true ->
+        state
+
+      map_size(state.running) == 0 ->
+        state
+
+      true ->
+        now = DateTime.utc_now()
+
+        Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
+          maybe_restart_stuck_issue(state_acc, issue_id, running_entry, now, config.no_progress_threshold_ms)
+        end)
+    end
+  end
+
+  defp maybe_restart_stuck_issue(state, issue_id, _running_entry, now, threshold_ms) do
+    case Map.get(state.running, issue_id) do
+      nil ->
+        state
+
+      running_entry ->
+        elapsed_ms = watchdog_elapsed_ms(running_entry, now)
+
+        if is_integer(elapsed_ms) and elapsed_ms >= threshold_ms do
+          restart_stuck_issue(state, issue_id, running_entry, elapsed_ms)
+        else
+          state
+        end
+    end
+  end
+
+  defp watchdog_elapsed_ms(running_entry, now) do
+    running_entry
+    |> watchdog_last_event_at()
+    |> case do
+      %DateTime{} = timestamp ->
+        max(0, DateTime.diff(now, timestamp, :millisecond))
+
+      _ ->
+        nil
+    end
+  end
+
+  defp watchdog_last_event_at(running_entry) when is_map(running_entry) do
+    Map.get(running_entry, :last_event_at) ||
+      Map.get(running_entry, :last_codex_timestamp) ||
+      Map.get(running_entry, :started_at)
+  end
+
+  defp watchdog_last_event_at(_running_entry), do: nil
+
+  defp restart_stuck_issue(state, issue_id, running_entry, elapsed_ms) do
+    identifier = Map.get(running_entry, :identifier, issue_id)
+    session_id = running_entry_session_id(running_entry)
+    last_event_at = watchdog_last_event_at(running_entry)
+    last_event_at_for_log = if is_struct(last_event_at, DateTime), do: DateTime.to_iso8601(last_event_at), else: "n/a"
+    error = "stuck for #{elapsed_ms}ms without transcript activity"
+    next_attempt = next_retry_attempt_from_running(running_entry)
+
+    Logger.warning(
+      "Agent run stuck: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} last_event_at=#{last_event_at_for_log} elapsed_ms=#{elapsed_ms}; restarting with backoff"
+    )
+
+    emit_run_stuck(running_entry, elapsed_ms, next_attempt)
+
+    state
+    |> terminate_running_issue(issue_id, false,
+      status: "timeout",
+      error: error,
+      stop_agent_session: true,
+      run_after_run_hook: true
+    )
+    |> schedule_issue_retry(issue_id, next_attempt, %{
+      identifier: identifier,
+      error: error,
+      reason: :stuck,
+      elapsed_ms: elapsed_ms,
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path)
+    })
+  end
 
   defp terminate_task(pid) when is_pid(pid) do
     case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
@@ -1117,6 +1244,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_message: nil,
           last_codex_timestamp: nil,
           last_codex_event: nil,
+          last_event_at: started_at,
           codex_app_server_pid: nil,
           agent_module: nil,
           agent_session: nil,
@@ -1194,6 +1322,8 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    reason = metadata[:reason] || Map.get(previous_retry, :reason)
+    elapsed_ms = metadata[:elapsed_ms] || Map.get(previous_retry, :elapsed_ms)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1207,6 +1337,8 @@ defmodule SymphonyElixir.Orchestrator do
       error: error,
       worker_host: worker_host,
       workspace_path: workspace_path,
+      reason: reason,
+      elapsed_ms: elapsed_ms,
       updated_at: DateTime.utc_now()
     })
 
@@ -1228,7 +1360,9 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            reason: reason,
+            elapsed_ms: elapsed_ms
           })
     }
   end
@@ -1240,7 +1374,9 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          reason: Map.get(retry_entry, :reason),
+          elapsed_ms: Map.get(retry_entry, :elapsed_ms)
         }
 
         delete_persisted_retry(issue_id)
@@ -1383,6 +1519,14 @@ defmodule SymphonyElixir.Orchestrator do
       reason: reason,
       attempt: next_attempt,
       metadata: %{source: "orchestrator"}
+    })
+  end
+
+  defp emit_run_stuck(running_entry, elapsed_ms, next_attempt) when is_map(running_entry) do
+    emit_running_event(:run_stuck, running_entry, %{
+      reason: "stuck",
+      attempt: next_attempt,
+      metadata: %{source: "orchestrator", reason: "stuck", elapsed_ms: elapsed_ms}
     })
   end
 
@@ -1645,6 +1789,47 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp stop_agent_session_configured?(_running_entry), do: false
 
+  defp stop_agent_session_for_stuck_issue(running_entry) do
+    if stop_agent_session_configured?(running_entry) do
+      case stop_agent_session_with_timeout(running_entry, @stop_session_cleanup_timeout_ms) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Agent stop_session cleanup failed while restarting stuck issue issue_identifier=#{Map.get(running_entry, :identifier)} session_id=#{running_entry_session_id(running_entry)} reason=#{inspect(reason)}"
+          )
+
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp run_after_run_cleanup(%{workspace_path: workspace} = running_entry)
+       when is_binary(workspace) and workspace != "" do
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           Workspace.run_after_run_hook(
+             workspace,
+             Map.get(running_entry, :issue) || Map.get(running_entry, :identifier),
+             Map.get(running_entry, :worker_host)
+           )
+         end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Unable to start async after_run cleanup while restarting stuck issue issue_identifier=#{Map.get(running_entry, :identifier)} session_id=#{running_entry_session_id(running_entry)} reason=#{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp run_after_run_cleanup(_running_entry), do: :ok
+
   defp stop_agent_session_with_timeout(running_entry, timeout_ms) do
     task =
       Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
@@ -1816,7 +2001,9 @@ defmodule SymphonyElixir.Orchestrator do
       identifier: Map.get(retry, :identifier) || issue_id,
       error: Map.get(retry, :error),
       worker_host: Map.get(retry, :worker_host),
-      workspace_path: Map.get(retry, :workspace_path)
+      workspace_path: Map.get(retry, :workspace_path),
+      reason: Map.get(retry, :reason),
+      elapsed_ms: Map.get(retry, :elapsed_ms)
     }
 
     {Map.put(retry_attempts, issue_id, retry_entry), MapSet.put(claimed, issue_id)}
@@ -1971,8 +2158,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp persist_running_entry(_running_entry), do: :ok
-
   defp persist_run_completion(running_entry, status, error) when is_map(running_entry) and is_binary(status) do
     case Map.get(running_entry, :run_id) do
       run_id when is_binary(run_id) ->
@@ -2094,7 +2279,7 @@ defmodule SymphonyElixir.Orchestrator do
       tokens: run_tokens(running_entry),
       runtime_seconds: 0,
       last_event: Map.get(running_entry, :last_codex_event),
-      last_event_at: Map.get(running_entry, :last_codex_timestamp),
+      last_event_at: Map.get(running_entry, :last_event_at) || Map.get(running_entry, :last_codex_timestamp),
       pull_request_url: URLUtils.pull_request_url(running_entry) || URLUtils.pull_request_url(issue),
       updated_at: now
     }
@@ -2114,7 +2299,7 @@ defmodule SymphonyElixir.Orchestrator do
       tokens: run_tokens(running_entry),
       runtime_seconds: running_seconds(Map.get(running_entry, :started_at), DateTime.utc_now()),
       last_event: Map.get(running_entry, :last_codex_event),
-      last_event_at: Map.get(running_entry, :last_codex_timestamp),
+      last_event_at: Map.get(running_entry, :last_event_at) || Map.get(running_entry, :last_codex_timestamp),
       pull_request_url: URLUtils.pull_request_url(running_entry) || URLUtils.pull_request_url(issue),
       updated_at: DateTime.utc_now()
     }
@@ -2344,6 +2529,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          last_event_at: Map.get(metadata, :last_event_at) || metadata.last_codex_timestamp,
           transcript_buffer: transcript_buffer_list(metadata),
           transcript_buffer_size: Map.get(metadata, :transcript_buffer_size, 0),
           runtime_seconds: running_seconds(metadata.started_at, now)
@@ -2360,7 +2546,9 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry, :identifier),
           error: Map.get(retry, :error),
           worker_host: Map.get(retry, :worker_host),
-          workspace_path: Map.get(retry, :workspace_path)
+          workspace_path: Map.get(retry, :workspace_path),
+          reason: Map.get(retry, :reason),
+          elapsed_ms: Map.get(retry, :elapsed_ms)
         }
       end)
 
@@ -2454,6 +2642,7 @@ defmodule SymphonyElixir.Orchestrator do
         transcript_path: transcript_path_for_update(transcript_path, update),
         pull_request_url: pull_request_url,
         last_codex_event: event,
+        last_event_at: timestamp,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
@@ -2577,6 +2766,25 @@ defmodule SymphonyElixir.Orchestrator do
         tick_token: tick_token,
         next_poll_due_at_ms: System.monotonic_time(:millisecond) + delay_ms
     }
+  end
+
+  defp schedule_watchdog_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
+    if is_reference(state.watchdog_timer_ref) do
+      Process.cancel_timer(state.watchdog_timer_ref)
+    end
+
+    watchdog_token = make_ref()
+    timer_ref = Process.send_after(self(), {:watchdog_tick, watchdog_token}, delay_ms)
+
+    %{
+      state
+      | watchdog_timer_ref: timer_ref,
+        watchdog_token: watchdog_token
+    }
+  end
+
+  defp watchdog_tick_interval_ms do
+    Config.settings!().watchdog.tick_interval_ms
   end
 
   defp schedule_poll_cycle_start do

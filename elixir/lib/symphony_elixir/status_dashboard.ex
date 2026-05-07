@@ -705,7 +705,7 @@ defmodule SymphonyElixir.StatusDashboard do
     identifier = map_value(watching_entry, [:identifier, "identifier"]) || issue_id
     state = map_value(watching_entry, [:state, "state"]) || "unknown"
     seconds_since_last_run = map_value(watching_entry, [:seconds_since_last_run, "seconds_since_last_run"])
-    url = watching_pull_request_url(watching_entry) || watching_linear_url(watching_entry) || "n/a"
+    url = watching_urls(watching_entry)
 
     [
       "│ ",
@@ -745,6 +745,21 @@ defmodule SymphonyElixir.StatusDashboard do
     watching_entry
     |> map_value([:url, "url"])
     |> URLUtils.present_url()
+  end
+
+  defp watching_urls(watching_entry) do
+    watching_entry
+    |> watching_url_values()
+    |> case do
+      [] -> "n/a"
+      urls -> Enum.join(urls, " | ")
+    end
+  end
+
+  defp watching_url_values(watching_entry) do
+    [watching_pull_request_url(watching_entry), watching_linear_url(watching_entry)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
   end
 
   defp watching_table_separator_row(watching_url_width) do

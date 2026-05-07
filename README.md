@@ -1,7 +1,8 @@
 # Symphony
 
 Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
-work instead of supervising coding agents.
+work instead of supervising coding agents. It retries failed work and recovers silent agent stalls so
+long-running queues do not need constant operator supervision.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
 

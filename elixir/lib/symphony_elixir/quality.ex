@@ -210,6 +210,7 @@ defmodule SymphonyElixir.Quality do
 
   defp error_kind("budget_exhausted", _error), do: "budget_exhausted"
   defp error_kind("timeout", _error), do: "timeout"
+  defp error_kind("stopped", _error), do: "stopped"
   defp error_kind(_status, error) when is_binary(error), do: "failure"
   defp error_kind("failure", _error), do: "failure"
   defp error_kind(_status, _error), do: nil

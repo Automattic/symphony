@@ -160,6 +160,27 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Watchdog do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: true)
+      field(:tick_interval_ms, :integer, default: 60_000)
+      field(:no_progress_threshold_ms, :integer, default: 600_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled, :tick_interval_ms, :no_progress_threshold_ms], empty_values: [])
+      |> validate_number(:tick_interval_ms, greater_than: 0)
+      |> validate_number(:no_progress_threshold_ms, greater_than: 0)
+    end
+  end
+
   defmodule Workspace do
     @moduledoc false
     use Ecto.Schema
@@ -899,6 +920,7 @@ defmodule SymphonyElixir.Config.Schema do
   embedded_schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:watchdog, Watchdog, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
@@ -1079,6 +1101,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast(attrs, [])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
+    |> cast_embed(:watchdog, with: &Watchdog.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)

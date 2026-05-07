@@ -203,16 +203,20 @@ ci:
   # flaky_retry: true
   # max_retries: 3
   # escalation_state: In Review
+watchdog:
+  enabled: true
+  tick_interval_ms: 60000
+  no_progress_threshold_ms: 600000
 notifications:
   enabled: false
   # redact_titles: true
   # channels:
   #   - kind: slack
   #     webhook_url: $SLACK_WEBHOOK_URL
-  #     events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, reviewer_commented, rework_pushed, ci_failed, ci_escalated]
+  #     events: [pr_opened, awaiting_review, run_failed, run_stuck, issue_completed, budget_exceeded, reviewer_commented, rework_pushed, ci_failed, ci_escalated]
   #   - kind: webhook
   #     url: $NOTIFY_WEBHOOK_URL
-  #     events: [run_failed, budget_exceeded, ci_failed, ci_escalated]
+  #     events: [run_failed, run_stuck, budget_exceeded, ci_failed, ci_escalated]
   #     headers:
   #       Authorization: $NOTIFY_AUTH_HEADER
 quality_gate:
@@ -280,17 +284,24 @@ Notes:
   either budget is configured with a command that may not report token usage. Per-issue exhausted
   runs are rehydrated from run history across restarts while the current limit still applies; raising
   or removing the per-issue limit lets the issue dispatch again.
+- `watchdog` is enabled by default and protects running agent sessions from silent no-progress stalls.
+  It checks running agents every `watchdog.tick_interval_ms` (default: `60000`) and compares the
+  current time with the latest transcript event timestamp. When no event has arrived for
+  `watchdog.no_progress_threshold_ms` (default: `600000`), Symphony stops the agent session, runs
+  `hooks.after_run`, records the run as timed out, emits `run_stuck`, and schedules a retry through
+  the normal retry queue/backoff. Set `watchdog.enabled: false` to keep the timer active while
+  disabling automatic termination.
 - The optional `ci` block is disabled by default. `poll_interval_ms` falls back to
   `polling.interval_ms` when omitted, `log_excerpt_lines` defaults to 200, `flaky_retry` defaults to
   true, `max_retries` defaults to 3, and `escalation_state` defaults to `In Review`.
 - The optional `notifications` block is disabled by default. When enabled, Symphony emits semantic
   lifecycle events to configured Slack incoming webhooks and generic JSON webhooks without blocking
   the orchestrator. Supported v1 events are `pr_opened`, `awaiting_review`, `run_failed`,
-  `issue_completed`, `budget_exceeded`, `reviewer_commented`, `rework_pushed`, `ci_failed`, and
-  `ci_escalated`. Per-channel `events` filters limit delivery; omitting `events` sends all supported
-  events to that channel. `redact_titles: true` suppresses issue and PR titles while preserving
-  identifiers and URLs. Slack and webhook URL/header values support the same `$VAR` environment
-  reference convention used by other secret-backed settings.
+  `run_stuck`, `issue_completed`, `budget_exceeded`, `reviewer_commented`, `rework_pushed`,
+  `ci_failed`, and `ci_escalated`. Per-channel `events` filters limit delivery; omitting `events`
+  sends all supported events to that channel. `redact_titles: true` suppresses issue and PR titles
+  while preserving identifiers and URLs. Slack and webhook URL/header values support the same `$VAR`
+  environment reference convention used by other secret-backed settings.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

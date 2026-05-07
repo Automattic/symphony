@@ -134,4 +134,23 @@ defmodule SymphonyElixir.QualityTest do
 
     assert eval.outcome == "pr_opened"
   end
+
+  test "stopped terminal status is not reported as failure error_kind" do
+    eval =
+      Quality.build_eval_log_for_test(
+        %{
+          run_id: "run-quality-7",
+          issue: %Issue{id: "i7", identifier: "RSM-7", pull_request_url: "https://github.com/example/repo/pull/100"},
+          started_at: DateTime.utc_now()
+        },
+        "stopped",
+        "agent stopped by orchestrator",
+        agent_kind: "codex",
+        transcript_events: nil
+      )
+
+    assert eval.outcome == "pr_opened"
+    assert eval.status == "stopped"
+    assert eval.error_kind == "stopped"
+  end
 end

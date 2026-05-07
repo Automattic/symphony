@@ -540,6 +540,136 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Verification do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @type t :: %__MODULE__{}
+
+    defmodule PortAllocation do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @type t :: %__MODULE__{}
+
+      @primary_key false
+      embedded_schema do
+        field(:range, {:array, :integer}, default: [4000, 4099])
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:range], empty_values: [])
+        |> validate_required([:range])
+        |> validate_range()
+      end
+
+      defp validate_range(changeset) do
+        validate_change(changeset, :range, fn :range, range ->
+          case range do
+            [first, last]
+            when is_integer(first) and is_integer(last) and first in 1..65_535 and last in 1..65_535 and
+                   first <= last ->
+              []
+
+            [_first, _last] ->
+              [range: "must contain two port integers between 1 and 65535 with start <= end"]
+
+            _ ->
+              [range: "must contain exactly two port integers"]
+          end
+        end)
+      end
+    end
+
+    defmodule DevServer do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @type t :: %__MODULE__{}
+
+      @primary_key false
+      @stop_signals ["TERM", "INT", "QUIT", "HUP", "KILL"]
+
+      embedded_schema do
+        field(:start_cmd, :string)
+        field(:health_check_url, :string)
+        field(:health_timeout_ms, :integer, default: 30_000)
+        field(:stop_signal, :string, default: "TERM")
+        field(:stop_timeout_ms, :integer, default: 10_000)
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(
+          attrs,
+          [:start_cmd, :health_check_url, :health_timeout_ms, :stop_signal, :stop_timeout_ms],
+          empty_values: []
+        )
+        |> normalize_optional_string(:start_cmd)
+        |> normalize_optional_string(:health_check_url)
+        |> normalize_stop_signal()
+        |> validate_number(:health_timeout_ms, greater_than: 0)
+        |> validate_number(:stop_timeout_ms, greater_than_or_equal_to: 0)
+        |> validate_inclusion(:stop_signal, @stop_signals)
+        |> validate_health_check_url_when_start_cmd_set()
+      end
+
+      defp normalize_optional_string(changeset, field) do
+        update_change(changeset, field, fn value when is_binary(value) ->
+          case String.trim(value) do
+            "" -> nil
+            trimmed -> trimmed
+          end
+        end)
+      end
+
+      defp normalize_stop_signal(changeset) do
+        update_change(changeset, :stop_signal, fn
+          value when is_binary(value) ->
+            value
+            |> String.trim()
+            |> String.upcase()
+            |> String.replace_prefix("SIG", "")
+
+          value ->
+            value
+        end)
+      end
+
+      defp validate_health_check_url_when_start_cmd_set(changeset) do
+        if present?(get_field(changeset, :start_cmd)) and not present?(get_field(changeset, :health_check_url)) do
+          add_error(changeset, :health_check_url, "is required when verification.dev_server.start_cmd is set")
+        else
+          changeset
+        end
+      end
+
+      defp present?(value) when is_binary(value), do: String.trim(value) != ""
+      defp present?(_value), do: false
+    end
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      embeds_one(:port_allocation, PortAllocation, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:dev_server, DevServer, on_replace: :update, defaults_to_struct: true)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled], empty_values: [])
+      |> cast_embed(:port_allocation, with: &PortAllocation.changeset/2)
+      |> cast_embed(:dev_server, with: &DevServer.changeset/2)
+    end
+  end
+
   defmodule Server do
     @moduledoc false
     use Ecto.Schema
@@ -777,6 +907,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:pr_review, PrReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:ci, Ci, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:verification, Verification, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:self_review, SelfReview, on_replace: :update, defaults_to_struct: true)
@@ -957,6 +1088,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:pr_review, with: &PrReview.changeset/2)
     |> cast_embed(:ci, with: &Ci.changeset/2)
+    |> cast_embed(:verification, with: &Verification.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
     |> cast_embed(:self_review, with: &SelfReview.changeset/2)

@@ -54,6 +54,22 @@ hooks:
     fi
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
+# Optional UI verification orchestration for parallel worktree runs. Disabled by
+# default. Symphony exposes SYMPHONY_VERIFICATION_PORT only; commands decide how
+# to pass it to the dev server.
+# verification:
+#   enabled: true
+#   port_allocation:
+#     range: [4000, 4099]
+#   dev_server:
+#     start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
+#     # Also works for framework env conventions:
+#     # start_cmd: "PORT=$SYMPHONY_VERIFICATION_PORT pnpm dev"
+#     # start_cmd: "PORT=$SYMPHONY_VERIFICATION_PORT mix phx.server"
+#     health_check_url: "http://localhost:${SYMPHONY_VERIFICATION_PORT}/healthz"
+#     health_timeout_ms: 30000
+#     stop_signal: TERM
+#     stop_timeout_ms: 10000
 agent:
   kind: codex
   max_concurrent_agents: 10

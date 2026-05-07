@@ -278,6 +278,76 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  test "auto-detects repo from HTTPS origin URL" do
+    with_fake_gh_and_git(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      """
+      #!/bin/sh
+      if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
+        printf 'https://github.com/alice/project.git\n'
+        exit 0
+      fi
+
+      printf 'feature/https-origin\n'
+      exit 0
+      """,
+      fn log_path ->
+        BeforeRemove.run([])
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo alice/project --head feature/https-origin"
+      end
+    )
+  end
+
+  test "falls back to default repo when origin URL is malformed" do
+    with_fake_gh_and_git(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      """
+      #!/bin/sh
+      if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
+        printf 'git@github.com\n'
+        exit 0
+      fi
+
+      printf 'feature/default-repo\n'
+      exit 0
+      """,
+      fn log_path ->
+        BeforeRemove.run([])
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo chihsuan/symphony --head feature/default-repo"
+      end
+    )
+  end
+
   test "no-ops when gh auth is unavailable" do
     with_fake_gh(
       """

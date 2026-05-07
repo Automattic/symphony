@@ -18,6 +18,7 @@ defmodule SymphonyElixir.Orchestrator do
     StatusDashboard,
     Tracker,
     URLUtils,
+    Verification,
     Workspace
   }
 
@@ -174,6 +175,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
+        Verification.release(Map.get(running_entry, :verification), "agent process exit")
         state = record_session_completion_totals(state, running_entry)
         session_id = running_entry_session_id(running_entry)
 
@@ -590,6 +592,8 @@ defmodule SymphonyElixir.Orchestrator do
         if is_reference(ref) do
           Process.demonitor(ref, [:flush])
         end
+
+        Verification.release(Map.get(running_entry, :verification), Keyword.get(opts, :error, "agent stopped by orchestrator"))
 
         worker_host = Map.get(running_entry, :worker_host)
 
@@ -1056,13 +1060,44 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+    run_id = new_run_id(issue.id)
+
+    case Verification.allocate_for_dispatch(issue, run_id, worker_host) do
+      {:ok, verification} ->
+        spawn_allocated_issue_on_worker_host(state, issue, attempt, recipient, worker_host, run_id, verification)
+
+      {:error, :exhausted} ->
+        Logger.warning("Verification port allocation exhausted for #{issue_context(issue)}; waiting for a free port")
+
+        schedule_issue_retry(state, issue.id, retry_attempt(attempt), %{
+          identifier: issue.identifier,
+          error: "verification port allocation exhausted",
+          worker_host: worker_host
+        })
+
+      {:error, reason} ->
+        Logger.warning("Verification port allocation failed for #{issue_context(issue)}: #{inspect(reason)}")
+
+        schedule_issue_retry(state, issue.id, retry_attempt(attempt), %{
+          identifier: issue.identifier,
+          error: "verification port allocation failed: #{inspect(reason)}",
+          worker_host: worker_host
+        })
+    end
+  end
+
+  defp spawn_allocated_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, run_id, verification) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient,
+             attempt: attempt,
+             worker_host: worker_host,
+             run_id: run_id,
+             verification: verification
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
         started_at = DateTime.utc_now()
-        run_id = new_run_id(issue.id)
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
@@ -1073,6 +1108,7 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           issue: issue,
           worker_host: worker_host,
+          verification: verification,
           workspace_path: nil,
           session_id: nil,
           transcript_path: nil,
@@ -1109,6 +1145,7 @@ defmodule SymphonyElixir.Orchestrator do
         }
 
       {:error, reason} ->
+        Verification.release(verification, "agent task spawn failed")
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
@@ -2048,6 +2085,7 @@ defmodule SymphonyElixir.Orchestrator do
       ended_at: nil,
       error: nil,
       worker_host: Map.get(running_entry, :worker_host),
+      verification_port: verification_port(running_entry),
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: Map.get(running_entry, :session_id),
       transcript_path: Map.get(running_entry, :transcript_path),
@@ -2067,6 +2105,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     %{
       worker_host: Map.get(running_entry, :worker_host),
+      verification_port: verification_port(running_entry),
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: Map.get(running_entry, :session_id),
       transcript_path: Map.get(running_entry, :transcript_path),
@@ -2088,6 +2127,9 @@ defmodule SymphonyElixir.Orchestrator do
       total_tokens: Map.get(running_entry, :codex_total_tokens, 0)
     }
   end
+
+  defp verification_port(%{verification: %{port: port}}) when is_integer(port), do: port
+  defp verification_port(_running_entry), do: nil
 
   defp new_run_id(issue_id) when is_binary(issue_id) do
     "#{issue_id}-#{System.system_time(:microsecond)}-#{System.unique_integer([:positive])}"
@@ -2586,10 +2628,6 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp completed_run_metadata(_running_entry) do
-    %{identifier: nil, url: nil, pull_request_url: nil, last_ran_at: DateTime.utc_now()}
-  end
-
   defp put_watching_issue(%State{} = state, %Issue{id: issue_id} = issue) when is_binary(issue_id) do
     completed_metadata = Map.get(state.completed_run_metadata, issue_id, %{})
     existing = Map.get(state.watching, issue_id, %{})
@@ -2670,8 +2708,6 @@ defmodule SymphonyElixir.Orchestrator do
     persist_codex_totals(codex_totals)
     %{state | codex_totals: codex_totals}
   end
-
-  defp record_session_completion_totals(state, _running_entry), do: state
 
   defp refresh_runtime_config(%State{} = state) do
     config = Config.settings!()

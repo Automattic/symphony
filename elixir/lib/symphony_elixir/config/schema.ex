@@ -654,6 +654,44 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Learnings do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @type t :: %__MODULE__{}
+
+    @primary_key false
+    @providers ["anthropic", "openai"]
+    @fields [:enabled, :provider, :model, :max_total_per_repo, :max_per_run]
+
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:provider, :string, default: "anthropic")
+      field(:model, :string, default: "claude-haiku-4-5-20251001")
+      field(:max_total_per_repo, :integer, default: 500)
+      field(:max_per_run, :integer, default: 3)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, @fields, empty_values: [])
+      |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
+      |> validate_number(:max_total_per_repo, greater_than: 0)
+      |> validate_number(:max_per_run, greater_than_or_equal_to: 0, less_than_or_equal_to: 3)
+      |> validate_required_when_enabled()
+    end
+
+    defp validate_required_when_enabled(changeset) do
+      if get_field(changeset, :enabled) do
+        validate_required(changeset, [:provider, :model, :max_total_per_repo, :max_per_run], message: "is required when learnings.enabled is true")
+      else
+        changeset
+      end
+    end
+  end
+
   defmodule SelfReview do
     @moduledoc false
     use Ecto.Schema
@@ -801,6 +839,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:ci, Ci, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:learnings, Learnings, on_replace: :update, defaults_to_struct: true)
     embeds_one(:self_review, SelfReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Notifications, on_replace: :update, defaults_to_struct: true)
   end
@@ -982,6 +1021,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:ci, with: &Ci.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
+    |> cast_embed(:learnings, with: &Learnings.changeset/2)
     |> cast_embed(:self_review, with: &SelfReview.changeset/2)
     |> cast_embed(:notifications, with: &Notifications.changeset/2)
   end

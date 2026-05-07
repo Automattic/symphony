@@ -15,8 +15,11 @@ defmodule SymphonyElixir.RunStore do
   @ci_check_table :symphony_run_store_ci_checks
   @eval_logs_table :symphony_run_store_eval_logs
   @pause_table :symphony_run_store_pause
+  @learnings_table :symphony_run_store_learnings
   @eval_log_attributes [:eval_id, :outcome, :agent_kind, :issue_label, :date, :record]
   @eval_log_indexes [:outcome, :agent_kind, :issue_label, :date]
+  @learning_attributes [:id, :repo, :created_at, :record]
+  @learning_indexes [:repo, :created_at]
   @tables [
     {@runs_table, [:run_id, :record], []},
     {@retry_table, [:issue_id, :record], []},
@@ -24,7 +27,8 @@ defmodule SymphonyElixir.RunStore do
     {@pr_review_table, [:issue_id, :record], []},
     {@ci_check_table, [:issue_id, :record], []},
     {@pause_table, [:key, :record], []},
-    {@eval_logs_table, @eval_log_attributes, [type: :bag, index: @eval_log_indexes]}
+    {@eval_logs_table, @eval_log_attributes, [type: :bag, index: @eval_log_indexes]},
+    {@learnings_table, @learning_attributes, [index: @learning_indexes]}
   ]
   @data_tables Enum.map(@tables, fn {table, _attributes, _opts} -> table end)
   @codex_totals_key :codex_totals
@@ -298,6 +302,44 @@ defmodule SymphonyElixir.RunStore do
         |> filter_eval_logs(opts)
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :logged_at)), :desc)
         |> limit_eval_logs(Keyword.get(opts, :limit, 50))
+      end)
+    end
+  end
+
+  @spec put_learnings([map()]) :: :ok | {:error, term()}
+  def put_learnings(records), do: put_learnings(records, 500)
+
+  @spec put_learnings([map()], pos_integer()) :: :ok | {:error, term()}
+  def put_learnings([], _max_total_per_repo), do: :ok
+
+  def put_learnings(records, max_total_per_repo)
+      when is_list(records) and is_integer(max_total_per_repo) and max_total_per_repo > 0 do
+    with :ok <- ensure_started(),
+         {:ok, normalized} <- normalize_learning_records(records) do
+      durable_transaction(fn ->
+        Enum.each(normalized, &write_learning_record/1)
+
+        normalized
+        |> Enum.map(&Map.fetch!(&1, :repo))
+        |> Enum.uniq()
+        |> Enum.each(&prune_learning_records(&1, max_total_per_repo))
+
+        :ok
+      end)
+    end
+  end
+
+  def put_learnings(_records, _max_total_per_repo), do: {:error, :invalid_learning_record}
+
+  @spec list_learnings(keyword()) :: [map()] | {:error, term()}
+  def list_learnings(opts \\ []) when is_list(opts) do
+    with :ok <- ensure_started() do
+      transaction(fn ->
+        @learnings_table
+        |> all_learning_records()
+        |> filter_learnings(opts)
+        |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :created_at)), :desc)
+        |> limit_learnings(Keyword.get(opts, :limit, :all))
       end)
     end
   end
@@ -659,6 +701,11 @@ defmodule SymphonyElixir.RunStore do
     |> Enum.uniq_by(&Map.get(&1, :eval_id))
   end
 
+  defp all_learning_records(table) do
+    :mnesia.match_object({table, :_, :_, :_, :_})
+    |> Enum.map(fn {^table, _id, _repo, _created_at, record} -> record end)
+  end
+
   defp normalize_record(record) when is_map(record) do
     Map.new(record)
   end
@@ -715,6 +762,70 @@ defmodule SymphonyElixir.RunStore do
       normalized
     })
   end
+
+  defp normalize_learning_records(records) do
+    records
+    |> Enum.reduce_while({:ok, []}, fn record, {:ok, acc} ->
+      case normalize_learning_record(record) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_learning_record(%{id: id, repo: repo, created_at: %DateTime{} = created_at} = record)
+       when is_binary(id) and is_binary(repo) do
+    trimmed_repo = String.trim(repo)
+
+    cond do
+      String.trim(id) == "" -> {:error, :invalid_learning_id}
+      trimmed_repo == "" -> {:error, :invalid_learning_repo}
+      true -> {:ok, record |> normalize_record() |> Map.put(:repo, trimmed_repo) |> Map.put(:created_at, created_at)}
+    end
+  end
+
+  defp normalize_learning_record(_record), do: {:error, :invalid_learning_record}
+
+  defp write_learning_record(%{id: id, repo: repo, created_at: created_at} = record) do
+    :mnesia.write({@learnings_table, id, repo, created_at, record})
+  end
+
+  defp prune_learning_records(repo, max_total_per_repo) do
+    records =
+      @learnings_table
+      |> all_learning_records()
+      |> Enum.filter(&(Map.get(&1, :repo) == repo))
+      |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :created_at)), :asc)
+
+    records
+    |> Enum.take(max(0, length(records) - max_total_per_repo))
+    |> Enum.each(fn %{id: id} -> :mnesia.delete({@learnings_table, id}) end)
+
+    :ok
+  end
+
+  defp filter_learnings(records, opts) do
+    Enum.filter(records, fn record ->
+      matches_value?(Map.get(record, :repo), Keyword.get(opts, :repo)) and
+        matches_learning_tag?(Map.get(record, :tags, []), Keyword.get(opts, :tag))
+    end)
+  end
+
+  defp matches_learning_tag?(_tags, nil), do: true
+  defp matches_learning_tag?(tags, tag) when is_list(tags) and is_binary(tag), do: tag in tags
+  defp matches_learning_tag?(_tags, _tag), do: false
+
+  defp limit_learnings(records, :all), do: records
+
+  defp limit_learnings(records, limit) when is_integer(limit) and limit >= 0 do
+    Enum.take(records, limit)
+  end
+
+  defp limit_learnings(records, _limit), do: records
 
   defp filter_eval_logs(records, opts) do
     Enum.filter(records, fn record ->

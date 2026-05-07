@@ -8,13 +8,15 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   alias SymphonyElixir.{CiPoller, Config, Notifications, RunStore, Tracker, Workspace}
   alias SymphonyElixir.GitHub.PullRequest
+  alias SymphonyElixir.Learnings.Reflection
   alias SymphonyElixir.Linear.Issue
 
   @in_review_state "In Review"
   @active_state "In Progress"
   @changes_requested "CHANGES_REQUESTED"
   @approved "APPROVED"
-  @closed_pr_states ["CLOSED", "MERGED"]
+  @closed_pr_states ["CLOSED"]
+  @merged_pr_state "MERGED"
   @github_error_backoff_threshold 3
   @max_github_error_backoff_ms 300_000
 
@@ -268,11 +270,12 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp discover_review_record(%Issue{} = issue, _runs, %{workspace_path: workspace_path} = existing, now)
+  defp discover_review_record(%Issue{} = issue, runs, %{workspace_path: workspace_path} = existing, now)
        when is_binary(workspace_path) and workspace_path != "" do
     attrs =
       existing
       |> missing_review_detail_attrs(issue)
+      |> missing_run_detail_attrs(existing, latest_run_for_issue(runs, issue.id))
       |> maybe_put_updated_at(now)
 
     if map_size(attrs) > 0 do
@@ -290,6 +293,8 @@ defmodule SymphonyElixir.PrReviewPoller do
         issue_title: issue.title,
         issue_url: issue.url,
         pr_url: pr_url,
+        run_id: Map.get(run, :run_id),
+        transcript_path: Map.get(run, :transcript_path),
         workspace_path: workspace_path,
         worker_host: Map.get(run, :worker_host),
         status: Map.get(existing || %{}, :status, "watching"),
@@ -387,6 +392,11 @@ defmodule SymphonyElixir.PrReviewPoller do
     {attrs, latest_activity_at, unaddressed_comments} = review_activity_attrs(record, activity, settings, now)
 
     case review_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
+      :merged ->
+        record
+        |> maybe_capture_learnings(activity, settings, opts, now)
+        |> cleanup_review(opts, now, "merged")
+
       :closed ->
         cleanup_review(record, opts, now, "closed")
 
@@ -443,6 +453,7 @@ defmodule SymphonyElixir.PrReviewPoller do
     review_decision = normalize_decision(Map.get(activity, :review_decision))
 
     cond do
+      merged_pr_state?(Map.get(activity, :state)) -> :merged
       closed_pr_state?(Map.get(activity, :state)) -> :closed
       review_decision == @changes_requested -> :changes_requested
       review_decision == @approved -> :approved
@@ -598,6 +609,147 @@ defmodule SymphonyElixir.PrReviewPoller do
           )
       end
     end
+  end
+
+  defp maybe_capture_learnings(record, activity, settings, opts, now) do
+    learnings = Map.get(settings, :learnings)
+
+    cond do
+      not learnings_enabled?(learnings) ->
+        record
+
+      learning_reflection_attempted?(record) ->
+        record
+
+      true ->
+        do_capture_learnings(record, activity, learnings, opts, now)
+    end
+  end
+
+  defp do_capture_learnings(record, activity, learnings, opts, now) do
+    case mark_learning_reflection_started(record, opts, now) do
+      {:ok, started_record} ->
+        issue = learning_reflection_issue(started_record, opts)
+
+        result =
+          capture_learnings_safely(
+            started_record,
+            %{record: started_record, activity: activity, issue: issue},
+            learnings,
+            opts_for_reflection(opts, now)
+          )
+
+        started_record
+        |> learning_reflection_result_attrs(result, now)
+        |> persist_learning_reflection_result(started_record, opts)
+
+      {:error, reason} ->
+        Logger.warning("Failed to mark learning reflection started issue_id=#{Map.get(record, :issue_id)}: #{inspect(reason)}")
+        record
+    end
+  end
+
+  defp capture_learnings_safely(record, source, learnings, opts) do
+    Reflection.capture(source, learnings, opts)
+  rescue
+    exception ->
+      stacktrace = __STACKTRACE__
+      log_learning_reflection_crash(record, :error, exception, stacktrace)
+      {:error, {:capture_crashed, :error, exception}}
+  catch
+    kind, reason ->
+      stacktrace = __STACKTRACE__
+      log_learning_reflection_crash(record, kind, reason, stacktrace)
+      {:error, {:capture_crashed, kind, reason}}
+  end
+
+  defp log_learning_reflection_crash(record, kind, reason, stacktrace) do
+    issue_id = Map.get(record, :issue_id)
+
+    Logger.error(
+      "Learning reflection crashed issue_id=#{issue_id}: " <>
+        Exception.format(kind, reason, stacktrace)
+    )
+  end
+
+  defp opts_for_reflection(opts, now) do
+    opts
+    |> Keyword.put(:now, now)
+    |> Keyword.put_new(:run_store, Keyword.get(opts, :run_store, RunStore))
+  end
+
+  defp learnings_enabled?(%{enabled: true}), do: true
+  defp learnings_enabled?(_learnings), do: false
+
+  defp learning_reflection_attempted?(record) do
+    Map.get(record, :learning_reflection_started_at) != nil or Map.get(record, :learning_reflected_at) != nil
+  end
+
+  defp mark_learning_reflection_started(record, opts, now) do
+    attrs = %{
+      learning_reflection_started_at: now,
+      updated_at: now
+    }
+
+    case update_review(opts, record, attrs) do
+      :ok -> {:ok, Map.merge(record, attrs)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp learning_reflection_result_attrs(_record, {:ok, count}, now) do
+    %{
+      learning_reflected_at: now,
+      learning_reflection_count: count,
+      learning_reflection_error: nil,
+      updated_at: now
+    }
+  end
+
+  defp learning_reflection_result_attrs(_record, {:discarded, reason}, now) do
+    %{
+      learning_reflected_at: now,
+      learning_reflection_count: 0,
+      learning_reflection_error: inspect({:discarded, reason}),
+      updated_at: now
+    }
+  end
+
+  defp learning_reflection_result_attrs(_record, {:error, reason}, now) do
+    %{
+      learning_reflected_at: now,
+      learning_reflection_count: 0,
+      learning_reflection_error: inspect(reason),
+      updated_at: now
+    }
+  end
+
+  defp persist_learning_reflection_result(attrs, record, opts) do
+    case update_review(opts, record, attrs) do
+      :ok ->
+        Map.merge(record, attrs)
+
+      {:error, reason} ->
+        Logger.warning("Failed to persist learning reflection result issue_id=#{Map.get(record, :issue_id)}: #{inspect(reason)}")
+        record
+    end
+  end
+
+  defp learning_reflection_issue(record, opts) do
+    case fetch_review_issue(record, opts) do
+      {:ok, %Issue{} = issue} -> issue
+      _other -> issue_from_review_record(record)
+    end
+  end
+
+  defp issue_from_review_record(record) do
+    %Issue{
+      id: Map.get(record, :issue_id),
+      identifier: Map.get(record, :issue_identifier),
+      title: Map.get(record, :issue_title),
+      url: Map.get(record, :issue_url),
+      pr_urls: [Map.get(record, :pr_url)] |> Enum.filter(&present?/1)
+    }
   end
 
   defp finish_workspace_cleanup(record, opts, now, reason) do
@@ -904,6 +1056,12 @@ defmodule SymphonyElixir.PrReviewPoller do
     |> then(&(&1 in @closed_pr_states))
   end
 
+  defp merged_pr_state?(state) do
+    state
+    |> normalize_decision()
+    |> then(&(&1 == @merged_pr_state))
+  end
+
   defp normalize_decision(value) when is_binary(value) do
     value |> String.trim() |> String.upcase()
   end
@@ -1099,6 +1257,14 @@ defmodule SymphonyElixir.PrReviewPoller do
     record
     |> missing_issue_detail_attrs(issue)
     |> maybe_put_missing(:pr_url, record, first_pr_url(issue))
+  end
+
+  defp missing_run_detail_attrs(attrs, _record, nil), do: attrs
+
+  defp missing_run_detail_attrs(attrs, record, run) when is_map(run) do
+    attrs
+    |> maybe_put_missing(:run_id, record, Map.get(run, :run_id))
+    |> maybe_put_missing(:transcript_path, record, Map.get(run, :transcript_path))
   end
 
   defp maybe_put_missing(attrs, key, record, value) do

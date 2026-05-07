@@ -94,6 +94,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
             </p>
             <a class="action-pill" href="/quality">Quality Dashboard →</a>
+            <a class="action-pill" href="/learnings">Learnings →</a>
           </div>
 
           <div class="status-stack">

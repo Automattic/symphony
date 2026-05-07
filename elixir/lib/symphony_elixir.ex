@@ -54,7 +54,10 @@ defmodule SymphonyElixir.Application do
     else
       (core_children ++
          [
-           SymphonyElixir.RunStore,
+           SymphonyElixir.RunStore
+         ] ++
+         SymphonyElixir.Verification.child_specs_for_runtime(SymphonyElixir.Config.settings!()) ++
+         [
            SymphonyElixir.Orchestrator,
            pr_review_child_spec(),
            ci_child_spec(),

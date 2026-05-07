@@ -3,6 +3,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias Ecto.Changeset
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Agent, StringOrMap}
+  alias SymphonyElixir.Config.Schema.Verification.DevServer, as: DevServerConfig
   alias SymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
@@ -1213,6 +1214,36 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "run hooks receive verification port env when provided" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-verification-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_run: "printf '%s' \"$SYMPHONY_VERIFICATION_PORT\" > before-port.txt",
+        hook_after_run: "printf '%s' \"$SYMPHONY_VERIFICATION_PORT\" > after-port.txt"
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-PORT-ENV")
+      env = [{"SYMPHONY_VERIFICATION_PORT", "4077"}]
+
+      assert :ok = Workspace.run_before_run_hook(workspace, "MT-PORT-ENV", nil, env: env)
+      assert :ok = Workspace.run_after_run_hook(workspace, "MT-PORT-ENV", nil, env: env)
+
+      assert File.read!(Path.join(workspace, "before-port.txt")) == "4077"
+      assert File.read!(Path.join(workspace, "after-port.txt")) == "4077"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workflow routing supports label inputs and routes without hook overrides" do
     write_workflow_file!(Workflow.workflow_file_path(),
       hook_after_create: "echo fallback > route.txt",
@@ -1443,6 +1474,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.server.host == "127.0.0.1"
     assert Config.server_port() == 0
     assert Config.server_host() == "127.0.0.1"
+    assert config.verification.enabled == false
+    assert config.verification.port_allocation.range == [4000, 4099]
+    assert config.verification.dev_server.start_cmd == nil
+    assert config.verification.dev_server.health_check_url == nil
+    assert config.verification.dev_server.health_timeout_ms == 30_000
+    assert config.verification.dev_server.stop_signal == "TERM"
+    assert config.verification.dev_server.stop_timeout_ms == 10_000
+    refute SymphonyElixir.Verification.PortPool in SymphonyElixir.Application.child_specs_for_runtime(%{})
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_command: "codex --config 'model=\"gpt-5.5\"' app-server"
@@ -1450,6 +1489,100 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Config.settings!().agent.command ==
              "codex --config 'model=\"gpt-5.5\"' app-server"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      verification: %{
+        enabled: true,
+        port_allocation: %{range: [4100, 4102]},
+        dev_server: %{
+          start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT",
+          health_check_url: "http://localhost:${SYMPHONY_VERIFICATION_PORT}/healthz",
+          health_timeout_ms: 100,
+          stop_signal: "sigterm",
+          stop_timeout_ms: 50
+        }
+      }
+    )
+
+    assert Config.settings!().verification.enabled == true
+    assert Config.settings!().verification.port_allocation.range == [4100, 4102]
+    assert Config.settings!().verification.dev_server.stop_signal == "TERM"
+    verification_children = SymphonyElixir.Application.child_specs_for_runtime(%{})
+
+    dev_server_supervisor_child = {
+      DynamicSupervisor,
+      strategy: :one_for_one, name: SymphonyElixir.Verification.DevServerSupervisor
+    }
+
+    assert SymphonyElixir.Verification.PortPool in verification_children
+    assert dev_server_supervisor_child in verification_children
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      verification: %{enabled: true, port_allocation: %{range: [4102, 4100]}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "verification.port_allocation.range"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      verification: %{enabled: true, port_allocation: %{range: [4100]}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "must contain exactly two port integers"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      verification: %{enabled: true, port_allocation: %{range: [0, 70_000]}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "must contain two port integers between 1 and 65535"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      verification: %{
+        enabled: true,
+        dev_server: %{start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"}
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "verification.dev_server.start_cmd is set"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      verification: %{
+        enabled: true,
+        dev_server: %{
+          start_cmd: " ",
+          health_check_url: " ",
+          stop_signal: "sigint",
+          stop_timeout_ms: 0
+        }
+      }
+    )
+
+    assert Config.settings!().verification.dev_server.start_cmd == nil
+    assert Config.settings!().verification.dev_server.health_check_url == nil
+    assert Config.settings!().verification.dev_server.stop_signal == "INT"
+    assert Config.settings!().verification.dev_server.stop_timeout_ms == 0
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      verification: %{
+        enabled: true,
+        dev_server: %{stop_signal: "USR1"}
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "verification.dev_server.stop_signal"
+
+    dev_server_changeset =
+      DevServerConfig.changeset(%DevServerConfig{}, %{
+        start_cmd: nil,
+        health_check_url: nil,
+        stop_signal: nil
+      })
+
+    assert dev_server_changeset.valid?
 
     write_workflow_file!(Workflow.workflow_file_path(),
       max_tokens_per_issue: 500_000,

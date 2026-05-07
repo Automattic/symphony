@@ -408,11 +408,12 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host()) ::
+  @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host(), keyword()) ::
           :ok | {:error, term()}
-  def run_before_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
+  def run_before_run_hook(workspace, issue_or_identifier, worker_host \\ nil, opts \\ []) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
     hooks = Config.hooks_for_issue(issue_context)
+    env = Keyword.get(opts, :env, [])
 
     case hooks.before_run do
       nil ->
@@ -425,15 +426,17 @@ defmodule SymphonyElixir.Workspace do
           issue_context,
           "before_run",
           worker_host,
-          hooks.timeout_ms
+          hooks.timeout_ms,
+          env
         )
     end
   end
 
-  @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
-  def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
+  @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host(), keyword()) :: :ok
+  def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil, opts \\ []) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
     hooks = Config.hooks_for_issue(issue_context)
+    env = Keyword.get(opts, :env, [])
 
     case hooks.after_run do
       nil ->
@@ -446,7 +449,8 @@ defmodule SymphonyElixir.Workspace do
           issue_context,
           "after_run",
           worker_host,
-          hooks.timeout_ms
+          hooks.timeout_ms,
+          env
         )
         |> ignore_hook_failure()
     end
@@ -564,12 +568,18 @@ defmodule SymphonyElixir.Workspace do
   defp ignore_hook_failure(:ok), do: :ok
   defp ignore_hook_failure({:error, _reason}), do: :ok
 
-  defp run_hook(command, workspace, issue_context, hook_name, nil, timeout_ms) do
+  defp run_hook(command, workspace, issue_context, hook_name, worker_host, timeout_ms, env \\ [])
+
+  defp run_hook(command, workspace, issue_context, hook_name, nil, timeout_ms, env) do
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        opts =
+          [cd: workspace, stderr_to_stdout: true]
+          |> maybe_put_env(env)
+
+        System.cmd("sh", ["-lc", command], opts)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -585,10 +595,16 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp run_hook(command, workspace, issue_context, hook_name, worker_host, timeout_ms) when is_binary(worker_host) do
+  defp run_hook(command, workspace, issue_context, hook_name, worker_host, timeout_ms, env) when is_binary(worker_host) do
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    script =
+      env
+      |> remote_env_assignments()
+      |> Kernel.++(["cd #{shell_escape(workspace)} && #{command}"])
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -623,6 +639,17 @@ defmodule SymphonyElixir.Workspace do
         binary_part(binary_output, 0, max_bytes) <> "... (truncated)"
     end
   end
+
+  defp maybe_put_env(opts, []), do: opts
+  defp maybe_put_env(opts, env), do: Keyword.put(opts, :env, env)
+
+  defp remote_env_assignments(env) when is_list(env) do
+    Enum.map(env, fn {key, value} ->
+      "export #{key}=#{shell_escape(to_string(value))}"
+    end)
+  end
+
+  defp remote_env_assignments(_env), do: []
 
   defp log_workspace_removal_failure(workspace, issue_context, worker_host, reason, output) do
     sanitized_output = sanitize_hook_output_for_log(output)

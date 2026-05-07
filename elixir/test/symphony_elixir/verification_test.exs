@@ -1,0 +1,339 @@
+defmodule SymphonyElixir.VerificationTest do
+  use SymphonyElixir.TestSupport
+
+  alias SymphonyElixir.Config.Schema.Verification.DevServer, as: DevServerConfig
+  alias SymphonyElixir.Verification
+  alias SymphonyElixir.Verification.{DevServer, PortPool}
+
+  setup do
+    stop_verification_port_pool()
+    :ok = RunStore.clear()
+
+    on_exit(fn ->
+      stop_verification_port_pool()
+    end)
+
+    :ok
+  end
+
+  test "port pool allocates unique ports and never double allocates when exhausted" do
+    {:ok, _pid} = PortPool.start_link(reconcile_interval_ms: nil, process_alive?: fn _pid -> true end)
+
+    attrs = fn run_id ->
+      %{
+        run_id: run_id,
+        issue_id: "issue-#{run_id}",
+        issue_identifier: "RSM-#{run_id}",
+        port_range: [4110, 4111]
+      }
+    end
+
+    tasks =
+      for run_id <- ["run-1", "run-2"] do
+        Task.async(fn -> PortPool.allocate(attrs.(run_id)) end)
+      end
+
+    ports =
+      tasks
+      |> Task.await_many()
+      |> Enum.map(fn {:ok, allocation} -> allocation.port end)
+      |> Enum.sort()
+
+    assert ports == [4110, 4111]
+    assert {:error, :exhausted} = PortPool.allocate(attrs.("run-3"))
+
+    assert :ok = PortPool.release("run-1", "test release")
+    assert {:ok, %{port: 4110}} = PortPool.allocate(attrs.("run-3"))
+  end
+
+  test "port pool restart reconciliation keeps live allocations and releases stale ones" do
+    now = DateTime.utc_now()
+
+    assert :ok =
+             RunStore.put_verification_allocation(%{
+               run_id: "live-run",
+               issue_id: "issue-live",
+               issue_identifier: "RSM-LIVE",
+               port: 4120,
+               status: "dev_server_started",
+               dev_server_os_pid: 111,
+               allocated_at: now,
+               updated_at: now
+             })
+
+    assert :ok =
+             RunStore.put_verification_allocation(%{
+               run_id: "stale-run",
+               issue_id: "issue-stale",
+               issue_identifier: "RSM-STALE",
+               port: 4121,
+               status: "dev_server_started",
+               dev_server_os_pid: 222,
+               allocated_at: now,
+               updated_at: now
+             })
+
+    {:ok, pid} =
+      PortPool.start_link(
+        reconcile_interval_ms: nil,
+        process_alive?: fn
+          111 -> true
+          222 -> false
+        end
+      )
+
+    assert [%{run_id: "live-run", port: 4120}] = PortPool.active_allocations()
+
+    assert %{status: "released"} =
+             RunStore.list_verification_allocations()
+             |> Enum.find(&(&1.run_id == "stale-run"))
+
+    GenServer.stop(pid)
+
+    {:ok, _pid} = PortPool.start_link(reconcile_interval_ms: nil, process_alive?: fn _pid -> false end)
+    assert :ok = PortPool.reconcile()
+    assert [] = PortPool.active_allocations()
+  end
+
+  test "dev server starts in workspace cwd, becomes healthy, and stops" do
+    port = free_tcp_port()
+    workspace = System.tmp_dir!()
+    run_id = "dev-server-run"
+
+    {:ok, _pid} = PortPool.start_link(reconcile_interval_ms: nil, process_alive?: fn _pid -> true end)
+
+    assert {:ok, %{port: ^port}} =
+             PortPool.allocate(%{
+               run_id: run_id,
+               issue_id: "issue-dev-server",
+               issue_identifier: "RSM-DEV",
+               port_range: [port, port]
+             })
+
+    config = %DevServerConfig{
+      start_cmd: "python3 -m http.server $SYMPHONY_VERIFICATION_PORT --bind 127.0.0.1",
+      health_check_url: "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/",
+      health_timeout_ms: 5_000,
+      stop_signal: "TERM",
+      stop_timeout_ms: 1_000
+    }
+
+    assert {:ok, pid} =
+             DevServer.start(
+               run_id: run_id,
+               port: port,
+               workspace: workspace,
+               config: config,
+               env: Verification.env(%{port: port}),
+               owner: self()
+             )
+
+    assert Process.alive?(pid)
+    assert :ok = DevServer.stop(pid)
+    refute Process.alive?(pid)
+
+    assert %{status: "dev_server_started", dev_server_os_pid: os_pid} =
+             RunStore.list_verification_allocations()
+             |> Enum.find(&(&1.run_id == run_id))
+
+    assert is_integer(os_pid)
+    refute http_server_responding_after_wait?("http://127.0.0.1:#{port}/")
+  end
+
+  test "dev server returns verification_failed when health check times out" do
+    port = free_tcp_port()
+
+    config = %DevServerConfig{
+      start_cmd: "sleep 1",
+      health_check_url: "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/healthz",
+      health_timeout_ms: 50,
+      stop_signal: "TERM",
+      stop_timeout_ms: 100
+    }
+
+    assert {:error, {:verification_failed, :health_timeout}} =
+             DevServer.start(
+               run_id: "timeout-run",
+               port: port,
+               workspace: System.tmp_dir!(),
+               config: config,
+               env: Verification.env(%{port: port}),
+               owner: self()
+             )
+  end
+
+  test "dev server fails fast when process-group isolation is unavailable" do
+    port = free_tcp_port()
+    shell = System.find_executable("sh") || System.find_executable("bash")
+    assert is_binary(shell)
+
+    config = %DevServerConfig{
+      start_cmd: "sleep 1",
+      health_check_url: "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/healthz",
+      health_timeout_ms: 50,
+      stop_signal: "TERM",
+      stop_timeout_ms: 100
+    }
+
+    assert {:error, {:verification_failed, :process_group_unavailable}} =
+             DevServer.start(
+               run_id: "no-process-group-run",
+               port: port,
+               workspace: System.tmp_dir!(),
+               config: config,
+               env: Verification.env(%{port: port}),
+               owner: self(),
+               launcher: fn -> {:ok, shell, ["-lc", "sleep 1"], [], false} end
+             )
+  end
+
+  test "dev server reports verification_failed when Python is unavailable" do
+    port = free_tcp_port()
+
+    config = %DevServerConfig{
+      start_cmd: "sleep 1",
+      health_check_url: "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/healthz",
+      health_timeout_ms: 50,
+      stop_signal: "TERM",
+      stop_timeout_ms: 100
+    }
+
+    assert {:error, {:verification_failed, :python_not_found}} =
+             DevServer.start(
+               run_id: "python-not-found-run",
+               port: port,
+               workspace: System.tmp_dir!(),
+               config: config,
+               env: Verification.env(%{port: port}),
+               owner: self(),
+               launcher: fn -> {:error, :python_not_found} end
+             )
+  end
+
+  test "agent runner aborts before first turn when verification health check fails" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-verification-agent-abort-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      fake_codex = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+      port = free_tcp_port()
+
+      File.mkdir_p!(test_root)
+
+      File.write!(fake_codex, """
+      #!/bin/sh
+      printf 'agent-turn-started\\n' > "#{trace_file}"
+      exit 0
+      """)
+
+      File.chmod!(fake_codex, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{fake_codex} app-server",
+        verification: %{
+          enabled: true,
+          port_allocation: %{range: [port, port]},
+          dev_server: %{
+            start_cmd: "sleep 1",
+            health_check_url: "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/healthz",
+            health_timeout_ms: 50,
+            stop_timeout_ms: 100
+          }
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-verification-timeout",
+        identifier: "RSM-VERIFY",
+        title: "Verify before turn",
+        state: "In Progress"
+      }
+
+      assert_raise RuntimeError, ~r/verification_failed/, fn ->
+        AgentRunner.run(issue, nil)
+      end
+
+      refute File.exists?(trace_file)
+
+      assert [%{run_id: run_id, status: "released"}] = RunStore.list_verification_allocations()
+      assert String.starts_with?(run_id, "issue-verification-timeout-verification-")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner releases verification allocation when workspace setup fails" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-verification-workspace-fail-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      File.mkdir_p!(test_root)
+      workspace_root = Path.join(test_root, "workspace-root-file")
+      File.write!(workspace_root, "not a directory")
+      port = free_tcp_port()
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        verification: %{
+          enabled: true,
+          port_allocation: %{range: [port, port]}
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-verification-workspace-fail",
+        identifier: "RSM-VERIFY-WS",
+        title: "Release on workspace failure",
+        state: "In Progress"
+      }
+
+      assert_raise RuntimeError, ~r/workspace setup failed|enotdir|file exists/i, fn ->
+        AgentRunner.run(issue, nil)
+      end
+
+      assert [%{run_id: run_id, status: "released", release_reason: "workspace setup failed"}] =
+               RunStore.list_verification_allocations()
+
+      assert String.starts_with?(run_id, "issue-verification-workspace-fail-verification-")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp free_tcp_port do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(socket)
+    :gen_tcp.close(socket)
+    port
+  end
+
+  defp http_server_responding_after_wait?(url, attempts \\ 50)
+  defp http_server_responding_after_wait?(_url, 0), do: true
+
+  defp http_server_responding_after_wait?(url, attempts) do
+    if http_ok?(url) do
+      Process.sleep(100)
+      http_server_responding_after_wait?(url, attempts - 1)
+    else
+      false
+    end
+  end
+
+  defp http_ok?(url) do
+    case Req.get(url, receive_timeout: 100, retry: false) do
+      {:ok, %{status: 200}} -> true
+      _response -> false
+    end
+  rescue
+    _exception -> false
+  end
+end

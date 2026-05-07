@@ -14,8 +14,11 @@ defmodule SymphonyElixir.AgentRunner do
     PrReviewPoller,
     SelfReview,
     Tracker,
+    Verification,
     Workspace
   }
+
+  @dev_server_pid_key {__MODULE__, :verification_dev_server_pid}
 
   @type worker_host :: String.t() | nil
 
@@ -39,21 +42,45 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case workspace_for_issue(issue, opts, worker_host) do
-      {:ok, workspace} ->
-        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+    case Verification.context_for_agent(issue, Keyword.put(opts, :worker_host, worker_host)) do
+      {:ok, verification} ->
+        verification_env = Verification.env(verification)
 
-        try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            enriched_issue = enrich_issue_for_dispatch(issue, opts)
-            run_codex_turns(workspace, enriched_issue, codex_update_recipient, opts, worker_host)
-          end
-        after
-          Workspace.run_after_run_hook(workspace, issue, worker_host)
+        case workspace_for_issue(issue, opts, worker_host) do
+          {:ok, workspace} ->
+            send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+
+            try do
+              with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host, env: verification_env),
+                   {:ok, dev_server_pid} <-
+                     Verification.start_dev_server(verification, workspace, settings: Config.settings!()) do
+                remember_verification_dev_server(dev_server_pid)
+                enriched_issue = enrich_issue_for_dispatch(issue, opts)
+                run_codex_turns(workspace, enriched_issue, codex_update_recipient, opts, worker_host)
+              end
+            after
+              Workspace.run_after_run_hook(workspace, issue, worker_host, env: verification_env)
+              stop_remembered_verification_dev_server()
+              Verification.release(verification, "after_run completed")
+            end
+
+          {:error, reason} ->
+            Verification.release(verification, "workspace setup failed")
+            {:error, reason}
         end
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp remember_verification_dev_server(pid) when is_pid(pid), do: Process.put(@dev_server_pid_key, pid)
+  defp remember_verification_dev_server(_pid), do: :ok
+
+  defp stop_remembered_verification_dev_server do
+    case Process.delete(@dev_server_pid_key) do
+      pid when is_pid(pid) -> Verification.stop_dev_server(pid)
+      _ -> :ok
     end
   end
 

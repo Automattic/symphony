@@ -124,12 +124,18 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     mark_interrupted_runs()
-    run_terminal_workspace_cleanup()
-    state = run_startup_workspace_lifecycle(state, now_ms)
-    state = schedule_tick(state, 0)
+    tick_token = make_ref()
+    send(self(), {:tick, tick_token})
+    state = %{state | tick_token: tick_token, next_poll_due_at_ms: now_ms}
     state = schedule_watchdog_tick(state, config.watchdog.tick_interval_ms)
 
-    {:ok, state}
+    {:ok, state, {:continue, {:startup_workspace_lifecycle, now_ms}}}
+  end
+
+  @impl true
+  def handle_continue({:startup_workspace_lifecycle, now_ms}, state) do
+    run_terminal_workspace_cleanup()
+    {:noreply, run_startup_workspace_lifecycle(state, now_ms)}
   end
 
   defp log_quality_gate_config(%SymphonyElixir.Config.Schema.QualityGate{} = config) do

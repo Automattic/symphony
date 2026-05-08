@@ -1053,6 +1053,26 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert warning =~ "pausing new dispatch"
   end
 
+  test "orchestrator snapshots include default finite token budgets when omitted" do
+    write_workflow_without_token_budget_keys!()
+
+    orchestrator_name = Module.concat(__MODULE__, :DefaultBudgetOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.budget.per_issue_limit == 500_000
+    assert snapshot.budget.daily_limit == 5_000_000
+    assert snapshot.budget.daily_used == 0
+    assert snapshot.budget.daily_remaining == 5_000_000
+    refute snapshot.budget.daily_paused
+  end
+
   test "operator pause is exposed in snapshots and preserves retry queue without dispatching" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -3047,6 +3067,29 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           do_wait_for_file_contents(path, expected, deadline_ms)
         end
     end
+  end
+
+  defp write_workflow_without_token_budget_keys! do
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    ---
+    Prompt
+    """)
+
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      try do
+        SymphonyElixir.WorkflowStore.force_reload()
+      catch
+        :exit, _reason -> :ok
+      end
+    end
+
+    :ok
   end
 
   defp terminate_task_supervisor_children do

@@ -228,6 +228,8 @@ defmodule SymphonyElixir.Config.Schema do
 
     alias SymphonyElixir.Config.Schema
 
+    @default_max_tokens_per_issue 500_000
+    @default_max_tokens_per_day 5_000_000
     @codex_default_approval_policy %{
       "reject" => %{
         "sandbox_approval" => true,
@@ -272,8 +274,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
-      field(:max_tokens_per_issue, :integer)
-      field(:max_tokens_per_day, :integer)
+      field(:max_tokens_per_issue, :integer, default: @default_max_tokens_per_issue)
+      field(:max_tokens_per_day, :integer, default: @default_max_tokens_per_day)
       field(:command, :string)
 
       field(:approval_policy, StringOrMap)
@@ -1344,17 +1346,28 @@ defmodule SymphonyElixir.Config.Schema do
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
 
-  defp drop_nil_values(value) when is_map(value) do
+  defp drop_nil_values(value), do: drop_nil_values(value, [])
+
+  defp drop_nil_values(value, path) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, nested}, acc ->
-      case drop_nil_values(nested) do
-        nil -> acc
-        normalized -> Map.put(acc, key, normalized)
-      end
+      child_path = path ++ [key]
+      put_non_nil_or_preserved_value(acc, key, child_path, drop_nil_values(nested, child_path))
     end)
   end
 
-  defp drop_nil_values(value) when is_list(value), do: Enum.map(value, &drop_nil_values/1)
-  defp drop_nil_values(value), do: value
+  defp drop_nil_values(value, path) when is_list(value), do: Enum.map(value, &drop_nil_values(&1, path))
+  defp drop_nil_values(value, _path), do: value
+
+  defp put_non_nil_or_preserved_value(acc, key, path, nil) do
+    if preserve_explicit_nil_path?(path), do: Map.put(acc, key, nil), else: acc
+  end
+
+  defp put_non_nil_or_preserved_value(acc, key, _path, value), do: Map.put(acc, key, value)
+
+  defp preserve_explicit_nil_path?(["agent", key]) when key in ["max_tokens_per_issue", "max_tokens_per_day"],
+    do: true
+
+  defp preserve_explicit_nil_path?(_path), do: false
 
   defp resolve_secret_setting(nil, fallback), do: normalize_secret_value(fallback)
 

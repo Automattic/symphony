@@ -301,6 +301,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="token-stack numeric">
                         <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
+                        <%= if issue_budget_limited?(@payload.budget.per_issue_limit) do %>
+                          <span class="muted">Budget: <%= format_issue_budget_remaining(entry.tokens.total_tokens, @payload.budget.per_issue_limit) %> left</span>
+                        <% end %>
                         <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
                     </td>
@@ -560,6 +563,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp format_budget_limit(limit) when is_integer(limit) and limit > 0, do: format_compact_int(limit)
   defp format_budget_limit(_limit), do: "Unlimited"
+
+  defp issue_budget_limited?(limit), do: is_integer(limit) and limit > 0
+
+  defp format_issue_budget_remaining(used, limit) when is_integer(used) and is_integer(limit) and limit > 0 do
+    limit
+    |> Kernel.-(max(used, 0))
+    |> max(0)
+    |> format_compact_int()
+  end
+
+  defp format_issue_budget_remaining(_used, _limit), do: "n/a"
 
   defp daily_budget_detail(%{daily_paused: true}), do: "paused"
 

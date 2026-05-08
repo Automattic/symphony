@@ -2631,6 +2631,23 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "token budget defaults apply when omitted and explicit null disables caps" do
+    write_workflow_without_token_budget_keys!()
+
+    config = Config.settings!()
+    assert config.agent.max_tokens_per_issue == 500_000
+    assert config.agent.max_tokens_per_day == 5_000_000
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_tokens_per_issue: nil,
+      max_tokens_per_day: nil
+    )
+
+    config = Config.settings!()
+    assert config.agent.max_tokens_per_issue == nil
+    assert config.agent.max_tokens_per_day == nil
+  end
+
   test "workflow prompt is used when building base prompt" do
     workflow_prompt = "Workflow prompt body used as codex instruction."
 
@@ -2855,6 +2872,33 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert query =~ "SymphonyLinearPoll"
 
     variables
+  end
+
+  defp write_workflow_without_token_budget_keys! do
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    ---
+    Prompt
+    """)
+
+    reload_workflow_store()
+  end
+
+  defp reload_workflow_store do
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      try do
+        SymphonyElixir.WorkflowStore.force_reload()
+      catch
+        :exit, _reason -> :ok
+      end
+    end
+
+    :ok
   end
 
   defp linear_page_response(nodes, page_info \\ %{"hasNextPage" => false, "endCursor" => nil}) do

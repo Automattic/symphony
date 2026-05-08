@@ -169,7 +169,10 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - `agent.network_access.mode` defaults to `allowlist`.
 - Supported `agent.approval_policy` values depend on the targeted Codex app-server version. In the
   current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and
-  `never`, and object-form `reject` is also supported.
+  `auto_approve_all`, and object-form `reject` is also supported. `auto_approve_all` is the
+  explicit unattended mode: Symphony forwards Codex's wire value for "never ask" and auto-approves
+  every approval request. The older Codex-facing string `never` is still accepted for one release,
+  but it is deprecated in Symphony config and logs a warning that points to `auto_approve_all`.
 - Supported `agent.thread_sandbox` values for Codex: `read-only`, `workspace-write`,
   `danger-full-access`.
 - Supported `agent.network_access.mode` values:

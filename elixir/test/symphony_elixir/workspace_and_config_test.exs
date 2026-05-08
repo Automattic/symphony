@@ -1779,6 +1779,32 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().agent.command == "codex app-server"
   end
 
+  test "codex runtime approval policy maps auto approve all to Codex wire value" do
+    write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: "auto_approve_all")
+
+    assert Config.settings!().agent.approval_policy == "auto_approve_all"
+    assert {:ok, runtime_settings} = Config.codex_runtime_settings()
+    assert runtime_settings.approval_policy == "never"
+    assert runtime_settings.auto_approve_requests == true
+  end
+
+  test "config warns that Codex approval policy never is deprecated" do
+    write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: "never")
+
+    warning =
+      capture_log(fn ->
+        assert :ok = Config.validate!()
+      end)
+
+    assert warning =~ "agent.approval_policy: \"never\" is deprecated for Codex"
+    assert warning =~ "auto-approves all approval requests"
+    assert warning =~ "auto_approve_all"
+
+    assert {:ok, runtime_settings} = Config.codex_runtime_settings()
+    assert runtime_settings.approval_policy == "never"
+    assert runtime_settings.auto_approve_requests == true
+  end
+
   test "config defaults omitted Claude approval policy to never" do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_kind: "claude",

@@ -22,9 +22,13 @@ defmodule SymphonyElixir.Config do
   {% endif %}
   """
   @default_server_port 0
+  @codex_auto_approve_all_approval_policy "auto_approve_all"
+  @codex_legacy_auto_approve_approval_policy "never"
+  @codex_auto_approve_all_wire_approval_policy "never"
 
   @type codex_runtime_settings :: %{
           approval_policy: String.t() | map(),
+          auto_approve_requests: boolean(),
           thread_sandbox: String.t(),
           thread_config: map() | nil,
           turn_sandbox_policy: map()
@@ -127,11 +131,14 @@ defmodule SymphonyElixir.Config do
           {:ok, codex_runtime_settings()} | {:error, term()}
   def codex_runtime_settings(workspace \\ nil, opts \\ []) do
     with {:ok, settings} <- settings() do
+      {approval_policy, auto_approve_requests} = codex_runtime_approval_policy(settings.agent.approval_policy)
+
       with {:ok, turn_sandbox_policy} <-
              Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
         {:ok,
          %{
-           approval_policy: settings.agent.approval_policy,
+           approval_policy: approval_policy,
+           auto_approve_requests: auto_approve_requests,
            thread_sandbox: settings.agent.thread_sandbox,
            thread_config: Schema.resolve_codex_thread_config(settings),
            turn_sandbox_policy: turn_sandbox_policy
@@ -154,11 +161,22 @@ defmodule SymphonyElixir.Config do
         with :ok <- validate_tracker_semantics(settings),
              :ok <- validate_workspace_semantics(settings),
              :ok <- validate_notifications_semantics(settings) do
+          warn_if_deprecated_codex_approval_policy(settings)
           warn_if_budget_token_reporting_unavailable(settings)
           :ok
         end
     end
   end
+
+  defp codex_runtime_approval_policy(@codex_auto_approve_all_approval_policy) do
+    {@codex_auto_approve_all_wire_approval_policy, true}
+  end
+
+  defp codex_runtime_approval_policy(@codex_legacy_auto_approve_approval_policy) do
+    {@codex_auto_approve_all_wire_approval_policy, true}
+  end
+
+  defp codex_runtime_approval_policy(approval_policy), do: {approval_policy, false}
 
   defp validate_tracker_semantics(settings) do
     cond do
@@ -185,6 +203,14 @@ defmodule SymphonyElixir.Config do
       is_integer(settings.server.port) -> settings.server.port
       true -> @default_server_port
     end
+  end
+
+  defp warn_if_deprecated_codex_approval_policy(%Schema{agent: agent}) do
+    if agent.kind == "codex" and agent.approval_policy == @codex_legacy_auto_approve_approval_policy do
+      Logger.warning(~s(agent.approval_policy: "never" is deprecated for Codex because it auto-approves all approval requests; use "auto_approve_all" instead.))
+    end
+
+    :ok
   end
 
   defp warn_if_budget_token_reporting_unavailable(%Schema{} = settings) do

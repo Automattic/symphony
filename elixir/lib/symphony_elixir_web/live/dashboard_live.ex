@@ -426,7 +426,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <%= if @payload.retrying == [] do %>
-            <p class="empty-state">No issues are currently backing off.</p>
+            <p class="empty-state">No queued retries</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table" style="min-width: 680px;">
@@ -449,6 +449,114 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
                     <td><%= entry.error || "n/a" %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Awaiting clarification</h2>
+              <p class="section-copy">Quality-gate holds waiting for clearer issue context.</p>
+            </div>
+          </div>
+
+          <%= if @payload.awaiting_clarification == [] do %>
+            <p class="empty-state">No issues awaiting clarification</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table data-table-quality">
+                <colgroup>
+                  <col style="width: 12rem;" />
+                  <col style="width: 7rem;" />
+                  <col style="width: 7rem;" />
+                  <col />
+                  <col style="width: 12rem;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Round</th>
+                    <th>Score</th>
+                    <th>Reason</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.awaiting_clarification}>
+                    <td>
+                      <%= if entry.url do %>
+                        <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                      <% else %>
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                      <% end %>
+                    </td>
+                    <td class="numeric"><%= format_optional_int(entry.rounds_asked) %></td>
+                    <td class="numeric"><%= format_optional_int(entry.score) %></td>
+                    <td>
+                      <span class="event-text" title={entry.reason || "n/a"}><%= entry.reason || "n/a" %></span>
+                    </td>
+                    <td class="mono"><%= entry.updated_at || "n/a" %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Skipped (quality gate)</h2>
+              <p class="section-copy">Issues rejected by the quality gate before dispatch.</p>
+            </div>
+          </div>
+
+          <%= if @payload.skipped == [] do %>
+            <p class="empty-state">No issues skipped this session</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table data-table-quality">
+                <colgroup>
+                  <col style="width: 12rem;" />
+                  <col style="width: 8rem;" />
+                  <col style="width: 7rem;" />
+                  <col />
+                  <col style="width: 12rem;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Result</th>
+                    <th>Score</th>
+                    <th>Detail</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.skipped}>
+                    <td>
+                      <%= if entry.url do %>
+                        <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                      <% else %>
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                      <% end %>
+                    </td>
+                    <td>
+                      <span class={quality_gate_badge_class(entry)}>
+                        <%= quality_gate_kind_label(entry) %>
+                      </span>
+                    </td>
+                    <td class="numeric"><%= format_optional_int(entry.score) %></td>
+                    <td>
+                      <span class="event-text" title={quality_gate_detail(entry)}>
+                        <%= quality_gate_detail(entry) %>
+                      </span>
+                    </td>
+                    <td class="mono"><%= entry.updated_at || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -707,6 +815,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp self_review_badge_title(%{verdict: "approve"}), do: "Self-review approved"
   defp self_review_badge_title(_), do: ""
+
+  defp format_optional_int(value) when is_integer(value), do: Integer.to_string(value)
+  defp format_optional_int(_value), do: "n/a"
+
+  defp quality_gate_badge_class(%{kind: "error"}), do: "state-badge state-badge-danger"
+  defp quality_gate_badge_class(_entry), do: "state-badge state-badge-warning"
+
+  defp quality_gate_kind_label(%{kind: "error"}), do: "Error"
+  defp quality_gate_kind_label(%{kind: "scored"}), do: "Scored"
+  defp quality_gate_kind_label(%{kind: kind}) when is_binary(kind), do: String.capitalize(kind)
+  defp quality_gate_kind_label(_entry), do: "Skipped"
+
+  defp quality_gate_detail(%{kind: "error", error: error}) when is_binary(error) and error != "", do: error
+  defp quality_gate_detail(%{reason: reason}) when is_binary(reason) and reason != "", do: reason
+  defp quality_gate_detail(_entry), do: "n/a"
 
   defp pending_stop?({:stop, issue_id}, issue_id), do: true
   defp pending_stop?(_pending_control, _issue_id), do: false

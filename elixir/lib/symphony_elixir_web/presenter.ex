@@ -31,6 +31,14 @@ defmodule SymphonyElixirWeb.Presenter do
           running: Enum.map(snapshot.running, &running_entry_payload(&1, self_review_by_run)),
           watching: snapshot |> Map.get(:watching, []) |> Enum.map(&watching_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+          awaiting_clarification:
+            snapshot
+            |> Map.get(:awaiting_clarification, [])
+            |> Enum.map(&awaiting_clarification_entry_payload/1),
+          skipped:
+            snapshot
+            |> Map.get(:skipped, [])
+            |> Enum.map(&skipped_entry_payload/1),
           run_history: Enum.map(run_history, &run_history_payload(&1, self_review_by_run)),
           codex_totals: normalize_codex_totals(Map.get(snapshot, :codex_totals)),
           pause: normalize_pause(Map.get(snapshot, :pause)),
@@ -198,6 +206,31 @@ defmodule SymphonyElixirWeb.Presenter do
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path)
+    }
+  end
+
+  defp awaiting_clarification_entry_payload(entry) do
+    %{
+      issue_id: Map.get(entry, :issue_id),
+      issue_identifier: quality_gate_identifier(entry),
+      url: URLUtils.present_url(Map.get(entry, :url)),
+      score: Map.get(entry, :score),
+      reason: Map.get(entry, :reason),
+      rounds_asked: Map.get(entry, :rounds_asked, 0),
+      updated_at: iso8601(Map.get(entry, :updated_at))
+    }
+  end
+
+  defp skipped_entry_payload(entry) do
+    %{
+      kind: entry |> Map.get(:kind) |> quality_gate_kind(),
+      issue_id: Map.get(entry, :issue_id),
+      issue_identifier: quality_gate_identifier(entry),
+      url: URLUtils.present_url(Map.get(entry, :url)),
+      score: Map.get(entry, :score),
+      reason: Map.get(entry, :reason),
+      error: entry |> Map.get(:error) |> quality_gate_error(),
+      updated_at: iso8601(Map.get(entry, :updated_at))
     }
   end
 
@@ -415,6 +448,18 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp normalize_blocker(_), do: nil
+
+  defp quality_gate_identifier(entry) do
+    Map.get(entry, :identifier) || Map.get(entry, :issue_id) || "unknown"
+  end
+
+  defp quality_gate_kind(kind) when is_atom(kind), do: Atom.to_string(kind)
+  defp quality_gate_kind(kind) when is_binary(kind), do: kind
+  defp quality_gate_kind(_kind), do: "unknown"
+
+  defp quality_gate_error(nil), do: nil
+  defp quality_gate_error(error) when is_binary(error), do: error
+  defp quality_gate_error(error), do: inspect(error)
 
   defp workspace_payload(issue_identifier, running, retry) do
     if running || retry do

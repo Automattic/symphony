@@ -483,6 +483,10 @@ pre,
   min-width: 820px;
 }
 
+.data-table-quality {
+  min-width: 760px;
+}
+
 .learnings-table {
   min-width: 980px;
 }

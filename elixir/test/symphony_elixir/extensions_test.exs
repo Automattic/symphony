@@ -396,6 +396,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => nil
                }
              ],
+             "awaiting_clarification" => [],
+             "skipped" => [],
              "run_history" => [
                %{
                  "run_id" => "run-http",
@@ -750,6 +752,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+    assert html =~ "Awaiting clarification"
+    assert html =~ "No issues awaiting clarification"
+    assert html =~ "Skipped (quality gate)"
+    assert html =~ "No issues skipped this session"
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -790,6 +796,92 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
     end)
+  end
+
+  test "dashboard liveview renders empty retry and quality gate sections" do
+    orchestrator_name = Module.concat(__MODULE__, :EmptyQueuesDashboardOrchestrator)
+
+    snapshot =
+      static_snapshot()
+      |> Map.put(:retrying, [])
+      |> Map.put(:awaiting_clarification, [])
+      |> Map.put(:skipped, [])
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "Retry queue"
+    assert html =~ "No queued retries"
+    assert html =~ "Awaiting clarification"
+    assert html =~ "No issues awaiting clarification"
+    assert html =~ "Skipped (quality gate)"
+    assert html =~ "No issues skipped this session"
+  end
+
+  test "dashboard liveview renders quality gate issue sections" do
+    orchestrator_name = Module.concat(__MODULE__, :QualityGateSectionsDashboardOrchestrator)
+
+    snapshot =
+      static_snapshot()
+      |> Map.put(:awaiting_clarification, [
+        %{
+          kind: :clarification,
+          issue_id: "issue-await",
+          identifier: "MT-AWAIT",
+          url: "https://example.org/MT-AWAIT",
+          score: 5,
+          reason: "needs acceptance criteria",
+          rounds_asked: 2,
+          updated_at: ~U[2026-05-05 03:00:00Z]
+        }
+      ])
+      |> Map.put(:skipped, [
+        %{
+          kind: :scored,
+          issue_id: "issue-skip",
+          identifier: "MT-SKIP",
+          url: "https://example.org/MT-SKIP",
+          score: 3,
+          reason: "vague description",
+          updated_at: ~U[2026-05-05 04:00:00Z]
+        },
+        %{
+          kind: :error,
+          issue_id: "issue-error",
+          identifier: "MT-ERR",
+          url: "https://example.org/MT-ERR",
+          error: :llm_timeout,
+          updated_at: ~U[2026-05-05 05:00:00Z]
+        }
+      ])
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "MT-AWAIT"
+    assert html =~ "needs acceptance criteria"
+    assert html =~ "https://example.org/MT-AWAIT"
+    assert html =~ "2026-05-05T03:00:00Z"
+    assert html =~ "MT-SKIP"
+    assert html =~ "Scored"
+    assert html =~ "vague description"
+    assert html =~ "MT-ERR"
+    assert html =~ "Error"
+    assert html =~ ":llm_timeout"
   end
 
   test "dashboard liveview renders persisted pause reason and timestamp" do

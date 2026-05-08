@@ -405,6 +405,32 @@ pre,
   font-weight: 600;
 }
 
+.ops-control-blockers {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ops-control-blocker {
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border-muted, rgba(255, 255, 255, 0.06));
+}
+
+.ops-control-blocker:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.ops-control-blocker .muted {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
 .ops-control-actions {
   display: flex;
   gap: 0.5rem;

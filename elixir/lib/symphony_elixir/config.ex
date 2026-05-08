@@ -340,6 +340,31 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @doc """
+  Returns the dirty status of a local worktree primary clone.
+
+    * `:clean` — repo exists and `git status --porcelain` is empty.
+    * `{:dirty, summary}` — uncommitted changes; `summary` is the trimmed porcelain output.
+    * `:not_applicable` — path is missing, not a directory, or not a git repo.
+  """
+  @spec local_worktree_dirty_status(String.t()) ::
+          :clean | {:dirty, String.t()} | :not_applicable
+  def local_worktree_dirty_status(repo) when is_binary(repo) do
+    with true <- File.dir?(repo),
+         {_out, 0} <-
+           System.cmd("git", ["-C", repo, "rev-parse", "--git-dir"], stderr_to_stdout: true) do
+      case System.cmd("git", ["-C", repo, "status", "--porcelain"], stderr_to_stdout: true) do
+        {"", 0} -> :clean
+        {output, 0} -> {:dirty, String.trim(output)}
+        _ -> :not_applicable
+      end
+    else
+      _ -> :not_applicable
+    end
+  end
+
+  def local_worktree_dirty_status(_repo), do: :not_applicable
+
   defp format_config_error(reason) do
     case reason do
       {:invalid_workflow_config, message} ->

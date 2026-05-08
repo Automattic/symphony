@@ -3085,4 +3085,40 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       {_output, _status} -> false
     end
   end
+
+  describe "local_worktree_dirty_status/1" do
+    setup do
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "sym_dirty_test_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      git!(tmp, ["init", "-q", "-b", "main"])
+      git!(tmp, ["config", "user.email", "t@t"])
+      git!(tmp, ["config", "user.name", "t"])
+      File.write!(Path.join(tmp, "f"), "x")
+      git!(tmp, ["add", "."])
+      git!(tmp, ["commit", "-q", "-m", "init"])
+
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      %{repo: tmp}
+    end
+
+    test "returns :clean for a clean repo", %{repo: repo} do
+      assert SymphonyElixir.Config.local_worktree_dirty_status(repo) == :clean
+    end
+
+    test "returns {:dirty, summary} when there are uncommitted changes", %{repo: repo} do
+      File.write!(Path.join(repo, "f"), "y")
+      assert {:dirty, summary} = SymphonyElixir.Config.local_worktree_dirty_status(repo)
+      assert summary =~ "M f"
+    end
+
+    test "returns :not_applicable for a non-git path" do
+      assert SymphonyElixir.Config.local_worktree_dirty_status("/nonexistent_xyzzy") ==
+               :not_applicable
+    end
+  end
 end

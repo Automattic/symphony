@@ -72,7 +72,8 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_quota_logged: false,
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
-      quality_gate_skipped_errors: %{}
+      quality_gate_skipped_errors: %{},
+      workspace_dirty: nil
     ]
   end
 
@@ -2803,6 +2804,7 @@ defmodule SymphonyElixir.Orchestrator do
        pause: state.pause || unpaused_state(),
        workspace_lifecycle: workspace_lifecycle_snapshot(state),
        budget: budget_snapshot(state),
+       dispatch_state: dispatch_state_snapshot(state),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -3134,6 +3136,7 @@ defmodule SymphonyElixir.Orchestrator do
     case Config.settings() do
       {:ok, config} ->
         state = reset_daily_budget_if_needed(state)
+        state = refresh_workspace_dirty(state, config)
 
         %{
           state
@@ -3144,6 +3147,24 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.error("Failed to refresh runtime config: #{inspect(reason)}")
         state
+    end
+  end
+
+  defp refresh_workspace_dirty(%State{} = state, config) do
+    case config.workspace do
+      %{strategy: "worktree", repo: repo} when is_binary(repo) and repo != "" ->
+        expanded = Path.expand(repo)
+
+        case Config.local_worktree_dirty_status(expanded) do
+          {:dirty, summary} ->
+            %{state | workspace_dirty: %{repo: expanded, summary: summary}}
+
+          _ ->
+            %{state | workspace_dirty: nil}
+        end
+
+      _ ->
+        %{state | workspace_dirty: nil}
     end
   end
 
@@ -3304,6 +3325,21 @@ defmodule SymphonyElixir.Orchestrator do
       daily_remaining: budget_remaining(daily_limit, daily_used),
       daily_paused: daily_budget_paused?(state)
     }
+  end
+
+  defp dispatch_state_snapshot(%State{} = state) do
+    agent = Config.settings!().agent
+
+    SymphonyElixir.DispatchState.compute(
+      %{
+        pause: state.pause || unpaused_state(),
+        budget_daily_used: state.budget_daily_used,
+        budget_day_started_on: state.budget_day_started_on,
+        workspace_dirty: state.workspace_dirty
+      },
+      %{daily_limit: agent.max_tokens_per_day},
+      System.get_env()
+    )
   end
 
   defp budget_remaining(limit, used) when is_integer(limit) and limit > 0 do

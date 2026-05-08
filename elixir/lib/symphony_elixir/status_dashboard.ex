@@ -367,30 +367,36 @@ defmodule SymphonyElixir.StatusDashboard do
         awaiting_to_skipped_spacer = if(awaiting_clarification == [], do: [], else: ["│"])
         skipped_rows = format_skipped_rows(skipped)
 
+        dispatch_state = Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []})
+        dispatch_lines = format_dispatch_lines(dispatch_state)
+
         ([
-           colorize("╭─ SYMPHONY STATUS", @ansi_bold),
-           colorize("│ Agents: ", @ansi_bold) <>
-             colorize("#{agent_count}", @ansi_green) <>
-             colorize("/", @ansi_gray) <>
-             colorize("#{max_agents}", @ansi_gray),
-           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
-           colorize("│ Runtime: ", @ansi_bold) <>
-             colorize(format_runtime_seconds(codex_seconds_running), @ansi_magenta),
-           colorize("│ Tokens: ", @ansi_bold) <>
-             colorize("in #{format_count(codex_input_tokens)}", @ansi_yellow) <>
-             colorize(" | ", @ansi_gray) <>
-             colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
-             colorize(" | ", @ansi_gray) <>
-             colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
-           colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
-           workspace_lifecycle_lines,
-           project_link_lines,
-           project_refresh_line,
-           colorize("├─ Running", @ansi_bold),
-           "│",
-           running_table_header_row(running_event_width),
-           running_table_separator_row(running_event_width)
+           colorize("╭─ SYMPHONY STATUS", @ansi_bold)
          ] ++
+           dispatch_lines ++
+           [
+             colorize("│ Agents: ", @ansi_bold) <>
+               colorize("#{agent_count}", @ansi_green) <>
+               colorize("/", @ansi_gray) <>
+               colorize("#{max_agents}", @ansi_gray),
+             colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
+             colorize("│ Runtime: ", @ansi_bold) <>
+               colorize(format_runtime_seconds(codex_seconds_running), @ansi_magenta),
+             colorize("│ Tokens: ", @ansi_bold) <>
+               colorize("in #{format_count(codex_input_tokens)}", @ansi_yellow) <>
+               colorize(" | ", @ansi_gray) <>
+               colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
+               colorize(" | ", @ansi_gray) <>
+               colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
+             colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+             workspace_lifecycle_lines,
+             project_link_lines,
+             project_refresh_line,
+             colorize("├─ Running", @ansi_bold),
+             "│",
+             running_table_header_row(running_event_width),
+             running_table_separator_row(running_event_width)
+           ] ++
            running_rows ++
            running_to_watching_spacer ++
            [colorize("├─ Watching", @ansi_bold), "│"] ++
@@ -619,7 +625,8 @@ defmodule SymphonyElixir.StatusDashboard do
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              workspace_lifecycle: Map.get(snapshot, :workspace_lifecycle),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             dispatch_state: Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []})
            }}
 
         _ ->
@@ -642,6 +649,55 @@ defmodule SymphonyElixir.StatusDashboard do
       |> Enum.map(&format_running_summary(&1, running_event_width))
     end
   end
+
+  defp format_dispatch_lines(%{active?: true}) do
+    [colorize("│ Dispatch: ", @ansi_bold) <> colorize("active", @ansi_green)]
+  end
+
+  defp format_dispatch_lines(%{active?: false, blockers: blockers}) when is_list(blockers) do
+    count = length(blockers)
+    suffix = if count == 1, do: "blocker", else: "blockers"
+
+    header =
+      colorize("│ Dispatch: ", @ansi_bold) <>
+        colorize("paused", @ansi_red) <>
+        colorize(" — #{count} #{suffix}", @ansi_gray)
+
+    blocker_lines =
+      Enum.map(blockers, fn blocker ->
+        colorize("│   ✗ ", @ansi_red) <> colorize(format_blocker_line(blocker), @ansi_yellow)
+      end)
+
+    [header | blocker_lines]
+  end
+
+  defp format_dispatch_lines(_), do: []
+
+  defp format_blocker_line(%{kind: :manual, reason: reason}) do
+    case reason do
+      reason when is_binary(reason) and reason != "" -> "manually paused: #{reason}"
+      _ -> "manually paused"
+    end
+  end
+
+  defp format_blocker_line(%{kind: :budget, used: used, limit: limit, resets_on: resets_on}) do
+    base = "daily budget exhausted: #{format_count(used)} / #{format_count(limit)}"
+
+    case resets_on do
+      %Date{} = date -> base <> " (resets #{Date.to_iso8601(date)})"
+      _ -> base
+    end
+  end
+
+  defp format_blocker_line(%{kind: :workspace_dirty, dirty_summary: summary}) do
+    "primary worktree dirty: #{summary}"
+  end
+
+  defp format_blocker_line(%{kind: :missing_api_key, provider: provider}) do
+    "missing #{provider} API key"
+  end
+
+  defp format_blocker_line(%{kind: kind}), do: "blocked: #{kind}"
 
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do

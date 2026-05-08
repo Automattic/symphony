@@ -1213,6 +1213,32 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute snapshot.budget.daily_paused
   end
 
+  test "orchestrator snapshot exposes dispatch_state with active? and blockers" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      max_concurrent_agents: 1
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :DispatchStateOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert is_map(snapshot.dispatch_state)
+    assert is_boolean(snapshot.dispatch_state.active?)
+    assert is_list(snapshot.dispatch_state.blockers)
+
+    Enum.each(snapshot.dispatch_state.blockers, fn blocker ->
+      assert blocker.kind in [:manual, :budget, :workspace_dirty, :missing_api_key]
+    end)
+  end
+
   test "operator pause is exposed in snapshots and preserves retry queue without dispatching" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",

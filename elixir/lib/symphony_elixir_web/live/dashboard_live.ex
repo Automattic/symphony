@@ -120,19 +120,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
-        <section class={["ops-control-card", @payload.pause.paused && "ops-control-card-paused"]}>
+        <section class={["ops-control-card", !@payload.dispatch_state.active? && "ops-control-card-paused"]}>
           <div class="ops-control-main">
             <div class="ops-control-copy">
-              <span class={if @payload.pause.paused, do: "state-badge state-badge-warning", else: "state-badge state-badge-active"}>
-                Dispatch <%= if @payload.pause.paused, do: "paused", else: "active" %>
+              <span class={if @payload.dispatch_state.active?, do: "state-badge state-badge-active", else: "state-badge state-badge-warning"}>
+                Dispatch <%= if @payload.dispatch_state.active?, do: "active", else: "paused" %>
               </span>
-              <%= if @payload.pause.paused do %>
-                <p class="ops-control-detail">
-                  <strong><%= @payload.pause.reason || "No reason provided" %></strong>
-                  <%= if @payload.pause.paused_at do %>
-                    <span class="muted mono">since <%= @payload.pause.paused_at %></span>
+              <%= if !@payload.dispatch_state.active? do %>
+                <ul class="ops-control-blockers">
+                  <%= for blocker <- @payload.dispatch_state.blockers do %>
+                    <li class={"ops-control-blocker ops-control-blocker-#{blocker.kind}"}>
+                      <strong><%= blocker_label(blocker) %></strong>
+                      <span class="muted"><%= blocker_detail(blocker) %></span>
+                    </li>
                   <% end %>
-                </p>
+                </ul>
               <% end %>
               <%= if @control_error do %>
                 <p class="ops-control-error"><%= @control_error %></p>
@@ -632,6 +634,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_compact_int(_value), do: "n/a"
+
+  defp blocker_label(%{kind: :manual}), do: "Manually paused"
+  defp blocker_label(%{kind: :budget}), do: "Daily token budget exhausted"
+  defp blocker_label(%{kind: :workspace_dirty}), do: "Primary worktree has uncommitted changes"
+
+  defp blocker_label(%{kind: :missing_api_key, provider: provider}),
+    do: "Missing #{provider |> to_string() |> String.upcase()} API key"
+
+  defp blocker_detail(%{kind: :manual, reason: reason, since: since}) do
+    [reason, since && "since #{since}"]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" — ")
+  end
+
+  defp blocker_detail(%{kind: :budget, used: used, limit: limit, resets_on: resets_on}) do
+    "#{format_compact_int(used)} / #{format_compact_int(limit)} (resets #{resets_on})"
+  end
+
+  defp blocker_detail(%{kind: :workspace_dirty, repo: repo, dirty_summary: summary}) do
+    "#{repo} — #{summary}"
+  end
+
+  defp blocker_detail(%{kind: :missing_api_key}),
+    do: "set the env var and restart symphony"
 
   defp format_compact_number(value, divisor, suffix) do
     value

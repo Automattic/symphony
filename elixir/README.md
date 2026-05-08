@@ -137,7 +137,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 
 CLI flags:
 
-- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
+- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`).
+  Application logs go under `<logs-root>/log/`; append-only audit events go under
+  `<logs-root>/audit/`.
 - `--host` pins the Phoenix observability service to a specific host
 - `--port` pins the Phoenix observability service to a specific port
 
@@ -145,6 +147,9 @@ Symphony also keeps an OTP-native durable run store next to the configured log f
 (`run_store/`). It persists run history, retry queue entries, session metadata, captured learnings,
 and aggregate token totals so retry backoff and observability data survive process restarts. The
 same store persists the operator dispatch pause flag, including its reason and timestamp.
+
+To inspect side effects for an issue, run `mix symphony.audit ISSUE_ID --from YYYY-MM-DD --to
+YYYY-MM-DD --logs-root /path/to/logs-root`.
 
 For every supported setting, default, and value list, see
 [docs/configuration.md](docs/configuration.md).

@@ -33,6 +33,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Learnings.Store,
           SymphonyElixir.RunStore,
           SymphonyElixir.AgentRunner,
+          SymphonyElixir.AuditLog,
           SymphonyElixir.Verification,
           SymphonyElixir.Verification.DevServer,
           SymphonyElixir.Verification.PortPool,
@@ -59,6 +60,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.Router,
           SymphonyElixirWeb.Router.Helpers,
           Mix.Tasks.Symphony.Pause,
+          Mix.Tasks.Symphony.Audit,
           Mix.Tasks.Symphony.Resume,
           Mix.Tasks.Symphony.Stop
         ]

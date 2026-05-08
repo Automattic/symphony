@@ -89,10 +89,12 @@ agent:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
-# Optional: score each candidate issue for agent-readiness with an LLM before
-# queuing it. Scores at or above `pass_threshold` dispatch. Scores below
-# `clarification_floor` skip. Scores in between ask Linear clarification
-# questions and appear in the dashboard's Awaiting clarification section.
+# The quality gate is enabled by default and scores each candidate issue for
+# agent-readiness with an LLM before queuing it. Scores at or above
+# `pass_threshold` dispatch. Scores below `clarification_floor` skip. Scores in
+# between ask Linear clarification questions and appear in the dashboard's
+# Awaiting clarification section. Uncomment the block to change provider/model
+# settings, or set `enabled: false` to opt out.
 # Existing configs may keep `min_score`; when `pass_threshold` is unset,
 # Symphony treats `min_score` as the pass threshold and clarification stays off
 # unless `clarification_floor` is set.

@@ -726,9 +726,21 @@ defmodule SymphonyElixir.QualityGateTest do
                QualityGate.provider_settings(config)
     end
 
-    test "errors when the schema struct lacks a provider/model" do
+    test "resolves provider/model from schema defaults" do
+      assert {:ok,
+              %{
+                api_key: "test-anthropic-key",
+                provider: "anthropic",
+                model: "claude-haiku-4-5-20251001"
+              }} = QualityGate.provider_settings(%SymphonyElixir.Config.Schema.QualityGate{})
+    end
+
+    test "errors when provider/model are nil" do
       assert {:error, :missing_provider_settings} =
-               QualityGate.provider_settings(%SymphonyElixir.Config.Schema.QualityGate{})
+               QualityGate.provider_settings(%SymphonyElixir.Config.Schema.QualityGate{
+                 provider: nil,
+                 model: nil
+               })
     end
   end
 

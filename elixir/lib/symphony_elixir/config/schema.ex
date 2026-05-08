@@ -732,9 +732,9 @@ defmodule SymphonyElixir.Config.Schema do
     ]
 
     embedded_schema do
-      field(:enabled, :boolean, default: false)
-      field(:provider, :string)
-      field(:model, :string)
+      field(:enabled, :boolean, default: true)
+      field(:provider, :string, default: "anthropic")
+      field(:model, :string, default: "claude-haiku-4-5-20251001")
       field(:min_score, :integer, default: 6)
       field(:pass_threshold, :integer)
       field(:clarification_floor, :integer)
@@ -744,6 +744,9 @@ defmodule SymphonyElixir.Config.Schema do
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
+      provider_configured? = field_configured?(attrs, :provider)
+      model_configured? = field_configured?(attrs, :model)
+
       schema
       |> cast(attrs, @fields, empty_values: [])
       |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
@@ -753,7 +756,12 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:clarification_floor, greater_than_or_equal_to: 1, less_than_or_equal_to: 10)
       |> validate_number(:max_clarification_rounds, greater_than_or_equal_to: 1)
       |> validate_clarification_band()
+      |> validate_model_when_provider_configured(provider_configured?, model_configured?)
       |> validate_required_when_enabled()
+    end
+
+    defp field_configured?(attrs, field) when is_map(attrs) do
+      Map.has_key?(attrs, field) or Map.has_key?(attrs, Atom.to_string(field))
     end
 
     defp validate_clarification_band(changeset) do
@@ -771,6 +779,16 @@ defmodule SymphonyElixir.Config.Schema do
           add_error(changeset, :clarification_floor, "must be less than pass_threshold")
       end
     end
+
+    defp validate_model_when_provider_configured(changeset, true, false) do
+      if get_field(changeset, :enabled) do
+        add_error(changeset, :model, "is required when quality_gate.provider is set")
+      else
+        changeset
+      end
+    end
+
+    defp validate_model_when_provider_configured(changeset, _provider_configured?, _model_configured?), do: changeset
 
     defp validate_required_when_enabled(changeset) do
       if get_field(changeset, :enabled) do

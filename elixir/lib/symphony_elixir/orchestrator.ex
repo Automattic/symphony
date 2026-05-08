@@ -83,6 +83,7 @@ defmodule SymphonyElixir.Orchestrator do
   def init(_opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
+    log_quality_gate_config(config.quality_gate)
     :ok = ensure_run_store_started()
     {retry_attempts, claimed} = hydrate_retry_attempts()
     codex_totals = persisted_codex_totals()
@@ -122,6 +123,15 @@ defmodule SymphonyElixir.Orchestrator do
     state = schedule_watchdog_tick(state, config.watchdog.tick_interval_ms)
 
     {:ok, state}
+  end
+
+  defp log_quality_gate_config(%SymphonyElixir.Config.Schema.QualityGate{} = config) do
+    threshold = config.pass_threshold || config.min_score
+
+    Logger.info(
+      "QualityGate config enabled=#{config.enabled} provider=#{config.provider} model=#{config.model} threshold=#{threshold} " <>
+        "clarification_floor=#{inspect(config.clarification_floor)} max_clarification_rounds=#{config.max_clarification_rounds} on_error=#{config.on_error}"
+    )
   end
 
   @impl true

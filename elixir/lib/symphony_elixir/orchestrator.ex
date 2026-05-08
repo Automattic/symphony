@@ -72,8 +72,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_quota_logged: false,
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
-      quality_gate_skipped: %{},
-      quality_gate_awaiting_clarification: %{}
+      quality_gate_skipped_errors: %{}
     ]
   end
 
@@ -841,7 +840,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         comment_keys = retain_quality_gate_comment_keys(state.quality_gate_comment_keys, issues)
 
-        {cache, comment_keys, awaiting_with_status} =
+        {cache, comment_keys, _awaiting_with_status} =
           post_quality_gate_clarification_comments(awaiting_clarification, gate_config, cache, comment_keys)
 
         {cache, comment_keys, skipped_with_status} =
@@ -849,21 +848,22 @@ defmodule SymphonyElixir.Orchestrator do
 
         persist_quality_gate_cache(cache)
 
-        awaiting_index = index_quality_gate_entries(awaiting_with_status)
-        skipped_index = index_skipped_entries(skipped_with_status)
+        error_skips_index =
+          skipped_with_status
+          |> Enum.filter(&match?(%{kind: :error}, &1))
+          |> Enum.reduce(%{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
 
         state = %{
           state
           | quality_gate_cache: cache,
             quality_gate_comment_keys: comment_keys,
-            quality_gate_awaiting_clarification: awaiting_index,
-            quality_gate_skipped: skipped_index
+            quality_gate_skipped_errors: error_skips_index
         }
 
         {passed, state}
 
       _disabled ->
-        state = %{state | quality_gate_skipped: %{}, quality_gate_awaiting_clarification: %{}}
+        state = %{state | quality_gate_skipped_errors: %{}}
         {issues, state}
     end
   end
@@ -965,14 +965,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retain_quality_gate_comment_keys(_comment_keys, _issues), do: MapSet.new()
 
-  defp index_quality_gate_entries(entries) do
-    Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
-  end
-
-  defp index_skipped_entries(entries) do
-    Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
-  end
-
   defp snapshot_awaiting_clarification_entry(entry) do
     %{
       kind: entry.kind,
@@ -982,7 +974,7 @@ defmodule SymphonyElixir.Orchestrator do
       score: Map.get(entry, :score),
       reason: Map.get(entry, :reason),
       rounds_asked: Map.get(entry, :rounds_asked, 0),
-      updated_at: entry.updated_at
+      updated_at: Map.get(entry, :updated_at)
     }
   end
 
@@ -995,7 +987,7 @@ defmodule SymphonyElixir.Orchestrator do
       score: Map.get(entry, :score),
       reason: Map.get(entry, :reason),
       error: Map.get(entry, :error),
-      updated_at: entry.updated_at
+      updated_at: Map.get(entry, :updated_at)
     }
   end
 
@@ -2744,14 +2736,21 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
-    skipped =
-      state.quality_gate_skipped
+    cached_skipped =
+      state.quality_gate_cache
+      |> QualityGate.skipped_from_cache()
+      |> Enum.map(&snapshot_skipped_entry/1)
+
+    error_skipped =
+      state.quality_gate_skipped_errors
       |> Map.values()
       |> Enum.map(&snapshot_skipped_entry/1)
 
+    skipped = error_skipped ++ cached_skipped
+
     awaiting_clarification =
-      state.quality_gate_awaiting_clarification
-      |> Map.values()
+      state.quality_gate_cache
+      |> QualityGate.awaiting_clarification_from_cache()
       |> Enum.map(&snapshot_awaiting_clarification_entry/1)
 
     {:reply,

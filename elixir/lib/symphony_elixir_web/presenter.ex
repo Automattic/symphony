@@ -32,6 +32,7 @@ defmodule SymphonyElixirWeb.Presenter do
           codex_totals: normalize_codex_totals(Map.get(snapshot, :codex_totals)),
           pause: normalize_pause(Map.get(snapshot, :pause)),
           budget: normalize_budget(Map.get(snapshot, :budget)),
+          dispatch_state: normalize_dispatch_state(Map.get(snapshot, :dispatch_state)),
           rate_limits: snapshot.rate_limits
         }
 
@@ -295,6 +296,49 @@ defmodule SymphonyElixirWeb.Presenter do
       daily_paused: false
     }
   end
+
+  defp normalize_dispatch_state(%{active?: active?, blockers: blockers}) when is_list(blockers) do
+    normalized =
+      blockers
+      |> Enum.map(&normalize_blocker/1)
+      |> Enum.reject(&is_nil/1)
+
+    %{active?: active? == true, blockers: normalized}
+  end
+
+  defp normalize_dispatch_state(_), do: %{active?: true, blockers: []}
+
+  defp normalize_blocker(%{kind: :manual} = b) do
+    %{
+      kind: :manual,
+      reason: Map.get(b, :reason),
+      since: iso8601(Map.get(b, :since))
+    }
+  end
+
+  defp normalize_blocker(%{kind: :budget} = b) do
+    %{
+      kind: :budget,
+      used: Map.get(b, :used, 0),
+      limit: Map.get(b, :limit, 0),
+      day_started_on: Map.get(b, :day_started_on),
+      resets_on: Map.get(b, :resets_on)
+    }
+  end
+
+  defp normalize_blocker(%{kind: :workspace_dirty} = b) do
+    %{
+      kind: :workspace_dirty,
+      repo: Map.get(b, :repo),
+      dirty_summary: Map.get(b, :dirty_summary)
+    }
+  end
+
+  defp normalize_blocker(%{kind: :missing_api_key} = b) do
+    %{kind: :missing_api_key, provider: Map.get(b, :provider)}
+  end
+
+  defp normalize_blocker(_), do: nil
 
   defp workspace_payload(issue_identifier, running, retry) do
     if running || retry do

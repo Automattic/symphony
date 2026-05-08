@@ -487,7 +487,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server auto-approves command execution approval requests when approval policy is never" do
+  test "app server auto-approves command execution approval requests when approval policy is auto approve all" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -549,7 +549,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         agent_command: "#{codex_binary} app-server",
-        agent_approval_policy: "never"
+        agent_approval_policy: "auto_approve_all"
       )
 
       issue = %Issue{
@@ -589,6 +589,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
 
                  payload["id"] == 2 and
+                   get_in(payload, ["params", "approvalPolicy"]) == "never" and
                    case get_in(payload, ["params", "dynamicTools"]) do
                      [
                        %{
@@ -602,6 +603,19 @@ defmodule SymphonyElixir.AppServerTest do
                      _ ->
                        false
                    end
+               else
+                 false
+               end
+             end)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 3 and get_in(payload, ["params", "approvalPolicy"]) == "never"
                else
                  false
                end

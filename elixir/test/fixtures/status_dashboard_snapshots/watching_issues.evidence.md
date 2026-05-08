@@ -1,5 +1,6 @@
 ```text
 ╭─ SYMPHONY STATUS
+│ Dispatch: active
 │ Agents: 0/10
 │ Throughput: 0 tps
 │ Runtime: 45m 0s

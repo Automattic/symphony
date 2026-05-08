@@ -4,9 +4,11 @@ defmodule SymphonyElixir.QualityGateConfigTest do
   alias SymphonyElixir.Config.Schema
 
   describe "quality_gate config" do
-    test "defaults to disabled when section is absent" do
+    test "defaults to enabled when section is absent" do
       assert {:ok, %Schema{quality_gate: gate}} = Config.settings()
-      refute gate.enabled
+      assert gate.enabled
+      assert gate.provider == "anthropic"
+      assert gate.model == "claude-haiku-4-5-20251001"
       assert gate.min_score == 6
       assert gate.on_error == "pass"
     end
@@ -53,20 +55,21 @@ defmodule SymphonyElixir.QualityGateConfigTest do
       assert gate.clarification_floor == nil
     end
 
-    test "errors when enabled but provider is missing" do
+    test "uses provider and model defaults when enabled section omits them" do
       write_workflow_file!(Workflow.workflow_file_path(),
         quality_gate: %{
-          enabled: true,
-          model: "claude-haiku-4-5-20251001"
+          enabled: true
         }
       )
 
-      assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-      assert message =~ "quality_gate"
-      assert message =~ "provider"
+      assert :ok = Config.validate!()
+      assert {:ok, %Schema{quality_gate: gate}} = Config.settings()
+      assert gate.enabled
+      assert gate.provider == "anthropic"
+      assert gate.model == "claude-haiku-4-5-20251001"
     end
 
-    test "errors when enabled but model is missing" do
+    test "errors when enabled section sets provider but omits model" do
       write_workflow_file!(Workflow.workflow_file_path(),
         quality_gate: %{
           enabled: true,
@@ -143,6 +146,16 @@ defmodule SymphonyElixir.QualityGateConfigTest do
 
       assert {:ok, %Schema{quality_gate: gate}} = Config.settings()
       refute gate.enabled
+    end
+
+    test "allows disabled provider override without requiring model" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        quality_gate: %{enabled: false, provider: "openai"}
+      )
+
+      assert {:ok, %Schema{quality_gate: gate}} = Config.settings()
+      refute gate.enabled
+      assert gate.provider == "openai"
     end
   end
 end

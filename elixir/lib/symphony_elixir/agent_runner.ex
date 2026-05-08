@@ -6,6 +6,7 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
 
   alias SymphonyElixir.{
+    AuditLog,
     CiPoller,
     Config,
     Linear.Issue,
@@ -194,6 +195,7 @@ defmodule SymphonyElixir.AgentRunner do
 
     prompt = run_context.next_prompt || build_turn_prompt(issue, opts, turn_number, max_turns)
     run_context = %{run_context | next_prompt: nil}
+    audit_prompt_sent(issue, Keyword.get(opts, :run_id), prompt, turn_number, max_turns, agent_module)
 
     with {:ok, turn_session} <-
            agent_module.run_turn(
@@ -204,7 +206,7 @@ defmodule SymphonyElixir.AgentRunner do
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
+      case continue_with_issue?(issue, issue_state_fetcher, opts) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           run_context = %{run_context | issue: refreshed_issue}
           continue_active_issue(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns)
@@ -376,6 +378,16 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
+  defp audit_prompt_sent(issue, run_id, prompt, turn_number, max_turns, agent_module) do
+    issue
+    |> AuditLog.record_prompt_sent(run_id, prompt,
+      turn_number: turn_number,
+      max_turns: max_turns,
+      agent: inspect(agent_module)
+    )
+    |> log_audit_error("record prompt_sent")
+  end
+
   defp put_reviewer_comments(opts, issue) when is_list(opts) do
     if Keyword.has_key?(opts, :reviewer_comments) do
       opts
@@ -404,9 +416,10 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp pending_ci_failure(_issue), do: nil
 
-  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
+  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher, opts) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
+        audit_linear_state_transition(issue, refreshed_issue, Keyword.get(opts, :run_id))
         emit_lifecycle_events(issue, refreshed_issue)
 
         if active_issue_state?(refreshed_issue.state) do
@@ -423,7 +436,13 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+  defp continue_with_issue?(issue, _issue_state_fetcher, _opts), do: {:done, issue}
+
+  defp audit_linear_state_transition(issue, refreshed_issue, run_id) do
+    issue
+    |> AuditLog.record_linear_state_transition(refreshed_issue, run_id)
+    |> log_audit_error("record linear_state_change")
+  end
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)
@@ -483,5 +502,12 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
+  end
+
+  defp log_audit_error(:ok, _action), do: :ok
+
+  defp log_audit_error({:error, reason}, action) do
+    Logger.warning("Audit log failed to #{action}: #{inspect(reason)}")
+    :ok
   end
 end

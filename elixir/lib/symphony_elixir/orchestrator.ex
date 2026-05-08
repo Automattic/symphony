@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{
     AgentRunner,
+    AuditLog,
     Config,
     Notifications,
     PrReviewPoller,
@@ -86,6 +87,7 @@ defmodule SymphonyElixir.Orchestrator do
   def init(_opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
+    log_quality_gate_config(config.quality_gate)
     :ok = ensure_run_store_started()
     {retry_attempts, claimed} = hydrate_retry_attempts()
     codex_totals = persisted_codex_totals()
@@ -126,6 +128,15 @@ defmodule SymphonyElixir.Orchestrator do
     state = schedule_watchdog_tick(state, config.watchdog.tick_interval_ms)
 
     {:ok, state}
+  end
+
+  defp log_quality_gate_config(%SymphonyElixir.Config.Schema.QualityGate{} = config) do
+    threshold = config.pass_threshold || config.min_score
+
+    Logger.info(
+      "QualityGate config enabled=#{config.enabled} provider=#{config.provider} model=#{config.model} threshold=#{threshold} " <>
+        "clarification_floor=#{inspect(config.clarification_floor)} max_clarification_rounds=#{config.max_clarification_rounds} on_error=#{config.on_error}"
+    )
   end
 
   @impl true
@@ -283,6 +294,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+        audit_agent_update(updated_running_entry, update, token_delta)
         maybe_emit_pr_opened(running_entry, updated_running_entry)
 
         state_after_tokens =
@@ -1628,8 +1640,20 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp notify_transcript(_issue_id, _event), do: :ok
 
+  defp audit_agent_update(running_entry, update, token_delta) do
+    running_entry
+    |> AuditLog.record_agent_update(update, token_delta)
+    |> log_audit_error("record agent update")
+  end
+
   defp maybe_emit_pr_opened(previous_entry, updated_entry) when is_map(updated_entry) do
-    if is_nil(URLUtils.pull_request_url(previous_entry)) and is_binary(URLUtils.pull_request_url(updated_entry)) do
+    pr_url = URLUtils.pull_request_url(updated_entry)
+
+    if is_nil(URLUtils.pull_request_url(previous_entry)) and is_binary(pr_url) do
+      updated_entry
+      |> AuditLog.record_pr_opened(pr_url)
+      |> log_audit_error("record pr_opened")
+
       emit_running_event(:pr_opened, updated_entry)
     end
   end
@@ -3685,4 +3709,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  defp log_audit_error(:ok, _action), do: :ok
+
+  defp log_audit_error({:error, reason}, action) do
+    Logger.warning("Audit log failed to #{action}: #{inspect(reason)}")
+    :ok
+  end
 end

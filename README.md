@@ -29,7 +29,7 @@ recovered, so long-running queues do not need constant operator supervision.
 - **Run** — one attempt to make progress on a Linear issue.
 - **Workspace** — the isolated checkout or worktree for a run.
 - **Tracker** — the system Symphony polls for work, currently Linear in the reference implementation.
-- **Quality gate** — the optional pre-dispatch check that decides whether an issue is clear enough
+- **Quality gate** — the default pre-dispatch check that decides whether an issue is clear enough
   for an agent.
 - **Harness engineering** — the practice of preparing a codebase with scripts, tests, docs, and
   guardrails so coding agents can work safely.
@@ -47,7 +47,7 @@ recovered, so long-running queues do not need constant operator supervision.
   totals.
 - **Workspace lifecycle guardrails** for age-based cleanup, startup orphan reporting/removal, and
   disk free-space dispatch pauses.
-- **Quality gate** (optional) that scores issue clarity before dispatch so unclear work is held
+- **Quality gate** that scores issue clarity before dispatch by default so unclear work is held
   instead of reaching Codex.
 - **Verification dev server orchestration** for parallel worktree runs: per-issue port allocation,
   dev-server lifecycle, and health checks via `SYMPHONY_VERIFICATION_PORT`.

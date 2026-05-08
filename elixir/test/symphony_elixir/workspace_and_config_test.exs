@@ -1901,6 +1901,32 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().agent.command == "codex app-server"
   end
 
+  test "codex runtime approval policy maps auto approve all to Codex wire value" do
+    write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: "auto_approve_all")
+
+    assert Config.settings!().agent.approval_policy == "auto_approve_all"
+    assert {:ok, runtime_settings} = Config.codex_runtime_settings()
+    assert runtime_settings.approval_policy == "never"
+    assert runtime_settings.auto_approve_requests == true
+  end
+
+  test "config warns that Codex approval policy never is deprecated" do
+    write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: "never")
+
+    warning =
+      capture_log(fn ->
+        assert :ok = Config.validate!()
+      end)
+
+    assert warning =~ "agent.approval_policy: \"never\" is deprecated for Codex"
+    assert warning =~ "auto-approves all approval requests"
+    assert warning =~ "auto_approve_all"
+
+    assert {:ok, runtime_settings} = Config.codex_runtime_settings()
+    assert runtime_settings.approval_policy == "never"
+    assert runtime_settings.auto_approve_requests == true
+  end
+
   test "config defaults omitted Claude approval policy to never" do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_kind: "claude",
@@ -2753,6 +2779,23 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "token budget defaults apply when omitted and explicit null disables caps" do
+    write_workflow_without_token_budget_keys!()
+
+    config = Config.settings!()
+    assert config.agent.max_tokens_per_issue == 500_000
+    assert config.agent.max_tokens_per_day == 5_000_000
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_tokens_per_issue: nil,
+      max_tokens_per_day: nil
+    )
+
+    config = Config.settings!()
+    assert config.agent.max_tokens_per_issue == nil
+    assert config.agent.max_tokens_per_day == nil
+  end
+
   test "workflow prompt is used when building base prompt" do
     workflow_prompt = "Workflow prompt body used as codex instruction."
 
@@ -2977,6 +3020,33 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert query =~ "SymphonyLinearPoll"
 
     variables
+  end
+
+  defp write_workflow_without_token_budget_keys! do
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    ---
+    Prompt
+    """)
+
+    reload_workflow_store()
+  end
+
+  defp reload_workflow_store do
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      try do
+        SymphonyElixir.WorkflowStore.force_reload()
+      catch
+        :exit, _reason -> :ok
+      end
+    end
+
+    :ok
   end
 
   defp linear_page_response(nodes, page_info \\ %{"hasNextPage" => false, "endCursor" => nil}) do

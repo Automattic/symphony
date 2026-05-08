@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, URLUtils}
+  alias SymphonyElixir.{AuditLog, Config, Orchestrator, StatusDashboard, URLUtils}
 
   @empty_codex_totals %{
     input_tokens: 0,
@@ -18,6 +18,9 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        run_history = Map.get(snapshot, :run_history, [])
+        self_review_by_run = self_review_lookup(snapshot.running, run_history)
+
         %{
           generated_at: generated_at,
           counts: %{
@@ -25,10 +28,10 @@ defmodule SymphonyElixirWeb.Presenter do
             watching: length(Map.get(snapshot, :watching, [])),
             retrying: length(snapshot.retrying)
           },
-          running: Enum.map(snapshot.running, &running_entry_payload/1),
+          running: Enum.map(snapshot.running, &running_entry_payload(&1, self_review_by_run)),
           watching: snapshot |> Map.get(:watching, []) |> Enum.map(&watching_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          run_history: Enum.map(Map.get(snapshot, :run_history, []), &run_history_payload/1),
+          run_history: Enum.map(run_history, &run_history_payload(&1, self_review_by_run)),
           codex_totals: normalize_codex_totals(Map.get(snapshot, :codex_totals)),
           pause: normalize_pause(Map.get(snapshot, :pause)),
           budget: normalize_budget(Map.get(snapshot, :budget)),
@@ -149,7 +152,7 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp running_entry_payload(entry) do
+  defp running_entry_payload(entry, self_review_by_run) do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -168,7 +171,8 @@ defmodule SymphonyElixirWeb.Presenter do
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
-      }
+      },
+      self_review: self_review_payload(Map.get(entry, :run_id), self_review_by_run)
     }
   end
 
@@ -236,7 +240,7 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp run_history_payload(entry) do
+  defp run_history_payload(entry, self_review_by_run) do
     %{
       run_id: entry.run_id,
       issue_id: entry.issue_id,
@@ -254,9 +258,39 @@ defmodule SymphonyElixirWeb.Presenter do
       transcript_path: Map.get(entry, :transcript_path),
       turn_count: Map.get(entry, :turn_count, 0),
       runtime_seconds: Map.get(entry, :runtime_seconds, 0),
-      tokens: Map.get(entry, :tokens, %{})
+      tokens: Map.get(entry, :tokens, %{}),
+      self_review: self_review_payload(entry.run_id, self_review_by_run)
     }
   end
+
+  defp self_review_lookup(running_entries, run_history) do
+    run_ids =
+      (Enum.map(running_entries, &Map.get(&1, :run_id)) ++
+         Enum.map(run_history, &Map.get(&1, :run_id)))
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    AuditLog.latest_self_review_by_run(run_ids)
+  end
+
+  defp self_review_payload(run_id, self_review_by_run) when is_binary(run_id) do
+    case Map.get(self_review_by_run, run_id) do
+      %{} = event ->
+        %{
+          verdict: Map.get(event, "verdict"),
+          fail_open_category: Map.get(event, "fail_open_category"),
+          findings_count: Map.get(event, "findings_count", 0),
+          finding_categories: Map.get(event, "finding_categories", []),
+          round: Map.get(event, "round"),
+          recorded_at: Map.get(event, "timestamp")
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp self_review_payload(_run_id, _self_review_by_run), do: nil
 
   defp normalize_codex_totals(totals) when is_map(totals) do
     Map.merge(@empty_codex_totals, totals)

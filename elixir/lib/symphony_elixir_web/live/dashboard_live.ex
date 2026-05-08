@@ -228,14 +228,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div class="table-wrap">
               <table class="data-table data-table-running">
                 <colgroup>
-                  <col style="width: 10rem;" />
-                  <col style="width: 8rem;" />
+                  <col style="width: 9rem;" />
                   <col style="width: 7.5rem;" />
-                  <col style="width: 8.5rem;" />
-                  <col />
-                  <col style="width: 10rem;" />
-                  <col style="width: 10rem;" />
+                  <col style="width: 7rem;" />
                   <col style="width: 8rem;" />
+                  <col />
+                  <col style="width: 9rem;" />
+                  <col style="width: 6.5rem;" />
+                  <col style="width: 9rem;" />
+                  <col style="width: 7rem;" />
                 </colgroup>
                 <thead>
                   <tr>
@@ -245,6 +246,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Runtime / turns</th>
                     <th>Codex update</th>
                     <th>Tokens</th>
+                    <th>Self-review</th>
                     <th>Links</th>
                     <th>Control</th>
                   </tr>
@@ -306,6 +308,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% end %>
                         <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
+                    </td>
+                    <td>
+                      <%= if entry.self_review do %>
+                        <span class={self_review_badge_class(entry.self_review)} title={self_review_badge_title(entry.self_review)}>
+                          <%= self_review_badge_label(entry.self_review) %>
+                        </span>
+                        <%= if entry.self_review.round == 2 do %>
+                          <p class="muted event-meta">after correction</p>
+                        <% end %>
+                      <% else %>
+                        <span class="muted">—</span>
+                      <% end %>
                     </td>
                     <td class="links-cell">
                       <div class="link-actions">
@@ -642,6 +656,36 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp self_review_badge_class(%{fail_open_category: category}) when is_binary(category),
+    do: "state-badge state-badge-warning"
+
+  defp self_review_badge_class(%{verdict: "request_changes"}),
+    do: "state-badge state-badge-danger"
+
+  defp self_review_badge_class(%{verdict: "approve"}),
+    do: "state-badge state-badge-active"
+
+  defp self_review_badge_class(_), do: "state-badge"
+
+  defp self_review_badge_label(%{fail_open_category: category}) when is_binary(category),
+    do: "Fail-open"
+
+  defp self_review_badge_label(%{verdict: "request_changes", findings_count: count}),
+    do: "#{count} finding#{if count == 1, do: "", else: "s"}"
+
+  defp self_review_badge_label(%{verdict: "approve"}), do: "Approved"
+  defp self_review_badge_label(_), do: "—"
+
+  defp self_review_badge_title(%{fail_open_category: category}) when is_binary(category),
+    do: "Self-review fell open: #{category}"
+
+  defp self_review_badge_title(%{verdict: "request_changes", finding_categories: categories}) do
+    "Blocking findings: " <> Enum.join(categories || [], ", ")
+  end
+
+  defp self_review_badge_title(%{verdict: "approve"}), do: "Self-review approved"
+  defp self_review_badge_title(_), do: ""
 
   defp pending_stop?({:stop, issue_id}, issue_id), do: true
   defp pending_stop?(_pending_control, _issue_id), do: false

@@ -124,6 +124,31 @@ defmodule SymphonyElixir.AuditLog do
     end
   end
 
+  @spec record_self_review(map(), String.t() | nil, map(), keyword()) ::
+          :ok | {:error, term()}
+  def record_self_review(issue, run_id, %{verdict: verdict} = result, opts \\ [])
+      when is_map(issue) and verdict in [:approve, :request_changes] do
+    findings = Map.get(result, :findings, [])
+    source = Map.get(result, :source)
+
+    record(
+      %{
+        issue_id: issue_id(issue),
+        issue_identifier: issue_identifier(issue),
+        run_id: run_id,
+        event_type: "self_review",
+        verdict: verdict,
+        fail_open_category: Map.get(result, :fail_open_category),
+        findings_count: length(findings),
+        finding_categories: findings |> Enum.map(& &1.category) |> Enum.uniq(),
+        diff_truncated: source && Map.get(source, :diff_truncated?),
+        diff_line_count: source && Map.get(source, :diff_line_count),
+        round: Keyword.get(opts, :round)
+      },
+      opts
+    )
+  end
+
   @spec list_events(String.t(), Date.t() | String.t(), Date.t() | String.t(), query_opts()) ::
           {:ok, [map()]} | {:error, term()}
   def list_events(issue_id, date_from, date_to, opts \\ []) when is_binary(issue_id) do
@@ -138,6 +163,37 @@ defmodule SymphonyElixir.AuditLog do
         |> Enum.sort_by(&timestamp_sort_key/1)
 
       {:ok, events}
+    end
+  end
+
+  @spec latest_self_review_by_run([String.t()], query_opts()) :: %{String.t() => map()}
+  def latest_self_review_by_run(run_ids, opts \\ []) when is_list(run_ids) do
+    wanted = run_ids |> Enum.filter(&is_binary/1) |> MapSet.new()
+
+    if MapSet.size(wanted) == 0 do
+      %{}
+    else
+      today = Date.utc_today()
+      date_from = Keyword.get(opts, :date_from, Date.add(today, -1))
+      date_to = Keyword.get(opts, :date_to, today)
+
+      with {:ok, from_date} <- normalize_date(date_from),
+           {:ok, to_date} <- normalize_date(date_to),
+           :ok <- validate_date_range(from_date, to_date) do
+        from_date
+        |> Date.range(to_date)
+        |> Enum.flat_map(&read_events_for_date(&1, opts))
+        |> Enum.filter(fn event ->
+          Map.get(event, "event_type") == "self_review" and
+            MapSet.member?(wanted, Map.get(event, "run_id"))
+        end)
+        |> Enum.sort_by(&timestamp_sort_key/1)
+        |> Enum.reduce(%{}, fn event, acc ->
+          Map.put(acc, Map.get(event, "run_id"), event)
+        end)
+      else
+        _ -> %{}
+      end
     end
   end
 

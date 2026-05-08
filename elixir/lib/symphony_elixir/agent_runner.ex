@@ -341,13 +341,24 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp request_change_rounds(%{self_review: %{request_change_rounds: rounds}}) when is_integer(rounds), do: rounds
 
-  defp evaluate_self_review(%{issue: issue, workspace: workspace, opts: opts, worker_host: worker_host}, config) do
+  defp evaluate_self_review(%{issue: issue, workspace: workspace, opts: opts, worker_host: worker_host} = run_context, config) do
     provider_module = Keyword.get(opts, :self_review_provider_module)
     review_opts = [worker_host: worker_host]
     review_opts = if provider_module, do: Keyword.put(review_opts, :provider_module, provider_module), else: review_opts
 
-    SelfReview.evaluate(issue, workspace, config, review_opts)
+    result = SelfReview.evaluate(issue, workspace, config, review_opts)
+    audit_self_review(issue, Keyword.get(opts, :run_id), result, self_review_round(run_context))
+    result
   end
+
+  defp audit_self_review(issue, run_id, result, round) do
+    issue
+    |> AuditLog.record_self_review(run_id, result, round: round)
+    |> log_audit_error("record self_review")
+  end
+
+  defp self_review_round(%{self_review: %{phase: :awaiting_correction}}), do: 2
+  defp self_review_round(_run_context), do: 1
 
   defp agent_module do
     case Config.settings!().agent.kind do

@@ -7,6 +7,8 @@ defmodule SymphonyElixir.HttpServer do
   alias SymphonyElixirWeb.Endpoint
 
   @secret_key_bytes 48
+  @secret_key_min_bytes 64
+  @secret_key_env "SYMPHONY_SECRET_KEY_BASE"
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -83,6 +85,48 @@ defmodule SymphonyElixir.HttpServer do
   defp normalize_host(host), do: to_string(host)
 
   defp secret_key_base do
+    case System.get_env(@secret_key_env) do
+      value when is_binary(value) and byte_size(value) >= @secret_key_min_bytes ->
+        value
+
+      value when is_binary(value) and value != "" ->
+        raise """
+        #{@secret_key_env} must be at least #{@secret_key_min_bytes} bytes; got #{byte_size(value)}.
+        Generate one with `mix phx.gen.secret` or unset the variable to use the persisted key.
+        """
+
+      _ ->
+        load_or_create_secret_key_base()
+    end
+  end
+
+  defp load_or_create_secret_key_base do
+    path = secret_key_base_path()
+
+    with {:ok, contents} <- File.read(path),
+         key = String.trim(contents),
+         true <- byte_size(key) >= @secret_key_min_bytes do
+      key
+    else
+      _ -> write_secret_key_base!(path)
+    end
+  end
+
+  defp write_secret_key_base!(path) do
+    key = generate_secret_key_base()
+    dir = Path.dirname(path)
+    File.mkdir_p!(dir)
+    _ = File.chmod(dir, 0o700)
+    File.write!(path, key)
+    _ = File.chmod(path, 0o600)
+    key
+  end
+
+  defp generate_secret_key_base do
     Base.encode64(:crypto.strong_rand_bytes(@secret_key_bytes), padding: false)
+  end
+
+  defp secret_key_base_path do
+    Path.join([System.user_home!(), ".symphony", "secret_key_base"])
   end
 end

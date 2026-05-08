@@ -1235,7 +1235,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert is_list(snapshot.dispatch_state.blockers)
 
     Enum.each(snapshot.dispatch_state.blockers, fn blocker ->
-      assert blocker.kind in [:manual, :budget, :workspace_dirty, :missing_api_key]
+      assert blocker.kind in [:manual, :budget, :missing_api_key]
     end)
   end
 

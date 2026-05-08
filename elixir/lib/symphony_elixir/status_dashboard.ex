@@ -367,7 +367,11 @@ defmodule SymphonyElixir.StatusDashboard do
         awaiting_to_skipped_spacer = if(awaiting_clarification == [], do: [], else: ["│"])
         skipped_rows = format_skipped_rows(skipped)
 
-        dispatch_state = Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []})
+        dispatch_state =
+          snapshot
+          |> Map.get(:dispatch_state, %{active?: true, blockers: []})
+          |> normalize_dispatch_state()
+
         dispatch_lines = format_dispatch_lines(dispatch_state)
 
         ([
@@ -652,6 +656,20 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  defp normalize_dispatch_state(%{blockers: blockers} = dispatch_state) when is_list(blockers) do
+    blockers = Enum.reject(blockers, &workspace_dirty_blocker?/1)
+
+    %{
+      active?: Map.get(dispatch_state, :active?) == true or blockers == [],
+      blockers: blockers
+    }
+  end
+
+  defp normalize_dispatch_state(_), do: %{active?: true, blockers: []}
+
+  defp workspace_dirty_blocker?(%{kind: :workspace_dirty}), do: true
+  defp workspace_dirty_blocker?(_), do: false
+
   defp format_dispatch_lines(%{active?: true}) do
     [colorize("│ Dispatch: ", @ansi_bold) <> colorize("active", @ansi_green)]
   end
@@ -689,10 +707,6 @@ defmodule SymphonyElixir.StatusDashboard do
       %Date{} = date -> base <> " (resets #{Date.to_iso8601(date)})"
       _ -> base
     end
-  end
-
-  defp format_blocker_line(%{kind: :workspace_dirty, dirty_summary: summary}) do
-    "primary worktree dirty: #{summary}"
   end
 
   defp format_blocker_line(%{kind: :missing_api_key, provider: provider}) do

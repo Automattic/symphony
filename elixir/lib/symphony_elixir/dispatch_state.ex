@@ -2,8 +2,9 @@ defmodule SymphonyElixir.DispatchState do
   @moduledoc """
   Computes a unified dispatch-state view from orchestrator state, config and env.
 
-  A dispatch is `active?` only when zero blockers apply. Blockers are tagged
-  maps so callers can render each one with a specific message + remediation.
+  A dispatch is `active?` only when zero operational blockers apply. Blockers
+  are tagged maps so callers can render each one with a specific message +
+  remediation.
   """
 
   @type blocker ::
@@ -15,7 +16,6 @@ defmodule SymphonyElixir.DispatchState do
               day_started_on: Date.t(),
               resets_on: Date.t()
             }
-          | %{kind: :workspace_dirty, repo: String.t(), dirty_summary: String.t()}
           | %{kind: :missing_api_key, provider: atom()}
 
   @type t :: %{active?: boolean(), blockers: [blocker]}
@@ -26,7 +26,6 @@ defmodule SymphonyElixir.DispatchState do
       []
       |> maybe_manual(state)
       |> maybe_budget(state, config)
-      |> maybe_workspace_dirty(state)
       |> maybe_missing_api_key(env)
       |> Enum.reverse()
 
@@ -69,13 +68,6 @@ defmodule SymphonyElixir.DispatchState do
   end
 
   defp maybe_budget(blockers, _state, _config), do: blockers
-
-  defp maybe_workspace_dirty(blockers, %{workspace_dirty: %{repo: repo, summary: summary}})
-       when is_binary(repo) and is_binary(summary) do
-    [%{kind: :workspace_dirty, repo: repo, dirty_summary: summary} | blockers]
-  end
-
-  defp maybe_workspace_dirty(blockers, _state), do: blockers
 
   defp maybe_missing_api_key(blockers, env) do
     case Map.get(env, "ANTHROPIC_API_KEY") do

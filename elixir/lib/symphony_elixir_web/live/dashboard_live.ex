@@ -637,7 +637,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp blocker_label(%{kind: :manual}), do: "Manually paused"
   defp blocker_label(%{kind: :budget}), do: "Daily token budget exhausted"
-  defp blocker_label(%{kind: :workspace_dirty}), do: "Primary worktree has uncommitted changes"
 
   defp blocker_label(%{kind: :missing_api_key, provider: provider}),
     do: "Missing #{provider |> to_string() |> String.upcase()} API key"
@@ -650,10 +649,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp blocker_detail(%{kind: :budget, used: used, limit: limit, resets_on: resets_on}) do
     "#{format_compact_int(used)} / #{format_compact_int(limit)} (resets #{resets_on})"
-  end
-
-  defp blocker_detail(%{kind: :workspace_dirty, repo: repo, dirty_summary: summary}) do
-    "#{repo} — #{summary}"
   end
 
   defp blocker_detail(%{kind: :missing_api_key}),

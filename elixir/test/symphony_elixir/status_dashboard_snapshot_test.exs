@@ -338,7 +338,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("credits_unlimited", render_snapshot(snapshot_data, 42.0))
   end
 
-  test "snapshot fixture: dispatch paused with multiple blockers" do
+  test "snapshot fixture: dispatch paused with operational blockers" do
     snapshot_data =
       {:ok,
        %{
@@ -369,12 +369,40 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
 
     assert rendered =~ "Dispatch: "
     assert rendered =~ "paused"
-    assert rendered =~ "2 blockers"
+    assert rendered =~ "1 blocker"
     assert rendered =~ "daily budget exhausted"
     assert rendered =~ "88,402,765 / 5,000,000"
     assert rendered =~ "resets 2026-05-09"
-    assert rendered =~ "primary worktree dirty"
-    assert rendered =~ "M elixir/WORKFLOW.md"
+    refute rendered =~ "primary worktree dirty"
+    refute rendered =~ "M elixir/WORKFLOW.md"
+  end
+
+  test "snapshot fixture: workspace dirty blocker alone does not pause dispatch" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil,
+         dispatch_state: %{
+           active?: false,
+           blockers: [
+             %{
+               kind: :workspace_dirty,
+               repo: "/Users/chihsuan/Projects/symphony",
+               dirty_summary: "M elixir/WORKFLOW.md"
+             }
+           ]
+         }
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "Dispatch: "
+    assert rendered =~ "active"
+    refute rendered =~ "paused"
+    refute rendered =~ "primary worktree dirty"
   end
 
   defp render_snapshot(snapshot_data, tps) do

@@ -812,7 +812,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Resume Dispatch"
   end
 
-  test "dashboard liveview renders dispatch_state blocker chips" do
+  test "dashboard liveview renders operational dispatch_state blocker chips" do
     orchestrator_name = Module.concat(__MODULE__, :BlockerChipsDashboardOrchestrator)
 
     snapshot =
@@ -848,10 +848,39 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Daily token budget exhausted"
     assert html =~ "88.4M / 5M"
     assert html =~ "resets 2026-05-09"
-    assert html =~ "Primary worktree has uncommitted changes"
-    assert html =~ "M elixir/WORKFLOW.md"
     assert html =~ "ops-control-blocker-budget"
-    assert html =~ "ops-control-blocker-workspace_dirty"
+    refute html =~ "Primary worktree has uncommitted changes"
+    refute html =~ "ops-control-blocker-workspace_dirty"
+  end
+
+  test "dashboard liveview ignores stale workspace dirty dispatch blockers" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkspaceDirtyDashboardOrchestrator)
+
+    snapshot =
+      Map.put(static_snapshot(), :dispatch_state, %{
+        active?: false,
+        blockers: [
+          %{
+            kind: :workspace_dirty,
+            repo: "/Users/chihsuan/Projects/symphony",
+            dirty_summary: "M elixir/WORKFLOW.md"
+          }
+        ]
+      })
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "Dispatch active"
+    refute html =~ "Dispatch paused"
+    refute html =~ "Primary worktree has uncommitted changes"
   end
 
   test "dashboard liveview disarms armed pause control after timeout" do

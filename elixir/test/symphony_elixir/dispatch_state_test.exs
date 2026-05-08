@@ -46,15 +46,15 @@ defmodule SymphonyElixir.DispatchStateTest do
              ] = result.blockers
     end
 
-    test "workspace_dirty blocker captures repo and dirty summary" do
+    test "workspace dirty state does not block dispatch" do
       state =
         base_state()
         |> Map.put(:workspace_dirty, %{repo: "/path/repo", summary: "M elixir/WORKFLOW.md"})
 
       result = DispatchState.compute(state, base_config(), full_env())
 
-      assert [%{kind: :workspace_dirty, repo: "/path/repo", dirty_summary: "M elixir/WORKFLOW.md"}] =
-               result.blockers
+      assert result.active? == true
+      assert result.blockers == []
     end
 
     test "missing api key blocker fires when env var is empty" do
@@ -76,7 +76,6 @@ defmodule SymphonyElixir.DispatchStateTest do
       kinds = Enum.map(result.blockers, & &1.kind)
       assert :manual in kinds
       assert :budget in kinds
-      assert :workspace_dirty in kinds
       assert :missing_api_key in kinds
       assert result.active? == false
     end

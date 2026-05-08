@@ -72,8 +72,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_quota_logged: false,
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
-      quality_gate_skipped_errors: %{},
-      workspace_dirty: nil
+      quality_gate_skipped_errors: %{}
     ]
   end
 
@@ -3233,7 +3232,6 @@ defmodule SymphonyElixir.Orchestrator do
     case Config.settings() do
       {:ok, config} ->
         state = reset_daily_budget_if_needed(state)
-        state = refresh_workspace_dirty(state, config)
 
         %{
           state
@@ -3244,24 +3242,6 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.error("Failed to refresh runtime config: #{inspect(reason)}")
         state
-    end
-  end
-
-  defp refresh_workspace_dirty(%State{} = state, config) do
-    case config.workspace do
-      %{strategy: "worktree", repo: repo} when is_binary(repo) and repo != "" ->
-        expanded = Path.expand(repo)
-
-        case Config.local_worktree_dirty_status(expanded) do
-          {:dirty, summary} ->
-            %{state | workspace_dirty: %{repo: expanded, summary: summary}}
-
-          _ ->
-            %{state | workspace_dirty: nil}
-        end
-
-      _ ->
-        %{state | workspace_dirty: nil}
     end
   end
 
@@ -3431,8 +3411,7 @@ defmodule SymphonyElixir.Orchestrator do
       %{
         pause: state.pause || unpaused_state(),
         budget_daily_used: state.budget_daily_used,
-        budget_day_started_on: state.budget_day_started_on,
-        workspace_dirty: state.workspace_dirty
+        budget_day_started_on: state.budget_day_started_on
       },
       %{daily_limit: agent.max_tokens_per_day},
       System.get_env()

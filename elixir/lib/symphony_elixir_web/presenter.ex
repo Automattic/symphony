@@ -339,7 +339,7 @@ defmodule SymphonyElixirWeb.Presenter do
           |> Enum.map(&normalize_blocker/1)
           |> Enum.reject(&is_nil/1)
 
-        %{active?: active? == true, blockers: normalized}
+        %{active?: active? == true or normalized == [], blockers: normalized}
 
       _ ->
         synthesize_dispatch_state(snapshot)
@@ -407,14 +407,6 @@ defmodule SymphonyElixirWeb.Presenter do
       limit: Map.get(b, :limit, 0),
       day_started_on: Map.get(b, :day_started_on),
       resets_on: Map.get(b, :resets_on)
-    }
-  end
-
-  defp normalize_blocker(%{kind: :workspace_dirty} = b) do
-    %{
-      kind: :workspace_dirty,
-      repo: Map.get(b, :repo),
-      dirty_summary: Map.get(b, :dirty_summary)
     }
   end
 

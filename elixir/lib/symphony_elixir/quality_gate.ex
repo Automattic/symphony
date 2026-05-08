@@ -34,6 +34,7 @@ defmodule SymphonyElixir.QualityGate do
   @openai_provider "openai"
   @clarification_comment_marker "Symphony quality gate: clarification requested"
   @skip_comment_marker "Symphony quality gate: skipped"
+  @workpad_comment_markers ["## Codex Workpad", "## Claude Workpad"]
   @fallback_questions [
     "What specific acceptance criteria should the agent satisfy before opening a PR?",
     "Which files, modules, or product areas should the agent focus on?",
@@ -473,7 +474,7 @@ defmodule SymphonyElixir.QualityGate do
   defp handle_provider_error(%Issue{} = issue, _config, cache, reason) do
     Logger.warning("QualityGate LLM call failed; on_error=pass issue=#{issue.identifier || issue.id} reason=#{inspect(reason)}")
 
-    {:pass, cache}
+    {:pass, Map.delete(cache, issue.id)}
   end
 
   defp put_cache(cache, %Issue{} = issue, score, reason, passed?, now, opts \\ []) do
@@ -619,7 +620,7 @@ defmodule SymphonyElixir.QualityGate do
 
   defp comment_activity_signature(%Issue{comments: comments}) when is_list(comments) do
     comments
-    |> Enum.reject(&quality_gate_comment?/1)
+    |> Enum.reject(&signature_excluded_comment?/1)
     |> Enum.map(&comment_signature_part/1)
     |> Enum.reject(&(&1 == ""))
     |> case do
@@ -639,12 +640,15 @@ defmodule SymphonyElixir.QualityGate do
 
   defp comment_activity_signature(_issue), do: nil
 
-  defp quality_gate_comment?(%{body: body}) when is_binary(body) do
+  defp signature_excluded_comment?(%{body: body}) when is_binary(body) do
     trimmed = String.trim(body)
-    String.starts_with?(trimmed, @clarification_comment_marker) or String.starts_with?(trimmed, @skip_comment_marker)
+
+    String.starts_with?(trimmed, @clarification_comment_marker) or
+      String.starts_with?(trimmed, @skip_comment_marker) or
+      Enum.any?(@workpad_comment_markers, &String.starts_with?(trimmed, &1))
   end
 
-  defp quality_gate_comment?(_comment), do: false
+  defp signature_excluded_comment?(_comment), do: false
 
   defp comment_signature_part(%{body: body} = comment) when is_binary(body) do
     author = Map.get(comment, :author) || "Unknown"

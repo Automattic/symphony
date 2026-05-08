@@ -351,10 +351,17 @@ defmodule SymphonyElixir.Orchestrator do
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues() do
-      state = prune_quality_gate_cache_to_active(state, issues)
+      state =
+        state
+        |> prune_quality_gate_cache_to_active(issues)
+        |> clear_running_quality_gate_cache_entries()
 
       if available_slots(state) > 0 do
-        {gated_issues, state} = apply_quality_gate(issues, state)
+        {gated_issues, state} =
+          issues
+          |> reject_running_quality_gate_candidates(state)
+          |> apply_quality_gate(state)
+
         choose_issues(gated_issues, state)
       else
         state
@@ -977,6 +984,18 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retain_quality_gate_comment_keys(_comment_keys, _issues), do: MapSet.new()
 
+  defp reject_running_quality_gate_candidates(issues, %State{running: running})
+       when is_list(issues) and is_map(running) do
+    running_ids = running |> Map.keys() |> MapSet.new()
+
+    Enum.reject(issues, fn
+      %Issue{id: issue_id} when is_binary(issue_id) -> MapSet.member?(running_ids, issue_id)
+      _issue -> false
+    end)
+  end
+
+  defp reject_running_quality_gate_candidates(issues, _state), do: issues
+
   defp prune_quality_gate_cache_to_active(%State{quality_gate_cache: cache} = state, issues)
        when is_list(issues) do
     pruned = QualityGate.retain_active_issues(cache, issues)
@@ -988,6 +1007,74 @@ defmodule SymphonyElixir.Orchestrator do
       %{state | quality_gate_cache: pruned}
     end
   end
+
+  defp clear_running_quality_gate_cache_entries(%State{running: running} = state)
+       when is_map(running) do
+    clear_quality_gate_blocking_cache_entries(state, Map.keys(running))
+  end
+
+  defp clear_running_quality_gate_cache_entries(state), do: state
+
+  defp clear_quality_gate_blocking_cache_entry(%State{} = state, issue_id) when is_binary(issue_id) do
+    clear_quality_gate_blocking_cache_entries(state, [issue_id])
+  end
+
+  defp clear_quality_gate_blocking_cache_entry(state, _issue_id), do: state
+
+  defp clear_quality_gate_blocking_cache_entries(%State{quality_gate_cache: cache} = state, issue_ids)
+       when is_map(cache) and is_list(issue_ids) do
+    {cache, changed?} =
+      Enum.reduce(issue_ids, {cache, false}, fn issue_id, {cache_acc, changed?} ->
+        if quality_gate_blocking_cache_entry?(Map.get(cache_acc, issue_id)) do
+          {Map.delete(cache_acc, issue_id), true}
+        else
+          {cache_acc, changed?}
+        end
+      end)
+
+    quality_gate_skipped_errors =
+      case state.quality_gate_skipped_errors do
+        skipped_errors when is_map(skipped_errors) -> Map.drop(skipped_errors, issue_ids)
+        _skipped_errors -> %{}
+      end
+
+    state = %{state | quality_gate_skipped_errors: quality_gate_skipped_errors}
+
+    if changed? do
+      persist_quality_gate_cache(cache)
+      %{state | quality_gate_cache: cache}
+    else
+      state
+    end
+  end
+
+  defp clear_quality_gate_blocking_cache_entries(state, _issue_ids), do: state
+
+  defp quality_gate_blocking_cache_entry?(%{passed?: false}), do: true
+  defp quality_gate_blocking_cache_entry?(_entry), do: false
+
+  defp quality_gate_snapshot_cache(%State{quality_gate_cache: cache, running: running})
+       when is_map(cache) and is_map(running) do
+    running_ids = running |> Map.keys() |> MapSet.new()
+
+    cache
+    |> Enum.reject(fn {issue_id, _entry} -> MapSet.member?(running_ids, issue_id) end)
+    |> Map.new()
+  end
+
+  defp quality_gate_snapshot_cache(%State{quality_gate_cache: cache}) when is_map(cache), do: cache
+  defp quality_gate_snapshot_cache(_state), do: %{}
+
+  defp quality_gate_snapshot_skipped_errors(%State{quality_gate_skipped_errors: skipped_errors, running: running})
+       when is_map(skipped_errors) and is_map(running) do
+    Map.drop(skipped_errors, Map.keys(running))
+  end
+
+  defp quality_gate_snapshot_skipped_errors(%State{quality_gate_skipped_errors: skipped_errors})
+       when is_map(skipped_errors),
+       do: skipped_errors
+
+  defp quality_gate_snapshot_skipped_errors(_state), do: %{}
 
   defp snapshot_awaiting_clarification_entry(entry) do
     %{
@@ -1299,6 +1386,7 @@ defmodule SymphonyElixir.Orchestrator do
         persist_run_start(issue, running_entry, attempt)
         delete_persisted_retry(issue.id)
 
+        state = clear_quality_gate_blocking_cache_entry(state, issue.id)
         running = Map.put(state.running, issue.id, running_entry)
 
         %{
@@ -2780,20 +2868,23 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    quality_gate_cache = quality_gate_snapshot_cache(state)
+
     cached_skipped =
-      state.quality_gate_cache
+      quality_gate_cache
       |> QualityGate.skipped_from_cache()
       |> Enum.map(&snapshot_skipped_entry/1)
 
     error_skipped =
-      state.quality_gate_skipped_errors
+      state
+      |> quality_gate_snapshot_skipped_errors()
       |> Map.values()
       |> Enum.map(&snapshot_skipped_entry/1)
 
     skipped = error_skipped ++ cached_skipped
 
     awaiting_clarification =
-      state.quality_gate_cache
+      quality_gate_cache
       |> QualityGate.awaiting_clarification_from_cache()
       |> Enum.map(&snapshot_awaiting_clarification_entry/1)
 

@@ -622,6 +622,8 @@ defmodule SymphonyElixir.StatusDashboard do
              running: running,
              watching: Map.get(snapshot, :watching, []),
              retrying: retrying,
+             awaiting_clarification: Map.get(snapshot, :awaiting_clarification, []),
+             skipped: Map.get(snapshot, :skipped, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              workspace_lifecycle: Map.get(snapshot, :workspace_lifecycle),

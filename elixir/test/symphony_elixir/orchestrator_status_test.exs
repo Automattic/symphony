@@ -2503,6 +2503,215 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered =~ "http://127.0.0.1:4000/"
   end
 
+  test "status dashboard forwards quality gate sections from orchestrator snapshot" do
+    orchestrator_pid = Process.whereis(Orchestrator)
+    assert is_pid(orchestrator_pid)
+
+    previous_state = :sys.get_state(orchestrator_pid)
+
+    on_exit(fn ->
+      if pid = Process.whereis(Orchestrator) do
+        :sys.replace_state(pid, fn state ->
+          %{
+            state
+            | quality_gate_cache: previous_state.quality_gate_cache,
+              quality_gate_comment_keys: previous_state.quality_gate_comment_keys,
+              quality_gate_skipped_errors: previous_state.quality_gate_skipped_errors
+          }
+        end)
+      end
+    end)
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      %{
+        state
+        | quality_gate_cache: %{
+            "issue-skip-terminal" => %{
+              updated_at: ~U[2026-05-05 03:00:00Z],
+              comment_signature: nil,
+              score: 3,
+              reason: "too vague for dispatch",
+              passed?: false,
+              awaiting_clarification?: false,
+              questions: [],
+              rounds_asked: 0,
+              max_rounds: nil,
+              pass_threshold: nil,
+              max_rounds_reached?: false,
+              comment_posted?: true,
+              identifier: "MT-SKIP-TERMINAL",
+              title: "Skip terminal",
+              state: "Todo",
+              url: "https://example.org/issues/MT-SKIP-TERMINAL",
+              scored_at: ~U[2026-05-05 03:00:00Z]
+            },
+            "issue-await-terminal" => %{
+              updated_at: ~U[2026-05-05 03:10:00Z],
+              comment_signature: nil,
+              score: 5,
+              reason: "needs acceptance criteria",
+              passed?: false,
+              awaiting_clarification?: true,
+              questions: ["What should the agent verify?"],
+              rounds_asked: 1,
+              max_rounds: 2,
+              pass_threshold: 6,
+              max_rounds_reached?: false,
+              comment_posted?: true,
+              identifier: "MT-AWAIT-TERMINAL",
+              title: "Await terminal",
+              state: "Todo",
+              url: "https://example.org/issues/MT-AWAIT-TERMINAL",
+              scored_at: ~U[2026-05-05 03:10:00Z]
+            }
+          },
+          quality_gate_comment_keys: MapSet.new(),
+          quality_gate_skipped_errors: %{}
+      }
+    end)
+
+    dashboard_name = Module.concat(__MODULE__, :QualityGateDashboard)
+    parent = self()
+
+    {:ok, dashboard_pid} =
+      StatusDashboard.start_link(
+        name: dashboard_name,
+        enabled: true,
+        refresh_ms: 60_000,
+        render_interval_ms: 1,
+        render_fun: fn content -> send(parent, {:quality_gate_dashboard_render, content}) end
+      )
+
+    on_exit(fn ->
+      if Process.alive?(dashboard_pid) do
+        Process.exit(dashboard_pid, :normal)
+      end
+    end)
+
+    StatusDashboard.notify_update(dashboard_name)
+
+    assert_receive {:quality_gate_dashboard_render, rendered}, 500
+
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+
+    assert plain =~ "MT-AWAIT-TERMINAL"
+    assert plain =~ "round=1"
+    assert plain =~ "MT-SKIP-TERMINAL"
+    assert plain =~ "score=3"
+    assert plain =~ "too vague for dispatch"
+  end
+
+  test "orchestrator snapshot hides quality gate sections for running issues" do
+    orchestrator_pid = Process.whereis(Orchestrator)
+    assert is_pid(orchestrator_pid)
+
+    previous_state = :sys.get_state(orchestrator_pid)
+
+    on_exit(fn ->
+      if pid = Process.whereis(Orchestrator) do
+        :sys.replace_state(pid, fn state ->
+          %{
+            state
+            | running: previous_state.running,
+              quality_gate_cache: previous_state.quality_gate_cache,
+              quality_gate_comment_keys: previous_state.quality_gate_comment_keys,
+              quality_gate_skipped_errors: previous_state.quality_gate_skipped_errors
+          }
+        end)
+      end
+    end)
+
+    running_issue = %Issue{
+      id: "issue-running",
+      identifier: "MT-RUNNING",
+      title: "Running issue",
+      state: "Todo",
+      url: "https://example.org/issues/MT-RUNNING",
+      updated_at: ~U[2026-05-05 03:00:00Z]
+    }
+
+    waiting_issue = %Issue{
+      id: "issue-waiting",
+      identifier: "MT-WAITING",
+      title: "Waiting issue",
+      state: "Todo",
+      url: "https://example.org/issues/MT-WAITING",
+      updated_at: ~U[2026-05-05 03:10:00Z]
+    }
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      %{
+        state
+        | running: %{
+            running_issue.id => %{
+              identifier: running_issue.identifier,
+              issue: running_issue,
+              started_at: ~U[2026-05-05 03:30:00Z],
+              last_codex_timestamp: nil,
+              last_codex_message: nil,
+              last_codex_event: nil
+            }
+          },
+          quality_gate_cache: %{
+            running_issue.id => %{
+              updated_at: running_issue.updated_at,
+              comment_signature: nil,
+              score: 5,
+              reason: "stale awaiting entry",
+              passed?: false,
+              awaiting_clarification?: true,
+              questions: ["Question?"],
+              rounds_asked: 1,
+              max_rounds: 2,
+              pass_threshold: 6,
+              comment_posted?: true,
+              identifier: running_issue.identifier,
+              title: running_issue.title,
+              state: running_issue.state,
+              url: running_issue.url,
+              scored_at: ~U[2026-05-05 03:00:00Z]
+            },
+            waiting_issue.id => %{
+              updated_at: waiting_issue.updated_at,
+              comment_signature: nil,
+              score: 5,
+              reason: "still awaiting",
+              passed?: false,
+              awaiting_clarification?: true,
+              questions: ["Question?"],
+              rounds_asked: 1,
+              max_rounds: 2,
+              pass_threshold: 6,
+              comment_posted?: true,
+              identifier: waiting_issue.identifier,
+              title: waiting_issue.title,
+              state: waiting_issue.state,
+              url: waiting_issue.url,
+              scored_at: ~U[2026-05-05 03:10:00Z]
+            }
+          },
+          quality_gate_skipped_errors: %{
+            running_issue.id => %{
+              kind: :error,
+              issue_id: running_issue.id,
+              identifier: running_issue.identifier,
+              url: running_issue.url,
+              updated_at: running_issue.updated_at,
+              reason: "stale error entry",
+              error: :stub_boom
+            }
+          }
+      }
+    end)
+
+    snapshot = GenServer.call(orchestrator_pid, :snapshot)
+
+    assert Enum.any?(snapshot.running, &match?(%{issue_id: "issue-running"}, &1))
+    assert Enum.any?(snapshot.awaiting_clarification, &match?(%{issue_id: "issue-waiting"}, &1))
+    refute Enum.any?(snapshot.awaiting_clarification, &match?(%{issue_id: "issue-running"}, &1))
+    refute Enum.any?(snapshot.skipped, &match?(%{issue_id: "issue-running"}, &1))
+  end
+
   test "status dashboard prefers the bound server port and normalizes wildcard hosts" do
     assert StatusDashboard.dashboard_url_for_test("127.0.0.1", 0, nil) == nil
 

@@ -1130,6 +1130,57 @@ defmodule SymphonyElixir.CoreTest do
            ]
   end
 
+  test "linear client pins claude workpad comment alongside recent comments" do
+    long_body = String.duplicate("x", 805)
+
+    issue = %Issue{id: "issue-claude", identifier: "MT-CLAUDE", state: "In Progress"}
+
+    graphql_fun = fn _query, _variables ->
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "comments" => %{
+               "nodes" => [
+                 %{
+                   "body" => "Older note",
+                   "createdAt" => "2026-05-05T01:00:00Z",
+                   "user" => %{"name" => "Sam"}
+                 },
+                 %{
+                   "body" => "## Claude Workpad\n" <> long_body,
+                   "createdAt" => "2026-05-05T02:00:00Z",
+                   "user" => %{"name" => "Claude"}
+                 },
+                 %{
+                   "body" => "Recent note",
+                   "createdAt" => "2026-05-05T03:00:00Z",
+                   "user" => %{"name" => "Alex"}
+                 },
+                 %{
+                   "body" => "Latest human note",
+                   "createdAt" => "2026-05-05T04:00:00Z",
+                   "user" => %{"name" => "Taylor"}
+                 }
+               ]
+             },
+             "relations" => %{"nodes" => []}
+           }
+         }
+       }}
+    end
+
+    assert {:ok, enriched_issue} = Client.fetch_issue_enrichment_for_test(issue, graphql_fun)
+
+    assert [
+             %{author: "Claude", body: workpad_body, created_at: ~U[2026-05-05 02:00:00Z]},
+             %{author: "Taylor", body: "Latest human note", created_at: ~U[2026-05-05 04:00:00Z]},
+             %{author: "Alex", body: "Recent note", created_at: ~U[2026-05-05 03:00:00Z]}
+           ] = enriched_issue.comments
+
+    assert String.starts_with?(workpad_body, "## Claude Workpad\n")
+  end
+
   test "linear client reports enrichment errors without changing issue fetchers" do
     issue = %Issue{id: "issue-missing", identifier: "MT-404"}
 

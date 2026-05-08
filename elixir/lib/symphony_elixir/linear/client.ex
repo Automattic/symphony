@@ -12,7 +12,7 @@ defmodule SymphonyElixir.Linear.Client do
   @enrichment_relation_first 50
   @enrichment_comment_limit 3
   @enrichment_comment_body_limit 800
-  @workpad_marker "## Codex Workpad"
+  @workpad_markers ["## Codex Workpad", "## Claude Workpad"]
   @max_error_body_log_bytes 1_000
   @team_id_pattern ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -863,7 +863,7 @@ defmodule SymphonyElixir.Linear.Client do
         index: index,
         author: comment_author(comment),
         body: truncate_comment_body(body),
-        contains_workpad_marker: String.contains?(body, @workpad_marker),
+        contains_workpad_marker: Enum.any?(@workpad_markers, &String.contains?(body, &1)),
         created_at: parse_datetime(comment["createdAt"])
       }
     end

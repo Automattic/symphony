@@ -376,6 +376,59 @@ defmodule SymphonyElixir.QualityGateTest do
       assert %{comment_signature: "1:" <> _hash} = Map.fetch!(result.cache, "ID-MALFORMED-COMMENTS")
     end
 
+    test "comment signatures ignore agent workpad comments so workpad edits do not invalidate cache" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4)
+      updated_at = ~U[2026-05-05 03:00:00Z]
+
+      cache = %{
+        "ID-WORKPAD" => %{
+          updated_at: updated_at,
+          comment_signature: nil,
+          score: 5,
+          reason: "needs clarification",
+          passed?: false,
+          awaiting_clarification?: true,
+          questions: ["Existing question?"],
+          rounds_asked: 1,
+          max_rounds: 2,
+          pass_threshold: 6,
+          comment_posted?: true,
+          identifier: "RSM-ID-WORKPAD",
+          title: "Title ID-WORKPAD",
+          state: "Todo",
+          url: "https://linear.app/x/ID-WORKPAD",
+          scored_at: updated_at
+        }
+      }
+
+      cached_issue =
+        issue("ID-WORKPAD",
+          updated_at: updated_at,
+          comments: [
+            %{
+              author: "Codex",
+              body: "## Codex Workpad\nUpdated plan after agent run",
+              created_at: ~U[2026-05-05 04:00:00Z]
+            },
+            %{
+              author: "Claude",
+              body: "## Claude Workpad\nClaude variant",
+              created_at: ~U[2026-05-05 04:05:00Z]
+            }
+          ]
+        )
+
+      Process.put(:quality_gate_stub_results, %{
+        "ID-WORKPAD" => {:ok, %{score: 9, reason: "should not run"}}
+      })
+
+      result = QualityGate.evaluate([cached_issue], config, cache, provider_module: StubProvider)
+
+      assert result.passed == []
+      assert [%{issue_id: "ID-WORKPAD", reason: "needs clarification"}] = result.awaiting_clarification
+      assert Map.fetch!(result.cache, "ID-WORKPAD") == Map.fetch!(cache, "ID-WORKPAD")
+    end
+
     test "comment activity falls back to nil for non-list issue comments" do
       config = config_enabled(min_score: 6)
       issue = issue("ID-NON-LIST-COMMENTS", comments: :not_a_list)
@@ -485,6 +538,36 @@ defmodule SymphonyElixir.QualityGateTest do
       assert [%Issue{id: "ID-FAIL"}] = result.passed
       assert result.skipped == []
       # Cache is not updated on failure
+      assert result.cache == %{}
+    end
+
+    test "on_error: pass clears stale blocking cache entries" do
+      config = config_enabled(min_score: 6, on_error: "pass")
+      fresh_at = ~U[2026-05-05 04:00:00Z]
+      stale_at = ~U[2026-05-05 03:00:00Z]
+      issues = [issue("ID-FAIL", updated_at: fresh_at)]
+
+      cache = %{
+        "ID-FAIL" => %{
+          updated_at: stale_at,
+          score: 5,
+          reason: "needs clarification",
+          passed?: false,
+          awaiting_clarification?: true,
+          comment_posted?: true,
+          identifier: "RSM-ID-FAIL",
+          title: "Title",
+          state: "Todo",
+          url: "https://linear.app/x/ID-FAIL",
+          scored_at: stale_at
+        }
+      }
+
+      result = QualityGate.evaluate(issues, config, cache, provider_module: ErroringProvider)
+
+      assert [%Issue{id: "ID-FAIL"}] = result.passed
+      assert result.skipped == []
+      assert result.awaiting_clarification == []
       assert result.cache == %{}
     end
 

@@ -663,11 +663,22 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "/vendor/phoenix_html/phoenix_html.js"
     assert html =~ "/vendor/phoenix/phoenix.js"
     assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
+    assert html =~ ~r|/dashboard\.css\?v=[a-f0-9]{16}|
+    assert html =~ ~r|/vendor/phoenix_html/phoenix_html\.js\?v=[a-f0-9]{16}|
+    assert html =~ ~r|/vendor/phoenix/phoenix\.js\?v=[a-f0-9]{16}|
+    assert html =~ ~r|/vendor/phoenix_live_view/phoenix_live_view\.js\?v=[a-f0-9]{16}|
+    assert html =~ ~s(phx-track-static)
     assert html =~ "TranscriptFilter"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
 
-    dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
+    dashboard_css_conn = get(build_conn(), "/dashboard.css")
+    dashboard_css = response(dashboard_css_conn, 200)
+
+    assert Plug.Conn.get_resp_header(dashboard_css_conn, "cache-control") == [
+             "public, max-age=31536000, immutable"
+           ]
+
     assert dashboard_css =~ ":root {"
     assert dashboard_css =~ "minmax(150px, 1fr)"
     assert dashboard_css =~ ".status-badge-live"

@@ -16,17 +16,45 @@ defmodule SymphonyElixirWeb.StaticAssets do
   @phoenix_js File.read!(@phoenix_js_path)
   @phoenix_live_view_js File.read!(@phoenix_live_view_js_path)
 
+  @dashboard_css_digest :sha256
+                        |> :crypto.hash(@dashboard_css)
+                        |> Base.encode16(case: :lower)
+                        |> binary_part(0, 16)
+
+  @phoenix_html_js_digest :sha256
+                          |> :crypto.hash(@phoenix_html_js)
+                          |> Base.encode16(case: :lower)
+                          |> binary_part(0, 16)
+
+  @phoenix_js_digest :sha256
+                     |> :crypto.hash(@phoenix_js)
+                     |> Base.encode16(case: :lower)
+                     |> binary_part(0, 16)
+
+  @phoenix_live_view_js_digest :sha256
+                               |> :crypto.hash(@phoenix_live_view_js)
+                               |> Base.encode16(case: :lower)
+                               |> binary_part(0, 16)
+
   @assets %{
-    "/dashboard.css" => {"text/css", @dashboard_css},
-    "/vendor/phoenix_html/phoenix_html.js" => {"application/javascript", @phoenix_html_js},
-    "/vendor/phoenix/phoenix.js" => {"application/javascript", @phoenix_js},
-    "/vendor/phoenix_live_view/phoenix_live_view.js" => {"application/javascript", @phoenix_live_view_js}
+    "/dashboard.css" => {"text/css", @dashboard_css, @dashboard_css_digest},
+    "/vendor/phoenix_html/phoenix_html.js" => {"application/javascript", @phoenix_html_js, @phoenix_html_js_digest},
+    "/vendor/phoenix/phoenix.js" => {"application/javascript", @phoenix_js, @phoenix_js_digest},
+    "/vendor/phoenix_live_view/phoenix_live_view.js" => {"application/javascript", @phoenix_live_view_js, @phoenix_live_view_js_digest}
   }
+
+  @spec asset_path!(String.t()) :: String.t()
+  def asset_path!(path) when is_binary(path) do
+    case Map.fetch(@assets, path) do
+      {:ok, {_content_type, _body, digest}} -> "#{path}?v=#{digest}"
+      :error -> raise ArgumentError, "unknown dashboard static asset: #{path}"
+    end
+  end
 
   @spec fetch(String.t()) :: {:ok, String.t(), binary()} | :error
   def fetch(path) when is_binary(path) do
     case Map.fetch(@assets, path) do
-      {:ok, {content_type, body}} -> {:ok, content_type, body}
+      {:ok, {content_type, body, _digest}} -> {:ok, content_type, body}
       :error -> :error
     end
   end

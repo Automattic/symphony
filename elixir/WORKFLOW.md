@@ -87,7 +87,7 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
   # Optional token budget guardrails. Omit or leave commented for no enforcement.
-  max_tokens_per_issue: 10000000
+  max_tokens_per_issue: 100000000
   max_tokens_per_day: 1000000000
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_HEADLESS="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_ISOLATED="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_ACTION="5000"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_NAVIGATION="15000"' app-server
   # Auto-approve every Codex approval request for unattended orchestration.
@@ -405,7 +405,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
       - **What changed and why**, including the motivation reviewers need to evaluate the approach,
       - **Testing evidence**, with commands run and output snippets confirming the change works,
       - **Screenshots or recordings** for any UI-touching changes,
-      - **Known limitations or follow-ups** for anything deferred to Backlog.
+      - **Follow-ups** for anything deferred to Backlog.
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.

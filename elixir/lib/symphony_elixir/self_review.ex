@@ -9,7 +9,7 @@ defmodule SymphonyElixir.SelfReview do
 
   require Logger
 
-  alias SymphonyElixir.{Config.Schema, QualityGate, SSH}
+  alias SymphonyElixir.{Config.Schema, PromptSafety, QualityGate, SSH}
   alias SymphonyElixir.Linear.Issue
 
   @allowed_categories %{
@@ -71,6 +71,7 @@ defmodule SymphonyElixir.SelfReview do
           required(:issue_title) => String.t(),
           required(:issue_description) => String.t(),
           required(:acceptance_criteria) => String.t(),
+          required(:linear_input_warnings) => [String.t()],
           required(:changed_paths) => [String.t()],
           required(:commit_messages) => String.t(),
           required(:diff) => String.t(),
@@ -246,12 +247,14 @@ defmodule SymphonyElixir.SelfReview do
          {:ok, commit_messages} <- git(workspace, ["log", "--reverse", "--format=%s%n%b%x1e", "origin/main..HEAD"], worker_host) do
       changed_paths = split_lines(changed_paths_output)
       {review_diff, diff_line_count, truncated?} = truncate_diff(diff, changed_paths, config.diff_max_lines, issue)
+      raw_acceptance_criteria = acceptance_criteria(issue.description)
 
       {:ok,
        %{
-         issue_title: present(issue.title),
-         issue_description: present(issue.description),
-         acceptance_criteria: acceptance_criteria(issue.description),
+         issue_title: present_linear(issue.title, &PromptSafety.linear_issue_title/1),
+         issue_description: present_linear(issue.description, &PromptSafety.linear_issue_body/1),
+         acceptance_criteria: present_linear(raw_acceptance_criteria, &PromptSafety.linear_issue_acceptance_criteria/1),
+         linear_input_warnings: linear_input_warnings(issue, raw_acceptance_criteria),
          changed_paths: changed_paths,
          commit_messages: String.trim(commit_messages),
          diff: review_diff,
@@ -289,6 +292,8 @@ defmodule SymphonyElixir.SelfReview do
 
     Acceptance criteria:
     #{blank_fallback(source.acceptance_criteria)}
+
+    #{PromptSafety.warning_section(Map.get(source, :linear_input_warnings, []))}
 
     Changed file paths:
     #{format_paths(source.changed_paths)}
@@ -486,6 +491,15 @@ defmodule SymphonyElixir.SelfReview do
 
   defp acceptance_criteria(_description), do: ""
 
+  defp linear_input_warnings(issue, acceptance_criteria) do
+    [
+      {"issue.title", issue.title},
+      {"issue.description", issue.description},
+      {"issue.acceptance_criteria", acceptance_criteria}
+    ]
+    |> PromptSafety.warning_fields()
+  end
+
   defp count_lines(""), do: 0
   defp count_lines(text) when is_binary(text), do: length(String.split(text, "\n", trim: false))
 
@@ -520,9 +534,11 @@ defmodule SymphonyElixir.SelfReview do
     end
   end
 
-  defp present(nil), do: ""
-  defp present(value) when is_binary(value), do: value
-  defp present(value), do: to_string(value)
+  defp present_linear(value, _renderer) when value in [nil, ""], do: ""
+
+  defp present_linear(value, renderer) when is_binary(value), do: renderer.(value)
+
+  defp present_linear(value, renderer), do: value |> to_string() |> renderer.()
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"

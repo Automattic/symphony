@@ -8,7 +8,7 @@ defmodule SymphonyElixir.QualityGate.Prompt do
   `{"score": <1-10>, "reason": "<one-sentence>", "questions": ["..."]}`.
   """
 
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.{Linear.Issue, PromptSafety}
 
   @system_instructions """
   You evaluate Linear issues for autonomous code-agent readiness.
@@ -38,16 +38,20 @@ defmodule SymphonyElixir.QualityGate.Prompt do
 
   @spec user_prompt(Issue.t()) :: String.t()
   def user_prompt(%Issue{} = issue) do
+    linear_input_warnings = linear_input_warnings(issue)
+
     """
     Identifier: #{present(issue.identifier)}
-    Title: #{present(issue.title)}
+    Title: #{present_linear(issue.title, "(unknown)", &PromptSafety.linear_issue_title/1)}
     Labels: #{format_labels(issue.labels)}
     State: #{present(issue.state)}
 
     #{format_comments(issue.comments)}
 
     Description:
-    #{present(issue.description, "(no description)")}
+    #{present_linear(issue.description, "(no description)", &PromptSafety.linear_issue_body/1)}
+
+    #{PromptSafety.warning_section(linear_input_warnings)}
     """
   end
 
@@ -56,6 +60,12 @@ defmodule SymphonyElixir.QualityGate.Prompt do
   defp present("", fallback), do: fallback
   defp present(value, _fallback) when is_binary(value), do: value
   defp present(value, _fallback), do: to_string(value)
+
+  defp present_linear(value, fallback, _renderer) when value in [nil, ""], do: fallback
+
+  defp present_linear(value, _fallback, renderer) when is_binary(value), do: renderer.(value)
+
+  defp present_linear(value, _fallback, renderer), do: value |> to_string() |> renderer.()
 
   defp format_labels([]), do: "(none)"
   defp format_labels(labels) when is_list(labels), do: Enum.join(labels, ", ")
@@ -80,10 +90,32 @@ defmodule SymphonyElixir.QualityGate.Prompt do
     author = present(Map.get(comment, :author), "Unknown")
     created_at = format_comment_datetime(Map.get(comment, :created_at))
 
-    "[#{author} @ #{created_at}]\n#{body}"
+    "[#{author} @ #{created_at}]\n#{PromptSafety.linear_issue_comment_body(body)}"
   end
 
   defp format_comment(_comment), do: ""
+
+  defp linear_input_warnings(%Issue{} = issue) do
+    sources =
+      [
+        {"issue.title", issue.title},
+        {"issue.description", issue.description}
+      ] ++ issue_comment_warning_sources(issue.comments)
+
+    PromptSafety.warning_fields(sources)
+  end
+
+  defp issue_comment_warning_sources(comments) when is_list(comments) do
+    comments
+    |> Enum.with_index(1)
+    |> Enum.map(fn {comment, index} -> {"issue.comments[#{index}].body", comment_body(comment)} end)
+  end
+
+  defp issue_comment_warning_sources(_comments), do: []
+
+  defp comment_body(%{body: body}), do: body
+  defp comment_body(%{"body" => body}), do: body
+  defp comment_body(_comment), do: nil
 
   defp format_comment_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp format_comment_datetime(_datetime), do: "unknown time"

@@ -70,7 +70,8 @@ defmodule SymphonyElixir.Orchestrator do
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
       quality_gate_skipped: %{},
-      quality_gate_awaiting_clarification: %{}
+      quality_gate_awaiting_clarification: %{},
+      workspace_dirty: nil
     ]
   end
 
@@ -2944,12 +2945,31 @@ defmodule SymphonyElixir.Orchestrator do
   defp refresh_runtime_config(%State{} = state) do
     config = Config.settings!()
     state = reset_daily_budget_if_needed(state)
+    state = refresh_workspace_dirty(state, config)
 
     %{
       state
       | poll_interval_ms: config.polling.interval_ms,
         max_concurrent_agents: config.agent.max_concurrent_agents
     }
+  end
+
+  defp refresh_workspace_dirty(%State{} = state, config) do
+    case config.workspace do
+      %{strategy: "worktree", repo: repo} when is_binary(repo) and repo != "" ->
+        expanded = Path.expand(repo)
+
+        case Config.local_worktree_dirty_status(expanded) do
+          {:dirty, summary} ->
+            %{state | workspace_dirty: %{repo: expanded, summary: summary}}
+
+          _ ->
+            %{state | workspace_dirty: nil}
+        end
+
+      _ ->
+        %{state | workspace_dirty: nil}
+    end
   end
 
   defp reset_daily_budget_if_needed(%State{} = state) do

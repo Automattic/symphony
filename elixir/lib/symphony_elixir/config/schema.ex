@@ -186,18 +186,88 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
+    defmodule Lifecycle do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @primary_key false
+      @orphan_actions ["log", "delete", "trash"]
+
+      embedded_schema do
+        field(:age_gc_enabled, :boolean, default: true)
+        field(:max_age_days, :integer, default: 14)
+        field(:gc_interval_ms, :integer, default: 3_600_000)
+        field(:min_free_bytes, :integer)
+        field(:orphan_action, :string, default: "log")
+        field(:trash_dir, :string, default: ".trash")
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(
+          attrs,
+          [:age_gc_enabled, :max_age_days, :gc_interval_ms, :min_free_bytes, :orphan_action, :trash_dir],
+          empty_values: []
+        )
+        |> validate_number(:max_age_days, greater_than: 0)
+        |> validate_number(:gc_interval_ms, greater_than: 0)
+        |> validate_number(:min_free_bytes, greater_than_or_equal_to: 0)
+        |> validate_inclusion(:orphan_action, @orphan_actions)
+        |> normalize_trash_dir()
+        |> validate_trash_dir()
+      end
+
+      defp normalize_trash_dir(changeset) do
+        update_change(changeset, :trash_dir, fn
+          value when is_binary(value) ->
+            case String.trim(value) do
+              "" -> ".trash"
+              normalized -> normalized
+            end
+
+          nil ->
+            ".trash"
+        end)
+      end
+
+      defp validate_trash_dir(changeset) do
+        validate_change(changeset, :trash_dir, fn :trash_dir, value ->
+          cond do
+            !is_binary(value) ->
+              [trash_dir: "must be a relative directory name"]
+
+            Path.type(value) != :relative ->
+              [trash_dir: "must be a relative directory name"]
+
+            String.contains?(value, ["\n", "\r", <<0>>]) ->
+              [trash_dir: "must not contain control characters"]
+
+            ".." in Path.split(value) ->
+              [trash_dir: "must not contain parent directory segments"]
+
+            true ->
+              []
+          end
+        end)
+      end
+    end
+
     @primary_key false
     embedded_schema do
       field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
       field(:strategy, :string, default: "clone")
       field(:repo, :string)
       field(:fetch_before_dispatch, :boolean, default: true)
+      embeds_one(:lifecycle, Lifecycle, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:root, :strategy, :repo, :fetch_before_dispatch], empty_values: [])
+      |> cast_embed(:lifecycle, with: &Lifecycle.changeset/2)
       |> validate_inclusion(:strategy, ["clone", "worktree"])
     end
   end

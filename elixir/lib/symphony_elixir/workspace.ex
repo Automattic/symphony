@@ -9,6 +9,27 @@ defmodule SymphonyElixir.Workspace do
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
   @type worker_host :: String.t() | nil
+  @type lifecycle_action :: %{
+          optional(:identifier) => String.t(),
+          optional(:path) => Path.t(),
+          optional(:destination) => Path.t(),
+          optional(:worker_host) => worker_host(),
+          optional(:action) => :deleted | :logged | :trashed | :failed,
+          optional(:reason) => :age_gc | :orphan,
+          optional(:error) => term()
+        }
+
+  @spec safe_identifier(term()) :: String.t()
+  def safe_identifier(identifier) do
+    identifier =
+      cond do
+        is_binary(identifier) and identifier != "" -> identifier
+        is_nil(identifier) -> "issue"
+        true -> to_string(identifier)
+      end
+
+    String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
+  end
 
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
@@ -387,6 +408,274 @@ defmodule SymphonyElixir.Workspace do
     :ok
   end
 
+  @spec free_bytes() :: {:ok, non_neg_integer()} | {:error, term()}
+  def free_bytes, do: free_bytes(nil)
+
+  @spec free_bytes(worker_host()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def free_bytes(nil) do
+    root = Config.settings!().workspace.root
+
+    with :ok <- File.mkdir_p(root),
+         {output, 0} <- System.cmd("df", ["-Pk", root], stderr_to_stdout: true),
+         {:ok, bytes} <- parse_df_available_bytes(output) do
+      {:ok, bytes}
+    else
+      {:error, reason} ->
+        {:error, {:workspace_free_space_check_failed, root, reason}}
+
+      {output, status} ->
+        {:error, {:workspace_free_space_check_failed, root, status, output}}
+    end
+  end
+
+  def free_bytes(worker_host) when is_binary(worker_host) do
+    root = Config.settings!().workspace.root
+
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("root", root),
+        "mkdir -p \"$root\"",
+        "df -Pk \"$root\" | awk 'NR==2 {print $4}'"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} ->
+        parse_df_available_bytes(output)
+
+      {:ok, {output, status}} ->
+        {:error, {:workspace_free_space_check_failed, worker_host, root, status, output}}
+
+      {:error, reason} ->
+        {:error, {:workspace_free_space_check_failed, worker_host, root, reason}}
+    end
+  end
+
+  @spec reclaim_stale_workspaces() :: {:ok, [lifecycle_action()]} | {:error, term()}
+  def reclaim_stale_workspaces, do: reclaim_stale_workspaces(MapSet.new(), DateTime.utc_now())
+
+  @spec reclaim_stale_workspaces(term()) :: {:ok, [lifecycle_action()]} | {:error, term()}
+  def reclaim_stale_workspaces(protected_identifiers),
+    do: reclaim_stale_workspaces(protected_identifiers, DateTime.utc_now())
+
+  @spec reclaim_stale_workspaces(term(), DateTime.t()) :: {:ok, [lifecycle_action()]} | {:error, term()}
+  def reclaim_stale_workspaces(protected_identifiers, %DateTime{} = now) do
+    lifecycle = Config.settings!().workspace.lifecycle
+
+    if lifecycle.age_gc_enabled == true do
+      protected = normalize_identifier_set(protected_identifiers)
+      cutoff = DateTime.to_unix(now) - lifecycle.max_age_days * 86_400
+
+      with {:ok, entries} <- local_workspace_entries() do
+        actions =
+          entries
+          |> Enum.filter(&(&1.mtime <= cutoff))
+          |> Enum.reject(&MapSet.member?(protected, &1.identifier))
+          |> Enum.map(&delete_lifecycle_workspace(&1, :age_gc))
+
+        {:ok, actions}
+      end
+    else
+      {:ok, []}
+    end
+  end
+
+  @spec sweep_orphan_workspaces(Enumerable.t()) :: {:ok, [lifecycle_action()]} | {:error, term()}
+  def sweep_orphan_workspaces(tracked_identifiers) do
+    lifecycle = Config.settings!().workspace.lifecycle
+    tracked = normalize_identifier_set(tracked_identifiers)
+
+    with {:ok, entries} <- local_workspace_entries() do
+      actions =
+        entries
+        |> Enum.reject(&MapSet.member?(tracked, &1.identifier))
+        |> Enum.map(&perform_orphan_action(&1, lifecycle))
+
+      {:ok, actions}
+    end
+  end
+
+  @spec local_workspace_entries() :: {:ok, [map()]} | {:error, term()}
+  def local_workspace_entries do
+    settings = Config.settings!()
+    root = settings.workspace.root
+    trash_dir = settings.workspace.lifecycle.trash_dir |> Path.split() |> List.first()
+
+    cond do
+      !File.exists?(root) ->
+        {:ok, []}
+
+      !File.dir?(root) ->
+        {:error, {:workspace_root_not_directory, root}}
+
+      true ->
+        case File.ls(root) do
+          {:ok, names} ->
+            entries =
+              names
+              |> Enum.reject(&(&1 == trash_dir))
+              |> Enum.flat_map(&local_workspace_entry(root, &1))
+
+            {:ok, entries}
+
+          {:error, reason} ->
+            {:error, {:workspace_root_list_failed, root, reason}}
+        end
+    end
+  end
+
+  defp local_workspace_entry(root, name) do
+    path = Path.join(root, name)
+
+    case File.stat(path, time: :posix) do
+      {:ok, %{type: :directory, mtime: mtime}} when is_integer(mtime) ->
+        [%{identifier: safe_identifier(name), name: name, path: path, mtime: mtime}]
+
+      _ ->
+        []
+    end
+  end
+
+  defp normalize_identifier_set(identifiers) do
+    identifiers
+    |> Enum.flat_map(fn
+      identifier when is_binary(identifier) -> [safe_identifier(identifier)]
+      %{identifier: identifier} when is_binary(identifier) -> [safe_identifier(identifier)]
+      %{issue_identifier: identifier} when is_binary(identifier) -> [safe_identifier(identifier)]
+      _ -> []
+    end)
+    |> MapSet.new()
+  end
+
+  defp perform_orphan_action(entry, %{orphan_action: "delete"}) do
+    delete_lifecycle_workspace(entry, :orphan)
+  end
+
+  defp perform_orphan_action(entry, %{orphan_action: "trash"} = lifecycle) do
+    trash_lifecycle_workspace(entry, :orphan, lifecycle)
+  end
+
+  defp perform_orphan_action(entry, _lifecycle) do
+    Logger.warning("Workspace orphan found identifier=#{entry.identifier} workspace=#{entry.path} action=log")
+
+    %{
+      identifier: entry.identifier,
+      path: entry.path,
+      worker_host: nil,
+      action: :logged,
+      reason: :orphan
+    }
+  end
+
+  defp delete_lifecycle_workspace(entry, reason) do
+    case remove(entry.path) do
+      {:ok, _removed_paths} ->
+        Logger.warning("Workspace lifecycle removed identifier=#{entry.identifier} workspace=#{entry.path} reason=#{reason} action=delete")
+
+        %{
+          identifier: entry.identifier,
+          path: entry.path,
+          worker_host: nil,
+          action: :deleted,
+          reason: reason
+        }
+
+      {:error, error, output} ->
+        log_workspace_removal_failure(entry.path, issue_context(entry.identifier), nil, error, output)
+
+        %{
+          identifier: entry.identifier,
+          path: entry.path,
+          worker_host: nil,
+          action: :failed,
+          reason: reason,
+          error: error
+        }
+    end
+  end
+
+  defp trash_lifecycle_workspace(entry, reason, lifecycle) do
+    root = Config.settings!().workspace.root
+    trash_root = Path.join(root, lifecycle.trash_dir)
+    destination = unique_trash_destination(trash_root, entry.identifier)
+
+    with :ok <- validate_workspace_path(entry.path, nil),
+         :ok <- File.mkdir_p(trash_root),
+         :ok <- File.rename(entry.path, destination) do
+      Logger.warning("Workspace orphan found identifier=#{entry.identifier} workspace=#{entry.path} action=trash destination=#{destination}")
+
+      %{
+        identifier: entry.identifier,
+        path: entry.path,
+        destination: destination,
+        worker_host: nil,
+        action: :trashed,
+        reason: reason
+      }
+    else
+      {:error, error} ->
+        Logger.warning("Workspace lifecycle trash failed identifier=#{entry.identifier} workspace=#{entry.path} destination=#{destination} reason=#{inspect(error)}")
+
+        %{
+          identifier: entry.identifier,
+          path: entry.path,
+          destination: destination,
+          worker_host: nil,
+          action: :failed,
+          reason: reason,
+          error: error
+        }
+    end
+  end
+
+  defp unique_trash_destination(trash_root, identifier) do
+    timestamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d%H%M%S")
+    base = Path.join(trash_root, "#{timestamp}-#{identifier}")
+
+    if File.exists?(base) do
+      Path.join(trash_root, "#{timestamp}-#{System.unique_integer([:positive])}-#{identifier}")
+    else
+      base
+    end
+  end
+
+  defp parse_df_available_bytes(output) do
+    output
+    |> IO.iodata_to_binary()
+    |> String.split("\n", trim: true)
+    |> Enum.find_value(&parse_df_available_line/1)
+    |> case do
+      blocks when is_integer(blocks) and blocks >= 0 -> {:ok, blocks * 1024}
+      _ -> {:error, {:invalid_df_output, output}}
+    end
+  end
+
+  defp parse_df_available_line(line) do
+    fields = String.split(line, ~r/\s+/, trim: true)
+
+    cond do
+      fields == [] or hd(fields) == "Filesystem" ->
+        nil
+
+      length(fields) == 1 ->
+        parse_non_negative_integer(hd(fields))
+
+      length(fields) >= 4 ->
+        fields |> Enum.at(3) |> parse_non_negative_integer()
+
+      true ->
+        nil
+    end
+  end
+
+  defp parse_non_negative_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer >= 0 -> integer
+      _ -> nil
+    end
+  end
+
   defp remove_issue_workspace(identifier, issue_context, worker_host) when is_binary(identifier) do
     safe_id = safe_identifier(identifier)
 
@@ -464,10 +753,6 @@ defmodule SymphonyElixir.Workspace do
 
   defp workspace_path_for_issue(safe_id, worker_host) when is_binary(safe_id) and is_binary(worker_host) do
     {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
-  end
-
-  defp safe_identifier(identifier) do
-    String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
   defp worktree_branch(%{issue_identifier: identifier}) when is_binary(identifier) and identifier != "" do

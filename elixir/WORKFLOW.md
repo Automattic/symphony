@@ -51,6 +51,14 @@ workspace:
   strategy: worktree
   repo: ~/Projects/symphony
   fetch_before_dispatch: true
+  # Workspace lifecycle guardrails. Age GC is enabled by default; quota checks
+  # are disabled until min_free_bytes is set; orphan sweep logs by default.
+  lifecycle:
+    max_age_days: 14
+    gc_interval_ms: 3600000
+    # min_free_bytes: 10737418240
+    orphan_action: log # log | delete | trash
+    trash_dir: .trash
 hooks:
   after_create: |
     if command -v mise >/dev/null 2>&1; then

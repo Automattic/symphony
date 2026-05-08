@@ -45,6 +45,8 @@ recovered, so long-running queues do not need constant operator supervision.
 - **Watchdog** that detects stalled agent sessions and recovers them without operator intervention.
 - **Durable run store** for run history, retry backoff, captured learnings, and aggregate token
   totals.
+- **Workspace lifecycle guardrails** for age-based cleanup, startup orphan reporting/removal, and
+  disk free-space dispatch pauses.
 - **Quality gate** (optional) that scores issue clarity before dispatch so unclear work is held
   instead of reaching Codex.
 - **Verification dev server orchestration** for parallel worktree runs: per-issue port allocation,

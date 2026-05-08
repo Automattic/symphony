@@ -118,6 +118,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 
 - `workspace.strategy: worktree` creates each issue workspace from an existing local primary clone
   instead of cloning in `hooks.after_create`. Set `workspace.repo` to that primary clone.
+- `workspace.lifecycle.*` controls workspace cleanup guardrails. By default Symphony removes local
+  workspaces older than 14 days, logs startup orphans without deleting them, and leaves disk quota
+  dispatch pauses disabled until `workspace.lifecycle.min_free_bytes` is configured.
 - `pr_review.mode: tracker` is the default and expects Linear states such as `Rework` and `Merging`
   to drive review loops. Set `pr_review.mode: polling` to let Symphony poll GitHub PR state while
   Linear stays on the standard Todo -> In Progress -> In Review -> Done path.

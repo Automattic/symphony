@@ -91,6 +91,7 @@ agent:
   kind: codex
   max_concurrent_agents: 10
   max_turns: 20
+  # Defaults shown; raise the numbers as needed or set either key to null to disable that cap.
   # max_tokens_per_issue: 500000
   # max_tokens_per_day: 5000000
   command: codex app-server
@@ -196,13 +197,17 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   field, `agent.network_access` controls that field.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- `agent.max_tokens_per_issue` and `agent.max_tokens_per_day` are optional guardrails. When omitted,
-  no token budget is enforced. The per-issue limit stops only the over-budget issue without
-  retrying; the daily limit pauses new dispatch for the UTC day while allowing already-running
-  agents to continue. Budget enforcement depends on Codex app-server token reporting, so Symphony
-  warns if either budget is configured with a command that may not report token usage. Per-issue
-  exhausted runs are rehydrated from run history across restarts while the current limit still
-  applies; raising or removing the per-issue limit lets the issue dispatch again.
+- `agent.max_tokens_per_issue` and `agent.max_tokens_per_day` are token budget guardrails. Defaults
+  are `500000` tokens per issue and `5000000` tokens per UTC day, so workflows have finite caps even
+  when these keys are omitted. Raise either value by setting a larger positive integer, or set either
+  key to `null` to disable that specific cap intentionally. The per-issue limit stops only the
+  over-budget issue without retrying; the daily limit pauses new dispatch for the UTC day while
+  allowing already-running agents to continue. Budget enforcement depends on Codex app-server token
+  reporting, so Symphony warns if either budget is active with a command that may not report token
+  usage. Per-issue exhausted runs are rehydrated from run history across restarts while the current
+  limit still applies; raising or disabling the per-issue limit lets the issue dispatch again. The
+  dashboard shows daily usage and remaining daily budget, and active session rows show per-issue
+  token usage with remaining headroom.
 - `watchdog` is enabled by default and protects running agent sessions from silent no-progress
   stalls. It checks running agents every `watchdog.tick_interval_ms` (default: `60000`) and
   compares the current time with the latest transcript event timestamp. When no event has arrived

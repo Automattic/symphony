@@ -736,6 +736,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(<div class="link-actions">)
     assert html =~ "thread-h…"
     assert html =~ "Codex update"
+    assert html =~ "Budget: 488 left"
     assert html =~ "/issues/MT-HTTP/transcript"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"

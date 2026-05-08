@@ -545,6 +545,96 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
            "expected retry-target skipped issue to remain on dashboard; got skipped=#{inspect(snapshot.skipped)}"
   end
 
+  test "skipped issue leaves the dashboard once it drops out of the candidate filter" do
+    skip_issue = %Issue{
+      id: "issue-skip-leaves",
+      identifier: "MT-LEAVES",
+      title: "Skip then leave",
+      description: "Vague",
+      state: "Todo",
+      url: "https://example.org/issues/MT-LEAVES",
+      updated_at: ~U[2026-05-05 03:00:00Z]
+    }
+
+    Application.put_env(:symphony_elixir, :quality_gate_anthropic_module, SkipProvider)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [skip_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      quality_gate: %{
+        enabled: true,
+        provider: "anthropic",
+        model: "claude-haiku-4-5-20251001",
+        min_score: 6,
+        on_error: "pass"
+      }
+    )
+
+    name = Module.concat(__MODULE__, :SkippedLeavesScopeOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: name)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+    send(pid, :run_poll_cycle)
+    assert_receive {:memory_tracker_comment, "issue-skip-leaves", _}, 500
+    wait_for_skipped(pid, "issue-skip-leaves")
+
+    # Issue moves out of scope (Done, reassigned, or label change → candidate fetch no longer returns it).
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+    send(pid, :run_poll_cycle)
+    Process.sleep(100)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    refute Enum.any?(snapshot.skipped, &match?(%{issue_id: "issue-skip-leaves"}, &1)),
+           "expected skipped issue to leave the dashboard once out of scope; got skipped=#{inspect(snapshot.skipped)}"
+  end
+
+  test "error-mode skip does not re-post the failed-LLM comment after orchestrator restart" do
+    issue = %Issue{
+      id: "issue-err-restart",
+      identifier: "MT-ERR-RESTART",
+      title: "Erroring across restart",
+      description: "...",
+      state: "Todo",
+      url: "https://example.org/issues/MT-ERR-RESTART",
+      updated_at: ~U[2026-05-05 03:00:00Z]
+    }
+
+    Application.put_env(:symphony_elixir, :quality_gate_anthropic_module, ErroringProvider)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      quality_gate: %{
+        enabled: true,
+        provider: "anthropic",
+        model: "claude-haiku-4-5-20251001",
+        min_score: 6,
+        on_error: "skip"
+      }
+    )
+
+    name_a = Module.concat(__MODULE__, :ErrorRestartOrchestratorA)
+    {:ok, pid_a} = Orchestrator.start_link(name: name_a)
+
+    send(pid_a, :run_poll_cycle)
+    assert_receive {:memory_tracker_comment, "issue-err-restart", body}, 500
+    assert body =~ "LLM call failed"
+
+    # Simulate restart: stop A, start B with the same persistence backing.
+    GenServer.stop(pid_a)
+
+    name_b = Module.concat(__MODULE__, :ErrorRestartOrchestratorB)
+    {:ok, pid_b} = Orchestrator.start_link(name: name_b)
+    on_exit(fn -> if Process.alive?(pid_b), do: Process.exit(pid_b, :normal) end)
+
+    send(pid_b, :run_poll_cycle)
+    refute_receive {:memory_tracker_comment, "issue-err-restart", _}, 200
+  end
+
   defp wait_for_skipped(pid, issue_id, timeout_ms \\ 1_000) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_skipped(pid, issue_id, deadline_ms)

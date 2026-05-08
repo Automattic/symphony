@@ -92,6 +92,7 @@ defmodule SymphonyElixir.Orchestrator do
     codex_totals = persisted_codex_totals()
     pause = persisted_pause_state()
     quality_gate_cache = hydrate_quality_gate_cache()
+    quality_gate_comment_keys = hydrate_quality_gate_comment_keys()
     budget_day_started_on = Date.utc_today()
     budget_daily_used = hydrate_budget_daily_used(budget_day_started_on)
     budget_exhausted = hydrate_budget_exhausted()
@@ -117,7 +118,8 @@ defmodule SymphonyElixir.Orchestrator do
       budget_daily_used: budget_daily_used,
       budget_daily_paused_logged: false,
       budget_exhausted: budget_exhausted,
-      quality_gate_cache: quality_gate_cache
+      quality_gate_cache: quality_gate_cache,
+      quality_gate_comment_keys: quality_gate_comment_keys
     }
 
     mark_interrupted_runs()
@@ -341,10 +343,15 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_watching_issues()
 
     with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
-      {gated_issues, state} = apply_quality_gate(issues, state)
-      choose_issues(gated_issues, state)
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
+      state = prune_quality_gate_cache_to_active(state, issues)
+
+      if available_slots(state) > 0 do
+        {gated_issues, state} = apply_quality_gate(issues, state)
+        choose_issues(gated_issues, state)
+      else
+        state
+      end
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -382,9 +389,6 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
-
-      false ->
         state
     end
   end
@@ -847,6 +851,7 @@ defmodule SymphonyElixir.Orchestrator do
           post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys)
 
         persist_quality_gate_cache(cache)
+        persist_quality_gate_comment_keys(comment_keys)
 
         error_skips_index =
           skipped_with_status
@@ -964,6 +969,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retain_quality_gate_comment_keys(_comment_keys, _issues), do: MapSet.new()
+
+  defp prune_quality_gate_cache_to_active(%State{quality_gate_cache: cache} = state, issues)
+       when is_list(issues) do
+    pruned = QualityGate.retain_active_issues(cache, issues)
+
+    if map_size(pruned) == map_size(cache) do
+      state
+    else
+      persist_quality_gate_cache(pruned)
+      %{state | quality_gate_cache: pruned}
+    end
+  end
 
   defp snapshot_awaiting_clarification_entry(entry) do
     %{
@@ -2137,6 +2154,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp persist_quality_gate_cache(_cache), do: :ok
+
+  defp hydrate_quality_gate_comment_keys do
+    case RunStore.get_quality_gate_comment_keys() do
+      %MapSet{} = keys ->
+        keys
+
+      nil ->
+        MapSet.new()
+
+      {:error, reason} ->
+        Logger.warning("Failed to read persisted quality gate comment keys: #{inspect(reason)}")
+        MapSet.new()
+    end
+  end
+
+  defp persist_quality_gate_comment_keys(%MapSet{} = keys) do
+    keys
+    |> RunStore.put_quality_gate_comment_keys()
+    |> log_run_store_error("persist quality gate comment keys")
+  end
 
   defp hydrate_retry_attempts do
     case RunStore.list_retries() do

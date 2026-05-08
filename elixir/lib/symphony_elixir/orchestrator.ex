@@ -67,10 +67,12 @@ defmodule SymphonyElixir.Orchestrator do
       budget_exhausted: MapSet.new(),
       pause: %{paused: false, reason: nil, paused_at: nil},
       operator_pause_logged: false,
+      workspace_lifecycle_last_check_at_ms: nil,
+      workspace_lifecycle_quota: %{configured?: false, paused: false, reason: nil},
+      workspace_quota_logged: false,
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
-      quality_gate_skipped: %{},
-      quality_gate_awaiting_clarification: %{},
+      quality_gate_skipped_errors: %{},
       workspace_dirty: nil
     ]
   end
@@ -91,6 +93,7 @@ defmodule SymphonyElixir.Orchestrator do
     codex_totals = persisted_codex_totals()
     pause = persisted_pause_state()
     quality_gate_cache = hydrate_quality_gate_cache()
+    quality_gate_comment_keys = hydrate_quality_gate_comment_keys()
     budget_day_started_on = Date.utc_today()
     budget_daily_used = hydrate_budget_daily_used(budget_day_started_on)
     budget_exhausted = hydrate_budget_exhausted()
@@ -116,11 +119,13 @@ defmodule SymphonyElixir.Orchestrator do
       budget_daily_used: budget_daily_used,
       budget_daily_paused_logged: false,
       budget_exhausted: budget_exhausted,
-      quality_gate_cache: quality_gate_cache
+      quality_gate_cache: quality_gate_cache,
+      quality_gate_comment_keys: quality_gate_comment_keys
     }
 
     mark_interrupted_runs()
     run_terminal_workspace_cleanup()
+    state = run_startup_workspace_lifecycle(state, now_ms)
     state = schedule_tick(state, 0)
     state = schedule_watchdog_tick(state, config.watchdog.tick_interval_ms)
 
@@ -339,10 +344,15 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_watching_issues()
 
     with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
-      {gated_issues, state} = apply_quality_gate(issues, state)
-      choose_issues(gated_issues, state)
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
+      state = prune_quality_gate_cache_to_active(state, issues)
+
+      if available_slots(state) > 0 do
+        {gated_issues, state} = apply_quality_gate(issues, state)
+        choose_issues(gated_issues, state)
+      else
+        state
+      end
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -380,9 +390,6 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
-
-      false ->
         state
     end
   end
@@ -838,29 +845,31 @@ defmodule SymphonyElixir.Orchestrator do
 
         comment_keys = retain_quality_gate_comment_keys(state.quality_gate_comment_keys, issues)
 
-        {cache, comment_keys, awaiting_with_status} =
+        {cache, comment_keys, _awaiting_with_status} =
           post_quality_gate_clarification_comments(awaiting_clarification, gate_config, cache, comment_keys)
 
         {cache, comment_keys, skipped_with_status} =
           post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys)
 
         persist_quality_gate_cache(cache)
+        persist_quality_gate_comment_keys(comment_keys)
 
-        awaiting_index = index_quality_gate_entries(awaiting_with_status)
-        skipped_index = index_skipped_entries(skipped_with_status)
+        error_skips_index =
+          skipped_with_status
+          |> Enum.filter(&match?(%{kind: :error}, &1))
+          |> Enum.reduce(%{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
 
         state = %{
           state
           | quality_gate_cache: cache,
             quality_gate_comment_keys: comment_keys,
-            quality_gate_awaiting_clarification: awaiting_index,
-            quality_gate_skipped: skipped_index
+            quality_gate_skipped_errors: error_skips_index
         }
 
         {passed, state}
 
       _disabled ->
-        state = %{state | quality_gate_skipped: %{}, quality_gate_awaiting_clarification: %{}}
+        state = %{state | quality_gate_skipped_errors: %{}}
         {issues, state}
     end
   end
@@ -962,12 +971,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retain_quality_gate_comment_keys(_comment_keys, _issues), do: MapSet.new()
 
-  defp index_quality_gate_entries(entries) do
-    Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
-  end
+  defp prune_quality_gate_cache_to_active(%State{quality_gate_cache: cache} = state, issues)
+       when is_list(issues) do
+    pruned = QualityGate.retain_active_issues(cache, issues)
 
-  defp index_skipped_entries(entries) do
-    Enum.reduce(entries, %{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
+    if map_size(pruned) == map_size(cache) do
+      state
+    else
+      persist_quality_gate_cache(pruned)
+      %{state | quality_gate_cache: pruned}
+    end
   end
 
   defp snapshot_awaiting_clarification_entry(entry) do
@@ -979,7 +992,7 @@ defmodule SymphonyElixir.Orchestrator do
       score: Map.get(entry, :score),
       reason: Map.get(entry, :reason),
       rounds_asked: Map.get(entry, :rounds_asked, 0),
-      updated_at: entry.updated_at
+      updated_at: Map.get(entry, :updated_at)
     }
   end
 
@@ -992,16 +1005,21 @@ defmodule SymphonyElixir.Orchestrator do
       score: Map.get(entry, :score),
       reason: Map.get(entry, :reason),
       error: Map.get(entry, :error),
-      updated_at: entry.updated_at
+      updated_at: Map.get(entry, :updated_at)
     }
   end
 
   defp choose_issues(issues, state) do
     state = reset_daily_budget_if_needed(state)
+    state = maybe_run_workspace_age_gc(state)
+    state = check_workspace_quota(state)
 
     cond do
       operator_paused?(state) ->
         log_operator_pause(state)
+
+      workspace_quota_paused?(state) ->
+        log_workspace_quota_pause(state)
 
       daily_budget_paused?(state) ->
         log_daily_budget_pause(state)
@@ -1495,6 +1513,133 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp run_startup_workspace_lifecycle(%State{} = state, now_ms) do
+    state
+    |> run_startup_orphan_sweep()
+    |> run_workspace_age_gc()
+    |> Map.put(:workspace_lifecycle_last_check_at_ms, now_ms)
+    |> check_workspace_quota()
+  end
+
+  defp run_startup_orphan_sweep(%State{} = state) do
+    case startup_tracked_workspace_identifiers() do
+      {:ok, tracked_identifiers} ->
+        case Workspace.sweep_orphan_workspaces(tracked_identifiers) do
+          {:ok, actions} ->
+            log_workspace_lifecycle_summary("startup orphan sweep", actions)
+            state
+
+          {:error, reason} ->
+            Logger.warning("Skipping startup orphan workspace sweep; failed to scan workspace root: #{inspect(reason)}")
+            state
+        end
+
+      {:error, reason} ->
+        Logger.warning("Skipping startup orphan workspace sweep; failed to fetch tracked issue identifiers: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp startup_tracked_workspace_identifiers do
+    with {:ok, candidate_issues} <- Tracker.fetch_candidate_issues(),
+         {:ok, terminal_issues} <- Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states),
+         runs when is_list(runs) <- RunStore.list_runs(:all),
+         retries when is_list(retries) <- RunStore.list_retries() do
+      identifiers =
+        issue_identifiers(candidate_issues ++ terminal_issues) ++
+          run_identifiers(runs) ++ retry_identifiers(retries)
+
+      {:ok, identifiers}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_run_workspace_age_gc(%State{} = state) do
+    lifecycle = Config.settings!().workspace.lifecycle
+    now_ms = System.monotonic_time(:millisecond)
+
+    cond do
+      lifecycle.age_gc_enabled != true ->
+        state
+
+      is_nil(state.workspace_lifecycle_last_check_at_ms) or
+          now_ms - state.workspace_lifecycle_last_check_at_ms >= lifecycle.gc_interval_ms ->
+        state
+        |> run_workspace_age_gc()
+        |> Map.put(:workspace_lifecycle_last_check_at_ms, now_ms)
+
+      true ->
+        state
+    end
+  end
+
+  defp run_workspace_age_gc(%State{} = state) do
+    case Workspace.reclaim_stale_workspaces(active_workspace_identifiers(state)) do
+      {:ok, actions} ->
+        log_workspace_lifecycle_summary("age GC", actions)
+        state
+
+      {:error, reason} ->
+        Logger.warning("Skipping workspace age GC; failed to scan workspace root: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp log_workspace_lifecycle_summary(_label, []), do: :ok
+
+  defp log_workspace_lifecycle_summary(label, actions) when is_list(actions) do
+    counts =
+      actions
+      |> Enum.map(&Map.get(&1, :action, :unknown))
+      |> Enum.frequencies()
+
+    Logger.warning("Workspace #{label} completed count=#{length(actions)} actions=#{inspect(counts)}")
+  end
+
+  defp active_workspace_identifiers(%State{} = state) do
+    state.running
+    |> Map.values()
+    |> Enum.flat_map(fn running_entry ->
+      [
+        Map.get(running_entry, :identifier),
+        running_entry |> Map.get(:issue) |> issue_identifier(),
+        running_entry |> Map.get(:workspace_path) |> workspace_identifier_from_path()
+      ]
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp issue_identifiers(issues) when is_list(issues) do
+    Enum.flat_map(issues, fn
+      %Issue{identifier: identifier} when is_binary(identifier) -> [identifier]
+      %{identifier: identifier} when is_binary(identifier) -> [identifier]
+      _ -> []
+    end)
+  end
+
+  defp run_identifiers(runs) when is_list(runs) do
+    Enum.flat_map(runs, fn
+      %{issue_identifier: identifier} when is_binary(identifier) -> [identifier]
+      %{workspace_path: path} when is_binary(path) -> [workspace_identifier_from_path(path)]
+      _ -> []
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp retry_identifiers(retries) when is_list(retries) do
+    Enum.flat_map(retries, fn retry ->
+      [
+        Map.get(retry, :identifier),
+        retry |> Map.get(:workspace_path) |> workspace_identifier_from_path()
+      ]
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp workspace_identifier_from_path(path) when is_binary(path), do: Path.basename(path)
+  defp workspace_identifier_from_path(_path), do: nil
+
   defp notify_dashboard do
     StatusDashboard.notify_update()
   end
@@ -1606,6 +1751,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp done_state?(_state_name), do: false
 
   defp handle_active_retry(state, issue, attempt, metadata) do
+    state = check_workspace_quota(state)
+
     cond do
       operator_paused?(state) ->
         state = log_operator_pause(state)
@@ -1618,6 +1765,20 @@ defmodule SymphonyElixir.Orchestrator do
            Map.merge(metadata, %{
              identifier: issue.identifier,
              error: "dispatch paused by operator"
+           })
+         )}
+
+      workspace_quota_paused?(state) ->
+        state = log_workspace_quota_pause(state)
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue.id,
+           attempt,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: workspace_quota_error(state)
            })
          )}
 
@@ -1994,6 +2155,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp persist_quality_gate_cache(_cache), do: :ok
+
+  defp hydrate_quality_gate_comment_keys do
+    case RunStore.get_quality_gate_comment_keys() do
+      %MapSet{} = keys ->
+        keys
+
+      nil ->
+        MapSet.new()
+
+      {:error, reason} ->
+        Logger.warning("Failed to read persisted quality gate comment keys: #{inspect(reason)}")
+        MapSet.new()
+    end
+  end
+
+  defp persist_quality_gate_comment_keys(%MapSet{} = keys) do
+    keys
+    |> RunStore.put_quality_gate_comment_keys()
+    |> log_run_store_error("persist quality gate comment keys")
+  end
 
   defp hydrate_retry_attempts do
     case RunStore.list_retries() do
@@ -2593,14 +2774,21 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
-    skipped =
-      state.quality_gate_skipped
+    cached_skipped =
+      state.quality_gate_cache
+      |> QualityGate.skipped_from_cache()
+      |> Enum.map(&snapshot_skipped_entry/1)
+
+    error_skipped =
+      state.quality_gate_skipped_errors
       |> Map.values()
       |> Enum.map(&snapshot_skipped_entry/1)
 
+    skipped = error_skipped ++ cached_skipped
+
     awaiting_clarification =
-      state.quality_gate_awaiting_clarification
-      |> Map.values()
+      state.quality_gate_cache
+      |> QualityGate.awaiting_clarification_from_cache()
       |> Enum.map(&snapshot_awaiting_clarification_entry/1)
 
     {:reply,
@@ -2614,6 +2802,7 @@ defmodule SymphonyElixir.Orchestrator do
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        pause: state.pause || unpaused_state(),
+       workspace_lifecycle: workspace_lifecycle_snapshot(state),
        budget: budget_snapshot(state),
        dispatch_state: dispatch_state_snapshot(state),
        polling: %{
@@ -2944,15 +3133,21 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp refresh_runtime_config(%State{} = state) do
-    config = Config.settings!()
-    state = reset_daily_budget_if_needed(state)
-    state = refresh_workspace_dirty(state, config)
+    case Config.settings() do
+      {:ok, config} ->
+        state = reset_daily_budget_if_needed(state)
+        state = refresh_workspace_dirty(state, config)
 
-    %{
-      state
-      | poll_interval_ms: config.polling.interval_ms,
-        max_concurrent_agents: config.agent.max_concurrent_agents
-    }
+        %{
+          state
+          | poll_interval_ms: config.polling.interval_ms,
+            max_concurrent_agents: config.agent.max_concurrent_agents
+        }
+
+      {:error, reason} ->
+        Logger.error("Failed to refresh runtime config: #{inspect(reason)}")
+        state
+    end
   end
 
   defp refresh_workspace_dirty(%State{} = state, config) do
@@ -2999,6 +3194,98 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp operator_paused?(%State{pause: %{paused: true}}), do: true
   defp operator_paused?(_state), do: false
+
+  defp check_workspace_quota(%State{} = state) do
+    min_free_bytes = Config.settings!().workspace.lifecycle.min_free_bytes
+
+    if is_integer(min_free_bytes) and min_free_bytes > 0 do
+      quota = workspace_quota_status(min_free_bytes)
+      logged? = if quota.paused, do: state.workspace_quota_logged, else: false
+
+      %{state | workspace_lifecycle_quota: quota, workspace_quota_logged: logged?}
+    else
+      %{
+        state
+        | workspace_lifecycle_quota: %{configured?: false, paused: false, reason: nil},
+          workspace_quota_logged: false
+      }
+    end
+  end
+
+  defp workspace_quota_status(min_free_bytes) do
+    host_statuses =
+      workspace_quota_hosts()
+      |> Enum.map(&workspace_quota_host_status(&1, min_free_bytes))
+
+    paused? = Enum.any?(host_statuses, &Map.get(&1, :paused))
+    reason = host_statuses |> Enum.filter(&Map.get(&1, :paused)) |> Enum.map_join("; ", & &1.reason)
+    free_values = host_statuses |> Enum.map(&Map.get(&1, :free_bytes)) |> Enum.filter(&is_integer/1)
+
+    %{
+      configured?: true,
+      paused: paused?,
+      reason: if(reason == "", do: nil, else: reason),
+      free_bytes: Enum.min(free_values, fn -> nil end),
+      min_free_bytes: min_free_bytes,
+      checked_at: DateTime.utc_now(),
+      hosts: host_statuses
+    }
+  end
+
+  defp workspace_quota_hosts do
+    case Config.settings!().worker.ssh_hosts do
+      hosts when is_list(hosts) and hosts != [] -> hosts
+      _ -> [nil]
+    end
+  end
+
+  defp workspace_quota_host_status(worker_host, min_free_bytes) do
+    host = quota_host_label(worker_host)
+
+    case Workspace.free_bytes(worker_host) do
+      {:ok, free_bytes} ->
+        paused? = free_bytes < min_free_bytes
+
+        %{
+          worker_host: host,
+          free_bytes: free_bytes,
+          min_free_bytes: min_free_bytes,
+          paused: paused?,
+          reason:
+            if(paused?,
+              do: "workspace free space below threshold host=#{host} free_bytes=#{free_bytes} min_free_bytes=#{min_free_bytes}"
+            )
+        }
+
+      {:error, reason} ->
+        %{
+          worker_host: host,
+          free_bytes: nil,
+          min_free_bytes: min_free_bytes,
+          paused: true,
+          reason: "workspace free-space check failed host=#{host} reason=#{inspect(reason)}"
+        }
+    end
+  end
+
+  defp quota_host_label(nil), do: "local"
+  defp quota_host_label(worker_host), do: worker_host
+
+  defp workspace_quota_paused?(%State{workspace_lifecycle_quota: %{paused: true}}), do: true
+  defp workspace_quota_paused?(_state), do: false
+
+  defp log_workspace_quota_pause(%State{workspace_quota_logged: true} = state), do: state
+
+  defp log_workspace_quota_pause(%State{} = state) do
+    Logger.warning("Workspace free-space threshold not met #{workspace_quota_error(state)}; pausing new dispatch")
+
+    %{state | workspace_quota_logged: true}
+  end
+
+  defp workspace_quota_error(%State{workspace_lifecycle_quota: %{reason: reason}}) when is_binary(reason),
+    do: reason
+
+  defp workspace_quota_error(_state), do: "workspace free-space threshold not met"
 
   defp log_operator_pause(%State{operator_pause_logged: true} = state), do: state
 
@@ -3060,6 +3347,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp budget_remaining(_limit, _used), do: nil
+
+  defp workspace_lifecycle_snapshot(%State{} = state) do
+    quota = state.workspace_lifecycle_quota || %{configured?: false, paused: false, reason: nil}
+
+    %{
+      quota_configured: Map.get(quota, :configured?, false),
+      quota_paused: Map.get(quota, :paused, false),
+      quota_reason: Map.get(quota, :reason),
+      free_bytes: Map.get(quota, :free_bytes),
+      min_free_bytes: Map.get(quota, :min_free_bytes),
+      checked_at: Map.get(quota, :checked_at),
+      hosts: Map.get(quota, :hosts, [])
+    }
+  end
 
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do
     candidate_issue?(issue, active_state_set(), terminal_states) and

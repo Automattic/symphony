@@ -345,8 +345,10 @@ defmodule SymphonyElixir.StatusDashboard do
         awaiting_clarification = Map.get(snapshot, :awaiting_clarification, [])
         skipped = Map.get(snapshot, :skipped, [])
         rate_limits = Map.get(snapshot, :rate_limits)
+        workspace_lifecycle = Map.get(snapshot, :workspace_lifecycle)
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
+        workspace_lifecycle_lines = format_workspace_lifecycle_lines(workspace_lifecycle)
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
         codex_total_tokens = Map.get(codex_totals, :total_tokens, 0)
@@ -387,6 +389,7 @@ defmodule SymphonyElixir.StatusDashboard do
                colorize(" | ", @ansi_gray) <>
                colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
              colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+             workspace_lifecycle_lines,
              project_link_lines,
              project_refresh_line,
              colorize("├─ Running", @ansi_bold),
@@ -459,6 +462,30 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_project_refresh_line(_) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
+
+  defp format_workspace_lifecycle_lines(%{quota_configured: true} = lifecycle) do
+    paused? = Map.get(lifecycle, :quota_paused) == true
+    status = if(paused?, do: "paused", else: "ok")
+    color = if(paused?, do: @ansi_red, else: @ansi_green)
+    free_bytes = format_bytes(Map.get(lifecycle, :free_bytes))
+    min_free_bytes = format_bytes(Map.get(lifecycle, :min_free_bytes))
+
+    lines = [
+      colorize("│ Workspace: ", @ansi_bold) <>
+        colorize(status, color) <>
+        colorize(" free #{free_bytes} / min #{min_free_bytes}", @ansi_gray)
+    ]
+
+    case Map.get(lifecycle, :quota_reason) do
+      reason when paused? and is_binary(reason) and reason != "" ->
+        lines ++ [colorize("│ Workspace reason: ", @ansi_bold) <> colorize(reason, @ansi_red)]
+
+      _ ->
+        lines
+    end
+  end
+
+  defp format_workspace_lifecycle_lines(_lifecycle), do: []
 
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
@@ -597,6 +624,7 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
+             workspace_lifecycle: Map.get(snapshot, :workspace_lifecycle),
              polling: Map.get(snapshot, :polling),
              dispatch_state: Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []})
            }}
@@ -1005,6 +1033,19 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_runtime_and_turns(seconds, _turn_count), do: format_runtime_seconds(seconds)
+
+  defp format_bytes(nil), do: "n/a"
+
+  defp format_bytes(bytes) when is_integer(bytes) and bytes >= 0 do
+    cond do
+      bytes >= 1_073_741_824 -> "#{Float.round(bytes / 1_073_741_824, 1)} GiB"
+      bytes >= 1_048_576 -> "#{Float.round(bytes / 1_048_576, 1)} MiB"
+      bytes >= 1024 -> "#{Float.round(bytes / 1024, 1)} KiB"
+      true -> "#{bytes} B"
+    end
+  end
+
+  defp format_bytes(_bytes), do: "n/a"
 
   defp format_count(nil), do: "0"
 

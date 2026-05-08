@@ -18,6 +18,32 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("idle", render_snapshot(snapshot_data, 0.0))
   end
 
+  test "dashboard renders workspace quota pause reason when configured" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil,
+         workspace_lifecycle: %{
+           quota_configured: true,
+           quota_paused: true,
+           quota_reason: "workspace free space below threshold host=local free_bytes=1024 min_free_bytes=2048",
+           free_bytes: 1024,
+           min_free_bytes: 2048
+         }
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "Workspace:"
+    assert rendered =~ "paused"
+    assert rendered =~ "free 1.0 KiB / min 2.0 KiB"
+    assert rendered =~ "Workspace reason:"
+    assert rendered =~ "workspace free space below threshold"
+  end
+
   test "snapshot fixture: idle dashboard with observability url" do
     previous_port_override = Application.get_env(:symphony_elixir, :server_port_override)
 

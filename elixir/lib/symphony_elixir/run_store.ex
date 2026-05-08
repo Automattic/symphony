@@ -37,6 +37,7 @@ defmodule SymphonyElixir.RunStore do
   @pause_key :dispatch_pause
   @unpaused %{paused: false, reason: nil, paused_at: nil}
   @quality_gate_cache_key :quality_gate_cache
+  @quality_gate_comment_keys_key :quality_gate_comment_keys
 
   defmodule State do
     @moduledoc false
@@ -191,6 +192,25 @@ defmodule SymphonyElixir.RunStore do
   def get_quality_gate_cache do
     with :ok <- ensure_started() do
       transaction(&read_quality_gate_cache/0)
+    end
+  end
+
+  @spec put_quality_gate_comment_keys(MapSet.t()) :: :ok | {:error, term()}
+  def put_quality_gate_comment_keys(%MapSet{} = keys) do
+    with :ok <- ensure_started() do
+      durable_transaction(fn ->
+        :mnesia.write({@totals_table, @quality_gate_comment_keys_key, keys})
+        :ok
+      end)
+    end
+  end
+
+  def put_quality_gate_comment_keys(_keys), do: {:error, :invalid_quality_gate_comment_keys}
+
+  @spec get_quality_gate_comment_keys() :: MapSet.t() | nil | {:error, term()}
+  def get_quality_gate_comment_keys do
+    with :ok <- ensure_started() do
+      transaction(&read_quality_gate_comment_keys/0)
     end
   end
 
@@ -748,6 +768,13 @@ defmodule SymphonyElixir.RunStore do
     case :mnesia.read(@totals_table, @quality_gate_cache_key) do
       [{@totals_table, @quality_gate_cache_key, cache}] -> cache
       [] -> nil
+    end
+  end
+
+  defp read_quality_gate_comment_keys do
+    case :mnesia.read(@totals_table, @quality_gate_comment_keys_key) do
+      [{@totals_table, @quality_gate_comment_keys_key, %MapSet{} = keys}] -> keys
+      _ -> nil
     end
   end
 

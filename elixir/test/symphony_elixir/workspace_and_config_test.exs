@@ -4,6 +4,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Agent, StringOrMap}
   alias SymphonyElixir.Config.Schema.Verification.DevServer, as: DevServerConfig
+  alias SymphonyElixir.Config.Schema.Workspace.Lifecycle, as: WorkspaceLifecycle
   alias SymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
@@ -118,6 +119,127 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert File.read!(Path.join(workspace, "README.md")) == "initial\n"
 
       assert :ok = Workspace.remove_issue_workspaces("MT-NO-FETCH")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace lifecycle config has conservative defaults and parses overrides" do
+    lifecycle = Config.settings!().workspace.lifecycle
+
+    assert lifecycle.age_gc_enabled == true
+    assert lifecycle.max_age_days == 14
+    assert lifecycle.gc_interval_ms == 3_600_000
+    assert lifecycle.min_free_bytes == nil
+    assert lifecycle.orphan_action == "log"
+    assert lifecycle.trash_dir == ".trash"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_lifecycle: %{
+        age_gc_enabled: false,
+        max_age_days: 3,
+        gc_interval_ms: 5_000,
+        min_free_bytes: 1_048_576,
+        orphan_action: "trash",
+        trash_dir: ".workspace-trash"
+      }
+    )
+
+    lifecycle = Config.settings!().workspace.lifecycle
+
+    assert lifecycle.age_gc_enabled == false
+    assert lifecycle.max_age_days == 3
+    assert lifecycle.gc_interval_ms == 5_000
+    assert lifecycle.min_free_bytes == 1_048_576
+    assert lifecycle.orphan_action == "trash"
+    assert lifecycle.trash_dir == ".workspace-trash"
+
+    blank_trash_dir =
+      %WorkspaceLifecycle{}
+      |> WorkspaceLifecycle.changeset(%{trash_dir: " "})
+      |> Changeset.apply_changes()
+
+    assert blank_trash_dir.trash_dir == ".trash"
+
+    nil_trash_dir =
+      %WorkspaceLifecycle{}
+      |> WorkspaceLifecycle.changeset(%{trash_dir: nil})
+      |> Changeset.apply_changes()
+
+    assert nil_trash_dir.trash_dir == ".trash"
+  end
+
+  test "workspace lifecycle rejects unsafe trash directories" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_lifecycle: %{orphan_action: "trash", trash_dir: "../outside"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "trash_dir"
+    assert message =~ "must not contain parent directory segments"
+  end
+
+  test "workspace age GC removes stale workspaces while protecting active identifiers" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-age-gc-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      stale_workspace = Path.join(workspace_root, "MT-STALE")
+      protected_workspace = Path.join(workspace_root, "MT-RUNNING")
+      recent_workspace = Path.join(workspace_root, "MT-RECENT")
+
+      Enum.each([stale_workspace, protected_workspace, recent_workspace], &File.mkdir_p!/1)
+      old_timestamp = {{2026, 1, 1}, {0, 0, 0}}
+      File.touch!(stale_workspace, old_timestamp)
+      File.touch!(protected_workspace, old_timestamp)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_lifecycle: %{max_age_days: 14}
+      )
+
+      now = DateTime.new!(~D[2026-01-20], ~T[00:00:00], "Etc/UTC")
+
+      assert {:ok, actions} = Workspace.reclaim_stale_workspaces(["MT-RUNNING"], now)
+
+      assert Enum.any?(actions, &match?(%{identifier: "MT-STALE", action: :deleted, reason: :age_gc}, &1))
+      refute File.exists?(stale_workspace)
+      assert File.exists?(protected_workspace)
+      assert File.exists?(recent_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "startup orphan sweep can delete untracked workspace directories" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-orphan-sweep-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      tracked_workspace = Path.join(workspace_root, "MT-TRACKED")
+      orphan_workspace = Path.join(workspace_root, "MT-ORPHAN")
+
+      File.mkdir_p!(tracked_workspace)
+      File.mkdir_p!(orphan_workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_lifecycle: %{orphan_action: "delete"}
+      )
+
+      assert {:ok, actions} = Workspace.sweep_orphan_workspaces(["MT-TRACKED"])
+
+      assert Enum.any?(actions, &match?(%{identifier: "MT-ORPHAN", action: :deleted, reason: :orphan}, &1))
+      assert File.exists?(tracked_workspace)
+      refute File.exists?(orphan_workspace)
     after
       File.rm_rf(test_root)
     end

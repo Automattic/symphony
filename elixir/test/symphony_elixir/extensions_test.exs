@@ -370,7 +370,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "self_review" => nil
                }
              ],
              "watching" => [
@@ -413,7 +414,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "transcript_path" => nil,
                  "turn_count" => 7,
                  "runtime_seconds" => 42,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "self_review" => nil
                }
              ],
              "codex_totals" => %{

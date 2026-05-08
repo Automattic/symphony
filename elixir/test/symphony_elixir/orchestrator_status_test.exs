@@ -1053,6 +1053,146 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert warning =~ "pausing new dispatch"
   end
 
+  test "orchestrator pauses new dispatch when workspace free space is below threshold" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workspace-quota-test-#{System.unique_integer([:positive])}"
+      )
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      max_concurrent_agents: 1,
+      workspace_lifecycle: %{
+        age_gc_enabled: false,
+        min_free_bytes: 9_000_000_000_000_000
+      }
+    )
+
+    issue = %Issue{
+      id: "issue-workspace-quota",
+      identifier: "MT-QUOTA",
+      title: "Workspace quota",
+      description: "Do not dispatch once workspace disk is too low",
+      state: "Todo",
+      url: "https://example.org/issues/MT-QUOTA"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    orchestrator_name = Module.concat(__MODULE__, :WorkspaceQuotaOrchestrator)
+
+    warning =
+      capture_log(fn ->
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        try do
+          send(pid, :run_poll_cycle)
+
+          snapshot =
+            wait_for_snapshot(pid, fn snapshot ->
+              snapshot.running == [] and get_in(snapshot, [:workspace_lifecycle, :quota_paused]) == true
+            end)
+
+          assert snapshot.workspace_lifecycle.quota_reason =~ "workspace free space below threshold"
+          assert snapshot.workspace_lifecycle.min_free_bytes == 9_000_000_000_000_000
+          assert RunStore.list_runs() == []
+        after
+          if Process.alive?(pid), do: GenServer.stop(pid)
+          File.rm_rf(workspace_root)
+        end
+      end)
+
+    assert warning =~ "Workspace free-space threshold not met"
+    assert warning =~ "pausing new dispatch"
+  end
+
+  test "orchestrator startup logs and deletes orphan workspaces" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-startup-orphan-test-#{System.unique_integer([:positive])}"
+      )
+
+    orphan_workspace = Path.join(workspace_root, "MT-ORPHAN")
+    File.mkdir_p!(orphan_workspace)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      workspace_lifecycle: %{
+        age_gc_enabled: false,
+        orphan_action: "delete"
+      }
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :StartupOrphanSweepOrchestrator)
+
+    log =
+      capture_log(fn ->
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        try do
+          assert %{running: []} = GenServer.call(pid, :snapshot)
+        after
+          if Process.alive?(pid), do: GenServer.stop(pid)
+        end
+      end)
+
+    assert log =~ "Workspace startup orphan sweep completed"
+    assert log =~ "action=delete"
+    refute File.exists?(orphan_workspace)
+    File.rm_rf(workspace_root)
+  end
+
+  test "orchestrator startup age GC reclaims stale crashed-run workspaces" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-startup-age-gc-test-#{System.unique_integer([:positive])}"
+      )
+
+    stale_workspace = Path.join(workspace_root, "MT-STALE")
+    File.mkdir_p!(stale_workspace)
+    File.touch!(stale_workspace, {{2026, 1, 1}, {0, 0, 0}})
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      workspace_lifecycle: %{
+        max_age_days: 1,
+        orphan_action: "delete"
+      }
+    )
+
+    :ok =
+      RunStore.put_run(%{
+        run_id: "run-stale-workspace",
+        issue_id: "issue-stale-workspace",
+        issue_identifier: "MT-STALE",
+        status: "failure",
+        started_at: DateTime.add(DateTime.utc_now(), -3 * 86_400, :second),
+        workspace_path: stale_workspace
+      })
+
+    orchestrator_name = Module.concat(__MODULE__, :StartupAgeGcOrchestrator)
+
+    log =
+      capture_log(fn ->
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        try do
+          assert %{running: []} = GenServer.call(pid, :snapshot)
+        after
+          if Process.alive?(pid), do: GenServer.stop(pid)
+        end
+      end)
+
+    assert log =~ "Workspace age GC completed"
+    refute File.exists?(stale_workspace)
+    File.rm_rf(workspace_root)
+  end
+
   test "orchestrator snapshots include default finite token budgets when omitted" do
     write_workflow_without_token_budget_keys!()
 
@@ -1102,7 +1242,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "operator pause is exposed in snapshots and preserves retry queue without dispatching" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
-      max_concurrent_agents: 1
+      max_concurrent_agents: 1,
+      quality_gate: %{enabled: false}
     )
 
     issue = %Issue{
@@ -1826,7 +1967,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       tracker_kind: "memory",
       workspace_root: test_root,
       hook_before_run: "sleep 5",
-      poll_interval_ms: 60_000
+      poll_interval_ms: 60_000,
+      quality_gate: %{enabled: false}
     )
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])

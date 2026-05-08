@@ -377,23 +377,23 @@ defmodule SymphonyElixir.StatusDashboard do
                colorize("#{agent_count}", @ansi_green) <>
                colorize("/", @ansi_gray) <>
                colorize("#{max_agents}", @ansi_gray),
-           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
-           colorize("│ Runtime: ", @ansi_bold) <>
-             colorize(format_runtime_seconds(codex_seconds_running), @ansi_magenta),
-           colorize("│ Tokens: ", @ansi_bold) <>
-             colorize("in #{format_count(codex_input_tokens)}", @ansi_yellow) <>
-             colorize(" | ", @ansi_gray) <>
-             colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
-             colorize(" | ", @ansi_gray) <>
-             colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
-           colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
-           project_link_lines,
-           project_refresh_line,
-           colorize("├─ Running", @ansi_bold),
-           "│",
-           running_table_header_row(running_event_width),
-           running_table_separator_row(running_event_width)
-         ] ++
+             colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
+             colorize("│ Runtime: ", @ansi_bold) <>
+               colorize(format_runtime_seconds(codex_seconds_running), @ansi_magenta),
+             colorize("│ Tokens: ", @ansi_bold) <>
+               colorize("in #{format_count(codex_input_tokens)}", @ansi_yellow) <>
+               colorize(" | ", @ansi_gray) <>
+               colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
+               colorize(" | ", @ansi_gray) <>
+               colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
+             colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+             project_link_lines,
+             project_refresh_line,
+             colorize("├─ Running", @ansi_bold),
+             "│",
+             running_table_header_row(running_event_width),
+             running_table_separator_row(running_event_width)
+           ] ++
            running_rows ++
            running_to_watching_spacer ++
            [colorize("├─ Watching", @ansi_bold), "│"] ++
@@ -598,8 +598,7 @@ defmodule SymphonyElixir.StatusDashboard do
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling),
-             dispatch_state:
-               Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []})
+             dispatch_state: Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []})
            }}
 
         _ ->

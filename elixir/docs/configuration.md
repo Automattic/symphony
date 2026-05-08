@@ -160,6 +160,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 ## Reference notes
 
 - If a value is missing, defaults are used.
+- `quality_gate` is enabled by default. Omitting the block uses `provider: anthropic`,
+  `model: claude-haiku-4-5-20251001`, threshold `6`, and `on_error: pass`. Set
+  `quality_gate.enabled: false` to dispatch raw issues without LLM scoring.
 - For Linear trackers, `project_slug` is optional when another scoping filter is set. Configure at
   least one of `project_slug`, `team`, or `labels`; these filters are combined server-side. Example:
   `team: "RSM"` with `labels: ["backend", "infra"]`.
@@ -302,8 +305,9 @@ agent:
 
 ## Quality gate
 
-The optional `quality_gate` block scores each candidate issue with an LLM before it is queued for
-dispatch. Issues that score at or above `pass_threshold` dispatch. Issues below
+The `quality_gate` settings score each candidate issue with an LLM before it is queued for dispatch.
+The gate is enabled by default, so omitting the block uses the default Anthropic scorer. Issues that
+score at or above `pass_threshold` dispatch. Issues below
 `clarification_floor` are skipped for the session, surfaced in the dashboard's `Skipped` section,
 and a Linear comment is posted explaining the score and how to re-queue. When
 `clarification_floor` is set, scores from `clarification_floor` through `pass_threshold - 1` are
@@ -323,6 +327,7 @@ quality_gate:
 
 - API keys are read from the environment (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`); they are never
   read from `WORKFLOW.md`.
+- Set `enabled: false` to opt out when raw issue dispatch is desired.
 - `min_score` is still accepted for existing configs. When `pass_threshold` is unset, Symphony
   treats `min_score` as the pass threshold and leaves clarification disabled unless
   `clarification_floor` is explicitly set.

@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
   use SymphonyElixir.TestSupport
 
+  import ExUnit.CaptureLog
+
   defmodule PassProvider do
     @behaviour SymphonyElixir.QualityGate.Provider
 
@@ -269,7 +271,61 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     assert snapshot.skipped == []
   end
 
-  test "orchestrator with quality gate disabled does not score or skip" do
+  test "orchestrator defaults quality gate on when section is absent" do
+    issue = %Issue{
+      id: "issue-default-on-1",
+      identifier: "MT-DEFAULT-ON",
+      title: "Gate defaults on",
+      description: "...",
+      state: "Todo",
+      url: "https://example.org/issues/MT-DEFAULT-ON",
+      updated_at: ~U[2026-05-05 03:00:00Z]
+    }
+
+    Application.put_env(:symphony_elixir, :quality_gate_anthropic_module, SkipProvider)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory"
+    )
+
+    name = Module.concat(__MODULE__, :DefaultOnOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: name)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    send(pid, :run_poll_cycle)
+
+    assert_receive {:memory_tracker_comment, "issue-default-on-1", body}, 500
+    assert body =~ "score 3"
+
+    snapshot = wait_for_skipped(pid, "issue-default-on-1")
+    assert [%{kind: :scored, issue_id: "issue-default-on-1", score: 3, identifier: "MT-DEFAULT-ON"}] = snapshot.skipped
+  end
+
+  test "orchestrator logs active quality gate configuration on startup" do
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory"
+    )
+
+    name = Module.concat(__MODULE__, :StartupLogOrchestrator)
+
+    log =
+      capture_log([level: :info], fn ->
+        {:ok, pid} = Orchestrator.start_link(name: name)
+        if Process.alive?(pid), do: GenServer.stop(pid)
+      end)
+
+    assert log =~ "QualityGate config enabled=true"
+    assert log =~ "provider=anthropic"
+    assert log =~ "model=claude-haiku-4-5-20251001"
+    assert log =~ "threshold=6"
+    assert log =~ "on_error=pass"
+  end
+
+  test "orchestrator with quality gate explicitly disabled does not score or skip" do
     issue = %Issue{
       id: "issue-off-1",
       identifier: "MT-OFF",
@@ -285,8 +341,8 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_kind: "memory"
-      # no quality_gate section -> defaults to disabled
+      tracker_kind: "memory",
+      quality_gate: %{enabled: false}
     )
 
     name = Module.concat(__MODULE__, :OffOrchestrator)

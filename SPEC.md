@@ -432,6 +432,17 @@ Fields:
   - Default: `true`.
   - When `strategy == worktree`, fetches `origin` in the primary clone before preparing an issue
     workspace.
+- `lifecycle` (object)
+  - Optional workspace lifecycle guardrails.
+  - `age_gc_enabled` defaults to `true`.
+  - `max_age_days` defaults to `14`; local workspaces older than this MAY be reclaimed even when
+    their associated issue is not terminal, except for currently running workspaces.
+  - `gc_interval_ms` defaults to `3600000` and controls how often the running service scans for
+    stale workspaces.
+  - `min_free_bytes` is unset by default. When set to a positive integer, new dispatch SHOULD pause
+    while `workspace.root` free space is below that threshold or cannot be checked.
+  - `orphan_action` defaults to `log`; supported values are `log`, `delete`, and `trash`.
+  - `trash_dir` defaults to `.trash` and is interpreted under `workspace.root`.
 
 #### 5.3.3a `verification` (object)
 
@@ -939,11 +950,12 @@ The effective poll interval SHOULD be updated when workflow config changes are r
 Tick sequence:
 
 1. Reconcile running issues.
-2. Run dispatch preflight validation.
-3. Fetch candidate issues from tracker using active states.
-4. Sort issues by dispatch priority.
-5. Dispatch eligible issues while slots remain.
-6. Notify observability/status consumers of state changes.
+2. Run workspace lifecycle preflight, including throttled age GC and free-space quota checks.
+3. Run dispatch preflight validation.
+4. Fetch candidate issues from tracker using active states.
+5. Sort issues by dispatch priority.
+6. Dispatch eligible issues while slots remain.
+7. Notify observability/status consumers of state changes.
 
 If per-tick validation fails, dispatch is skipped for that tick, but reconciliation still happens
 first.
@@ -1046,7 +1058,13 @@ When the service starts:
 
 1. Query tracker for issues in terminal states.
 2. For each returned issue identifier, remove the corresponding workspace directory.
-3. If the terminal-issues fetch fails, log a warning and continue startup.
+3. Query tracked active/terminal issues plus durable run/retry records and scan `workspace.root`
+   for local orphan directories.
+4. For each orphan directory, log the selected action and then log, delete, or move it to
+   `workspace.lifecycle.trash_dir` according to `workspace.lifecycle.orphan_action`.
+5. Run age-based GC for local workspaces older than `workspace.lifecycle.max_age_days`.
+6. If any tracker, run-store, or filesystem read required for startup cleanup fails, log a warning
+   and continue startup without deleting workspaces whose ownership could not be determined.
 
 This prevents stale terminal workspaces from accumulating after restarts.
 
@@ -1065,7 +1083,9 @@ Per-issue workspace path:
 Workspace persistence:
 
 - Workspaces are reused across runs for the same issue.
-- Successful runs do not auto-delete workspaces.
+- Successful runs do not auto-delete workspaces immediately.
+- Age-based workspace GC MAY later remove successful, failed, crashed, or sideways-state workspaces
+  once their directory age exceeds the configured lifecycle threshold.
 - With `workspace.strategy == worktree`, cleanup removes the registered worktree with
   `git worktree remove --force` and deletes Symphony's `auto/<issue.identifier>` branch.
   Forced worktree removal also deletes the working directory on disk, including any

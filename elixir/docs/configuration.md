@@ -254,6 +254,18 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   --force` during cleanup.
 - With SSH workers, `workspace.root` and `workspace.repo` are both interpreted on the worker host.
   Each worker host needs its own primary clone; Symphony surfaces a workspace error if it is missing.
+- `workspace.lifecycle.max_age_days` defaults to `14` and removes local workspaces older than that
+  age on startup and then every `workspace.lifecycle.gc_interval_ms` milliseconds while Symphony is
+  running. The age GC skips currently running workspaces, but does not require the associated issue
+  to be terminal.
+- `workspace.lifecycle.min_free_bytes` is unset by default. When set to a positive integer,
+  Symphony checks free space on `workspace.root` before starting new dispatches and pauses dispatch
+  with a dashboard/status reason if any configured workspace host is below the threshold or cannot
+  be checked.
+- Startup orphan sweep scans `workspace.root` for directories that do not match active/terminal
+  tracker issues or persisted run/retry records. `workspace.lifecycle.orphan_action` defaults to
+  `log`; set it to `delete` to remove orphans or `trash` to move them under
+  `workspace.lifecycle.trash_dir` (default `.trash`).
 - Use `routing` to override workspace hooks for issues with specific Linear labels. Entries are
   checked in order; the first `requires_label` that matches an issue label wins. Hook fields omitted
   from a matching route fall back to the top-level `hooks` values, and issues without a matching
@@ -297,6 +309,11 @@ workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
   strategy: worktree
   repo: $SOURCE_REPO_PATH
+  lifecycle:
+    max_age_days: 14
+    gc_interval_ms: 3600000
+    min_free_bytes: 10737418240
+    orphan_action: log
 hooks:
   after_create: |
     mix deps.get

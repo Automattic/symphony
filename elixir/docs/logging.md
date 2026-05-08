@@ -32,6 +32,23 @@ When logging Codex execution lifecycle events, include:
 - `Orchestrator`: log dispatch, retry, terminal/non-active transitions, and worker exits with issue context. Include `session_id` whenever running-entry data has it.
 - `Codex.AppServer`: log session start/completion/error with issue context and `session_id`.
 
+## Audit Events
+
+General application logs are not the audit trail. Symphony writes side-effect audit events to
+append-only NDJSON files under `<logs-root>/audit/YYYY-MM-DD.ndjson`. Events include the Linear
+issue ID, run ID, timestamp, event type, and structured details for prompt sends, tool calls, file
+changes, PR actions, Linear state/comment actions, and token usage deltas when those fields are
+available.
+
+Prompt bodies are not stored in the audit stream. Audit prompt events store a SHA-256 prompt hash
+and a redacted preview. Configured secrets such as tracker API keys, notification webhooks, and
+common API key environment variables are scrubbed before records are written.
+
+Each audit record includes `previous_hash` and `record_hash` fields. Use
+`SymphonyElixir.AuditLog.verify_file/1` to verify a daily file, or `mix symphony.audit ISSUE_ID
+--from YYYY-MM-DD --to YYYY-MM-DD --logs-root /path/to/logs-root` to print an issue-scoped
+chronological event stream.
+
 ## Checklist For New Logs
 
 - Is this event tied to a Linear issue? Include `issue_id` and `issue_identifier`.

@@ -1548,7 +1548,26 @@ Requirements:
 - If a configured log sink fails, the service SHOULD continue running when possible and emit an
   operator-visible warning through any remaining sink.
 
-### 13.3 Runtime Snapshot / Monitoring Interface (OPTIONAL but RECOMMENDED)
+### 13.3 Audit Trail
+
+Implementations SHOULD keep a separate append-only audit stream for side effects caused on behalf
+of an issue. This stream is distinct from human-readable application logs and SHOULD allow
+operators to query by issue ID and date range.
+
+Audit records SHOULD include:
+
+- `issue_id`
+- `run_id`
+- `timestamp`
+- `event_type`
+- event-specific details for prompts, tool calls, file changes, PR actions, tracker state/comment
+  actions, and token usage when available
+
+Prompt audit records MUST NOT store full prompt bodies. They SHOULD store a prompt hash and a
+short redacted preview. Configured secrets and secret environment values MUST be scrubbed before
+records are written.
+
+### 13.4 Runtime Snapshot / Monitoring Interface (OPTIONAL but RECOMMENDED)
 
 If the implementation exposes a synchronous runtime snapshot (for dashboards or monitoring), it
 SHOULD return:

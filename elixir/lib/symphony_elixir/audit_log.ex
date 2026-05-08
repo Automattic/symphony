@@ -1,0 +1,964 @@
+defmodule SymphonyElixir.AuditLog do
+  @moduledoc """
+  Append-only audit log for agent side effects.
+
+  Audit entries are stored as daily NDJSON files. Each record carries a
+  `previous_hash` and `record_hash` so operators can verify whether a file was
+  edited after the fact.
+  """
+
+  require Logger
+
+  alias SymphonyElixir.{Config, LogFile}
+
+  @redacted "[REDACTED]"
+  @preview_chars 500
+  @result_preview_chars 500
+  @common_secret_envs [
+    "LINEAR_API_KEY",
+    "LINEAR_ASSIGNEE",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "SLACK_WEBHOOK_URL",
+    "WEBHOOK_URL"
+  ]
+
+  @type event_attrs :: map()
+  @type query_opts :: keyword()
+
+  @spec default_dir(Path.t()) :: Path.t()
+  def default_dir(logs_root) when is_binary(logs_root) do
+    Path.join(logs_root, "audit")
+  end
+
+  @spec audit_dir(keyword()) :: Path.t()
+  def audit_dir(opts \\ []) do
+    Keyword.get(opts, :dir) ||
+      Application.get_env(:symphony_elixir, :audit_log_dir) ||
+      default_dir(logs_root_from_log_file())
+  end
+
+  @spec set_dir(Path.t()) :: :ok
+  def set_dir(dir) when is_binary(dir) do
+    Application.put_env(:symphony_elixir, :audit_log_dir, Path.expand(dir))
+    :ok
+  end
+
+  @spec record(event_attrs(), keyword()) :: :ok | {:error, term()}
+  def record(attrs, opts \\ []) when is_map(attrs) do
+    with {:ok, event} <- build_event(attrs, opts) do
+      append_event(event, opts)
+    end
+  end
+
+  @spec record_prompt_sent(map(), String.t() | nil, String.t(), keyword()) ::
+          :ok | {:error, term()}
+  def record_prompt_sent(issue, run_id, prompt, opts \\ [])
+      when is_map(issue) and is_binary(prompt) do
+    secrets = configured_secret_values(opts)
+    preview = prompt |> redact_string(secrets) |> String.slice(0, @preview_chars)
+
+    record(
+      %{
+        issue_id: issue_id(issue),
+        issue_identifier: issue_identifier(issue),
+        run_id: run_id,
+        event_type: "prompt_sent",
+        prompt_hash: sha256(prompt),
+        prompt_preview: preview,
+        prompt_preview_truncated: String.length(prompt) > @preview_chars,
+        turn_number: Keyword.get(opts, :turn_number),
+        max_turns: Keyword.get(opts, :max_turns),
+        agent: Keyword.get(opts, :agent)
+      },
+      opts
+    )
+  end
+
+  @spec record_agent_update(map(), map(), map()) :: :ok | {:error, term()}
+  def record_agent_update(running_entry, update, token_delta)
+      when is_map(running_entry) and is_map(update) and is_map(token_delta) do
+    running_entry
+    |> audit_events_from_update(update, token_delta)
+    |> record_many()
+  end
+
+  @spec record_pr_opened(map(), String.t(), keyword()) :: :ok | {:error, term()}
+  def record_pr_opened(running_entry, pr_url, opts \\ [])
+      when is_map(running_entry) and is_binary(pr_url) do
+    record(
+      running_entry
+      |> base_event("pr_opened", update_timestamp(Keyword.get(opts, :timestamp)))
+      |> Map.merge(%{
+        pr: parse_pr_url(pr_url),
+        url: pr_url,
+        action: "opened"
+      }),
+      opts
+    )
+  end
+
+  @spec record_linear_state_transition(map(), map(), String.t() | nil, keyword()) ::
+          :ok | {:error, term()}
+  def record_linear_state_transition(previous_issue, refreshed_issue, run_id, opts \\ [])
+      when is_map(previous_issue) and is_map(refreshed_issue) do
+    from_state = issue_state(previous_issue)
+    to_state = issue_state(refreshed_issue)
+
+    if present?(from_state) and present?(to_state) and from_state != to_state do
+      record(
+        %{
+          issue_id: issue_id(refreshed_issue) || issue_id(previous_issue),
+          issue_identifier: issue_identifier(refreshed_issue) || issue_identifier(previous_issue),
+          run_id: run_id,
+          event_type: "linear_state_change",
+          action: "observed_state_transition",
+          from_state: from_state,
+          to_state: to_state,
+          source: Keyword.get(opts, :source, "issue_refresh")
+        },
+        opts
+      )
+    else
+      :ok
+    end
+  end
+
+  @spec list_events(String.t(), Date.t() | String.t(), Date.t() | String.t(), query_opts()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_events(issue_id, date_from, date_to, opts \\ []) when is_binary(issue_id) do
+    with {:ok, from_date} <- normalize_date(date_from),
+         {:ok, to_date} <- normalize_date(date_to),
+         :ok <- validate_date_range(from_date, to_date) do
+      events =
+        from_date
+        |> Date.range(to_date)
+        |> Enum.flat_map(&read_events_for_date(&1, opts))
+        |> Enum.filter(&(Map.get(&1, "issue_id") == issue_id))
+        |> Enum.sort_by(&timestamp_sort_key/1)
+
+      {:ok, events}
+    end
+  end
+
+  @spec verify_file(Path.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def verify_file(path) when is_binary(path) do
+    path
+    |> read_ndjson_lines()
+    |> verify_lines(nil, 1, 0)
+  end
+
+  defp build_event(attrs, opts) do
+    timestamp =
+      attrs
+      |> Map.get(:timestamp, Map.get(attrs, "timestamp", Keyword.get(opts, :timestamp)))
+      |> update_timestamp()
+
+    event_type = attrs |> Map.get(:event_type, Map.get(attrs, "event_type")) |> normalize_event_type()
+
+    if is_nil(event_type) do
+      {:error, :missing_event_type}
+    else
+      event =
+        attrs
+        |> normalize_value()
+        |> Map.put_new("timestamp", DateTime.to_iso8601(timestamp))
+        |> Map.put("event_type", event_type)
+        |> Map.put_new("date", timestamp |> DateTime.to_date() |> Date.to_iso8601())
+        |> redact_value(configured_secret_values(opts))
+
+      {:ok, event}
+    end
+  end
+
+  defp append_event(event, opts) do
+    dir = audit_dir(opts)
+    path = event_path(dir, Map.fetch!(event, "date"))
+
+    :global.trans({__MODULE__, path}, fn ->
+      with :ok <- File.mkdir_p(Path.dirname(path)) do
+        previous_hash = last_record_hash(path)
+
+        event_with_chain =
+          event
+          |> Map.put("previous_hash", previous_hash)
+          |> drop_nil_values()
+
+        record_hash = hash_event(event_with_chain)
+        encoded_event = Map.put(event_with_chain, "record_hash", record_hash)
+
+        File.write(path, Jason.encode!(encoded_event) <> "\n", [:append])
+      end
+    end)
+  rescue
+    exception ->
+      {:error, {:audit_log_write_failed, Exception.message(exception)}}
+  catch
+    kind, reason ->
+      {:error, {:audit_log_write_failed, {kind, reason}}}
+  end
+
+  defp record_many(events) when is_list(events) do
+    Enum.reduce_while(events, :ok, fn event, :ok ->
+      case record(event) do
+        :ok ->
+          {:cont, :ok}
+
+        {:error, reason} = error ->
+          Logger.warning("Audit log write failed: #{inspect(reason)}")
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp audit_events_from_update(running_entry, update, token_delta) do
+    timestamp = update_timestamp(Map.get(update, :timestamp) || Map.get(update, "timestamp"))
+    payload = update_payload(update)
+
+    []
+    |> maybe_add_tool_call_event(running_entry, update, payload, timestamp)
+    |> maybe_add_file_change_event(running_entry, payload, timestamp)
+    |> maybe_add_token_delta_event(running_entry, token_delta, timestamp)
+  end
+
+  defp maybe_add_tool_call_event(events, running_entry, update, payload, timestamp) do
+    cond do
+      dynamic_tool_event?(update) ->
+        tool_event = dynamic_tool_event(running_entry, update, payload, timestamp)
+        events ++ tool_event ++ linear_side_effect_events(running_entry, tool_event, update, timestamp)
+
+      command_event?(payload) ->
+        events ++ [command_tool_event(running_entry, payload, timestamp)]
+
+      true ->
+        events
+    end
+  end
+
+  defp dynamic_tool_event(running_entry, update, payload, timestamp) do
+    params = payload_params(payload)
+    tool_name = tool_call_name(params)
+    arguments = tool_call_arguments(params)
+    result = Map.get(update, :result) || Map.get(update, "result") || %{}
+
+    [
+      running_entry
+      |> base_event("tool_call", timestamp)
+      |> Map.merge(%{
+        command: tool_name,
+        args: arguments,
+        tool_name: tool_name,
+        tool_kind: "dynamic",
+        status: dynamic_tool_status(update),
+        result_success: result_success?(result),
+        result_preview: result_preview(result)
+      })
+    ]
+  end
+
+  defp linear_side_effect_events(running_entry, [tool_event], update, timestamp) do
+    if Map.get(tool_event, :tool_name) == "linear_graphql" or Map.get(tool_event, "tool_name") == "linear_graphql" do
+      result = Map.get(update, :result) || Map.get(update, "result") || %{}
+
+      if result_success?(result) do
+        linear_graphql_events(running_entry, Map.get(tool_event, :args) || Map.get(tool_event, "args"), result, timestamp)
+      else
+        []
+      end
+    else
+      []
+    end
+  end
+
+  defp linear_side_effect_events(_running_entry, _tool_events, _update, _timestamp), do: []
+
+  defp command_tool_event(running_entry, payload, timestamp) do
+    command = command_from_payload(payload)
+    args = command_args_from_payload(payload)
+
+    running_entry
+    |> base_event("tool_call", timestamp)
+    |> Map.merge(%{
+      command: command,
+      args: args,
+      tool_kind: "command",
+      method: payload_method(payload),
+      cwd: get_in(payload, ["params", "cwd"])
+    })
+  end
+
+  defp maybe_add_file_change_event(events, running_entry, payload, timestamp) do
+    if file_change_event?(payload) do
+      events ++ [file_change_event(running_entry, payload, timestamp)]
+    else
+      events
+    end
+  end
+
+  defp file_change_event(running_entry, payload, timestamp) do
+    params = payload_params(payload)
+    diff = Map.get(params, "diff") || Map.get(params, :diff)
+    paths = file_change_paths(params, diff)
+
+    running_entry
+    |> base_event("file_change", timestamp)
+    |> Map.merge(%{
+      method: payload_method(payload),
+      paths: paths,
+      diff_stats: diff_stats(diff, paths),
+      file_change_count: Map.get(params, "fileChangeCount") || Map.get(params, :fileChangeCount)
+    })
+  end
+
+  defp maybe_add_token_delta_event(events, running_entry, token_delta, timestamp) do
+    if token_delta?(token_delta) do
+      events ++
+        [
+          running_entry
+          |> base_event("token_usage_delta", timestamp)
+          |> Map.merge(%{
+            token_usage_delta: Map.take(token_delta, [:input_tokens, :output_tokens, :total_tokens]),
+            token_usage_reported: Map.take(token_delta, [:input_reported, :output_reported, :total_reported])
+          })
+        ]
+    else
+      events
+    end
+  end
+
+  defp base_event(running_entry, event_type, timestamp) do
+    issue = Map.get(running_entry, :issue) || %{}
+
+    %{
+      issue_id: issue_id(issue) || Map.get(running_entry, :issue_id),
+      issue_identifier: issue_identifier(issue) || Map.get(running_entry, :identifier),
+      run_id: Map.get(running_entry, :run_id),
+      session_id: Map.get(running_entry, :session_id),
+      event_type: event_type,
+      timestamp: timestamp
+    }
+  end
+
+  defp linear_graphql_events(running_entry, arguments, result, timestamp) do
+    query = linear_query(arguments)
+    variables = linear_variables(arguments)
+    output = result_output(result)
+
+    cond do
+      contains_graphql_operation?(query, "commentCreate") ->
+        [
+          running_entry
+          |> base_event("linear_comment", timestamp)
+          |> Map.merge(%{
+            action: "created",
+            linear_issue_id: Map.get(variables, "issueId"),
+            comment_id: get_in(output, ["data", "commentCreate", "comment", "id"]),
+            comment_url: get_in(output, ["data", "commentCreate", "comment", "url"])
+          })
+        ]
+
+      contains_graphql_operation?(query, "commentUpdate") ->
+        [
+          running_entry
+          |> base_event("linear_comment", timestamp)
+          |> Map.merge(%{
+            action: "updated",
+            comment_id: Map.get(variables, "id") || get_in(output, ["data", "commentUpdate", "comment", "id"])
+          })
+        ]
+
+      contains_graphql_operation?(query, "issueUpdate") ->
+        [
+          running_entry
+          |> base_event("linear_state_change", timestamp)
+          |> Map.merge(%{
+            action: "updated",
+            linear_issue_id: Map.get(variables, "id") || Map.get(variables, "issueId"),
+            from_state: nil,
+            to_state: get_in(output, ["data", "issueUpdate", "issue", "state", "name"]),
+            to_state_id: Map.get(variables, "stateId")
+          })
+        ]
+
+      contains_graphql_operation?(query, "attachmentLinkGitHubPR") ->
+        pr_url = Map.get(variables, "url")
+
+        [
+          running_entry
+          |> base_event("pr_opened", timestamp)
+          |> Map.merge(%{
+            action: "linked",
+            url: pr_url,
+            pr: parse_pr_url(pr_url)
+          })
+        ]
+
+      true ->
+        []
+    end
+  end
+
+  defp dynamic_tool_event?(%{event: event}) when event in [:tool_call_completed, :tool_call_failed, :unsupported_tool_call],
+    do: true
+
+  defp dynamic_tool_event?(_update), do: false
+
+  defp dynamic_tool_status(%{event: :tool_call_completed}), do: "completed"
+  defp dynamic_tool_status(%{event: :tool_call_failed}), do: "failed"
+  defp dynamic_tool_status(%{event: :unsupported_tool_call}), do: "unsupported"
+  defp dynamic_tool_status(_update), do: "unknown"
+
+  defp command_event?(payload) do
+    payload_method(payload) in [
+      "item/commandExecution/requestApproval",
+      "execCommandApproval",
+      "codex/event/exec_command_begin"
+    ] || command_execution_item?(payload)
+  end
+
+  defp file_change_event?(payload) do
+    payload_method(payload) in [
+      "turn/diff/updated",
+      "item/fileChange/requestApproval"
+    ] || file_change_item?(payload)
+  end
+
+  defp command_execution_item?(payload) do
+    payload
+    |> get_in(["params", "item", "type"])
+    |> case do
+      "commandExecution" -> true
+      "command_execution" -> true
+      _ -> false
+    end
+  end
+
+  defp file_change_item?(payload) do
+    payload
+    |> get_in(["params", "item", "type"])
+    |> case do
+      "fileChange" -> true
+      "file_change" -> true
+      _ -> false
+    end
+  end
+
+  defp token_delta?(token_delta) when is_map(token_delta) do
+    Enum.any?([:input_tokens, :output_tokens, :total_tokens], fn key ->
+      value = Map.get(token_delta, key, 0)
+      is_integer(value) and value > 0
+    end)
+  end
+
+  defp update_payload(update) do
+    case Map.get(update, :payload) || Map.get(update, "payload") do
+      payload when is_map(payload) -> payload
+      _ -> %{}
+    end
+  end
+
+  defp payload_method(payload) when is_map(payload), do: Map.get(payload, "method") || Map.get(payload, :method)
+
+  defp payload_params(payload) when is_map(payload) do
+    case Map.get(payload, "params") || Map.get(payload, :params) do
+      params when is_map(params) -> params
+      _ -> %{}
+    end
+  end
+
+  defp tool_call_name(params) when is_map(params) do
+    case Map.get(params, "tool") || Map.get(params, :tool) || Map.get(params, "name") || Map.get(params, :name) do
+      name when is_binary(name) ->
+        name |> String.trim() |> blank_to_nil()
+
+      _ ->
+        nil
+    end
+  end
+
+  defp tool_call_arguments(params) when is_map(params) do
+    Map.get(params, "arguments") || Map.get(params, :arguments) || %{}
+  end
+
+  defp command_from_payload(payload) do
+    [
+      ["params", "parsedCmd"],
+      ["params", "command"],
+      ["params", "cmd"],
+      ["params", "argv"],
+      ["params", "args"],
+      ["params", "item", "command"],
+      ["params", "item", "parsedCmd"],
+      ["params", "msg", "command"],
+      ["params", "msg", "parsed_cmd"],
+      ["params", "msg", "payload", "command"],
+      ["params", "msg", "payload", "parsed_cmd"]
+    ]
+    |> Enum.find_value(&get_in(payload, &1))
+    |> normalize_command()
+  end
+
+  defp command_args_from_payload(payload) do
+    [
+      ["params", "argv"],
+      ["params", "args"],
+      ["params", "item", "argv"],
+      ["params", "item", "args"],
+      ["params", "msg", "argv"],
+      ["params", "msg", "args"]
+    ]
+    |> Enum.find_value(&get_in(payload, &1))
+    |> normalize_args()
+  end
+
+  defp normalize_command(%{} = command) do
+    binary_command = command["parsedCmd"] || command["command"] || command["cmd"]
+    args = command["args"] || command["argv"]
+
+    if is_binary(binary_command) and is_list(args) do
+      normalize_command([binary_command | args])
+    else
+      normalize_command(binary_command || args)
+    end
+  end
+
+  defp normalize_command(command) when is_binary(command) do
+    command
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> blank_to_nil()
+  end
+
+  defp normalize_command(command) when is_list(command) do
+    if Enum.all?(command, &is_binary/1), do: normalize_command(Enum.join(command, " ")), else: nil
+  end
+
+  defp normalize_command(_command), do: nil
+
+  defp normalize_args(args) when is_list(args), do: Enum.map(args, &normalize_value/1)
+  defp normalize_args(_args), do: []
+
+  defp file_change_paths(params, diff) do
+    params
+    |> explicit_file_paths()
+    |> Kernel.++(paths_from_diff(diff))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp explicit_file_paths(params) when is_map(params) do
+    ["files", "paths", "changes"]
+    |> Enum.flat_map(fn key -> paths_from_value(Map.get(params, key) || Map.get(params, String.to_atom(key))) end)
+  end
+
+  defp paths_from_value(values) when is_list(values), do: Enum.flat_map(values, &paths_from_value/1)
+  defp paths_from_value(%{"path" => path}) when is_binary(path), do: [path]
+  defp paths_from_value(%{path: path}) when is_binary(path), do: [path]
+  defp paths_from_value(path) when is_binary(path), do: [path]
+  defp paths_from_value(_value), do: []
+
+  defp paths_from_diff(diff) when is_binary(diff) do
+    diff
+    |> String.split("\n")
+    |> Enum.flat_map(fn line ->
+      cond do
+        String.starts_with?(line, "diff --git ") ->
+          line
+          |> String.split()
+          |> Enum.drop(2)
+          |> Enum.map(&strip_diff_prefix/1)
+
+        String.starts_with?(line, "+++ ") or String.starts_with?(line, "--- ") ->
+          line
+          |> String.split()
+          |> Enum.drop(1)
+          |> Enum.map(&strip_diff_prefix/1)
+
+        true ->
+          []
+      end
+    end)
+    |> Enum.reject(&(&1 in [nil, "/dev/null"]))
+    |> Enum.uniq()
+  end
+
+  defp paths_from_diff(_diff), do: []
+
+  defp strip_diff_prefix("a/" <> path), do: path
+  defp strip_diff_prefix("b/" <> path), do: path
+  defp strip_diff_prefix(path), do: path
+
+  defp diff_stats(diff, paths) when is_binary(diff) do
+    lines = String.split(diff, "\n")
+
+    %{
+      files_changed: length(paths),
+      additions: Enum.count(lines, &(String.starts_with?(&1, "+") and not String.starts_with?(&1, "+++"))),
+      deletions: Enum.count(lines, &(String.starts_with?(&1, "-") and not String.starts_with?(&1, "---")))
+    }
+  end
+
+  defp diff_stats(_diff, paths), do: %{files_changed: length(paths), additions: nil, deletions: nil}
+
+  defp linear_query(%{"query" => query}) when is_binary(query), do: query
+  defp linear_query(%{query: query}) when is_binary(query), do: query
+  defp linear_query(query) when is_binary(query), do: query
+  defp linear_query(_arguments), do: nil
+
+  defp linear_variables(%{"variables" => variables}) when is_map(variables), do: normalize_value(variables)
+  defp linear_variables(%{variables: variables}) when is_map(variables), do: normalize_value(variables)
+  defp linear_variables(_arguments), do: %{}
+
+  defp contains_graphql_operation?(query, operation) when is_binary(query) do
+    String.contains?(query, operation)
+  end
+
+  defp contains_graphql_operation?(_query, _operation), do: false
+
+  defp result_success?(%{"success" => success}) when is_boolean(success), do: success
+  defp result_success?(%{success: success}) when is_boolean(success), do: success
+  defp result_success?(_result), do: nil
+
+  defp result_preview(result) when is_map(result) do
+    result
+    |> result_output_text()
+    |> String.slice(0, @result_preview_chars)
+  end
+
+  defp result_output(%{"output" => output}) when is_binary(output), do: decode_json_or_empty(output)
+  defp result_output(%{output: output}) when is_binary(output), do: decode_json_or_empty(output)
+  defp result_output(_result), do: %{}
+
+  defp result_output_text(%{"output" => output}) when is_binary(output), do: output
+  defp result_output_text(%{output: output}) when is_binary(output), do: output
+  defp result_output_text(result) when is_map(result), do: Jason.encode!(normalize_value(result))
+
+  defp decode_json_or_empty(value) do
+    case Jason.decode(value) do
+      {:ok, decoded} when is_map(decoded) -> decoded
+      _ -> %{}
+    end
+  end
+
+  defp parse_pr_url(url) when is_binary(url) do
+    case Regex.run(~r{^https?://[^/]+/([^/\s]+)/([^/\s]+)/pull/(\d+)(?:$|[/?#])}, url) do
+      [_full, owner, repo, number] ->
+        %{
+          repo: "#{owner}/#{repo}",
+          number: String.to_integer(number),
+          url: url
+        }
+
+      _ ->
+        %{url: url}
+    end
+  end
+
+  defp parse_pr_url(_url), do: nil
+
+  defp issue_id(%{id: id}) when is_binary(id), do: id
+  defp issue_id(%{"id" => id}) when is_binary(id), do: id
+  defp issue_id(%{issue_id: id}) when is_binary(id), do: id
+  defp issue_id(%{"issue_id" => id}) when is_binary(id), do: id
+  defp issue_id(_issue), do: nil
+
+  defp issue_identifier(%{identifier: identifier}) when is_binary(identifier), do: identifier
+  defp issue_identifier(%{"identifier" => identifier}) when is_binary(identifier), do: identifier
+  defp issue_identifier(%{issue_identifier: identifier}) when is_binary(identifier), do: identifier
+  defp issue_identifier(%{"issue_identifier" => identifier}) when is_binary(identifier), do: identifier
+  defp issue_identifier(_issue), do: nil
+
+  defp issue_state(%{state: state}) when is_binary(state), do: state
+  defp issue_state(%{"state" => state}) when is_binary(state), do: state
+  defp issue_state(_issue), do: nil
+
+  defp read_events_for_date(date, opts) do
+    opts
+    |> audit_dir()
+    |> event_path(Date.to_iso8601(date))
+    |> read_ndjson_lines()
+    |> Enum.flat_map(fn {_line, decoded} ->
+      case decoded do
+        %{} = event -> [event]
+        _ -> []
+      end
+    end)
+  end
+
+  defp read_ndjson_lines(path) do
+    if File.exists?(path) do
+      path
+      |> File.stream!(:line, [])
+      |> Stream.with_index(1)
+      |> Enum.map(fn {line, line_number} ->
+        decoded =
+          line
+          |> String.trim()
+          |> decode_json_line()
+
+        {line_number, decoded}
+      end)
+    else
+      []
+    end
+  rescue
+    exception ->
+      [{0, {:error, {:read_failed, Exception.message(exception)}}}]
+  end
+
+  defp decode_json_line(""), do: nil
+
+  defp decode_json_line(line) do
+    case Jason.decode(line) do
+      {:ok, decoded} -> decoded
+      {:error, reason} -> {:error, {:decode_failed, reason}}
+    end
+  end
+
+  defp verify_lines([], _previous_hash, _line_number, count), do: {:ok, count}
+
+  defp verify_lines([{line_number, {:error, reason}} | _rest], _previous_hash, _next_line_number, _count) do
+    {:error, {:invalid_record, line_number, reason}}
+  end
+
+  defp verify_lines([{line_number, event} | rest], previous_hash, _next_line_number, count) when is_map(event) do
+    stored_hash = Map.get(event, "record_hash")
+    stored_previous_hash = Map.get(event, "previous_hash")
+    calculated_hash = event |> Map.delete("record_hash") |> hash_event()
+
+    cond do
+      stored_previous_hash != previous_hash ->
+        {:error, {:chain_mismatch, line_number}}
+
+      stored_hash != calculated_hash ->
+        {:error, {:hash_mismatch, line_number}}
+
+      true ->
+        verify_lines(rest, stored_hash, line_number + 1, count + 1)
+    end
+  end
+
+  defp verify_lines([{line_number, _event} | _rest], _previous_hash, _next_line_number, _count) do
+    {:error, {:invalid_record, line_number, :not_a_json_object}}
+  end
+
+  defp last_record_hash(path) do
+    path
+    |> read_ndjson_lines()
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      {_line_number, %{} = event} -> Map.get(event, "record_hash")
+      _line -> nil
+    end)
+  end
+
+  defp normalize_event_type(event_type) when is_atom(event_type), do: Atom.to_string(event_type)
+
+  defp normalize_event_type(event_type) when is_binary(event_type) do
+    event_type
+    |> String.trim()
+    |> blank_to_nil()
+  end
+
+  defp normalize_event_type(_event_type), do: nil
+
+  defp normalize_date(%Date{} = date), do: {:ok, date}
+
+  defp normalize_date(date) when is_binary(date) do
+    Date.from_iso8601(date)
+  end
+
+  defp normalize_date(_date), do: {:error, :invalid_date}
+
+  defp validate_date_range(from_date, to_date) do
+    if Date.compare(from_date, to_date) == :gt do
+      {:error, :invalid_date_range}
+    else
+      :ok
+    end
+  end
+
+  defp update_timestamp(%DateTime{} = timestamp), do: timestamp
+
+  defp update_timestamp(timestamp) when is_binary(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, parsed, _offset} -> parsed
+      _ -> DateTime.utc_now()
+    end
+  end
+
+  defp update_timestamp(_timestamp), do: DateTime.utc_now()
+
+  defp timestamp_sort_key(event) when is_map(event) do
+    case DateTime.from_iso8601(Map.get(event, "timestamp", "")) do
+      {:ok, timestamp, _offset} -> DateTime.to_unix(timestamp, :microsecond)
+      _ -> 0
+    end
+  end
+
+  defp event_path(dir, date_string), do: Path.join(dir, "#{date_string}.ndjson")
+
+  defp logs_root_from_log_file do
+    Application.get_env(:symphony_elixir, :log_file, LogFile.default_log_file())
+    |> Path.expand()
+    |> Path.dirname()
+    |> Path.dirname()
+  end
+
+  defp configured_secret_values(opts) do
+    []
+    |> Kernel.++(Keyword.get(opts, :secrets, []))
+    |> Kernel.++(settings_secret_values())
+    |> Kernel.++(env_secret_values())
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(String.length(&1) < 8))
+    |> Enum.uniq()
+  end
+
+  defp settings_secret_values do
+    case Config.settings() do
+      {:ok, settings} ->
+        [settings.tracker.api_key | notification_secret_values(settings.notifications)]
+
+      _ ->
+        []
+    end
+  end
+
+  defp notification_secret_values(%{channels: channels}) when is_list(channels) do
+    Enum.flat_map(channels, fn channel ->
+      [Map.get(channel, :webhook_url), Map.get(channel, :url)] ++
+        (channel |> Map.get(:headers, %{}) |> Map.values())
+    end)
+  end
+
+  defp env_secret_values do
+    common_values = Enum.map(@common_secret_envs, &System.get_env/1)
+
+    inferred_values =
+      System.get_env()
+      |> Enum.flat_map(fn {name, value} ->
+        if secret_env_name?(name), do: [value], else: []
+      end)
+
+    common_values ++ inferred_values
+  end
+
+  defp secret_env_name?(name) when is_binary(name) do
+    normalized = String.downcase(name)
+
+    String.contains?(normalized, [
+      "api_key",
+      "access_token",
+      "auth_token",
+      "refresh_token",
+      "secret",
+      "password",
+      "webhook_url"
+    ])
+  end
+
+  defp redact_value(value, secrets), do: redact_value(value, secrets, nil)
+
+  defp redact_value(value, secrets, key) when is_binary(value) and not is_nil(key) do
+    if secret_key?(key), do: @redacted, else: redact_string(value, secrets)
+  end
+
+  defp redact_value(value, secrets, _key) when is_binary(value), do: redact_string(value, secrets)
+
+  defp redact_value(value, secrets, _key) when is_list(value) do
+    Enum.map(value, &redact_value(&1, secrets, nil))
+  end
+
+  defp redact_value(value, secrets, _key) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, nested}, acc ->
+      string_key = to_string(key)
+      Map.put(acc, string_key, redact_value(nested, secrets, string_key))
+    end)
+  end
+
+  defp redact_value(value, _secrets, _key), do: value
+
+  defp redact_string(value, secrets) when is_binary(value) do
+    Enum.reduce(secrets, value, fn secret, acc ->
+      String.replace(acc, secret, @redacted)
+    end)
+  end
+
+  defp secret_key?(key) when is_binary(key) do
+    normalized = String.downcase(key)
+
+    String.contains?(normalized, [
+      "api_key",
+      "access_token",
+      "auth_token",
+      "refresh_token",
+      "authorization",
+      "password",
+      "secret",
+      "webhook_url"
+    ])
+  end
+
+  defp normalize_value(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp normalize_value(%Date{} = date), do: Date.to_iso8601(date)
+  defp normalize_value(value) when is_boolean(value) or is_nil(value), do: value
+  defp normalize_value(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_value(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, nested}, acc ->
+      Map.put(acc, to_string(key), normalize_value(nested))
+    end)
+  end
+
+  defp normalize_value(value) when is_list(value), do: Enum.map(value, &normalize_value/1)
+  defp normalize_value(value) when is_binary(value) or is_number(value), do: value
+  defp normalize_value(value), do: inspect(value)
+
+  defp drop_nil_values(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, nested}, acc ->
+      case drop_nil_values(nested) do
+        nil -> acc
+        normalized -> Map.put(acc, key, normalized)
+      end
+    end)
+  end
+
+  defp drop_nil_values(value) when is_list(value), do: Enum.map(value, &drop_nil_values/1)
+  defp drop_nil_values(value), do: value
+
+  defp hash_event(event) when is_map(event) do
+    event
+    |> canonical_json()
+    |> sha256()
+  end
+
+  defp sha256(value) when is_binary(value) do
+    :crypto.hash(:sha256, value)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp canonical_json(value) when is_map(value) do
+    encoded =
+      value
+      |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
+      |> Enum.map_join(",", fn {key, nested} ->
+        Jason.encode!(to_string(key)) <> ":" <> canonical_json(nested)
+      end)
+
+    "{" <> encoded <> "}"
+  end
+
+  defp canonical_json(value) when is_list(value) do
+    "[" <> Enum.map_join(value, ",", &canonical_json/1) <> "]"
+  end
+
+  defp canonical_json(value), do: Jason.encode!(value)
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(_value), do: false
+end

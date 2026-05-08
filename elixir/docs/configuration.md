@@ -16,7 +16,9 @@ If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
 Optional flags:
 
-- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
+- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`).
+  Application logs are written under `<logs-root>/log/`; audit events are written under
+  `<logs-root>/audit/`.
 - `--host` pins the Phoenix observability service to a specific host
 - `--port` pins the Phoenix observability service to a specific port
 
@@ -24,6 +26,12 @@ Symphony also keeps an OTP-native durable run store next to the configured log f
 (`run_store/`). It persists run history, retry queue entries, session metadata, captured learnings,
 and aggregate token totals so retry backoff and observability data survive process restarts. The
 same store persists the operator dispatch pause flag, including its reason and timestamp.
+
+Audit events are append-only NDJSON files named `YYYY-MM-DD.ndjson` under the audit directory.
+Each record includes issue/run identifiers, event type, timestamp, event-specific side-effect
+details, and hash-chain fields for tamper checks. Use `mix symphony.audit ISSUE_ID --from
+YYYY-MM-DD --to YYYY-MM-DD --logs-root /path/to/logs-root` to print a chronological issue-scoped
+event stream.
 
 ## Workflow file shape
 

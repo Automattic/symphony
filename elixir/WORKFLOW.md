@@ -17,7 +17,7 @@ tracker:
 polling:
   interval_ms: 5000
 pr_review:
-  mode: tracker
+  mode: polling
   # The following keys are polling-mode only and are ignored while mode is tracker.
   # Defaults are false so the agent returns the PR silently after rework unless
   # operators opt in.
@@ -29,13 +29,13 @@ pr_review:
   # bot_users: []
 # Optional polling-mode CI handling. Requires `pr_review.mode: polling`; omitted
 # or disabled keeps the current review-only loop with no CI-related gh calls.
-# ci:
-#   enabled: true
-#   poll_interval_ms: 30000
-#   log_excerpt_lines: 200
-#   flaky_retry: true
-#   max_retries: 3
-#   escalation_state: In Review
+ci:
+   enabled: true
+   poll_interval_ms: 30000
+   log_excerpt_lines: 200
+   flaky_retry: true
+   max_retries: 3
+   escalation_state: In Review
 observability:
   transcript_buffer_size: 200
 watchdog:
@@ -79,8 +79,8 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
   # Optional token budget guardrails. Omit or leave commented for no enforcement.
-  # max_tokens_per_issue: 500000
-  # max_tokens_per_day: 5000000
+  max_tokens_per_issue: 10000000
+  max_tokens_per_day: 1000000000
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_HEADLESS="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_ISOLATED="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_ACTION="5000"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_NAVIGATION="15000"' app-server
   # Auto-approve every Codex approval request for unattended orchestration.
   approval_policy: auto_approve_all
@@ -100,33 +100,33 @@ agent:
 # Symphony treats `min_score` as the pass threshold and clarification stays off
 # unless `clarification_floor` is set.
 # Provider API keys are read from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
-# quality_gate:
-#   enabled: true
-#   provider: anthropic        # or: openai
-#   model: claude-haiku-4-5-20251001
-#   pass_threshold: 6          # 1-10; scores >= this dispatch
-#   clarification_floor: 4     # optional; scores 4..5 ask clarification
-#   max_clarification_rounds: 2
-#   on_error: pass             # or: skip — behavior when the LLM call fails
+quality_gate:
+   enabled: true
+   provider: anthropic        # or: openai
+   model: claude-haiku-4-5-20251001
+   pass_threshold: 6          # 1-10; scores >= this dispatch
+   clarification_floor: 4     # optional; scores 4..5 ask clarification
+   max_clarification_rounds: 2
+   on_error: pass             # or: skip — behavior when the LLM call fails
 # Optional: after a tracked PR is merged in polling mode, run one capture-only
 # LLM reflection and store 0-3 repo-specific learnings with evidence quotes.
 # Captured records are visible at /learnings but are not injected into prompts.
 # Provider API keys are read from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
-# learnings:
-#   enabled: false
-#   provider: anthropic
-#   model: claude-haiku-4-5-20251001
-#   max_total_per_repo: 500
-#   max_per_run: 3
+learnings:
+   enabled: true
+   provider: anthropic
+   model: claude-haiku-4-5-20251001
+   max_total_per_repo: 500
+   max_per_run: 3
 # Optional: run a narrow fresh-context LLM self-review after validation and
 # diff review, before pushing. Disabled by default. Provider API keys are read
 # from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
-# self_review:
-#   enabled: false
-#   provider: anthropic
-#   model: claude-haiku-4-5-20251001
-#   diff_max_lines: 600
-#   max_rounds: 1
+self_review:
+   enabled: true
+   provider: anthropic
+   model: claude-sonnet-4-6
+   diff_max_lines: 600
+   max_rounds: 1
 # Optional semantic event notifications. Omit the block or keep enabled false
 # for no outbound notification HTTP calls.
 # notifications:

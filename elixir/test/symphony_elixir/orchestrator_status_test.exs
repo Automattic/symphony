@@ -1967,6 +1967,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       title: "Interrupted run",
       description: "Run should survive restart as failed history",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-502"
     }
 

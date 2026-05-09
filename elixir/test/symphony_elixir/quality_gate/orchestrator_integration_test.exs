@@ -84,6 +84,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Skip me",
       description: "Investigate something vague",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-SKIP",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -130,6 +131,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Clarify me",
       description: "Almost ready",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-MID",
       labels: [],
       updated_at: ~U[2026-05-05 03:00:00Z]
@@ -179,6 +181,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Clarify then pass",
       description: "Almost ready",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-REPLY",
       labels: [],
       comments: [],
@@ -224,7 +227,9 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [answered_issue])
 
+    force_repo_poll_due(pid)
     send(pid, :run_poll_cycle)
+    :sys.get_state(pid)
 
     refute_receive {:memory_tracker_comment, "issue-reply-1", _}, 200
 
@@ -240,6 +245,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Pass me",
       description: "Clear scope and acceptance criteria",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-PASS",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -278,6 +284,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Gate defaults on",
       description: "...",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-DEFAULT-ON",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -332,6 +339,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Gate off",
       description: "...",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-OFF",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -363,6 +371,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Erroring",
       description: "...",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-ERR",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -400,7 +409,9 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     edited_issue = %{issue | updated_at: ~U[2026-05-05 04:00:00Z]}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [edited_issue])
 
+    force_repo_poll_due(pid)
     send(pid, :run_poll_cycle)
+    :sys.get_state(pid)
     assert_receive {:memory_tracker_comment, "issue-err-1", edited_body}, 500
     assert edited_body =~ "LLM call failed"
   end
@@ -412,6 +423,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Retry skip me",
       description: "Still vague on retry",
       state: "In Progress",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-RETRY-SKIP",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -475,6 +487,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Skip me first",
       description: "Vague",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-SKIP-EARLIER",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -485,6 +498,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Retry me, also vague",
       description: "Vague too",
       state: "In Progress",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-RETRY-OTHER",
       updated_at: ~U[2026-05-05 03:30:00Z]
     }
@@ -552,6 +566,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Skip then leave",
       description: "Vague",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-LEAVES",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -582,7 +597,9 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     # Issue moves out of scope (Done, reassigned, or label change → candidate fetch no longer returns it).
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
 
+    force_repo_poll_due(pid)
     send(pid, :run_poll_cycle)
+    :sys.get_state(pid)
     Process.sleep(100)
 
     snapshot = GenServer.call(pid, :snapshot)
@@ -598,6 +615,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       title: "Erroring across restart",
       description: "...",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-ERR-RESTART",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
@@ -638,6 +656,12 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
   defp wait_for_skipped(pid, issue_id, timeout_ms \\ 1_000) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_skipped(pid, issue_id, deadline_ms)
+  end
+
+  defp force_repo_poll_due(pid) do
+    :sys.replace_state(pid, fn state ->
+      %{state | repo_poll_cache: %{}, repo_poll_due_at_ms: %{}}
+    end)
   end
 
   defp do_wait_for_skipped(pid, issue_id, deadline_ms) do

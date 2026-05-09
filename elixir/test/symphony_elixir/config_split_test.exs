@@ -186,6 +186,9 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert {:error, {:invalid_symphony_config, "unknown symphony.yml key `unknown`"}} =
              SystemSchema.parse(system_config(%{"unknown" => true}))
 
+    assert {:error, {:invalid_symphony_config, "unknown symphony.yml key `routing`"}} =
+             SystemSchema.parse(system_config(%{"routing" => []}))
+
     assert {:error, {:invalid_symphony_config, empty_repos_message}} =
              SystemSchema.parse(system_config(%{"repos" => []}))
 

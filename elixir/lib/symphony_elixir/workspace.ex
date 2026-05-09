@@ -729,7 +729,7 @@ defmodule SymphonyElixir.Workspace do
           :ok | {:error, term()}
   def run_before_run_hook(workspace, issue_or_identifier, worker_host \\ nil, opts \\ []) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
-    hooks = Config.hooks_for_issue(issue_context)
+    hooks = Config.settings!().hooks
     env = Keyword.get(opts, :env, [])
 
     case hooks.before_run do
@@ -752,7 +752,7 @@ defmodule SymphonyElixir.Workspace do
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host(), keyword()) :: :ok
   def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil, opts \\ []) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
-    hooks = Config.hooks_for_issue(issue_context)
+    hooks = Config.settings!().hooks
     env = Keyword.get(opts, :env, [])
 
     case hooks.after_run do
@@ -792,7 +792,7 @@ defmodule SymphonyElixir.Workspace do
   defp worktree_branch(_issue_context), do: "auto/issue"
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-    hooks = Config.hooks_for_issue(issue_context)
+    hooks = Config.settings!().hooks
 
     case created? do
       true ->
@@ -817,7 +817,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_before_remove_hook(workspace, issue_context, nil) do
-    hooks = Config.hooks_for_issue(issue_context)
+    hooks = Config.settings!().hooks
 
     case File.dir?(workspace) do
       true ->
@@ -843,7 +843,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_before_remove_hook(workspace, issue_context, worker_host) when is_binary(worker_host) do
-    hooks = Config.hooks_for_issue(issue_context)
+    hooks = Config.settings!().hooks
 
     case hooks.before_remove do
       nil ->

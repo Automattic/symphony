@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   @primary_key false
   @allowed_keys ~w(
-    agent ci dispatch learnings notifications observability polling pr_review quality_gate repos routing self_review
+    agent ci dispatch learnings notifications observability polling pr_review quality_gate repos self_review
     server token_budget tracker watchdog worker workspace
   )
 
@@ -80,7 +80,6 @@ defmodule SymphonyElixir.Config.SystemSchema do
     embeds_one(:workspace, Schema.Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Schema.Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Schema.Agent, on_replace: :update, defaults_to_struct: true)
-    embeds_many(:routing, Schema.Routing, on_replace: :delete)
     embeds_one(:observability, Schema.Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:pr_review, Schema.PrReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:ci, Schema.Ci, on_replace: :update, defaults_to_struct: true)
@@ -122,7 +121,6 @@ defmodule SymphonyElixir.Config.SystemSchema do
       "workspace" => workspace_to_map(system_config.workspace),
       "worker" => struct_to_map(system_config.worker),
       "agent" => agent_to_map(system_config.agent),
-      "routing" => struct_to_map(system_config.routing),
       "observability" => struct_to_map(system_config.observability),
       "pr_review" => struct_to_map(system_config.pr_review),
       "ci" => struct_to_map(system_config.ci),
@@ -175,7 +173,6 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast_embed(:workspace, with: &Schema.Workspace.changeset/2)
     |> cast_embed(:worker, with: &Schema.Worker.changeset/2)
     |> cast_embed(:agent, with: &Schema.Agent.changeset/2)
-    |> cast_embed(:routing, with: &Schema.Routing.changeset/2)
     |> cast_embed(:observability, with: &Schema.Observability.changeset/2)
     |> cast_embed(:pr_review, with: &Schema.PrReview.changeset/2)
     |> cast_embed(:ci, with: &Schema.Ci.changeset/2)

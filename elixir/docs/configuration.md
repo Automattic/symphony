@@ -92,15 +92,6 @@ verification:
   dev_server:
     start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
     health_check_url: "http://localhost:${SYMPHONY_VERIFICATION_PORT}/healthz"
-routing:
-  - requires_label: js
-    hooks:
-      after_create: |
-        git clone git@github.com:your-org/js-package.git .
-  - requires_label: php
-    hooks:
-      after_create: |
-        git clone git@github.com:your-org/php-plugin.git .
 agent:
   kind: codex
   max_concurrent_agents: 10
@@ -287,10 +278,6 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   tracker issues or persisted run/retry records. `workspace.lifecycle.orphan_action` defaults to
   `log`; set it to `delete` to remove orphans or `trash` to move them under
   `workspace.lifecycle.trash_dir` (default `.trash`).
-- Use `routing` to override workspace hooks for issues with specific Linear labels. Entries are
-  checked in order; the first `requires_label` that matches an issue label wins. Hook fields omitted
-  from a matching route fall back to the top-level `hooks` values, and issues without a matching
-  label use the top-level hooks unchanged.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - Optional `verification` orchestration is disabled by default. When `verification.enabled: true`,

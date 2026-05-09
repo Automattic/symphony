@@ -363,7 +363,6 @@ Top-level keys:
 - `workspace`
 - `verification`
 - `hooks`
-- `routing`
 - `agent`
 - `codex`
 - `pr_review`
@@ -533,42 +532,7 @@ Fields:
   - Invalid values fail configuration validation.
   - Changes SHOULD be re-applied at runtime for future hook executions.
 
-#### 5.3.5 `routing` (list of objects)
-
-Optional ordered label-based hook overrides for multi-repository projects.
-
-Each entry fields:
-
-- `requires_label` (string, REQUIRED)
-  - Compared against normalized issue labels after trimming and lowercasing.
-  - Entries are checked in list order. The first matching entry wins.
-- `hooks` (object, OPTIONAL)
-  - Same fields as top-level `hooks`.
-  - Values present here override top-level hook values for the matched issue.
-  - Omitted hook fields fall back to top-level `hooks`.
-
-Fallback behavior:
-
-- If `routing` is omitted or no entry matches the issue labels, the runtime uses top-level `hooks`.
-- Existing workflows without `routing` MUST continue to behave unchanged.
-
-Example:
-
-```yaml
-routing:
-  - requires_label: js
-    hooks:
-      after_create: |
-        git clone git@github.com:your-org/js-package.git .
-        pnpm install
-  - requires_label: php
-    hooks:
-      after_create: |
-        git clone git@github.com:your-org/php-plugin.git .
-        composer install
-```
-
-#### 5.3.6 `agent` (object)
+#### 5.3.5 `agent` (object)
 
 Fields:
 
@@ -587,7 +551,7 @@ Fields:
   - State keys are normalized (`lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
 
-#### 5.3.7 `codex` (object)
+#### 5.3.6 `codex` (object)
 
 Fields:
 
@@ -637,7 +601,7 @@ fields locally if they want stricter startup checks.
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
 
-#### 5.3.8 `watchdog` (object)
+#### 5.3.7 `watchdog` (object)
 
 Fields:
 
@@ -803,9 +767,6 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.after_run`: shell script or null
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
-- `routing`: ordered list of label-based hook override entries, default `[]`
-- `routing[].requires_label`: string label selector, REQUIRED for each entry
-- `routing[].hooks`: hook overrides merged over top-level `hooks`
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
@@ -1117,17 +1078,12 @@ Algorithm summary:
      creating it with `git worktree add` when absent.
 5. Mark `created_now=true` only if the directory or worktree was created during this call; otherwise
    `created_now=false`.
-6. Select effective hooks for the issue:
-   - Use the first `routing` entry whose `requires_label` matches an issue label, if any.
-   - Merge matched route hook values over top-level `hooks`.
-   - Use top-level `hooks` when no route matches.
-7. If `created_now=true`, run the effective `after_create` hook if configured.
+6. If `created_now=true`, run `hooks.after_create` if configured.
 
 Notes:
 
-- `before_run`, `after_run`, and `before_remove` use the same effective hook selection
-  as `after_create`, so a matched route applies consistently to every workspace lifecycle
-  hook execution point.
+- `before_run`, `after_run`, and `before_remove` use the same top-level `hooks` configuration
+  as `after_create`.
 - The `clone` strategy does not assume any specific repository/VCS workflow.
 - The `worktree` strategy owns branches named `auto/<issue.identifier>` and removes those branches
   during workspace cleanup.
@@ -2592,7 +2548,6 @@ Use the same validation profiles as Section 17:
 - Workspace manager with sanitized per-issue workspaces
 - Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
-- Label-based workflow routing for issue-specific workspace hook overrides
 - Coding-agent app-server subprocess client with JSON line protocol
 - Codex launch command config (`codex.command`, default `codex app-server`)
 - Strict prompt rendering with `issue` and `attempt` variables

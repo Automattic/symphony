@@ -218,14 +218,37 @@ defmodule SymphonyElixir.NotificationsTest do
     workflow_path = Workflow.workflow_file_path()
     missing_path = Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md")
 
-    :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+    Enum.each(["default", "symphony", Application.get_env(:symphony_elixir, :primary_repo_name)], fn
+      nil ->
+        :ok
+
+      repo_name ->
+        supervisor = SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
+
+        if GenServer.whereis(supervisor) do
+          Supervisor.terminate_child(supervisor, {SymphonyElixir.WorkflowStore, repo_name})
+        end
+    end)
+
+    if pid = Process.whereis(SymphonyElixir.WorkflowStore), do: GenServer.stop(pid)
 
     try do
       Workflow.set_workflow_file_path(missing_path)
       assert {:ok, %Event{transcript_url: nil}} = Event.new(:run_failed, %{issue_identifier: "RSM-9"})
     after
       Workflow.set_workflow_file_path(workflow_path)
-      {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+
+      Enum.each(["default", "symphony", Application.get_env(:symphony_elixir, :primary_repo_name)], fn
+        nil ->
+          :ok
+
+        repo_name ->
+          supervisor = SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
+
+          if GenServer.whereis(supervisor) do
+            Supervisor.restart_child(supervisor, {SymphonyElixir.WorkflowStore, repo_name})
+          end
+      end)
     end
   end
 

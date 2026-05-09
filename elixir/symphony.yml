@@ -1,0 +1,81 @@
+tracker:
+  kind: linear
+  project_slug: "building-the-harness-ai-agents-that-ship-production-code-safely-f469eb38bbc5"
+  assignee: me
+  active_states:
+    - Todo
+    - In Progress
+    - Merging
+    - Rework
+  terminal_states:
+    - Closed
+    - Cancelled
+    - Canceled
+    - Duplicate
+    - Done
+polling:
+  interval_ms: 5000
+pr_review:
+  mode: polling
+ci:
+  enabled: true
+  poll_interval_ms: 30000
+  log_excerpt_lines: 200
+  flaky_retry: true
+  max_retries: 3
+  escalation_state: In Review
+observability:
+  transcript_buffer_size: 200
+watchdog:
+  enabled: true
+  tick_interval_ms: 60000
+  no_progress_threshold_ms: 600000
+workspace:
+  root: ~/Projects/symphony-workspaces
+  strategy: worktree
+  repo: ~/Projects/symphony
+  fetch_before_dispatch: true
+  lifecycle:
+    max_age_days: 14
+    gc_interval_ms: 3600000
+    orphan_action: log
+    trash_dir: .trash
+agent:
+  kind: codex
+  max_concurrent_agents: 10
+  max_turns: 20
+  max_tokens_per_issue: 100000000
+  max_tokens_per_day: 1000000000
+  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_HEADLESS="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_ISOLATED="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_ACTION="5000"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_NAVIGATION="15000"' app-server
+  approval_policy: auto_approve_all
+  thread_sandbox: workspace-write
+  network_access:
+    mode: allowlist
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true
+quality_gate:
+  enabled: true
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  pass_threshold: 6
+  clarification_floor: 4
+  max_clarification_rounds: 2
+  on_error: pass
+learnings:
+  enabled: true
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  max_total_per_repo: 500
+  max_per_run: 3
+self_review:
+  enabled: true
+  provider: anthropic
+  model: claude-sonnet-4-6
+  diff_max_lines: 600
+  max_rounds: 1
+repos:
+  - name: symphony
+    path: .
+    workflow: WORKFLOW.md
+    team: Radical Speed Month

@@ -19,6 +19,9 @@ defmodule SymphonyElixir.Application do
 
   use Application
 
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.Config.SystemSchema
+
   @impl true
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
@@ -41,13 +44,20 @@ defmodule SymphonyElixir.Application do
   @doc false
   @spec child_specs_for_runtime(map()) :: [Supervisor.child_spec() | module() | {module(), term()}]
   def child_specs_for_runtime(env \\ System.get_env()) when is_map(env) do
+    system_config = Config.system!()
+    primary_repo = SystemSchema.primary_repo(system_config)
+    Application.put_env(:symphony_elixir, :primary_repo_name, primary_repo.name)
+    SymphonyElixir.Workflow.set_workflow_file_path(primary_repo.workflow_path)
+
     core_children =
       [
         {Phoenix.PubSub, name: SymphonyElixir.PubSub},
         {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
-        SymphonyElixir.WorkflowStore,
+        {Registry, keys: :unique, name: SymphonyElixir.Repo.Registry},
+        repo_supervisor_specs(system_config.repos),
         SymphonyElixir.Notifications.Notifier
       ]
+      |> List.flatten()
 
     if orchestrator_runtime_disabled?(env) do
       core_children
@@ -56,7 +66,7 @@ defmodule SymphonyElixir.Application do
          [
            SymphonyElixir.RunStore
          ] ++
-         SymphonyElixir.Verification.child_specs_for_runtime(SymphonyElixir.Config.settings!()) ++
+         SymphonyElixir.Verification.child_specs_for_runtime(Config.settings!()) ++
          [
            SymphonyElixir.Orchestrator,
            pr_review_child_spec(),
@@ -66,6 +76,10 @@ defmodule SymphonyElixir.Application do
          ])
       |> Enum.reject(&is_nil/1)
     end
+  end
+
+  defp repo_supervisor_specs(repos) do
+    Enum.map(repos, &SymphonyElixir.Repo.Supervisor.child_spec/1)
   end
 
   defp pr_review_child_spec do

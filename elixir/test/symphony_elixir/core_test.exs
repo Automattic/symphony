@@ -283,24 +283,34 @@ defmodule SymphonyElixir.CoreTest do
 
   test "current WORKFLOW.md file is valid and complete" do
     original_workflow_path = Workflow.workflow_file_path()
-    on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
+    original_symphony_path = Workflow.symphony_file_path()
+
+    on_exit(fn ->
+      Workflow.set_workflow_file_path(original_workflow_path)
+      Workflow.set_symphony_file_path(original_symphony_path)
+    end)
+
+    Workflow.clear_symphony_file_path()
     Workflow.clear_workflow_file_path()
 
-    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
-    assert is_map(config)
+    assert {:ok, system_config} = Workflow.load_symphony()
 
-    tracker = Map.get(config, "tracker", %{})
+    tracker = Map.get(system_config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
     assert is_binary(Map.get(tracker, "project_slug"))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
-    workspace = Map.get(config, "workspace", %{})
+    workspace = Map.get(system_config, "workspace", %{})
     assert is_map(workspace)
     assert Map.get(workspace, "strategy") == "worktree"
     assert Map.get(workspace, "repo") == "~/Projects/symphony"
     assert Map.get(workspace, "fetch_before_dispatch") == true
+    assert [%{"workflow" => "WORKFLOW.md"}] = Map.get(system_config, "repos")
+
+    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
+    assert is_map(config)
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
@@ -389,12 +399,13 @@ defmodule SymphonyElixir.CoreTest do
              Workflow.load(workflow_path)
   end
 
-  test "workflow load accepts unterminated front matter with an empty prompt" do
+  test "workflow load rejects operator keys in unterminated front matter" do
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "UNTERMINATED_WORKFLOW.md")
     File.write!(workflow_path, "---\ntracker:\n  kind: linear\n")
 
-    assert {:ok, %{config: %{"tracker" => %{"kind" => "linear"}}, prompt: "", prompt_template: ""}} =
-             Workflow.load(workflow_path)
+    assert {:error, {:invalid_repo_workflow_config, message}} = Workflow.load(workflow_path)
+    assert message =~ "operator-level key `tracker`"
+    assert message =~ "symphony.yml"
   end
 
   test "workflow load rejects non-map front matter" do
@@ -440,7 +451,7 @@ defmodule SymphonyElixir.CoreTest do
     refute SymphonyElixir.RunStore in nested_children
     refute SymphonyElixir.HttpServer in nested_children
     refute SymphonyElixir.StatusDashboard in nested_children
-    assert SymphonyElixir.WorkflowStore in nested_children
+    assert Enum.any?(nested_children, &match?(%{id: {SymphonyElixir.Repo.Supervisor, "default"}}, &1))
 
     test_children =
       SymphonyElixir.Application.child_specs_for_runtime(%{
@@ -1644,11 +1655,25 @@ defmodule SymphonyElixir.CoreTest do
       Workflow.set_workflow_file_path(original_workflow_path)
 
       if is_pid(workflow_store_pid) and is_nil(Process.whereis(SymphonyElixir.WorkflowStore)) do
-        Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+        Enum.each(["default", "symphony"], fn repo_name ->
+          supervisor = SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
+
+          if GenServer.whereis(supervisor) do
+            Supervisor.restart_child(supervisor, {SymphonyElixir.WorkflowStore, repo_name})
+          end
+        end)
       end
     end)
 
-    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+    Enum.each(["default", "symphony"], fn repo_name ->
+      supervisor = SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
+
+      if GenServer.whereis(supervisor) do
+        Supervisor.terminate_child(supervisor, {SymphonyElixir.WorkflowStore, repo_name})
+      end
+    end)
+
+    if pid = Process.whereis(SymphonyElixir.WorkflowStore), do: GenServer.stop(pid)
 
     Workflow.set_workflow_file_path(Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md"))
 

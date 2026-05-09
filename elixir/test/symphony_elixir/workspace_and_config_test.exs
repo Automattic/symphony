@@ -2064,20 +2064,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "config supports per-state max concurrent agent overrides" do
-    workflow = """
-    ---
-    agent:
-      kind: codex
-      command: codex app-server
-      max_concurrent_agents: 10
-      max_concurrent_agents_by_state:
-        todo: 1
-        "In Progress": 4
-        "In Review": 2
-    ---
-    """
-
-    File.write!(Workflow.workflow_file_path(), workflow)
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_concurrent_agents: 10,
+      max_concurrent_agents_by_state: %{
+        "todo" => 1,
+        "In Progress" => 4,
+        "In Review" => 2
+      }
+    )
 
     assert Config.settings!().agent.max_concurrent_agents == 10
     assert Config.max_concurrent_agents_for_state("Todo") == 1
@@ -3023,15 +3017,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   defp write_workflow_without_token_budget_keys! do
-    File.write!(Workflow.workflow_file_path(), """
-    ---
+    File.write!(Workflow.workflow_file_path(), "Prompt\n")
+
+    File.write!(Workflow.symphony_file_path(), """
     tracker:
       kind: memory
     agent:
       kind: codex
       command: codex app-server
-    ---
-    Prompt
+    repos:
+      - name: default
+        path: #{Path.dirname(Workflow.workflow_file_path())}
+        workflow: #{Path.basename(Workflow.workflow_file_path())}
+        team: Test
     """)
 
     reload_workflow_store()

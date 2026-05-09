@@ -170,30 +170,30 @@ defmodule SymphonyElixir.AuditLog do
   def latest_self_review_by_run(run_ids, opts \\ []) when is_list(run_ids) do
     wanted = run_ids |> Enum.filter(&is_binary/1) |> MapSet.new()
 
-    if MapSet.size(wanted) == 0 do
-      %{}
-    else
-      today = Date.utc_today()
-      date_from = Keyword.get(opts, :date_from, Date.add(today, -1))
-      date_to = Keyword.get(opts, :date_to, today)
+    if MapSet.size(wanted) == 0, do: %{}, else: latest_self_review_by_wanted_runs(wanted, opts)
+  end
 
-      with {:ok, from_date} <- normalize_date(date_from),
-           {:ok, to_date} <- normalize_date(date_to),
-           :ok <- validate_date_range(from_date, to_date) do
-        from_date
-        |> Date.range(to_date)
-        |> Enum.flat_map(&read_events_for_date(&1, opts))
-        |> Enum.filter(fn event ->
-          Map.get(event, "event_type") == "self_review" and
-            MapSet.member?(wanted, Map.get(event, "run_id"))
-        end)
-        |> Enum.sort_by(&timestamp_sort_key/1)
-        |> Enum.reduce(%{}, fn event, acc ->
-          Map.put(acc, Map.get(event, "run_id"), event)
-        end)
-      else
-        _ -> %{}
-      end
+  defp latest_self_review_by_wanted_runs(wanted, opts) do
+    today = Date.utc_today()
+    date_from = Keyword.get(opts, :date_from, Date.add(today, -1))
+    date_to = Keyword.get(opts, :date_to, today)
+
+    with {:ok, from_date} <- normalize_date(date_from),
+         {:ok, to_date} <- normalize_date(date_to),
+         :ok <- validate_date_range(from_date, to_date) do
+      from_date
+      |> Date.range(to_date)
+      |> Enum.flat_map(&read_events_for_date(&1, opts))
+      |> Enum.filter(fn event ->
+        Map.get(event, "event_type") == "self_review" and
+          MapSet.member?(wanted, Map.get(event, "run_id"))
+      end)
+      |> Enum.sort_by(&timestamp_sort_key/1)
+      |> Enum.reduce(%{}, fn event, acc ->
+        Map.put(acc, Map.get(event, "run_id"), event)
+      end)
+    else
+      _ -> %{}
     end
   end
 

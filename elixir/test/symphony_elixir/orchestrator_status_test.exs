@@ -2504,7 +2504,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard forwards quality gate sections from orchestrator snapshot" do
-    orchestrator_pid = Process.whereis(Orchestrator)
+    orchestrator_pid = ensure_orchestrator_running()
     assert is_pid(orchestrator_pid)
 
     previous_state = :sys.get_state(orchestrator_pid)
@@ -2602,7 +2602,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator snapshot hides quality gate sections for running issues" do
-    orchestrator_pid = Process.whereis(Orchestrator)
+    orchestrator_pid = ensure_orchestrator_running()
     assert is_pid(orchestrator_pid)
 
     previous_state = :sys.get_state(orchestrator_pid)
@@ -3447,15 +3447,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   defp write_workflow_without_token_budget_keys! do
-    File.write!(Workflow.workflow_file_path(), """
-    ---
+    File.write!(Workflow.workflow_file_path(), "Prompt\n")
+
+    File.write!(Workflow.symphony_file_path(), """
     tracker:
       kind: memory
     agent:
       kind: codex
       command: codex app-server
-    ---
-    Prompt
+    repos:
+      - name: default
+        path: #{Path.dirname(Workflow.workflow_file_path())}
+        workflow: #{Path.basename(Workflow.workflow_file_path())}
+        team: Test
     """)
 
     if Process.whereis(SymphonyElixir.WorkflowStore) do
@@ -3475,6 +3479,30 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     |> Enum.each(fn pid ->
       Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid)
     end)
+  end
+
+  defp ensure_orchestrator_running do
+    case Process.whereis(Orchestrator) do
+      pid when is_pid(pid) ->
+        pid
+
+      nil ->
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, Orchestrator) do
+          {:ok, pid} -> pid
+          {:error, {:already_started, pid}} -> pid
+          {:error, :not_found} -> start_unsupervised_orchestrator()
+        end
+    end
+  end
+
+  defp start_unsupervised_orchestrator do
+    {:ok, pid} = Orchestrator.start_link()
+
+    ExUnit.Callbacks.on_exit(fn ->
+      if Process.alive?(pid), do: GenServer.stop(pid)
+    end)
+
+    pid
   end
 
   defp graph_samples_from_rates(rates_per_bucket) do

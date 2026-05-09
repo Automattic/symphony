@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Config do
   require Logger
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Config.SystemSchema
   alias SymphonyElixir.Workflow
 
   @default_prompt_template """
@@ -39,12 +40,44 @@ defmodule SymphonyElixir.Config do
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
-    case Workflow.current() do
-      {:ok, %{config: config}} when is_map(config) ->
-        Schema.parse(config)
+    with {:ok, system_config} <- system(),
+         {:ok, repo_workflow} <- primary_repo_workflow(system_config),
+         {:ok, settings} <- Schema.parse(merged_runtime_config(system_config, repo_workflow)) do
+      {:ok, settings}
+    else
+      {:error, {:invalid_symphony_config, message}} ->
+        {:error, {:invalid_workflow_config, "symphony.yml: #{message}"}}
+
+      {:error, {:invalid_repo_workflow_config, message}} ->
+        {:error, {:invalid_workflow_config, "WORKFLOW.md: #{message}"}}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @spec system() :: {:ok, SystemSchema.t()} | {:error, term()}
+  def system do
+    with {:ok, config} <- Workflow.load_symphony() do
+      SystemSchema.parse(config)
+    end
+  end
+
+  @spec system!() :: SystemSchema.t()
+  def system! do
+    case system() do
+      {:ok, system_config} ->
+        system_config
+
+      {:error, reason} ->
+        raise ArgumentError, message: format_config_error(reason)
+    end
+  end
+
+  @spec repos() :: {:ok, [SystemSchema.Repo.t()]} | {:error, term()}
+  def repos do
+    with {:ok, system_config} <- system() do
+      {:ok, system_config.repos}
     end
   end
 
@@ -269,6 +302,19 @@ defmodule SymphonyElixir.Config do
 
   defp validate_workspace_semantics(_settings), do: :ok
 
+  defp primary_repo_workflow(%SystemSchema{} = system_config) do
+    case SystemSchema.primary_repo(system_config) do
+      nil -> {:error, {:invalid_symphony_config, "repos must include at least one repo"}}
+      repo -> Workflow.load(repo.workflow_path)
+    end
+  end
+
+  defp merged_runtime_config(%SystemSchema{} = system_config, %{config: repo_config}) when is_map(repo_config) do
+    system_config
+    |> SystemSchema.to_config_map()
+    |> Map.merge(repo_config)
+  end
+
   defp validate_notifications_semantics(%Schema{notifications: %{enabled: true, channels: channels}})
        when is_list(channels) do
     Enum.reduce_while(channels, :ok, fn channel, :ok ->
@@ -365,22 +411,22 @@ defmodule SymphonyElixir.Config do
 
   def local_worktree_dirty_status(_repo), do: :not_applicable
 
-  defp format_config_error(reason) do
-    case reason do
-      {:invalid_workflow_config, message} ->
-        "Invalid WORKFLOW.md config: #{message}"
+  defp format_config_error({:invalid_workflow_config, message}), do: "Invalid merged Symphony config: #{message}"
 
-      {:missing_workflow_file, path, raw_reason} ->
-        "Missing WORKFLOW.md at #{path}: #{inspect(raw_reason)}"
+  defp format_config_error({:invalid_symphony_config, message}), do: "Invalid symphony.yml config: #{message}"
 
-      {:workflow_parse_error, raw_reason} ->
-        "Failed to parse WORKFLOW.md: #{inspect(raw_reason)}"
+  defp format_config_error({:missing_symphony_file, path, raw_reason}),
+    do: "Missing symphony.yml at #{path}: #{inspect(raw_reason)}"
 
-      :workflow_front_matter_not_a_map ->
-        "Failed to parse WORKFLOW.md: workflow front matter must decode to a map"
+  defp format_config_error({:missing_workflow_file, path, raw_reason}),
+    do: "Missing WORKFLOW.md at #{path}: #{inspect(raw_reason)}"
 
-      other ->
-        "Invalid WORKFLOW.md config: #{inspect(other)}"
-    end
-  end
+  defp format_config_error({:symphony_parse_error, raw_reason}), do: "Failed to parse symphony.yml: #{inspect(raw_reason)}"
+
+  defp format_config_error({:workflow_parse_error, raw_reason}), do: "Failed to parse WORKFLOW.md: #{inspect(raw_reason)}"
+
+  defp format_config_error(:symphony_file_not_a_map), do: "Failed to parse symphony.yml: file must decode to a map"
+
+  defp format_config_error(:workflow_front_matter_not_a_map),
+    do: "Failed to parse WORKFLOW.md: workflow front matter must decode to a map"
 end

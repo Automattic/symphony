@@ -1587,22 +1587,64 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp workflow_store_supervisor do
-    repo_name = workflow_store_repo_name()
-    SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
+    case workflow_store_repo_name() do
+      nil -> SymphonyElixir.Supervisor
+      repo_name -> SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
+    end
+    |> fallback_workflow_store_supervisor()
   end
 
   defp workflow_store_child_id do
-    {WorkflowStore, workflow_store_repo_name()}
+    {WorkflowStore, workflow_store_repo_name() || supervised_repo_name()}
   end
 
   defp workflow_store_repo_name do
     ["default", "symphony", Application.get_env(:symphony_elixir, :primary_repo_name)]
     |> Enum.reject(&is_nil/1)
     |> Enum.find(fn repo_name ->
-      repo_name
-      |> SymphonyElixir.Repo.Supervisor.supervisor_name()
-      |> GenServer.whereis()
-      |> is_pid()
+      if Process.whereis(SymphonyElixir.Repo.Registry) do
+        repo_name
+        |> SymphonyElixir.Repo.Supervisor.supervisor_name()
+        |> GenServer.whereis()
+        |> is_pid()
+      else
+        false
+      end
     end)
+  end
+
+  defp fallback_workflow_store_supervisor(SymphonyElixir.Supervisor) do
+    case supervised_repo_child() do
+      {_repo_name, repo_pid} -> repo_pid
+      nil -> SymphonyElixir.Supervisor
+    end
+  end
+
+  defp fallback_workflow_store_supervisor(supervisor), do: supervisor
+
+  defp supervised_repo_name do
+    case supervised_repo_child() do
+      {repo_name, _repo_pid} -> repo_name
+      nil -> nil
+    end
+  end
+
+  defp supervised_repo_child do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) ->
+        pid
+        |> Supervisor.which_children()
+        |> Enum.find_value(fn
+          {{SymphonyElixir.Repo.Supervisor, repo_name}, repo_pid, :supervisor, _modules}
+          when is_pid(repo_pid) ->
+            {repo_name, repo_pid}
+
+          _child ->
+            nil
+        end)
+
+      _pid ->
+        nil
+    end
   end
 end

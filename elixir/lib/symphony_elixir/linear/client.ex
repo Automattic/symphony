@@ -28,6 +28,14 @@ defmodule SymphonyElixir.Linear.Client do
         state {
           name
         }
+        team {
+          key
+          name
+        }
+        project {
+          id
+          name
+        }
         branchName
         url
         attachments(first: $attachmentFirst) {
@@ -87,6 +95,14 @@ defmodule SymphonyElixir.Linear.Client do
         description
         priority
         state {
+          name
+        }
+        team {
+          key
+          name
+        }
+        project {
+          id
           name
         }
         branchName
@@ -646,6 +662,8 @@ defmodule SymphonyElixir.Linear.Client do
       description: issue["description"],
       priority: parse_priority(issue["priority"]),
       state: get_in(issue, ["state", "name"]),
+      team: extract_team(issue),
+      project: extract_project(issue),
       branch_name: issue["branchName"],
       url: issue["url"],
       pull_request_url: extract_pull_request_url(issue),
@@ -664,6 +682,24 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp assignee_field(%{} = assignee, field) when is_binary(field), do: assignee[field]
   defp assignee_field(_assignee, _field), do: nil
+
+  defp extract_team(%{"team" => %{} = team}) do
+    %{
+      key: team["key"],
+      name: team["name"]
+    }
+  end
+
+  defp extract_team(_issue), do: nil
+
+  defp extract_project(%{"project" => %{} = project}) do
+    %{
+      id: project["id"],
+      name: project["name"]
+    }
+  end
+
+  defp extract_project(_issue), do: nil
 
   defp assigned_to_worker?(_assignee, nil), do: true
 

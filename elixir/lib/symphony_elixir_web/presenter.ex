@@ -379,8 +379,6 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp normalize_dispatch_state(_), do: %{active?: true, blockers: []}
-
   # Backwards-compat fallback for snapshots that don't carry an explicit
   # dispatch_state (older test fixtures or external callers). Derives manual
   # and budget blockers from the legacy pause/budget fields.

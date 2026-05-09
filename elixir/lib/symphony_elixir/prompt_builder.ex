@@ -158,12 +158,7 @@ defmodule SymphonyElixir.PromptBuilder do
   defp put_repo_key(issue, nil), do: issue
   defp put_repo_key(issue, repo_key) when is_map(issue), do: Map.put(issue, :repo_key, repo_key)
 
-  defp default_repo_key do
-    case Config.repo_key() do
-      {:ok, repo_key} -> repo_key
-      {:error, _reason} -> nil
-    end
-  end
+  defp default_repo_key, do: Config.repo_key_or_nil()
 
   defp append_reviewer_comments(prompt, []), do: prompt
 

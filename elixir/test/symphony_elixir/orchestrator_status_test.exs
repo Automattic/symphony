@@ -114,7 +114,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     repo_key = Config.repo_key!()
 
-    assert :ok = ObservabilityPubSub.subscribe_transcript(repo_key, issue_id)
+    assert :ok = ObservabilityPubSub.subscribe_transcript()
 
     send(pid, {:codex_worker_update, issue_id, session_update})
     assert_receive {:transcript_event, session_event}

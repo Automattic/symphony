@@ -17,15 +17,15 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
     event = %{event: :notification, payload: %{message: "live"}, timestamp: DateTime.utc_now()}
     expected = Map.merge(event, %{repo_key: "default", issue_id: "issue-123"})
 
-    assert :ok = ObservabilityPubSub.subscribe_transcript("default", "issue-123")
+    assert :ok = ObservabilityPubSub.subscribe_transcript()
     assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-123", event)
     assert_receive {:transcript_event, ^expected}
     assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-123", :not_an_event)
   end
 
   test "legacy transcript helpers use the flat topic and default repo payload" do
-    assert ObservabilityPubSub.transcript_topic("issue-legacy") == ObservabilityPubSub.transcript_topic()
-    assert :ok = ObservabilityPubSub.subscribe_transcript("issue-legacy")
+    assert ObservabilityPubSub.transcript_topic() == "observability:transcript"
+    assert :ok = ObservabilityPubSub.subscribe_transcript()
 
     assert :ok =
              ObservabilityPubSub.broadcast_transcript_event("issue-legacy", %{

@@ -28,13 +28,8 @@ defmodule SymphonyElixirWeb.ObservabilityPubSub do
     end
   end
 
-  @spec subscribe_transcript(String.t()) :: :ok | {:error, term()}
-  def subscribe_transcript(issue_id) when is_binary(issue_id) do
-    subscribe_transcript(repo_key(nil), issue_id)
-  end
-
-  @spec subscribe_transcript(String.t() | nil, String.t()) :: :ok | {:error, term()}
-  def subscribe_transcript(_repo_key, issue_id) when is_binary(issue_id) do
+  @spec subscribe_transcript() :: :ok | {:error, term()}
+  def subscribe_transcript do
     Phoenix.PubSub.subscribe(@pubsub, transcript_topic())
   end
 
@@ -71,9 +66,6 @@ defmodule SymphonyElixirWeb.ObservabilityPubSub do
   @spec transcript_topic() :: String.t()
   def transcript_topic, do: @transcript_topic
 
-  @spec transcript_topic(String.t()) :: String.t()
-  def transcript_topic(_issue_id), do: transcript_topic()
-
   defp repo_key(repo_key) when is_binary(repo_key) do
     case String.trim(repo_key) do
       "" -> default_repo_key()
@@ -83,10 +75,5 @@ defmodule SymphonyElixirWeb.ObservabilityPubSub do
 
   defp repo_key(_repo_key), do: default_repo_key()
 
-  defp default_repo_key do
-    case Config.repo_key() do
-      {:ok, repo_key} -> repo_key
-      {:error, _reason} -> nil
-    end
-  end
+  defp default_repo_key, do: Config.repo_key_or_nil()
 end

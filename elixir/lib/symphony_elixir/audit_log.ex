@@ -759,12 +759,7 @@ defmodule SymphonyElixir.AuditLog do
     end
   end
 
-  defp default_repo_key do
-    case Config.repo_key() do
-      {:ok, repo_key} -> repo_key
-      {:error, _reason} -> nil
-    end
-  end
+  defp default_repo_key, do: Config.repo_key_or_nil()
 
   defp read_events_for_date(date, opts) do
     opts

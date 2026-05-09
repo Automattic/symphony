@@ -43,11 +43,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  @impl true
-  def handle_info(:observability_updated, socket) do
-    reload_dashboard(socket)
-  end
-
   def handle_info({:disarm_control, token}, %{assigns: %{pending_control_token: token}} = socket) do
     {:noreply, disarm_control(socket)}
   end
@@ -858,12 +853,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp matching_repo_key?(nil), do: true
   defp matching_repo_key?(repo_key), do: repo_key == current_repo_key()
 
-  defp current_repo_key do
-    case Config.repo_key() do
-      {:ok, repo_key} -> repo_key
-      {:error, _reason} -> nil
-    end
-  end
+  defp current_repo_key, do: Config.repo_key_or_nil()
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

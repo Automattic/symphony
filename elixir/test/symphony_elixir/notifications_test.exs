@@ -33,6 +33,50 @@ defmodule SymphonyElixir.NotificationsTest do
     assert_receive {:notification_event, %Event{repo_key: "default", issue_identifier: "RSM-0"}}
   end
 
+  test "notifier delivers non-primary repo PubSub events" do
+    test_pid = self()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      notifications: %{
+        enabled: true,
+        channels: [
+          %{kind: "webhook", url: "https://webhook.test/events", events: ["run_failed"]}
+        ]
+      }
+    )
+
+    request_fun = fn url, payload, headers, _timeout_ms ->
+      send(test_pid, {:post, url, payload, headers})
+      {:ok, %{status: 200, body: "ok"}}
+    end
+
+    notifier_name = :"#{__MODULE__}.Notifier#{System.unique_integer([:positive])}"
+
+    {:ok, notifier_pid} =
+      Notifier.start_link(
+        name: notifier_name,
+        task_starter: fn fun ->
+          fun.()
+          :ok
+        end,
+        request_fun: request_fun
+      )
+
+    on_exit(fn ->
+      if Process.alive?(notifier_pid), do: GenServer.stop(notifier_pid)
+    end)
+
+    {:ok, event} =
+      Event.new(:run_failed,
+        repo_key: "github.com/acme/repo",
+        issue_identifier: "RSM-99"
+      )
+
+    send(notifier_pid, {:notification_event, event})
+
+    assert_receive {:post, "https://webhook.test/events", %{"repo_key" => "github.com/acme/repo", "issue_identifier" => "RSM-99"}, []}
+  end
+
   test "notifications resolve channel env values and optional headers" do
     slack_env = "SYMP_TEST_SLACK_WEBHOOK_#{System.unique_integer([:positive])}"
     webhook_env = "SYMP_TEST_NOTIFY_WEBHOOK_#{System.unique_integer([:positive])}"

@@ -54,7 +54,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
       end
 
     if connected?(socket) and is_nil(socket.assigns.error) do
-      subscribe_transcript(socket.assigns.repo_key, socket.assigns.issue_id)
+      subscribe_transcript()
     end
 
     {:ok, socket}
@@ -528,8 +528,8 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   defp error_message(reason), do: Map.get(@error_messages, reason, "An unexpected error occurred.")
 
-  defp subscribe_transcript(repo_key, issue_id) do
-    case ObservabilityPubSub.subscribe_transcript(repo_key, issue_id) do
+  defp subscribe_transcript do
+    case ObservabilityPubSub.subscribe_transcript() do
       :ok ->
         :ok
 
@@ -539,12 +539,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     end
   end
 
-  defp current_repo_key do
-    case Config.repo_key() do
-      {:ok, repo_key} -> repo_key
-      {:error, _reason} -> nil
-    end
-  end
+  defp current_repo_key, do: Config.repo_key_or_nil()
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator

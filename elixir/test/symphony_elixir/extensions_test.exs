@@ -850,7 +850,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       Keyword.put(state, :snapshot, updated_snapshot)
     end)
 
-    StatusDashboard.notify_update()
+    assert :ok = ObservabilityPubSub.broadcast_update("github.com/acme/other")
+    Process.sleep(50)
+    refute render(view) =~ "structured update"
+
+    assert :ok = ObservabilityPubSub.broadcast_update("default")
 
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
@@ -1394,6 +1398,59 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert_eventually(fn ->
       render(view) =~ "command output streaming: 2 progress dots"
+    end)
+  end
+
+  test "transcript liveview routes encoded non-default repo keys" do
+    orchestrator_name = Module.concat(__MODULE__, :EncodedRepoTranscriptOrchestrator)
+    repo_key = "github.com/acme/repo"
+
+    snapshot =
+      update_in(static_snapshot().running, fn [running] ->
+        [Map.put(running, :repo_key, repo_key)]
+      end)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    encoded_repo_key = URI.encode_www_form(repo_key)
+    {:ok, view, html} = live(build_conn(), "/repos/#{encoded_repo_key}/issues/MT-HTTP/transcript")
+
+    assert html =~ "Live Transcript"
+    assert html =~ "MT-HTTP"
+
+    ignored_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"delta" => "wrong repo event"}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-http", ignored_event)
+    Process.sleep(50)
+    refute render(view) =~ "wrong repo event"
+
+    matching_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"delta" => "encoded route event"}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event(repo_key, "issue-http", matching_event)
+
+    assert_eventually(fn ->
+      render(view) =~ "encoded route event"
     end)
   end
 

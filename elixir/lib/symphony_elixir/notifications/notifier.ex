@@ -35,10 +35,7 @@ defmodule SymphonyElixir.Notifications.Notifier do
 
   @impl true
   def handle_info({:notification_event, %Event{} = event}, %__MODULE__{} = state) do
-    if event.repo_key == current_repo_key() do
-      deliver_from_config(event, state.opts)
-    end
-
+    deliver_from_config(event, state.opts)
     {:noreply, state}
   end
 
@@ -80,13 +77,6 @@ defmodule SymphonyElixir.Notifications.Notifier do
   end
 
   defp deliver_event(_event, _notifications, _opts), do: :ok
-
-  defp current_repo_key do
-    case Config.repo_key() do
-      {:ok, repo_key} -> repo_key
-      {:error, _reason} -> nil
-    end
-  end
 
   defp deliver_to_channel?(%{events: nil}, _event), do: true
 

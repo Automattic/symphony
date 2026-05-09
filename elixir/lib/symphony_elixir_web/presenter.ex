@@ -541,12 +541,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp repo_key_matches?(_entry, nil), do: true
   defp repo_key_matches?(entry, repo_key), do: Map.get(entry, :repo_key) == repo_key
 
-  defp current_repo_key do
-    case Config.repo_key() do
-      {:ok, repo_key} -> repo_key
-      {:error, _reason} -> nil
-    end
-  end
+  defp current_repo_key, do: Config.repo_key_or_nil()
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)

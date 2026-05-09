@@ -235,10 +235,5 @@ defmodule SymphonyElixir.Notifications.Event do
 
   defp transcript_url(_repo_key, _identifier), do: nil
 
-  defp default_repo_key do
-    case Config.repo_key() do
-      {:ok, repo_key} -> repo_key
-      {:error, _reason} -> nil
-    end
-  end
+  defp default_repo_key, do: Config.repo_key_or_nil()
 end

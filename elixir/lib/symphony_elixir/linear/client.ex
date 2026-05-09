@@ -188,19 +188,17 @@ defmodule SymphonyElixir.Linear.Client do
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
-    tracker = Config.settings!().tracker
+    with {:ok, context} <- repo_poll_context(),
+         {:ok, repo_results} <-
+           fetch_repo_issue_results(context.repos, context.tracker.active_states, context.tracker, &graphql/2) do
+      {:ok, aggregate_repo_results(repo_results).dispatchable}
+    end
+  end
 
-    cond do
-      is_nil(tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      not Config.linear_scoping_filter_configured?(tracker) ->
-        {:error, :missing_linear_scoping_filter}
-
-      true ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(tracker, tracker.active_states, assignee_filter)
-        end
+  @spec fetch_candidate_issues_for_repo(term()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_candidate_issues_for_repo(repo) do
+    with {:ok, context} <- repo_poll_context() do
+      do_fetch_repo_by_states(repo, context.tracker.active_states, context.tracker)
     end
   end
 
@@ -211,17 +209,10 @@ defmodule SymphonyElixir.Linear.Client do
     if normalized_states == [] do
       {:ok, []}
     else
-      tracker = Config.settings!().tracker
-
-      cond do
-        is_nil(tracker.api_key) ->
-          {:error, :missing_linear_api_token}
-
-        not Config.linear_scoping_filter_configured?(tracker) ->
-          {:error, :missing_linear_scoping_filter}
-
-        true ->
-          do_fetch_by_states(tracker, normalized_states, nil)
+      with {:ok, context} <- repo_poll_context(),
+           {:ok, repo_results} <-
+             fetch_repo_issue_results(context.repos, normalized_states, context.tracker, &graphql/2) do
+        {:ok, dedupe_repo_issues(repo_results)}
       end
     end
   end
@@ -326,12 +317,30 @@ defmodule SymphonyElixir.Linear.Client do
   @spec fetch_candidate_issues_for_test((String.t(), map() -> {:ok, map()} | {:error, term()})) ::
           {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues_for_test(graphql_fun) when is_function(graphql_fun, 2) do
-    tracker = Config.settings!().tracker
-
-    with {:ok, assignee_filter} <- routing_assignee_filter(graphql_fun) do
-      do_fetch_by_states(tracker, tracker.active_states, assignee_filter, graphql_fun: graphql_fun)
+    with {:ok, context} <- repo_poll_context(),
+         {:ok, repo_results} <-
+           fetch_repo_issue_results(context.repos, context.tracker.active_states, context.tracker, graphql_fun) do
+      {:ok, aggregate_repo_results(repo_results).dispatchable}
     end
   end
+
+  @doc false
+  @spec fetch_candidate_issues_for_repo_for_test(term(), (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_candidate_issues_for_repo_for_test(repo, graphql_fun)
+      when is_function(graphql_fun, 2) do
+    with {:ok, context} <- repo_poll_context() do
+      do_fetch_repo_by_states(repo, context.tracker.active_states, context.tracker, graphql_fun: graphql_fun)
+    end
+  end
+
+  @doc false
+  @spec aggregate_repo_results_for_test([{String.t(), [Issue.t()]}]) :: %{
+          dispatchable: [Issue.t()],
+          conflicts: [Issue.t()]
+        }
+  def aggregate_repo_results_for_test(repo_results) when is_list(repo_results),
+    do: aggregate_repo_results(repo_results)
 
   @doc false
   @spec fetch_issue_states_by_ids_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
@@ -351,20 +360,52 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
-  defp do_fetch_by_states(tracker, state_names, assignee_filter, opts \\ []) do
+  defp repo_poll_context do
+    tracker = Config.settings!().tracker
+
+    if is_nil(tracker.api_key) do
+      {:error, :missing_linear_api_token}
+    else
+      with {:ok, repos} <- Config.repos() do
+        {:ok, %{tracker: tracker, repos: repos}}
+      end
+    end
+  end
+
+  defp fetch_repo_issue_results(repos, state_names, tracker, graphql_fun)
+       when is_list(repos) and is_function(graphql_fun, 2) do
+    Enum.reduce_while(repos, {:ok, []}, fn repo, {:ok, acc} ->
+      case do_fetch_repo_by_states(repo, state_names, tracker, graphql_fun: graphql_fun) do
+        {:ok, issues} -> {:cont, {:ok, [{repo_key(repo), issues} | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, results} -> {:ok, Enum.reverse(results)}
+      error -> error
+    end
+  end
+
+  defp do_fetch_repo_by_states(repo, state_names, tracker, opts \\ []) do
     graphql_fun = Keyword.get(opts, :graphql_fun, &graphql/2)
-    assignee_ids = assignee_filter_ids(assignee_filter)
 
-    filter =
-      build_issue_filter(
-        state_names: state_names,
-        project_slug: tracker.project_slug,
-        team: tracker.team,
-        labels: tracker.labels,
-        assignee_ids: assignee_ids
-      )
+    with {:ok, assignee_filter} <- repo_assignee_filter(repo, tracker, graphql_fun) do
+      assignee_ids = assignee_filter_ids(assignee_filter)
+      {labels, label_mode} = effective_labels(repo, tracker)
 
-    do_fetch_by_states_page(filter, nil, [], graphql_fun)
+      filter =
+        build_issue_filter(
+          state_names: state_names,
+          project_slug: effective_project_slug(repo, tracker),
+          projects: repo_projects(repo),
+          team: effective_team(repo, tracker),
+          labels: labels,
+          label_mode: label_mode,
+          assignee_ids: assignee_ids
+        )
+
+      do_fetch_by_states_page(filter, nil, [], graphql_fun)
+    end
   end
 
   defp do_fetch_by_states_page(filter, after_cursor, acc_issues, graphql_fun) do
@@ -397,9 +438,177 @@ defmodule SymphonyElixir.Linear.Client do
     %{}
     |> maybe_put("state", opts[:state_names], &%{"name" => %{"in" => &1}})
     |> maybe_put("project", opts[:project_slug], &%{"slugId" => %{"eq" => &1}})
+    |> maybe_put("project", opts[:projects], &project_filter_clause/1)
     |> maybe_put("team", opts[:team], &team_filter_clause/1)
-    |> maybe_put("labels", opts[:labels], &%{"some" => %{"name" => %{"in" => &1}}})
+    |> put_label_filters(opts[:labels], opts[:label_mode])
     |> maybe_put("assignee", opts[:assignee_ids], &%{"id" => %{"in" => &1}})
+  end
+
+  @doc false
+  @spec aggregate_repo_results([{String.t(), [Issue.t()]}]) :: %{
+          dispatchable: [Issue.t()],
+          conflicts: [Issue.t()]
+        }
+  def aggregate_repo_results(repo_results) when is_list(repo_results) do
+    grouped =
+      repo_results
+      |> Enum.flat_map(fn {repo_key, issues} ->
+        issues
+        |> Enum.reject(&is_nil(issue_id(&1)))
+        |> Enum.map(&{issue_id(&1), repo_key, tag_issue_repo(&1, repo_key)})
+      end)
+      |> Enum.group_by(fn {issue_id, _repo_key, _issue} -> issue_id end)
+
+    {conflicts, dispatchable} =
+      grouped
+      |> Enum.map(fn {_issue_id, entries} -> aggregate_issue_entries(entries) end)
+      |> Enum.split_with(fn %Issue{conflict_repo_keys: repo_keys} -> length(repo_keys) > 1 end)
+
+    %{
+      dispatchable: sort_issues(dispatchable),
+      conflicts: sort_issues(conflicts)
+    }
+  end
+
+  defp aggregate_issue_entries(entries) do
+    repo_keys =
+      entries
+      |> Enum.map(fn {_issue_id, repo_key, _issue} -> repo_key end)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    {_issue_id, first_repo_key, issue} =
+      Enum.min_by(entries, fn {_issue_id, repo_key, issue} ->
+        {repo_key, issue.identifier || issue.id || ""}
+      end)
+
+    case repo_keys do
+      [_repo_key] -> %{issue | repo_key: first_repo_key, conflict_repo_keys: []}
+      repo_keys -> %{issue | repo_key: nil, conflict_repo_keys: repo_keys}
+    end
+  end
+
+  defp dedupe_repo_issues(repo_results) do
+    repo_results
+    |> aggregate_repo_results()
+    |> then(fn %{dispatchable: dispatchable, conflicts: conflicts} -> sort_issues(dispatchable ++ conflicts) end)
+  end
+
+  defp tag_issue_repo(%Issue{} = issue, repo_key), do: %{issue | repo_key: repo_key, conflict_repo_keys: []}
+  defp tag_issue_repo(issue, _repo_key), do: issue
+
+  defp issue_id(%Issue{id: id}) when is_binary(id) and id != "", do: id
+  defp issue_id(_issue), do: nil
+
+  defp sort_issues(issues) when is_list(issues) do
+    Enum.sort_by(issues, fn
+      %Issue{} = issue -> {issue.identifier || "", issue.id || ""}
+      _issue -> {"", ""}
+    end)
+  end
+
+  defp effective_team(repo, tracker), do: normalize_string(repo_value(repo, :team) || tracker.team)
+
+  defp effective_project_slug(repo, tracker) do
+    case repo_projects(repo) do
+      [] -> tracker.project_slug
+      _projects -> nil
+    end
+  end
+
+  defp repo_projects(repo), do: repo_value(repo, :projects) |> normalized_string_list()
+
+  defp effective_labels(repo, tracker) do
+    case repo_value(repo, :labels) |> normalized_string_list() do
+      [] -> {tracker.labels, :any}
+      labels -> {labels, :all}
+    end
+  end
+
+  defp repo_assignee_filter(repo, tracker, graphql_fun) do
+    case repo_value(repo, :assignee) || tracker.assignee do
+      nil -> {:ok, nil}
+      assignee -> build_assignee_filter(assignee, graphql_fun)
+    end
+  end
+
+  defp repo_key(repo) do
+    repo_value(repo, :name) || repo_value(repo, "name") || inspect(repo)
+  end
+
+  defp repo_value(repo, key) when is_atom(key) do
+    cond do
+      is_map(repo) and Map.has_key?(repo, key) -> Map.get(repo, key)
+      is_map(repo) and Map.has_key?(repo, Atom.to_string(key)) -> Map.get(repo, Atom.to_string(key))
+      true -> nil
+    end
+  end
+
+  defp repo_value(repo, key) when is_binary(key) do
+    if is_map(repo) and Map.has_key?(repo, key) do
+      Map.get(repo, key)
+    end
+  end
+
+  defp normalized_string_list(nil), do: []
+
+  defp normalized_string_list(values) when is_list(values) do
+    values
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalized_string_list(value), do: normalized_string_list([value])
+
+  defp normalize_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_string(_value), do: nil
+
+  defp project_filter_clause(projects) when is_list(projects) do
+    projects = normalized_string_list(projects)
+    project_ids = Enum.filter(projects, &Regex.match?(@team_id_pattern, &1))
+
+    [
+      %{"name" => %{"in" => projects}},
+      %{"slugId" => %{"in" => projects}},
+      project_ids != [] && %{"id" => %{"in" => project_ids}}
+    ]
+    |> Enum.reject(&(&1 in [nil, false]))
+    |> case do
+      [filter] -> filter
+      filters -> %{"or" => filters}
+    end
+  end
+
+  defp put_label_filters(filter, labels, :all) do
+    labels = normalized_string_list(labels)
+
+    case labels do
+      [] ->
+        filter
+
+      [label] ->
+        Map.put(filter, "labels", %{"some" => %{"name" => %{"eqIgnoreCase" => label}}})
+
+      labels ->
+        label_filters =
+          Enum.map(labels, fn label ->
+            %{"labels" => %{"some" => %{"name" => %{"eqIgnoreCase" => label}}}}
+          end)
+
+        Map.update(filter, "and", label_filters, &(&1 ++ label_filters))
+    end
+  end
+
+  defp put_label_filters(filter, labels, _mode) do
+    maybe_put(filter, "labels", labels, &%{"some" => %{"name" => %{"in" => &1}}})
   end
 
   defp maybe_put(filter, _key, nil, _builder), do: filter

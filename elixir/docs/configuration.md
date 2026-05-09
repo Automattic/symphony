@@ -177,6 +177,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 - For Linear trackers, `project_slug` is optional when another scoping filter is set. Configure at
   least one of `project_slug`, `team`, or `labels`; these filters are combined server-side. Example:
   `team: "RSM"` with `labels: ["backend", "infra"]`.
+- When `repos` is configured, candidate polling fans out one server-side Linear query per repo
+  instead of issuing a team-union query. Each repo query includes active states plus that repo's
+  `team`, `projects`, `labels`, and `assignee` selectors. `projects` match Linear project name or
+  slug, and labels use AND semantics for repo routes. For compatibility, a repo that omits
+  `projects`, `labels`, or `assignee` inherits the corresponding legacy `tracker.project_slug`,
+  `tracker.labels`, or `tracker.assignee` selector. Issues returned by two or more repo queries are
+  placed in the conflict bucket and excluded from dispatch.
 - Safer Codex defaults are used when policy fields are omitted:
   - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.

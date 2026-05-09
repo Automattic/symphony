@@ -731,6 +731,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              filter: %{
                "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
                "project" => %{"slugId" => %{"eq" => "project"}},
+               "team" => %{"key" => %{"eq" => "Test"}},
                "assignee" => %{"id" => %{"in" => ["user-1"]}}
              },
              first: 50,
@@ -873,6 +874,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert variables.filter == %{
                "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+               "team" => %{"key" => %{"eq" => "Test"}},
                "labels" => %{"some" => %{"name" => %{"in" => labels}}}
              }
     end
@@ -925,6 +927,83 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "labels" => %{"some" => %{"name" => %{"in" => ["backend"]}}},
              "assignee" => %{"id" => %{"in" => ["user-1"]}}
            }
+  end
+
+  test "linear client sends one isolated server-side candidate filter per repo" do
+    repo_root = Path.dirname(Workflow.workflow_file_path())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: "legacy-project",
+      tracker_team: "LEGACY",
+      tracker_labels: ["legacy"],
+      tracker_assignee: "legacy-user",
+      repos: [
+        %{
+          "name" => "web",
+          "path" => repo_root,
+          "workflow" => "WORKFLOW.md",
+          "team" => "RSM",
+          "projects" => ["Project Alpha"],
+          "labels" => ["web"],
+          "assignee" => "user-web"
+        },
+        %{
+          "name" => "api",
+          "path" => repo_root,
+          "workflow" => "WORKFLOW.md",
+          "team" => "RSM",
+          "projects" => ["Project Beta"],
+          "labels" => ["api"],
+          "assignee" => "user-api"
+        }
+      ]
+    )
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:candidate_query, query, variables})
+
+      issue =
+        case get_in(variables, [:filter, "assignee", "id", "in"]) do
+          ["user-web"] -> raw_linear_issue("issue-web", "RSM-WEB", "user-web")
+          ["user-api"] -> raw_linear_issue("issue-api", "RSM-API", "user-api")
+        end
+
+      {:ok, linear_page_response([issue])}
+    end
+
+    assert {:ok, issues} = Client.fetch_candidate_issues_for_test(graphql_fun)
+    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"RSM-API", "api"}, {"RSM-WEB", "web"}]
+
+    assert_receive {:candidate_query, query, web_variables}
+    assert_receive {:candidate_query, ^query, api_variables}
+
+    assert web_variables.filter == %{
+             "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+             "project" => %{
+               "or" => [
+                 %{"name" => %{"in" => ["Project Alpha"]}},
+                 %{"slugId" => %{"in" => ["Project Alpha"]}}
+               ]
+             },
+             "team" => %{"key" => %{"eq" => "RSM"}},
+             "labels" => %{"some" => %{"name" => %{"eqIgnoreCase" => "web"}}},
+             "assignee" => %{"id" => %{"in" => ["user-web"]}}
+           }
+
+    assert api_variables.filter == %{
+             "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
+             "project" => %{
+               "or" => [
+                 %{"name" => %{"in" => ["Project Beta"]}},
+                 %{"slugId" => %{"in" => ["Project Beta"]}}
+               ]
+             },
+             "team" => %{"key" => %{"eq" => "RSM"}},
+             "labels" => %{"some" => %{"name" => %{"eqIgnoreCase" => "api"}}},
+             "assignee" => %{"id" => %{"in" => ["user-api"]}}
+           }
+
+    refute inspect([web_variables.filter, api_variables.filter]) =~ "legacy"
   end
 
   test "linear client repeats candidate filter while paginating" do

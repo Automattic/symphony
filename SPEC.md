@@ -367,6 +367,7 @@ Top-level keys:
 - `agent`
 - `codex`
 - `pr_review`
+- `repos` (Elixir implementation extension)
 
 Unknown keys SHOULD be ignored for forward compatibility.
 
@@ -403,6 +404,11 @@ Fields:
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
   - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
+
+Elixir implementation note: when `repos` is configured, Linear candidate polling is performed per
+repo with one server-side issue filter per repo. The service does not widen this into a team-union
+query. Duplicate issue IDs across repo result sets are classified as conflicts and excluded from
+dispatch.
 
 #### 5.3.2 `polling` (object)
 

@@ -6,10 +6,16 @@ defmodule SymphonyElixir.Tracker.Memory do
   @behaviour SymphonyElixir.Tracker
 
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Routing.Resolver
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     {:ok, issue_entries()}
+  end
+
+  @spec fetch_candidate_issues_for_repo(term()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_candidate_issues_for_repo(repo) do
+    {:ok, Enum.filter(issue_entries(), &(Resolver.matches?(&1, repo) or not routed_issue?(&1)))}
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -56,6 +62,10 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   defp issue_entries do
     Enum.filter(configured_issues(), &match?(%Issue{}, &1))
+  end
+
+  defp routed_issue?(%Issue{} = issue) do
+    not is_nil(issue.team) or not is_nil(issue.project) or issue.labels != [] or not is_nil(issue.assignee_id)
   end
 
   defp send_event(message) do

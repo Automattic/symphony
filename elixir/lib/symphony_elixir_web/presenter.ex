@@ -26,10 +26,12 @@ defmodule SymphonyElixirWeb.Presenter do
           counts: %{
             running: length(snapshot.running),
             watching: length(Map.get(snapshot, :watching, [])),
+            conflicts: length(Map.get(snapshot, :conflicts, [])),
             retrying: length(snapshot.retrying)
           },
           running: Enum.map(snapshot.running, &running_entry_payload(&1, self_review_by_run)),
           watching: snapshot |> Map.get(:watching, []) |> Enum.map(&watching_entry_payload/1),
+          conflicts: snapshot |> Map.get(:conflicts, []) |> Enum.map(&conflict_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           awaiting_clarification:
             snapshot
@@ -194,6 +196,17 @@ defmodule SymphonyElixirWeb.Presenter do
       pull_request_url: URLUtils.pull_request_url(entry),
       last_ran_at: iso8601(entry.last_ran_at),
       seconds_since_last_run: entry.seconds_since_last_run
+    }
+  end
+
+  defp conflict_entry_payload(entry) do
+    %{
+      issue_id: entry.issue_id,
+      issue_identifier: entry.identifier,
+      state: entry.state,
+      linear_state: Map.get(entry, :linear_state),
+      url: URLUtils.present_url(Map.get(entry, :url)),
+      repo_keys: Map.get(entry, :repo_keys, [])
     }
   end
 

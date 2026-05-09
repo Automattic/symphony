@@ -23,7 +23,7 @@ defmodule SymphonyElixir.Orchestrator do
     Workspace
   }
 
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Linear.{Client, Issue}
   alias SymphonyElixirWeb.ObservabilityPubSub
 
   @continuation_retry_delay_ms 1_000
@@ -57,6 +57,9 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       completed_run_metadata: %{},
       watching: %{},
+      conflicts: %{},
+      repo_poll_cache: %{},
+      repo_poll_due_at_ms: %{},
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
@@ -74,6 +77,8 @@ defmodule SymphonyElixir.Orchestrator do
       quality_gate_comment_keys: MapSet.new(),
       quality_gate_skipped_errors: %{}
     ]
+
+    @type t :: %__MODULE__{}
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -183,9 +188,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(:run_poll_cycle, state) do
+    now_ms = System.monotonic_time(:millisecond)
     state = refresh_runtime_config(state)
-    state = maybe_dispatch(state)
-    state = schedule_tick(state, state.poll_interval_ms)
+    state = maybe_dispatch(state, now_ms)
+    state = schedule_tick(state, next_repo_poll_delay_ms(state, now_ms))
     state = %{state | poll_check_in_progress: false}
 
     notify_dashboard()
@@ -342,69 +348,237 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
-  defp maybe_dispatch(%State{} = state) do
+  defp maybe_dispatch(%State{} = state, now_ms) do
     state =
       state
       |> reconcile_running_issues()
       |> reconcile_watching_issues()
 
-    with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues() do
-      state =
-        state
-        |> prune_quality_gate_cache_to_active(issues)
-        |> clear_running_quality_gate_cache_entries()
+    case Config.validate!() do
+      :ok ->
+        case Config.repos() do
+          {:ok, repos} ->
+            dispatch_from_repo_poll(state, repos, now_ms)
 
-      if available_slots(state) > 0 do
-        {gated_issues, state} =
-          issues
-          |> reject_running_quality_gate_candidates(state)
-          |> apply_quality_gate(state)
-
-        choose_issues(gated_issues, state)
-      else
-        state
-      end
-    else
-      {:error, :missing_linear_api_token} ->
-        Logger.error("Linear API token missing in WORKFLOW.md")
-        state
-
-      {:error, :missing_linear_scoping_filter} ->
-        Logger.error("Linear scoping filter missing in WORKFLOW.md")
-        state
-
-      {:error, :missing_tracker_kind} ->
-        Logger.error("Tracker kind missing in WORKFLOW.md")
-
-        state
-
-      {:error, {:unsupported_tracker_kind, kind}} ->
-        Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
-
-        state
-
-      {:error, {:invalid_workflow_config, message}} ->
-        Logger.error("Invalid WORKFLOW.md config: #{message}")
-        state
-
-      {:error, {:missing_workflow_file, path, reason}} ->
-        Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
-        state
-
-      {:error, :workflow_front_matter_not_a_map} ->
-        Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
-        state
-
-      {:error, {:workflow_parse_error, reason}} ->
-        Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
-        state
+          {:error, reason} ->
+            log_poll_error(reason)
+            state
+        end
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        log_poll_error(reason)
         state
     end
   end
+
+  defp dispatch_from_repo_poll(%State{} = state, repos, now_ms) when is_list(repos) do
+    case poll_candidate_issue_buckets(state, repos, &Tracker.fetch_candidate_issues_for_repo/1, now_ms) do
+      {:ok, %{dispatchable: issues}, state} ->
+        state =
+          state
+          |> prune_quality_gate_cache_to_active(issues)
+          |> clear_running_quality_gate_cache_entries()
+
+        if available_slots(state) > 0 do
+          {gated_issues, state} =
+            issues
+            |> reject_running_quality_gate_candidates(state)
+            |> apply_quality_gate(state)
+
+          choose_issues(gated_issues, state)
+        else
+          state
+        end
+
+      {:error, reason, state} ->
+        log_poll_error(reason)
+        state
+    end
+  end
+
+  defp log_poll_error(:missing_linear_api_token), do: Logger.error("Linear API token missing in WORKFLOW.md")
+  defp log_poll_error(:missing_linear_scoping_filter), do: Logger.error("Linear scoping filter missing in WORKFLOW.md")
+  defp log_poll_error(:missing_tracker_kind), do: Logger.error("Tracker kind missing in WORKFLOW.md")
+
+  defp log_poll_error({:unsupported_tracker_kind, kind}) do
+    Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
+  end
+
+  defp log_poll_error({:invalid_workflow_config, message}), do: Logger.error("Invalid WORKFLOW.md config: #{message}")
+
+  defp log_poll_error({:missing_workflow_file, path, reason}) do
+    Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
+  end
+
+  defp log_poll_error(:workflow_front_matter_not_a_map) do
+    Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
+  end
+
+  defp log_poll_error({:workflow_parse_error, reason}), do: Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
+  defp log_poll_error(reason), do: Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+
+  @doc false
+  @spec poll_candidate_issue_buckets_for_test(
+          State.t(),
+          [term()],
+          (term() -> {:ok, [Issue.t()]} | {:error, term()}),
+          integer()
+        ) ::
+          {:ok, %{dispatchable: [Issue.t()], conflicts: [Issue.t()]}, State.t()}
+          | {:error, term(), State.t()}
+  def poll_candidate_issue_buckets_for_test(%State{} = state, repos, fetcher, now_ms)
+      when is_list(repos) and is_function(fetcher, 1) and is_integer(now_ms) do
+    poll_candidate_issue_buckets(state, repos, fetcher, now_ms)
+  end
+
+  defp poll_candidate_issue_buckets(%State{} = state, repos, fetcher, now_ms)
+       when is_list(repos) and is_function(fetcher, 1) and is_integer(now_ms) do
+    state = sync_repo_poll_state(state, repos, now_ms)
+
+    case next_due_repo(state, repos, now_ms) do
+      nil ->
+        buckets = candidate_buckets_from_cache(state, repos)
+        {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+
+      repo ->
+        poll_due_repo(state, repos, repo, fetcher, now_ms)
+    end
+  end
+
+  defp poll_due_repo(state, repos, repo, fetcher, now_ms) do
+    repo_name = repo_name(repo)
+
+    case fetcher.(repo) do
+      {:ok, issues} when is_list(issues) ->
+        state =
+          state
+          |> put_repo_poll_cache(repo_name, issues, now_ms)
+          |> put_repo_next_due(repo_name, now_ms + state.poll_interval_ms)
+
+        buckets = candidate_buckets_from_cache(state, repos)
+        {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+
+      {:error, reason} ->
+        retry_delay_ms = repo_poll_stagger_ms(state, repos)
+        state = put_repo_next_due(state, repo_name, now_ms + retry_delay_ms)
+        {:error, reason, state}
+    end
+  end
+
+  defp candidate_buckets_from_cache(%State{} = state, repos) when is_list(repos) do
+    repo_results =
+      Enum.map(repos, fn repo ->
+        repo_name = repo_name(repo)
+        cache_entry = Map.get(state.repo_poll_cache, repo_name, %{issues: []})
+        {repo_name, Map.get(cache_entry, :issues, [])}
+      end)
+
+    buckets = Client.aggregate_repo_results(repo_results)
+
+    if repo_poll_cache_warmed?(state, repos) do
+      buckets
+    else
+      %{buckets | dispatchable: []}
+    end
+  end
+
+  defp sync_repo_poll_state(%State{} = state, repos, now_ms) do
+    repo_names = Enum.map(repos, &repo_name/1)
+    existing_due = state.repo_poll_due_at_ms || %{}
+    existing_cache = state.repo_poll_cache || %{}
+    stagger_ms = repo_poll_stagger_ms(state, repos)
+
+    repo_poll_due_at_ms =
+      repos
+      |> Enum.with_index()
+      |> Map.new(fn {repo, index} ->
+        name = repo_name(repo)
+        {name, Map.get(existing_due, name, now_ms + index * stagger_ms)}
+      end)
+
+    %{
+      state
+      | repo_poll_due_at_ms: repo_poll_due_at_ms,
+        repo_poll_cache: Map.take(existing_cache, repo_names),
+        conflicts: state.conflicts || %{}
+    }
+  end
+
+  defp next_due_repo(%State{} = state, repos, now_ms) do
+    sorted_repos =
+      repos
+      |> Enum.map(fn repo -> {repo, Map.get(state.repo_poll_due_at_ms, repo_name(repo), now_ms)} end)
+      |> Enum.sort_by(fn {repo, due_at_ms} -> {due_at_ms, repo_name(repo)} end)
+
+    sorted_repos
+    |> Enum.find(fn {_repo, due_at_ms} -> due_at_ms <= now_ms end)
+    |> case do
+      {repo, _due_at_ms} ->
+        repo
+
+      nil ->
+        sorted_repos
+        |> List.first()
+        |> then(fn
+          {repo, _due_at_ms} -> repo
+          nil -> nil
+        end)
+    end
+  end
+
+  defp repo_poll_cache_warmed?(%State{} = state, repos) do
+    Enum.all?(repos, fn repo -> Map.has_key?(state.repo_poll_cache, repo_name(repo)) end)
+  end
+
+  defp put_repo_poll_cache(%State{} = state, repo_name, issues, now_ms) do
+    cache_entry = %{issues: issues, fetched_at_ms: now_ms}
+    %{state | repo_poll_cache: Map.put(state.repo_poll_cache, repo_name, cache_entry)}
+  end
+
+  defp put_repo_next_due(%State{} = state, repo_name, due_at_ms) do
+    %{state | repo_poll_due_at_ms: Map.put(state.repo_poll_due_at_ms, repo_name, due_at_ms)}
+  end
+
+  defp put_conflict_bucket(%State{} = state, conflicts) when is_list(conflicts) do
+    conflict_map =
+      conflicts
+      |> Enum.reject(&(issue_id(&1) == nil))
+      |> Map.new(fn issue -> {issue_id(issue), issue} end)
+
+    %{state | conflicts: conflict_map}
+  end
+
+  defp next_repo_poll_delay_ms(%State{} = state, now_ms) when is_integer(now_ms) do
+    state.repo_poll_due_at_ms
+    |> case do
+      due_at_ms when is_map(due_at_ms) and map_size(due_at_ms) > 0 ->
+        due_at_ms
+        |> Map.values()
+        |> Enum.min()
+        |> Kernel.-(now_ms)
+        |> max(0)
+
+      _ ->
+        state.poll_interval_ms
+    end
+  end
+
+  defp repo_poll_stagger_ms(%State{poll_interval_ms: interval_ms}, repos)
+       when is_integer(interval_ms) and interval_ms > 0 and is_list(repos) do
+    repo_count = max(length(repos), 1)
+    max(1, div(interval_ms, repo_count))
+  end
+
+  defp repo_poll_stagger_ms(_state, _repos), do: 1
+
+  defp repo_name(repo) when is_map(repo) do
+    Map.get(repo, :name) || Map.get(repo, "name") || inspect(repo)
+  end
+
+  defp repo_name(repo), do: inspect(repo)
+
+  defp issue_id(%Issue{id: id}) when is_binary(id) and id != "", do: id
+  defp issue_id(_issue), do: nil
 
   defp reconcile_running_issues(%State{} = state) do
     state = reconcile_stalled_running_issues(state)
@@ -2867,6 +3041,20 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    conflicts =
+      state.conflicts
+      |> Map.values()
+      |> Enum.map(fn %Issue{} = issue ->
+        %{
+          issue_id: issue.id,
+          identifier: issue.identifier,
+          state: "Conflict",
+          linear_state: issue.state,
+          url: issue_url(issue),
+          repo_keys: issue.conflict_repo_keys
+        }
+      end)
+
     quality_gate_cache = quality_gate_snapshot_cache(state)
 
     cached_skipped =
@@ -2891,6 +3079,7 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        running: running,
        watching: watching,
+       conflicts: conflicts,
        retrying: retrying,
        awaiting_clarification: awaiting_clarification,
        skipped: skipped,

@@ -118,7 +118,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_labels: []
     )
 
-    assert {:error, :missing_linear_scoping_filter} = Config.validate!()
+    assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
@@ -127,7 +127,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_labels: ["", "  "]
     )
 
-    assert {:error, :missing_linear_scoping_filter} = Config.validate!()
+    assert :ok = Config.validate!()
     assert Config.settings!().tracker.project_slug == nil
     assert Config.settings!().tracker.team == nil
     assert Config.settings!().tracker.labels == []

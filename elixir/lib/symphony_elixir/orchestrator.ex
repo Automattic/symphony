@@ -105,10 +105,10 @@ defmodule SymphonyElixir.Orchestrator do
     quality_gate_cache = hydrate_quality_gate_cache()
     quality_gate_comment_keys = hydrate_quality_gate_comment_keys()
     budget_day_started_on = Date.utc_today()
-    budget_daily_used = hydrate_budget_daily_used(repo_key, budget_day_started_on)
-    budget_exhausted = hydrate_budget_exhausted(repo_key)
+    budget_daily_used = hydrate_budget_daily_used(budget_day_started_on)
+    budget_exhausted = hydrate_budget_exhausted()
 
-    completed_run_metadata = hydrate_completed_run_metadata(repo_key, retry_attempts)
+    completed_run_metadata = hydrate_completed_run_metadata(retry_attempts)
 
     state = %State{
       repo_key: repo_key,
@@ -2821,8 +2821,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   @watchable_run_statuses ["success", "stopped"]
 
-  defp hydrate_completed_run_metadata(repo_key, retry_attempts) when is_map(retry_attempts) do
-    case RunStore.list_runs(repo_key, 500) do
+  defp hydrate_completed_run_metadata(retry_attempts) when is_map(retry_attempts) do
+    case RunStore.list_all_runs(500) do
       runs when is_list(runs) ->
         runs
         |> Enum.filter(&(Map.get(&1, :status) in @watchable_run_statuses))
@@ -2833,7 +2833,7 @@ defmodule SymphonyElixir.Orchestrator do
           most_recent = List.first(issue_runs)
 
           metadata = %{
-            repo_key: Map.get(most_recent, :repo_key) || repo_key,
+            repo_key: Map.get(most_recent, :repo_key) || Config.repo_key_or_nil(),
             run_id: Map.get(most_recent, :run_id),
             identifier: Map.get(most_recent, :issue_identifier),
             url: nil,
@@ -2853,7 +2853,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp hydrate_completed_run_metadata(_repo_key, _retry_attempts), do: %{}
+  defp hydrate_completed_run_metadata(_retry_attempts), do: %{}
 
   defp watch_closed_run?(run) when is_map(run) do
     present_value?(Map.get(run, :watch_closed_at)) or present_value?(Map.get(run, :issue_completed_notified_at))
@@ -2865,8 +2865,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp present_value?(""), do: false
   defp present_value?(_value), do: true
 
-  defp hydrate_budget_daily_used(repo_key, %Date{} = day) do
-    case RunStore.list_runs(repo_key, :all) do
+  defp hydrate_budget_daily_used(%Date{} = day) do
+    case RunStore.list_all_runs(:all) do
       runs when is_list(runs) ->
         runs
         |> Enum.filter(&run_started_on_day?(&1, day))
@@ -2880,18 +2880,18 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp hydrate_budget_exhausted(repo_key) do
+  defp hydrate_budget_exhausted do
     case Config.settings!().agent.max_tokens_per_issue do
       limit when is_integer(limit) and limit > 0 ->
-        hydrate_budget_exhausted(repo_key, limit)
+        hydrate_budget_exhausted(limit)
 
       _limit ->
         MapSet.new()
     end
   end
 
-  defp hydrate_budget_exhausted(repo_key, limit) do
-    case RunStore.list_runs(repo_key, :all) do
+  defp hydrate_budget_exhausted(limit) do
+    case RunStore.list_all_runs(:all) do
       runs when is_list(runs) ->
         runs
         |> Enum.flat_map(&budget_exhausted_issue_id(&1, limit))

@@ -552,6 +552,37 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [%{repo_key: @other_repo_key, rule: "Repo B rule."}] = RunStore.list_learnings(@other_repo_key)
   end
 
+  test "list_all_runs aggregates runs across every repo partition" do
+    earlier = DateTime.utc_now() |> DateTime.add(-60, :second)
+    later = DateTime.utc_now()
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: @repo_key,
+               run_id: "run-a",
+               issue_id: "issue-a",
+               status: "success",
+               started_at: earlier
+             })
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: @other_repo_key,
+               run_id: "run-b",
+               issue_id: "issue-b",
+               status: "success",
+               started_at: later
+             })
+
+    assert [
+             %{repo_key: @other_repo_key, run_id: "run-b"},
+             %{repo_key: @repo_key, run_id: "run-a"}
+           ] = RunStore.list_all_runs(:all)
+
+    assert [%{run_id: "run-b"}] = RunStore.list_all_runs(1)
+    assert [%{run_id: "run-b"}, %{run_id: "run-a"}] = RunStore.list_all_runs()
+  end
+
   defp attribute_position(attributes, field) do
     Enum.find_index(attributes, &(&1 == field)) + 2
   end

@@ -1671,6 +1671,62 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  test "orchestrator hydrates budget state from runs across every repo partition" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      max_tokens_per_issue: 10
+    )
+
+    primary_repo = Config.repo_key!()
+    other_repo = "other-repo-#{System.unique_integer([:positive])}"
+    today = Date.utc_today()
+    today_at = DateTime.new!(today, ~T[12:00:00.000], "Etc/UTC")
+    other_issue_id = "issue-budget-other-repo"
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: primary_repo,
+               run_id: "run-budget-primary",
+               issue_id: "issue-budget-primary",
+               issue_identifier: "MT-PRIMARY",
+               title: "Primary repo run",
+               state: "Done",
+               status: "success",
+               attempt: 1,
+               started_at: today_at,
+               ended_at: today_at,
+               tokens: %{input_tokens: 4, output_tokens: 0, total_tokens: 4}
+             })
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: other_repo,
+               run_id: "run-budget-other",
+               issue_id: other_issue_id,
+               issue_identifier: "MT-OTHER",
+               title: "Other repo budget exhausted",
+               state: "Todo",
+               status: "budget_exhausted",
+               attempt: 1,
+               started_at: today_at,
+               ended_at: today_at,
+               error: "token budget exhausted",
+               tokens: %{input_tokens: 12, output_tokens: 0, total_tokens: 12}
+             })
+
+    orchestrator_name = Module.concat(__MODULE__, :MultiRepoBudgetHydrateOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    state = get_orchestrator_state(pid)
+
+    assert state.budget_daily_used == 16
+    assert MapSet.member?(state.budget_exhausted, other_issue_id)
+  end
+
   test "orchestrator skips persisted budget-exhausted issues when the current limit no longer applies" do
     issue_id = "issue-budget-raised"
 

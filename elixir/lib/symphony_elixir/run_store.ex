@@ -125,6 +125,27 @@ defmodule SymphonyElixir.RunStore do
     end
   end
 
+  @spec list_all_runs() :: [map()] | {:error, term()}
+  def list_all_runs, do: list_all_runs(:all)
+
+  @spec list_all_runs(non_neg_integer() | :all) :: [map()] | {:error, term()}
+  def list_all_runs(limit) when is_integer(limit) and limit >= 0 do
+    case list_all_runs(:all) do
+      runs when is_list(runs) -> Enum.take(runs, limit)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def list_all_runs(:all) do
+    with :ok <- ensure_started() do
+      transaction(fn ->
+        @runs_table
+        |> all_scoped_records()
+        |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :started_at)), :desc)
+      end)
+    end
+  end
+
   @spec interrupt_running_runs(String.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
   def interrupt_running_runs(repo_key, error) when is_binary(error) do
     now = DateTime.utc_now()

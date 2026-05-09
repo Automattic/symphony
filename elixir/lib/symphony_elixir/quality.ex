@@ -48,7 +48,7 @@ defmodule SymphonyElixir.Quality do
   @spec runs_payload(map()) :: {:ok, map()} | {:error, term()}
   def runs_payload(params) when is_map(params) do
     with {:ok, filters} <- parse_filters(params) do
-      runs = RunStore.list_eval_logs(filters)
+      runs = RunStore.list_eval_logs(Config.repo_key!(), filters)
 
       case runs do
         records when is_list(records) ->
@@ -75,7 +75,7 @@ defmodule SymphonyElixir.Quality do
       end
 
     runs =
-      case RunStore.list_eval_logs(filters) do
+      case RunStore.list_eval_logs(Config.repo_key!(), filters) do
         records when is_list(records) -> records
         {:error, _reason} -> []
       end
@@ -92,7 +92,7 @@ defmodule SymphonyElixir.Quality do
     with {:ok, filters} <- parse_filters(params, default_limit: :all) do
       filters = filters |> Keyword.put(:session_id, session_id) |> Keyword.put(:limit, :all)
 
-      case RunStore.list_eval_logs(filters) do
+      case RunStore.list_eval_logs(Config.repo_key!(), filters) do
         [] ->
           {:error, :session_not_found}
 
@@ -145,6 +145,7 @@ defmodule SymphonyElixir.Quality do
 
     %{
       eval_id: run_id,
+      repo_key: Map.get(running_entry, :repo_key) || Config.repo_key!(),
       run_id: run_id,
       issue_id: Map.get(issue, :id),
       issue_identifier: Map.get(issue, :identifier) || Map.get(running_entry, :identifier),

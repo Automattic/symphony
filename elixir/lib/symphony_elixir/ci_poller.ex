@@ -86,8 +86,9 @@ defmodule SymphonyElixir.CiPoller do
   @spec pending_ci_failure(String.t(), keyword()) :: map() | nil
   def pending_ci_failure(issue_id, opts \\ []) do
     run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = repo_key_from_opts(opts)
 
-    with {:ok, checks} <- list_ci_checks(run_store),
+    with {:ok, checks} <- list_ci_checks(run_store, repo_key),
          %{} = record <- Enum.find(checks, &(Map.get(&1, :issue_id) == issue_id)) do
       normalize_ci_failure(Map.get(record, :ci_failure))
     else
@@ -99,8 +100,9 @@ defmodule SymphonyElixir.CiPoller do
   @spec ci_owned_issue?(String.t(), keyword()) :: boolean()
   def ci_owned_issue?(issue_id, opts \\ []) do
     run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = repo_key_from_opts(opts)
 
-    with {:ok, checks} <- list_ci_checks(run_store),
+    with {:ok, checks} <- list_ci_checks(run_store, repo_key),
          %{} = record <- Enum.find(checks, &(Map.get(&1, :issue_id) == issue_id)) do
       ci_owned_record?(record)
     else
@@ -122,32 +124,33 @@ defmodule SymphonyElixir.CiPoller do
   defp do_poll_once(settings, opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
     run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = repo_key_from_opts(opts)
     tracker = Keyword.get(opts, :tracker, Tracker)
 
-    with {:ok, discovered} <- discover_ci_checks(run_store, tracker, now),
-         {:ok, checks} <- list_ci_checks(run_store) do
+    with {:ok, discovered} <- discover_ci_checks(run_store, tracker, repo_key, now),
+         {:ok, checks} <- list_ci_checks(run_store, repo_key) do
       actions = Enum.map(checks, &process_ci_check(&1, settings, opts, now))
 
       {:ok, %{mode: :polling, discovered: discovered, processed: length(checks), actions: actions}}
     end
   end
 
-  defp discover_ci_checks(run_store, tracker, now) do
+  defp discover_ci_checks(run_store, tracker, repo_key, now) do
     with {:ok, issues} <- tracker.fetch_issues_by_states([@in_review_state]),
-         {:ok, runs} <- list_runs(run_store),
-         {:ok, existing} <- list_ci_checks(run_store) do
+         {:ok, runs} <- list_runs(run_store, repo_key),
+         {:ok, existing} <- list_ci_checks(run_store, repo_key) do
       existing_by_issue = Map.new(existing, &{Map.get(&1, :issue_id), &1})
 
       discovered =
         issues
         |> Enum.filter(&match?(%Issue{}, &1))
-        |> Enum.count(&persist_discovered_ci_check?(&1, runs, existing_by_issue, run_store, now))
+        |> Enum.count(&persist_discovered_ci_check?(&1, runs, existing_by_issue, run_store, repo_key, now))
 
       {:ok, discovered}
     end
   end
 
-  defp persist_discovered_ci_check?(%Issue{} = issue, runs, existing_by_issue, run_store, now) do
+  defp persist_discovered_ci_check?(%Issue{} = issue, runs, existing_by_issue, run_store, repo_key, now) do
     existing = Map.get(existing_by_issue, issue.id)
 
     case discover_ci_check_record(issue, runs, existing, now) do
@@ -155,7 +158,7 @@ defmodule SymphonyElixir.CiPoller do
         false
 
       record ->
-        case put_ci_check(run_store, record) do
+        case put_ci_check(run_store, Map.put(record, :repo_key, repo_key)) do
           :ok ->
             true
 
@@ -171,6 +174,7 @@ defmodule SymphonyElixir.CiPoller do
          %{workspace_path: workspace_path} = run when is_binary(workspace_path) <-
            latest_run_for_issue(runs, issue.id) do
       base = %{
+        repo_key: Map.get(existing || %{}, :repo_key),
         issue_id: issue.id,
         issue_identifier: issue.identifier,
         issue_url: issue.url,
@@ -456,9 +460,10 @@ defmodule SymphonyElixir.CiPoller do
 
   defp cleanup_ci(record, opts, now, reason) do
     run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = Map.get(record, :repo_key) || repo_key_from_opts(opts)
     issue_id = Map.get(record, :issue_id)
 
-    case delete_ci_check(run_store, issue_id) do
+    case delete_ci_check(run_store, repo_key, issue_id) do
       :ok ->
         {:cleanup, issue_id, reason}
 
@@ -577,16 +582,22 @@ defmodule SymphonyElixir.CiPoller do
   defp update_ci_check(run_store, record, attrs) do
     issue_id = Map.get(record, :issue_id)
 
-    case run_store.update_ci_check(issue_id, attrs) do
-      :ok ->
-        :ok
+    case Map.get(record, :repo_key) do
+      repo_key when is_binary(repo_key) ->
+        case update_ci_check_record(run_store, repo_key, issue_id, attrs) do
+          :ok ->
+            :ok
 
-      {:error, :ci_check_not_found} ->
-        put_ci_check(run_store, Map.merge(record, attrs))
+          {:error, :ci_check_not_found} ->
+            put_ci_check(run_store, record |> Map.merge(attrs) |> Map.put(:repo_key, repo_key))
 
-      {:error, reason} ->
-        Logger.warning("Failed to update CI check record issue_id=#{issue_id} target_status=#{inspect(Map.get(attrs, :status))}: #{inspect(reason)}")
-        {:error, {:update_ci_check_failed, reason}}
+          {:error, reason} ->
+            Logger.warning("Failed to update CI check record issue_id=#{issue_id} target_status=#{inspect(Map.get(attrs, :status))}: #{inspect(reason)}")
+            {:error, {:update_ci_check_failed, reason}}
+        end
+
+      _repo_key ->
+        {:error, :missing_repo_key}
     end
   end
 
@@ -597,10 +608,38 @@ defmodule SymphonyElixir.CiPoller do
     end
   end
 
-  defp delete_ci_check(run_store, issue_id) do
-    case run_store.delete_ci_check(issue_id) do
+  defp delete_ci_check(run_store, repo_key, issue_id) do
+    case delete_ci_check_record(run_store, repo_key, issue_id) do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp repo_key_from_opts(opts), do: Keyword.get_lazy(opts, :repo_key, &Config.repo_key!/0)
+
+  defp update_ci_check_record(run_store, repo_key, issue_id, attrs) do
+    cond do
+      function_exported?(run_store, :update_ci_check, 3) ->
+        run_store.update_ci_check(repo_key, issue_id, attrs)
+
+      function_exported?(run_store, :update_ci_check, 2) ->
+        run_store.update_ci_check(issue_id, attrs)
+
+      true ->
+        {:error, :ci_checks_unsupported}
+    end
+  end
+
+  defp delete_ci_check_record(run_store, repo_key, issue_id) do
+    cond do
+      function_exported?(run_store, :delete_ci_check, 2) ->
+        run_store.delete_ci_check(repo_key, issue_id)
+
+      function_exported?(run_store, :delete_ci_check, 1) ->
+        run_store.delete_ci_check(issue_id)
+
+      true ->
+        {:error, :ci_checks_unsupported}
     end
   end
 
@@ -794,21 +833,42 @@ defmodule SymphonyElixir.CiPoller do
     end
   end
 
-  defp list_runs(run_store) do
-    case run_store.list_runs(:all) do
+  defp list_runs(run_store, repo_key) do
+    case list_run_records(run_store, repo_key) do
       runs when is_list(runs) -> {:ok, runs}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp list_ci_checks(run_store) do
-    if function_exported?(run_store, :list_ci_checks, 0) do
-      case run_store.list_ci_checks() do
-        checks when is_list(checks) -> {:ok, checks}
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      {:error, :ci_checks_unsupported}
+  defp list_ci_checks(run_store, repo_key) do
+    cond do
+      function_exported?(run_store, :list_ci_checks, 1) ->
+        case run_store.list_ci_checks(repo_key) do
+          checks when is_list(checks) -> {:ok, checks}
+          {:error, reason} -> {:error, reason}
+        end
+
+      function_exported?(run_store, :list_ci_checks, 0) ->
+        case run_store.list_ci_checks() do
+          checks when is_list(checks) -> {:ok, checks}
+          {:error, reason} -> {:error, reason}
+        end
+
+      true ->
+        {:error, :ci_checks_unsupported}
+    end
+  end
+
+  defp list_run_records(run_store, repo_key) do
+    cond do
+      function_exported?(run_store, :list_runs, 2) ->
+        run_store.list_runs(repo_key, :all)
+
+      function_exported?(run_store, :list_runs, 1) ->
+        run_store.list_runs(:all)
+
+      true ->
+        {:error, :runs_unsupported}
     end
   end
 

@@ -6,7 +6,7 @@ defmodule SymphonyElixir.RunStore do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.LogFile
+  alias SymphonyElixir.{Config, LogFile}
 
   @runs_table :symphony_run_store_runs
   @retry_table :symphony_run_store_retries
@@ -17,17 +17,17 @@ defmodule SymphonyElixir.RunStore do
   @eval_logs_table :symphony_run_store_eval_logs
   @pause_table :symphony_run_store_pause
   @learnings_table :symphony_run_store_learnings
-  @eval_log_attributes [:eval_id, :outcome, :agent_kind, :issue_label, :date, :record]
-  @eval_log_indexes [:outcome, :agent_kind, :issue_label, :date]
-  @learning_attributes [:id, :repo, :created_at, :record]
-  @learning_indexes [:repo, :created_at]
+  @eval_log_attributes [:key, :repo_key, :eval_id, :outcome, :agent_kind, :issue_label, :date, :record]
+  @eval_log_indexes [:repo_key, :outcome, :agent_kind, :issue_label, :date]
+  @learning_attributes [:key, :repo_key, :created_at, :record]
+  @learning_indexes [:repo_key, :created_at]
   @tables [
-    {@runs_table, [:run_id, :record], []},
-    {@retry_table, [:issue_id, :record], []},
+    {@runs_table, [:key, :repo_key, :run_id, :record], [index: [:repo_key]]},
+    {@retry_table, [:key, :repo_key, :issue_id, :record], [index: [:repo_key]]},
     {@totals_table, [:key, :record], []},
-    {@pr_review_table, [:issue_id, :record], []},
-    {@ci_check_table, [:issue_id, :record], []},
-    {@verification_allocation_table, [:run_id, :record], []},
+    {@pr_review_table, [:key, :repo_key, :issue_id, :record], [index: [:repo_key]]},
+    {@ci_check_table, [:key, :repo_key, :issue_id, :record], [index: [:repo_key]]},
+    {@verification_allocation_table, [:key, :repo_key, :run_id, :record], [index: [:repo_key]]},
     {@pause_table, [:key, :record], []},
     {@eval_logs_table, @eval_log_attributes, [type: :bag, index: @eval_log_indexes]},
     {@learnings_table, @learning_attributes, [index: @learning_indexes]}
@@ -66,92 +66,125 @@ defmodule SymphonyElixir.RunStore do
   end
 
   @spec put_run(map()) :: :ok | {:error, term()}
-  def put_run(%{run_id: run_id} = record) when is_binary(run_id) do
-    with :ok <- ensure_started() do
+  def put_run(%{repo_key: repo_key, run_id: run_id} = record) when is_binary(run_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.write({@runs_table, run_id, normalize_record(record)})
+        key = scoped_key(repo_key, run_id)
+        :mnesia.write({@runs_table, key, repo_key, run_id, record |> normalize_record() |> Map.put(:repo_key, repo_key)})
         :ok
       end)
     end
   end
+
+  def put_run(%{run_id: run_id}) when is_binary(run_id), do: {:error, :missing_repo_key}
 
   def put_run(_record), do: {:error, :invalid_run_record}
 
   @spec update_run(String.t(), map()) :: :ok | {:error, term()}
   def update_run(run_id, attrs) when is_binary(run_id) and is_map(attrs) do
-    with :ok <- ensure_started() do
-      update_run_record(run_id, attrs)
+    {:error, :missing_repo_key}
+  end
+
+  @spec update_run(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def update_run(repo_key, run_id, attrs) when is_binary(run_id) and is_map(attrs) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
+      update_run_record(repo_key, run_id, attrs)
       |> unwrap_nested_error()
     end
   end
 
-  def update_run(_run_id, _attrs), do: {:error, :invalid_run_record}
+  def update_run(_repo_key, _run_id, _attrs), do: {:error, :invalid_run_record}
 
   @spec list_runs() :: [map()] | {:error, term()}
-  def list_runs, do: list_runs(50)
+  def list_runs, do: list_runs(Config.repo_key!(), 50)
 
-  @spec list_runs(non_neg_integer() | :all) :: [map()] | {:error, term()}
-  def list_runs(limit) when is_integer(limit) and limit >= 0 do
-    case list_runs(:all) do
+  @spec list_runs(String.t() | non_neg_integer() | :all) :: [map()] | {:error, term()}
+  def list_runs(limit) when is_integer(limit) or limit == :all, do: list_runs(Config.repo_key!(), limit)
+
+  @spec list_runs(String.t()) :: [map()] | {:error, term()}
+  def list_runs(repo_key) when is_binary(repo_key), do: list_runs(repo_key, 50)
+
+  @spec list_runs(String.t(), non_neg_integer() | :all) :: [map()] | {:error, term()}
+  def list_runs(repo_key, limit) when is_integer(limit) and limit >= 0 do
+    case list_runs(repo_key, :all) do
       runs when is_list(runs) -> Enum.take(runs, limit)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  def list_runs(:all) do
-    with :ok <- ensure_started() do
+  def list_runs(repo_key, :all) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       transaction(fn ->
         @runs_table
-        |> all_records()
+        |> scoped_records(repo_key)
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :started_at)), :desc)
       end)
     end
   end
 
-  @spec interrupt_running_runs(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def interrupt_running_runs(error) when is_binary(error) do
+  @spec interrupt_running_runs(String.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def interrupt_running_runs(repo_key, error) when is_binary(error) do
     now = DateTime.utc_now()
 
-    with :ok <- ensure_started() do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        {:ok, interrupt_running_records(error, now)}
+        {:ok, interrupt_running_records(repo_key, error, now)}
       end)
       |> unwrap_nested_error()
     end
   end
 
-  def interrupt_running_runs(_error), do: {:error, :invalid_error}
+  def interrupt_running_runs(_repo_key, _error), do: {:error, :invalid_error}
+
+  @spec interrupt_running_runs(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def interrupt_running_runs(error) when is_binary(error), do: {:error, :missing_repo_key}
 
   @spec put_retry(map()) :: :ok | {:error, term()}
-  def put_retry(%{issue_id: issue_id} = record) when is_binary(issue_id) do
-    with :ok <- ensure_started() do
+  def put_retry(%{repo_key: repo_key, issue_id: issue_id} = record) when is_binary(issue_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.write({@retry_table, issue_id, normalize_record(record)})
+        key = scoped_key(repo_key, issue_id)
+        :mnesia.write({@retry_table, key, repo_key, issue_id, record |> normalize_record() |> Map.put(:repo_key, repo_key)})
         :ok
       end)
     end
   end
+
+  def put_retry(%{issue_id: issue_id}) when is_binary(issue_id), do: {:error, :missing_repo_key}
 
   def put_retry(_record), do: {:error, :invalid_retry_record}
 
   @spec delete_retry(String.t()) :: :ok | {:error, term()}
-  def delete_retry(issue_id) when is_binary(issue_id) do
-    with :ok <- ensure_started() do
+  def delete_retry(issue_id) when is_binary(issue_id), do: {:error, :missing_repo_key}
+
+  @spec delete_retry(String.t(), String.t()) :: :ok | {:error, term()}
+  def delete_retry(repo_key, issue_id) when is_binary(issue_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.delete({@retry_table, issue_id})
+        :mnesia.delete({@retry_table, scoped_key(repo_key, issue_id)})
         :ok
       end)
     end
   end
 
-  def delete_retry(_issue_id), do: {:error, :invalid_issue_id}
+  def delete_retry(_repo_key, _issue_id), do: {:error, :invalid_issue_id}
 
   @spec list_retries() :: [map()] | {:error, term()}
-  def list_retries do
-    with :ok <- ensure_started() do
+  def list_retries, do: list_retries(Config.repo_key!())
+
+  @spec list_retries(String.t()) :: [map()] | {:error, term()}
+  def list_retries(repo_key) when is_binary(repo_key) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       transaction(fn ->
         @retry_table
-        |> all_records()
+        |> scoped_records(repo_key)
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :due_at)), :asc)
       end)
     end
@@ -215,158 +248,233 @@ defmodule SymphonyElixir.RunStore do
   end
 
   @spec put_pr_review(map()) :: :ok | {:error, term()}
-  def put_pr_review(%{issue_id: issue_id} = record) when is_binary(issue_id) do
-    with :ok <- ensure_started() do
+  def put_pr_review(%{repo_key: repo_key, issue_id: issue_id} = record) when is_binary(issue_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.write({@pr_review_table, issue_id, normalize_record(record)})
+        key = scoped_key(repo_key, issue_id)
+        :mnesia.write({@pr_review_table, key, repo_key, issue_id, record |> normalize_record() |> Map.put(:repo_key, repo_key)})
         :ok
       end)
     end
   end
+
+  def put_pr_review(%{issue_id: issue_id}) when is_binary(issue_id), do: {:error, :missing_repo_key}
 
   def put_pr_review(_record), do: {:error, :invalid_pr_review_record}
 
   @spec update_pr_review(String.t(), map()) :: :ok | {:error, term()}
   def update_pr_review(issue_id, attrs) when is_binary(issue_id) and is_map(attrs) do
-    with :ok <- ensure_started() do
-      update_pr_review_record(issue_id, attrs)
+    {:error, :missing_repo_key}
+  end
+
+  @spec update_pr_review(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def update_pr_review(repo_key, issue_id, attrs) when is_binary(issue_id) and is_map(attrs) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
+      update_pr_review_record(repo_key, issue_id, attrs)
       |> unwrap_nested_error()
     end
   end
 
-  def update_pr_review(_issue_id, _attrs), do: {:error, :invalid_pr_review_record}
+  def update_pr_review(_repo_key, _issue_id, _attrs), do: {:error, :invalid_pr_review_record}
 
   @spec delete_pr_review(String.t()) :: :ok | {:error, term()}
-  def delete_pr_review(issue_id) when is_binary(issue_id) do
-    with :ok <- ensure_started() do
+  def delete_pr_review(issue_id) when is_binary(issue_id), do: {:error, :missing_repo_key}
+
+  @spec delete_pr_review(String.t(), String.t()) :: :ok | {:error, term()}
+  def delete_pr_review(repo_key, issue_id) when is_binary(issue_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.delete({@pr_review_table, issue_id})
+        :mnesia.delete({@pr_review_table, scoped_key(repo_key, issue_id)})
         :ok
       end)
     end
   end
 
-  def delete_pr_review(_issue_id), do: {:error, :invalid_issue_id}
+  def delete_pr_review(_repo_key, _issue_id), do: {:error, :invalid_issue_id}
 
   @spec list_pr_reviews() :: [map()] | {:error, term()}
-  def list_pr_reviews do
-    with :ok <- ensure_started() do
+  def list_pr_reviews, do: list_pr_reviews(Config.repo_key!())
+
+  @spec list_pr_reviews(String.t()) :: [map()] | {:error, term()}
+  def list_pr_reviews(repo_key) when is_binary(repo_key) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       transaction(fn ->
         @pr_review_table
-        |> all_records()
+        |> scoped_records(repo_key)
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :updated_at)), :desc)
       end)
     end
   end
 
   @spec put_ci_check(map()) :: :ok | {:error, term()}
-  def put_ci_check(%{issue_id: issue_id} = record) when is_binary(issue_id) do
-    with :ok <- ensure_started() do
+  def put_ci_check(%{repo_key: repo_key, issue_id: issue_id} = record) when is_binary(issue_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.write({@ci_check_table, issue_id, normalize_record(record)})
+        key = scoped_key(repo_key, issue_id)
+        :mnesia.write({@ci_check_table, key, repo_key, issue_id, record |> normalize_record() |> Map.put(:repo_key, repo_key)})
         :ok
       end)
     end
   end
+
+  def put_ci_check(%{issue_id: issue_id}) when is_binary(issue_id), do: {:error, :missing_repo_key}
 
   def put_ci_check(_record), do: {:error, :invalid_ci_check_record}
 
   @spec update_ci_check(String.t(), map()) :: :ok | {:error, term()}
   def update_ci_check(issue_id, attrs) when is_binary(issue_id) and is_map(attrs) do
-    with :ok <- ensure_started() do
-      update_ci_check_record(issue_id, attrs)
+    {:error, :missing_repo_key}
+  end
+
+  @spec update_ci_check(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def update_ci_check(repo_key, issue_id, attrs) when is_binary(issue_id) and is_map(attrs) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
+      update_ci_check_record(repo_key, issue_id, attrs)
       |> unwrap_nested_error()
     end
   end
 
-  def update_ci_check(_issue_id, _attrs), do: {:error, :invalid_ci_check_record}
+  def update_ci_check(_repo_key, _issue_id, _attrs), do: {:error, :invalid_ci_check_record}
 
   @spec delete_ci_check(String.t()) :: :ok | {:error, term()}
-  def delete_ci_check(issue_id) when is_binary(issue_id) do
-    with :ok <- ensure_started() do
+  def delete_ci_check(issue_id) when is_binary(issue_id), do: {:error, :missing_repo_key}
+
+  @spec delete_ci_check(String.t(), String.t()) :: :ok | {:error, term()}
+  def delete_ci_check(repo_key, issue_id) when is_binary(issue_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.delete({@ci_check_table, issue_id})
+        :mnesia.delete({@ci_check_table, scoped_key(repo_key, issue_id)})
         :ok
       end)
     end
   end
 
-  def delete_ci_check(_issue_id), do: {:error, :invalid_issue_id}
+  def delete_ci_check(_repo_key, _issue_id), do: {:error, :invalid_issue_id}
 
   @spec list_ci_checks() :: [map()] | {:error, term()}
-  def list_ci_checks do
-    with :ok <- ensure_started() do
+  def list_ci_checks, do: list_ci_checks(Config.repo_key!())
+
+  @spec list_ci_checks(String.t()) :: [map()] | {:error, term()}
+  def list_ci_checks(repo_key) when is_binary(repo_key) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       transaction(fn ->
         @ci_check_table
-        |> all_records()
+        |> scoped_records(repo_key)
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :updated_at)), :desc)
       end)
     end
   end
 
   @spec put_verification_allocation(map()) :: :ok | {:error, term()}
-  def put_verification_allocation(%{run_id: run_id, port: port} = record)
+  def put_verification_allocation(%{repo_key: repo_key, run_id: run_id, port: port} = record)
       when is_binary(run_id) and is_integer(port) do
-    with :ok <- ensure_started() do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.write({@verification_allocation_table, run_id, normalize_record(record)})
+        key = scoped_key(repo_key, run_id)
+
+        :mnesia.write({
+          @verification_allocation_table,
+          key,
+          repo_key,
+          run_id,
+          record |> normalize_record() |> Map.put(:repo_key, repo_key)
+        })
+
         :ok
       end)
     end
   end
+
+  def put_verification_allocation(%{run_id: run_id, port: port}) when is_binary(run_id) and is_integer(port),
+    do: {:error, :missing_repo_key}
 
   def put_verification_allocation(_record), do: {:error, :invalid_verification_allocation_record}
 
   @spec update_verification_allocation(String.t(), map()) :: :ok | {:error, term()}
   def update_verification_allocation(run_id, attrs) when is_binary(run_id) and is_map(attrs) do
-    with :ok <- ensure_started() do
-      update_verification_allocation_record(run_id, attrs)
+    {:error, :missing_repo_key}
+  end
+
+  @spec update_verification_allocation(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def update_verification_allocation(repo_key, run_id, attrs) when is_binary(run_id) and is_map(attrs) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
+      update_verification_allocation_record(repo_key, run_id, attrs)
       |> unwrap_nested_error()
     end
   end
 
-  def update_verification_allocation(_run_id, _attrs), do: {:error, :invalid_verification_allocation_record}
+  def update_verification_allocation(_repo_key, _run_id, _attrs), do: {:error, :invalid_verification_allocation_record}
 
   @spec delete_verification_allocation(String.t()) :: :ok | {:error, term()}
-  def delete_verification_allocation(run_id) when is_binary(run_id) do
-    with :ok <- ensure_started() do
+  def delete_verification_allocation(run_id) when is_binary(run_id), do: {:error, :missing_repo_key}
+
+  @spec delete_verification_allocation(String.t(), String.t()) :: :ok | {:error, term()}
+  def delete_verification_allocation(repo_key, run_id) when is_binary(run_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        :mnesia.delete({@verification_allocation_table, run_id})
+        :mnesia.delete({@verification_allocation_table, scoped_key(repo_key, run_id)})
         :ok
       end)
     end
   end
 
-  def delete_verification_allocation(_run_id), do: {:error, :invalid_run_id}
+  def delete_verification_allocation(_repo_key, _run_id), do: {:error, :invalid_run_id}
 
   @spec list_verification_allocations() :: [map()] | {:error, term()}
-  def list_verification_allocations do
-    with :ok <- ensure_started() do
+  def list_verification_allocations, do: list_verification_allocations(Config.repo_key!())
+
+  @spec list_verification_allocations(String.t()) :: [map()] | {:error, term()}
+  def list_verification_allocations(repo_key) when is_binary(repo_key) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       transaction(fn ->
         @verification_allocation_table
-        |> all_records()
+        |> scoped_records(repo_key)
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :allocated_at)), :asc)
       end)
     end
   end
 
   @spec put_eval_log(map()) :: :ok | {:error, term()}
-  def put_eval_log(%{eval_id: eval_id} = record) when is_binary(eval_id) do
-    with :ok <- ensure_started() do
+  def put_eval_log(%{repo_key: repo_key, eval_id: eval_id} = record) when is_binary(eval_id) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       durable_transaction(fn ->
-        write_eval_log_records(eval_id, normalize_eval_log_record(record))
+        write_eval_log_records(repo_key, eval_id, normalize_eval_log_record(record, repo_key))
       end)
     end
   end
 
+  def put_eval_log(%{eval_id: eval_id}) when is_binary(eval_id), do: {:error, :missing_repo_key}
+
   def put_eval_log(_record), do: {:error, :invalid_eval_log_record}
 
+  @spec list_eval_logs() :: [map()] | {:error, term()}
+  def list_eval_logs, do: list_eval_logs(Config.repo_key!(), [])
+
   @spec list_eval_logs(keyword()) :: [map()] | {:error, term()}
-  def list_eval_logs(opts \\ []) when is_list(opts) do
-    with :ok <- ensure_started() do
+  @spec list_eval_logs(String.t()) :: [map()] | {:error, term()}
+  def list_eval_logs(opts) when is_list(opts), do: list_eval_logs(Config.repo_key!(), opts)
+  def list_eval_logs(repo_key) when is_binary(repo_key), do: list_eval_logs(repo_key, [])
+
+  @spec list_eval_logs(String.t(), keyword()) :: [map()] | {:error, term()}
+  def list_eval_logs(repo_key, opts) when is_list(opts) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       transaction(fn ->
         @eval_logs_table
-        |> all_eval_log_records()
+        |> all_eval_log_records(repo_key)
         |> filter_eval_logs(opts)
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :logged_at)), :desc)
         |> limit_eval_logs(Keyword.get(opts, :limit, 50))
@@ -388,7 +496,7 @@ defmodule SymphonyElixir.RunStore do
         Enum.each(normalized, &write_learning_record/1)
 
         normalized
-        |> Enum.map(&Map.fetch!(&1, :repo))
+        |> Enum.map(&Map.fetch!(&1, :repo_key))
         |> Enum.uniq()
         |> Enum.each(&prune_learning_records(&1, max_total_per_repo))
 
@@ -399,12 +507,25 @@ defmodule SymphonyElixir.RunStore do
 
   def put_learnings(_records, _max_total_per_repo), do: {:error, :invalid_learning_record}
 
+  @spec list_learnings() :: [map()] | {:error, term()}
+  def list_learnings, do: list_learnings(Config.repo_key!(), [])
+
   @spec list_learnings(keyword()) :: [map()] | {:error, term()}
-  def list_learnings(opts \\ []) when is_list(opts) do
-    with :ok <- ensure_started() do
+  @spec list_learnings(String.t()) :: [map()] | {:error, term()}
+  def list_learnings(opts) when is_list(opts) do
+    repo_key = Keyword.get(opts, :repo_key) || Config.repo_key!()
+    list_learnings(repo_key, opts)
+  end
+
+  def list_learnings(repo_key) when is_binary(repo_key), do: list_learnings(repo_key, [])
+
+  @spec list_learnings(String.t(), keyword()) :: [map()] | {:error, term()}
+  def list_learnings(repo_key, opts) when is_list(opts) do
+    with {:ok, repo_key} <- normalize_repo_key(repo_key),
+         :ok <- ensure_started() do
       transaction(fn ->
         @learnings_table
-        |> all_learning_records()
+        |> all_learning_records(repo_key)
         |> filter_learnings(opts)
         |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :created_at)), :desc)
         |> limit_learnings(Keyword.get(opts, :limit, :all))
@@ -548,14 +669,14 @@ defmodule SymphonyElixir.RunStore do
 
   defp ensure_table({table, attributes, opts}, :ok) do
     if table in :mnesia.system_info(:tables) do
-      case ensure_table_indexes(table, Keyword.get(opts, :index, [])) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
+      table
+      |> ensure_existing_table(attributes, Keyword.get(opts, :index, []))
+      |> continue_or_halt()
     else
       create_opts =
         opts
         |> Keyword.put_new(:type, :set)
+        |> normalize_create_table_indexes(attributes)
         |> Keyword.merge(attributes: attributes, disc_copies: [node()])
 
       case :mnesia.create_table(
@@ -569,6 +690,25 @@ defmodule SymphonyElixir.RunStore do
     end
   end
 
+  defp ensure_existing_table(table, attributes, indexes) do
+    with :ok <- ensure_table_attributes(table, attributes) do
+      ensure_table_indexes(table, indexes)
+    end
+  end
+
+  defp continue_or_halt(:ok), do: {:cont, :ok}
+  defp continue_or_halt({:error, reason}), do: {:halt, {:error, reason}}
+
+  defp ensure_table_attributes(table, expected_attributes) do
+    actual_attributes = :mnesia.table_info(table, :attributes)
+
+    if actual_attributes == expected_attributes do
+      :ok
+    else
+      {:error, run_store_schema_mismatch(table, expected_attributes, actual_attributes)}
+    end
+  end
+
   defp ensure_table_indexes(_table, []), do: :ok
 
   defp ensure_table_indexes(table, indexes) when is_list(indexes) do
@@ -578,12 +718,54 @@ defmodule SymphonyElixir.RunStore do
     indexes
     |> Enum.reject(&index_present?(&1, current_indexes, attributes))
     |> Enum.reduce_while(:ok, fn index, :ok ->
-      case :mnesia.add_table_index(table, index) do
-        {:atomic, :ok} -> {:cont, :ok}
-        {:aborted, {:already_exists, ^table, ^index}} -> {:cont, :ok}
-        {:aborted, {:already_exists, ^index}} -> {:cont, :ok}
-        {:aborted, reason} -> {:halt, {:error, reason}}
-      end
+      table
+      |> ensure_table_index(index, attributes)
+      |> continue_or_halt()
+    end)
+  end
+
+  defp ensure_table_index(table, index, attributes) do
+    case attribute_position(index, attributes) do
+      nil -> {:error, run_store_schema_mismatch(table, [index], attributes)}
+      index_position -> add_table_index(table, index_position)
+    end
+  end
+
+  defp add_table_index(table, index_position) do
+    case :mnesia.add_table_index(table, index_position) do
+      {:atomic, :ok} -> :ok
+      {:aborted, {:already_exists, ^table, ^index_position}} -> :ok
+      {:aborted, {:already_exists, ^index_position}} -> :ok
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  defp run_store_schema_mismatch(table, expected_attributes, actual_attributes) do
+    details = %{
+      actual_attributes: actual_attributes,
+      expected_attributes: expected_attributes,
+      run_store_dir: mnesia_directory(),
+      runbook: "Stop Symphony, wipe the configured run_store_dir, and restart with an empty v2 RunStore."
+    }
+
+    Logger.error(
+      "RunStore Mnesia schema mismatch table=#{inspect(table)} expected=#{inspect(expected_attributes)} actual=#{inspect(actual_attributes)} run_store_dir=#{details.run_store_dir}; #{details.runbook}"
+    )
+
+    {:run_store_schema_mismatch, table, details}
+  end
+
+  defp mnesia_directory do
+    :mnesia.system_info(:directory)
+    |> to_string()
+    |> Path.expand()
+  catch
+    :exit, _reason -> store_dir()
+  end
+
+  defp normalize_create_table_indexes(opts, attributes) do
+    Keyword.update(opts, :index, [], fn indexes ->
+      Enum.map(indexes, &attribute_position(&1, attributes))
     end)
   end
 
@@ -615,11 +797,14 @@ defmodule SymphonyElixir.RunStore do
     end
   end
 
-  defp update_run_record(run_id, attrs) do
+  defp update_run_record(repo_key, run_id, attrs) do
     durable_transaction(fn ->
-      case :mnesia.read(@runs_table, run_id) do
-        [{@runs_table, ^run_id, record}] ->
-          :mnesia.write({@runs_table, run_id, Map.merge(record, normalize_record(attrs))})
+      key = scoped_key(repo_key, run_id)
+
+      case :mnesia.read(@runs_table, key) do
+        [{@runs_table, ^key, ^repo_key, ^run_id, record}] ->
+          updated = record |> Map.merge(normalize_update(attrs, [:key, :repo_key, :run_id])) |> Map.put(:repo_key, repo_key)
+          :mnesia.write({@runs_table, key, repo_key, run_id, updated})
           :ok
 
         [] ->
@@ -628,11 +813,14 @@ defmodule SymphonyElixir.RunStore do
     end)
   end
 
-  defp update_pr_review_record(issue_id, attrs) do
+  defp update_pr_review_record(repo_key, issue_id, attrs) do
     durable_transaction(fn ->
-      case :mnesia.read(@pr_review_table, issue_id) do
-        [{@pr_review_table, ^issue_id, record}] ->
-          :mnesia.write({@pr_review_table, issue_id, Map.merge(record, normalize_record(attrs))})
+      key = scoped_key(repo_key, issue_id)
+
+      case :mnesia.read(@pr_review_table, key) do
+        [{@pr_review_table, ^key, ^repo_key, ^issue_id, record}] ->
+          updated = record |> Map.merge(normalize_update(attrs, [:key, :repo_key, :issue_id])) |> Map.put(:repo_key, repo_key)
+          :mnesia.write({@pr_review_table, key, repo_key, issue_id, updated})
           :ok
 
         [] ->
@@ -641,11 +829,14 @@ defmodule SymphonyElixir.RunStore do
     end)
   end
 
-  defp update_ci_check_record(issue_id, attrs) do
+  defp update_ci_check_record(repo_key, issue_id, attrs) do
     durable_transaction(fn ->
-      case :mnesia.read(@ci_check_table, issue_id) do
-        [{@ci_check_table, ^issue_id, record}] ->
-          :mnesia.write({@ci_check_table, issue_id, Map.merge(record, normalize_record(attrs))})
+      key = scoped_key(repo_key, issue_id)
+
+      case :mnesia.read(@ci_check_table, key) do
+        [{@ci_check_table, ^key, ^repo_key, ^issue_id, record}] ->
+          updated = record |> Map.merge(normalize_update(attrs, [:key, :repo_key, :issue_id])) |> Map.put(:repo_key, repo_key)
+          :mnesia.write({@ci_check_table, key, repo_key, issue_id, updated})
           :ok
 
         [] ->
@@ -654,11 +845,14 @@ defmodule SymphonyElixir.RunStore do
     end)
   end
 
-  defp update_verification_allocation_record(run_id, attrs) do
+  defp update_verification_allocation_record(repo_key, run_id, attrs) do
     durable_transaction(fn ->
-      case :mnesia.read(@verification_allocation_table, run_id) do
-        [{@verification_allocation_table, ^run_id, record}] ->
-          :mnesia.write({@verification_allocation_table, run_id, Map.merge(record, normalize_record(attrs))})
+      key = scoped_key(repo_key, run_id)
+
+      case :mnesia.read(@verification_allocation_table, key) do
+        [{@verification_allocation_table, ^key, ^repo_key, ^run_id, record}] ->
+          updated = record |> Map.merge(normalize_update(attrs, [:key, :repo_key, :run_id])) |> Map.put(:repo_key, repo_key)
+          :mnesia.write({@verification_allocation_table, key, repo_key, run_id, updated})
           :ok
 
         [] ->
@@ -778,29 +972,47 @@ defmodule SymphonyElixir.RunStore do
     end
   end
 
-  defp all_records(table) do
-    :mnesia.match_object({table, :_, :_})
-    |> Enum.map(fn {^table, _key, record} -> record end)
+  defp scoped_records(table, repo_key) do
+    :mnesia.match_object({table, :_, repo_key, :_, :_})
+    |> Enum.map(fn {^table, _key, ^repo_key, _id, record} -> record end)
   end
 
-  defp all_eval_log_records(table) do
-    :mnesia.match_object({table, :_, :_, :_, :_, :_, :_})
-    |> Enum.map(fn {^table, _eval_id, _outcome, _agent_kind, _issue_label, _date, record} -> record end)
+  defp all_eval_log_records(table, repo_key) do
+    :mnesia.match_object({table, :_, repo_key, :_, :_, :_, :_, :_, :_})
+    |> Enum.map(fn {^table, _key, ^repo_key, _eval_id, _outcome, _agent_kind, _issue_label, _date, record} -> record end)
     |> Enum.uniq_by(&Map.get(&1, :eval_id))
   end
 
-  defp all_learning_records(table) do
-    :mnesia.match_object({table, :_, :_, :_, :_})
-    |> Enum.map(fn {^table, _id, _repo, _created_at, record} -> record end)
+  defp all_learning_records(table, repo_key) do
+    :mnesia.match_object({table, :_, repo_key, :_, :_})
+    |> Enum.map(fn {^table, _key, ^repo_key, _created_at, record} -> record end)
+  end
+
+  defp normalize_repo_key(repo_key) when is_binary(repo_key) do
+    case String.trim(repo_key) do
+      "" -> {:error, :invalid_repo_key}
+      normalized -> {:ok, normalized}
+    end
+  end
+
+  defp normalize_repo_key(_repo_key), do: {:error, :invalid_repo_key}
+
+  defp scoped_key(repo_key, id), do: {repo_key, id}
+
+  defp normalize_update(attrs, immutable_fields) do
+    attrs
+    |> normalize_record()
+    |> Map.drop(immutable_fields)
   end
 
   defp normalize_record(record) when is_map(record) do
     Map.new(record)
   end
 
-  defp normalize_eval_log_record(record) when is_map(record) do
+  defp normalize_eval_log_record(record, repo_key) when is_map(record) do
     record
     |> normalize_record()
+    |> Map.put(:repo_key, repo_key)
     |> Map.put_new(:issue_labels, [])
     |> Map.update!(:issue_labels, &normalize_issue_labels/1)
     |> Map.put_new(:logged_at, DateTime.utc_now())
@@ -829,19 +1041,22 @@ defmodule SymphonyElixir.RunStore do
 
   defp eval_log_issue_label_index_values(_record), do: [nil]
 
-  defp write_eval_log_records(eval_id, normalized) do
-    :mnesia.delete({@eval_logs_table, eval_id})
+  defp write_eval_log_records(repo_key, eval_id, normalized) do
+    key = scoped_key(repo_key, eval_id)
+    :mnesia.delete({@eval_logs_table, key})
 
     normalized
     |> eval_log_issue_label_index_values()
-    |> Enum.each(&write_eval_log_record(eval_id, normalized, &1))
+    |> Enum.each(&write_eval_log_record(repo_key, eval_id, normalized, &1))
 
     :ok
   end
 
-  defp write_eval_log_record(eval_id, normalized, issue_label) do
+  defp write_eval_log_record(repo_key, eval_id, normalized, issue_label) do
     :mnesia.write({
       @eval_logs_table,
+      scoped_key(repo_key, eval_id),
+      repo_key,
       eval_id,
       normalized.outcome,
       normalized.agent_kind,
@@ -865,40 +1080,45 @@ defmodule SymphonyElixir.RunStore do
     end
   end
 
-  defp normalize_learning_record(%{id: id, repo: repo, created_at: %DateTime{} = created_at} = record)
-       when is_binary(id) and is_binary(repo) do
-    trimmed_repo = String.trim(repo)
+  defp normalize_learning_record(%{id: id, repo_key: repo_key, created_at: %DateTime{} = created_at} = record)
+       when is_binary(id) and is_binary(repo_key) do
+    trimmed_repo_key = String.trim(repo_key)
 
     cond do
       String.trim(id) == "" -> {:error, :invalid_learning_id}
-      trimmed_repo == "" -> {:error, :invalid_learning_repo}
-      true -> {:ok, record |> normalize_record() |> Map.put(:repo, trimmed_repo) |> Map.put(:created_at, created_at)}
+      trimmed_repo_key == "" -> {:error, :invalid_learning_repo_key}
+      true -> {:ok, record |> normalize_record() |> Map.put(:repo_key, trimmed_repo_key) |> Map.put(:created_at, created_at)}
     end
   end
 
+  defp normalize_learning_record(%{repo: repo}) when is_binary(repo), do: {:error, :missing_repo_key}
+
   defp normalize_learning_record(_record), do: {:error, :invalid_learning_record}
 
-  defp write_learning_record(%{id: id, repo: repo, created_at: created_at} = record) do
-    :mnesia.write({@learnings_table, id, repo, created_at, record})
+  defp write_learning_record(%{id: id, repo_key: repo_key, created_at: created_at} = record) do
+    :mnesia.write({@learnings_table, scoped_key(repo_key, id), repo_key, created_at, record})
   end
 
-  defp prune_learning_records(repo, max_total_per_repo) do
+  defp prune_learning_records(repo_key, max_total_per_repo) do
     records =
       @learnings_table
-      |> all_learning_records()
-      |> Enum.filter(&(Map.get(&1, :repo) == repo))
+      |> all_learning_records(repo_key)
       |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :created_at)), :asc)
 
     records
     |> Enum.take(max(0, length(records) - max_total_per_repo))
-    |> Enum.each(fn %{id: id} -> :mnesia.delete({@learnings_table, id}) end)
+    |> Enum.each(fn %{id: id} -> :mnesia.delete({@learnings_table, scoped_key(repo_key, id)}) end)
 
     :ok
   end
 
   defp filter_learnings(records, opts) do
+    repo_key_filter = Keyword.get(opts, :repo_key)
+    repo_filter = Keyword.get(opts, :repo)
+
     Enum.filter(records, fn record ->
-      matches_value?(Map.get(record, :repo), Keyword.get(opts, :repo)) and
+      matches_value?(Map.get(record, :repo_key), repo_key_filter) and
+        matches_value?(Map.get(record, :repo), repo_filter) and
         matches_learning_tag?(Map.get(record, :tags, []), Keyword.get(opts, :tag))
     end)
   end
@@ -963,9 +1183,9 @@ defmodule SymphonyElixir.RunStore do
 
   defp limit_eval_logs(records, _limit), do: records
 
-  defp interrupt_running_records(error, now) do
+  defp interrupt_running_records(repo_key, error, now) do
     @runs_table
-    |> all_records()
+    |> scoped_records(repo_key)
     |> Enum.reduce(0, &interrupt_running_record(&1, error, now, &2))
   end
 
@@ -986,7 +1206,8 @@ defmodule SymphonyElixir.RunStore do
             updated_at: now
           })
 
-        :mnesia.write({@runs_table, run_id, updated})
+        repo_key = Map.fetch!(record, :repo_key)
+        :mnesia.write({@runs_table, scoped_key(repo_key, run_id), repo_key, run_id, updated})
         count + 1
 
       malformed_run_id ->

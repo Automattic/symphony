@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Learnings.Reflection do
 
   require Logger
 
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Learnings.Store
   alias SymphonyElixir.Linear.Issue
@@ -64,9 +65,10 @@ defmodule SymphonyElixir.Learnings.Reflection do
     with {:ok, material} <- source_material(source, opts),
          {:ok, raw_response} <- invoke_provider(material, config, opts),
          {:ok, parsed_entries} <- parse_response(raw_response, config.max_per_run),
-         records = learning_records(parsed_entries, material, now),
+         records = learning_records(parsed_entries, material, now, Keyword.get(opts, :repo_key)),
          :ok <-
            Store.put_many(records,
+             repo_key: Keyword.get(opts, :repo_key),
              max_total_per_repo: config.max_total_per_repo,
              run_store: Keyword.get(opts, :run_store, RunStore)
            ) do
@@ -264,10 +266,11 @@ defmodule SymphonyElixir.Learnings.Reflection do
 
   defp normalize_tag(_tag), do: nil
 
-  defp learning_records(entries, source, now) do
+  defp learning_records(entries, source, now, repo_key) do
     Enum.map(entries, fn entry ->
       Map.merge(entry, %{
         id: new_id(),
+        repo_key: repo_key || Config.repo_key!(),
         repo: source.repo,
         evidence_issue_identifier: source.issue_identifier,
         evidence_issue_url: source.issue_url,

@@ -5,6 +5,8 @@ defmodule SymphonyElixir.PrReviewPollerTest do
   alias SymphonyElixir.Notifications.Event
   alias SymphonyElixir.PrReviewPoller
 
+  @repo_key "default"
+
   defmodule FakeTracker do
     alias SymphonyElixir.Linear.Issue
 
@@ -330,6 +332,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     assert :ok =
              RunStore.put_run(%{
+               repo_key: @repo_key,
                run_id: "run-1",
                issue_id: issue.id,
                issue_identifier: issue.identifier,
@@ -1940,6 +1943,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
   defp review_record(now, attrs \\ %{}) do
     %{
+      repo_key: @repo_key,
       issue_id: "issue-1780",
       issue_identifier: "RSM-1780",
       issue_title: "Review manager",

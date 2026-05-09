@@ -3,12 +3,23 @@ defmodule SymphonyElixir.Learnings.Store do
   Durable, read-mostly store for run-derived learnings.
   """
 
-  alias SymphonyElixir.RunStore
+  alias SymphonyElixir.{Config, RunStore}
 
   @default_max_total_per_repo 500
 
+  @typedoc """
+  A persisted learning entry.
+
+  `:repo_key` is the durable RunStore partition key and controls storage,
+  pruning, and default listing. `:repo` is source metadata from the evidence
+  record, kept as a display/filter facet when the source repository slug is
+  useful to readers. Writers must provide `:repo_key`; `:repo` may differ when
+  the evidence source is more specific than the supervised repository
+  partition.
+  """
   @type record :: %{
           required(:id) => String.t(),
+          required(:repo_key) => String.t(),
           required(:repo) => String.t(),
           required(:rule) => String.t(),
           required(:tags) => [String.t()],
@@ -24,13 +35,18 @@ defmodule SymphonyElixir.Learnings.Store do
   def put_many(records, opts \\ []) when is_list(records) do
     max_total_per_repo = Keyword.get(opts, :max_total_per_repo, @default_max_total_per_repo)
     run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = Keyword.get(opts, :repo_key) || Config.repo_key!()
 
-    run_store.put_learnings(records, max_total_per_repo)
+    records
+    |> Enum.map(&Map.put_new(&1, :repo_key, repo_key))
+    |> run_store.put_learnings(max_total_per_repo)
   end
 
   @spec list(keyword()) :: [record()] | {:error, term()}
   def list(opts \\ []) when is_list(opts) do
     run_store = Keyword.get(opts, :run_store, RunStore)
-    run_store.list_learnings(Keyword.drop(opts, [:run_store]))
+    repo_key = Keyword.get(opts, :repo_key) || Config.repo_key!()
+
+    run_store.list_learnings(repo_key, Keyword.drop(opts, [:run_store]))
   end
 end

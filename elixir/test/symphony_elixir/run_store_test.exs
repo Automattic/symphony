@@ -1,8 +1,79 @@
 defmodule SymphonyElixir.RunStoreTest do
   use SymphonyElixir.TestSupport
 
+  @repo_key "repo-a"
+  @other_repo_key "repo-b"
+
   setup do
     :ok = RunStore.clear()
+  end
+
+  test "rejects partitioned write shims without an explicit repo_key" do
+    assert {:error, :missing_repo_key} = RunStore.put_run(%{run_id: "run-missing-repo"})
+    assert {:error, :missing_repo_key} = RunStore.update_run("run-missing-repo", %{status: "success"})
+    assert {:error, :missing_repo_key} = RunStore.interrupt_running_runs("orchestrator restarted")
+
+    assert {:error, :missing_repo_key} = RunStore.put_retry(%{issue_id: "issue-missing-repo"})
+    assert {:error, :missing_repo_key} = RunStore.delete_retry("issue-missing-repo")
+
+    assert {:error, :missing_repo_key} = RunStore.put_pr_review(%{issue_id: "issue-missing-repo"})
+    assert {:error, :missing_repo_key} = RunStore.update_pr_review("issue-missing-repo", %{status: "complete"})
+    assert {:error, :missing_repo_key} = RunStore.delete_pr_review("issue-missing-repo")
+
+    assert {:error, :missing_repo_key} = RunStore.put_ci_check(%{issue_id: "issue-missing-repo"})
+    assert {:error, :missing_repo_key} = RunStore.update_ci_check("issue-missing-repo", %{status: "green"})
+    assert {:error, :missing_repo_key} = RunStore.delete_ci_check("issue-missing-repo")
+
+    assert {:error, :missing_repo_key} =
+             RunStore.put_verification_allocation(%{run_id: "run-missing-repo", port: 4010})
+
+    assert {:error, :missing_repo_key} =
+             RunStore.update_verification_allocation("run-missing-repo", %{status: "released"})
+
+    assert {:error, :missing_repo_key} = RunStore.delete_verification_allocation("run-missing-repo")
+    assert {:error, :missing_repo_key} = RunStore.put_eval_log(%{eval_id: "eval-missing-repo"})
+
+    assert {:error, :missing_repo_key} =
+             RunStore.put_learnings([%{id: "learning-missing-repo", repo: "github.com/example/repo", created_at: DateTime.utc_now()}])
+  end
+
+  test "fails startup with an explicit schema mismatch for legacy Mnesia tables" do
+    original_run_store_dir = Application.fetch_env!(:symphony_elixir, :run_store_dir)
+    legacy_dir = Path.join(System.tmp_dir!(), "symphony-legacy-run-store-#{System.unique_integer([:positive])}")
+    trap_exit? = Process.flag(:trap_exit, true)
+
+    try do
+      :ok = Application.stop(:symphony_elixir)
+      stop_run_store_for_test()
+      stop_mnesia_for_test()
+      create_legacy_run_store_dir!(legacy_dir)
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:run_store_schema_mismatch, :symphony_run_store_runs, details}} =
+                   RunStore.start_link(dir: legacy_dir)
+
+          assert details.actual_attributes == [:run_id, :record]
+          assert details.expected_attributes == [:key, :repo_key, :run_id, :record]
+          assert details.run_store_dir == Path.expand(legacy_dir)
+          assert details.runbook =~ "wipe"
+        end)
+
+      assert log =~ "RunStore Mnesia schema mismatch"
+      assert log =~ "wipe"
+
+      receive do
+        {:EXIT, _pid, {:run_store_schema_mismatch, :symphony_run_store_runs, _details}} -> :ok
+      after
+        0 -> :ok
+      end
+    after
+      stop_run_store_for_test()
+      stop_mnesia_for_test()
+      File.rm_rf(legacy_dir)
+      Application.put_env(:symphony_elixir, :run_store_dir, original_run_store_dir)
+      Process.flag(:trap_exit, trap_exit?)
+    end
   end
 
   test "persists run records, retry queue entries, and codex totals" do
@@ -11,6 +82,7 @@ defmodule SymphonyElixir.RunStoreTest do
 
     assert :ok =
              RunStore.put_run(%{
+               repo_key: @repo_key,
                run_id: "run-1",
                issue_id: "issue-1",
                issue_identifier: "RSM-1",
@@ -30,7 +102,7 @@ defmodule SymphonyElixir.RunStoreTest do
              })
 
     assert :ok =
-             RunStore.update_run("run-1", %{
+             RunStore.update_run(@repo_key, "run-1", %{
                status: "success",
                ended_at: DateTime.add(started_at, 10, :second),
                runtime_seconds: 10
@@ -39,6 +111,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [
              %{
                run_id: "run-1",
+               repo_key: @repo_key,
                issue_id: "issue-1",
                status: "success",
                attempt: 2,
@@ -46,10 +119,11 @@ defmodule SymphonyElixir.RunStoreTest do
                transcript_path: "/tmp/transcript.jsonl",
                runtime_seconds: 10
              }
-           ] = RunStore.list_runs()
+           ] = RunStore.list_runs(@repo_key)
 
     assert :ok =
              RunStore.put_retry(%{
+               repo_key: @repo_key,
                issue_id: "issue-1",
                issue_identifier: "RSM-1",
                identifier: "RSM-1",
@@ -63,18 +137,20 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [
              %{
                issue_id: "issue-1",
+               repo_key: @repo_key,
                identifier: "RSM-1",
                attempt: 3,
                due_at: ^due_at,
                error: "agent exited: :boom"
              }
-           ] = RunStore.list_retries()
+           ] = RunStore.list_retries(@repo_key)
 
-    assert :ok = RunStore.delete_retry("issue-1")
-    assert [] = RunStore.list_retries()
+    assert :ok = RunStore.delete_retry(@repo_key, "issue-1")
+    assert [] = RunStore.list_retries(@repo_key)
 
     assert :ok =
              RunStore.put_pr_review(%{
+               repo_key: @repo_key,
                issue_id: "issue-1",
                issue_identifier: "RSM-1",
                pr_url: "https://github.com/example/repo/pull/1",
@@ -84,7 +160,7 @@ defmodule SymphonyElixir.RunStoreTest do
              })
 
     assert :ok =
-             RunStore.update_pr_review("issue-1", %{
+             RunStore.update_pr_review(@repo_key, "issue-1", %{
                status: "cooling_down",
                last_activity_at: due_at,
                last_addressed_comment_id: "comment-1"
@@ -93,19 +169,21 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [
              %{
                issue_id: "issue-1",
+               repo_key: @repo_key,
                pr_url: "https://github.com/example/repo/pull/1",
                workspace_path: "/tmp/workspaces/RSM-1",
                status: "cooling_down",
                last_activity_at: ^due_at,
                last_addressed_comment_id: "comment-1"
              }
-           ] = RunStore.list_pr_reviews()
+           ] = RunStore.list_pr_reviews(@repo_key)
 
-    assert :ok = RunStore.delete_pr_review("issue-1")
-    assert [] = RunStore.list_pr_reviews()
+    assert :ok = RunStore.delete_pr_review(@repo_key, "issue-1")
+    assert [] = RunStore.list_pr_reviews(@repo_key)
 
     assert :ok =
              RunStore.put_ci_check(%{
+               repo_key: @repo_key,
                issue_id: "issue-1",
                issue_identifier: "RSM-1",
                pr_url: "https://github.com/example/repo/pull/1",
@@ -116,7 +194,7 @@ defmodule SymphonyElixir.RunStoreTest do
              })
 
     assert :ok =
-             RunStore.update_ci_check("issue-1", %{
+             RunStore.update_ci_check(@repo_key, "issue-1", %{
                status: "green",
                ci_retry_count: 0,
                updated_at: due_at
@@ -125,19 +203,21 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [
              %{
                issue_id: "issue-1",
+               repo_key: @repo_key,
                pr_url: "https://github.com/example/repo/pull/1",
                commit_sha: "abc123",
                status: "green",
                ci_retry_count: 0,
                updated_at: ^due_at
              }
-           ] = RunStore.list_ci_checks()
+           ] = RunStore.list_ci_checks(@repo_key)
 
-    assert :ok = RunStore.delete_ci_check("issue-1")
-    assert [] = RunStore.list_ci_checks()
+    assert :ok = RunStore.delete_ci_check(@repo_key, "issue-1")
+    assert [] = RunStore.list_ci_checks(@repo_key)
 
     assert :ok =
              RunStore.put_verification_allocation(%{
+               repo_key: @repo_key,
                run_id: "run-1",
                issue_id: "issue-1",
                issue_identifier: "RSM-1",
@@ -148,7 +228,7 @@ defmodule SymphonyElixir.RunStoreTest do
              })
 
     assert :ok =
-             RunStore.update_verification_allocation("run-1", %{
+             RunStore.update_verification_allocation(@repo_key, "run-1", %{
                status: "dev_server_started",
                dev_server_os_pid: 12_345,
                dev_server_pgid: 12_345,
@@ -158,6 +238,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [
              %{
                run_id: "run-1",
+               repo_key: @repo_key,
                issue_id: "issue-1",
                issue_identifier: "RSM-1",
                port: 4010,
@@ -165,10 +246,10 @@ defmodule SymphonyElixir.RunStoreTest do
                dev_server_os_pid: 12_345,
                updated_at: ^due_at
              }
-           ] = RunStore.list_verification_allocations()
+           ] = RunStore.list_verification_allocations(@repo_key)
 
-    assert :ok = RunStore.delete_verification_allocation("run-1")
-    assert [] = RunStore.list_verification_allocations()
+    assert :ok = RunStore.delete_verification_allocation(@repo_key, "run-1")
+    assert [] = RunStore.list_verification_allocations(@repo_key)
 
     totals = %{input_tokens: 10, output_tokens: 4, total_tokens: 14, seconds_running: 10}
     assert :ok = RunStore.put_codex_totals(totals)
@@ -227,6 +308,7 @@ defmodule SymphonyElixir.RunStoreTest do
 
     assert :ok =
              RunStore.put_run(%{
+               repo_key: @repo_key,
                run_id: "run-stale",
                issue_id: "issue-stale",
                issue_identifier: "RSM-2",
@@ -235,16 +317,17 @@ defmodule SymphonyElixir.RunStoreTest do
                started_at: now
              })
 
-    assert {:ok, 1} = RunStore.interrupt_running_runs("orchestrator restarted before worker exit")
+    assert {:ok, 1} = RunStore.interrupt_running_runs(@repo_key, "orchestrator restarted before worker exit")
 
     assert [
              %{
                run_id: "run-stale",
+               repo_key: @repo_key,
                status: "failure",
                error: "orchestrator restarted before worker exit",
                ended_at: %DateTime{}
              }
-           ] = RunStore.list_runs()
+           ] = RunStore.list_runs(@repo_key)
   end
 
   test "interrupt_running_runs skips malformed running records" do
@@ -252,6 +335,7 @@ defmodule SymphonyElixir.RunStoreTest do
 
     assert :ok =
              RunStore.put_run(%{
+               repo_key: @repo_key,
                run_id: "run-valid",
                issue_id: "issue-valid",
                issue_identifier: "RSM-3",
@@ -262,13 +346,13 @@ defmodule SymphonyElixir.RunStoreTest do
 
     assert {:atomic, :ok} =
              :mnesia.transaction(fn ->
-               :mnesia.write({:symphony_run_store_runs, "malformed", %{status: "running"}})
+               :mnesia.write({:symphony_run_store_runs, {@repo_key, "malformed"}, @repo_key, "malformed", %{status: "running"}})
                :ok
              end)
 
     log =
       capture_log(fn ->
-        assert {:ok, 1} = RunStore.interrupt_running_runs("orchestrator restarted before worker exit")
+        assert {:ok, 1} = RunStore.interrupt_running_runs(@repo_key, "orchestrator restarted before worker exit")
       end)
 
     assert log =~ "Skipping malformed running run store record"
@@ -276,7 +360,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [
              %{run_id: "run-valid", status: "failure"},
              %{status: "running"}
-           ] = Enum.sort_by(RunStore.list_runs(:all), &Map.get(&1, :run_id, "zzz"))
+           ] = Enum.sort_by(RunStore.list_runs(@repo_key, :all), &Map.get(&1, :run_id, "zzz"))
   end
 
   test "persists eval logs with indexed filter fields" do
@@ -285,6 +369,7 @@ defmodule SymphonyElixir.RunStoreTest do
 
     assert :ok =
              RunStore.put_eval_log(%{
+               repo_key: @repo_key,
                eval_id: "eval-1",
                run_id: "run-1",
                issue_identifier: "RSM-1",
@@ -302,6 +387,7 @@ defmodule SymphonyElixir.RunStoreTest do
 
     assert :ok =
              RunStore.put_eval_log(%{
+               repo_key: @repo_key,
                eval_id: "eval-2",
                run_id: "run-2",
                issue_identifier: "RSM-2",
@@ -315,10 +401,10 @@ defmodule SymphonyElixir.RunStoreTest do
                date: DateTime.to_date(yesterday)
              })
 
-    assert [%{eval_id: "eval-1"}] = RunStore.list_eval_logs(outcome: "pr_opened", limit: :all)
-    assert [%{eval_id: "eval-2"}] = RunStore.list_eval_logs(agent_kind: "claude", limit: :all)
-    assert [%{eval_id: "eval-1"}] = RunStore.list_eval_logs(issue_label: "backend", limit: :all)
-    assert [%{eval_id: "eval-1"}] = RunStore.list_eval_logs(date_from: DateTime.to_date(now), limit: :all)
+    assert [%{eval_id: "eval-1", repo_key: @repo_key}] = RunStore.list_eval_logs(@repo_key, outcome: "pr_opened", limit: :all)
+    assert [%{eval_id: "eval-2"}] = RunStore.list_eval_logs(@repo_key, agent_kind: "claude", limit: :all)
+    assert [%{eval_id: "eval-1"}] = RunStore.list_eval_logs(@repo_key, issue_label: "backend", limit: :all)
+    assert [%{eval_id: "eval-1"}] = RunStore.list_eval_logs(@repo_key, date_from: DateTime.to_date(now), limit: :all)
 
     attributes = :mnesia.table_info(:symphony_run_store_eval_logs, :attributes)
     indexes = :mnesia.table_info(:symphony_run_store_eval_logs, :index)
@@ -335,6 +421,7 @@ defmodule SymphonyElixir.RunStoreTest do
       for index <- 1..3 do
         %{
           id: "learning-#{index}",
+          repo_key: "github.com/example/repo",
           repo: "github.com/example/repo",
           rule: "Prefer the established helper #{index}.",
           tags: ["review-feedback", "repo-patterns"],
@@ -352,19 +439,111 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [
              %{id: "learning-3", evidence_pr_number: 3},
              %{id: "learning-2", evidence_pr_number: 2}
-           ] = RunStore.list_learnings()
+           ] = RunStore.list_learnings("github.com/example/repo")
 
-    assert [%{id: "learning-3"}] = RunStore.list_learnings(tag: "review-feedback", limit: 1)
-    assert [] = RunStore.list_learnings(repo: "github.com/other/repo")
+    assert [%{id: "learning-3"}] = RunStore.list_learnings("github.com/example/repo", tag: "review-feedback", limit: 1)
+    assert [] = RunStore.list_learnings("github.com/other/repo")
 
     restart_run_store()
 
     assert [
              %{id: "learning-3"},
              %{id: "learning-2"}
-           ] = RunStore.list_learnings(repo: "github.com/example/repo")
+           ] = RunStore.list_learnings("github.com/example/repo")
 
     restart_run_store()
+  end
+
+  test "scopes durable records by repo_key when identifiers collide" do
+    now = DateTime.utc_now()
+
+    assert :ok = RunStore.put_run(%{repo_key: @repo_key, run_id: "run-shared", issue_id: "issue-shared", status: "running", started_at: now})
+    assert :ok = RunStore.put_run(%{repo_key: @other_repo_key, run_id: "run-shared", issue_id: "issue-shared", status: "queued", started_at: now})
+    assert :ok = RunStore.update_run(@repo_key, "run-shared", %{status: "success"})
+
+    assert [%{repo_key: @repo_key, status: "success"}] = RunStore.list_runs(@repo_key)
+    assert [%{repo_key: @other_repo_key, status: "queued"}] = RunStore.list_runs(@other_repo_key)
+
+    retry = %{issue_id: "issue-shared", issue_identifier: "RSM-1", identifier: "RSM-1", attempt: 1, due_at: now}
+    assert :ok = RunStore.put_retry(Map.put(retry, :repo_key, @repo_key))
+    assert :ok = RunStore.put_retry(retry |> Map.put(:repo_key, @other_repo_key) |> Map.put(:attempt, 2))
+    assert :ok = RunStore.delete_retry(@repo_key, "issue-shared")
+
+    assert [] = RunStore.list_retries(@repo_key)
+    assert [%{repo_key: @other_repo_key, attempt: 2}] = RunStore.list_retries(@other_repo_key)
+
+    pr_review = %{issue_id: "issue-shared", pr_url: "https://example.test/pr/1", status: "watching", updated_at: now}
+    assert :ok = RunStore.put_pr_review(Map.put(pr_review, :repo_key, @repo_key))
+    assert :ok = RunStore.put_pr_review(pr_review |> Map.put(:repo_key, @other_repo_key) |> Map.put(:status, "cooling_down"))
+    assert :ok = RunStore.update_pr_review(@repo_key, "issue-shared", %{status: "complete"})
+
+    assert [%{repo_key: @repo_key, status: "complete"}] = RunStore.list_pr_reviews(@repo_key)
+    assert [%{repo_key: @other_repo_key, status: "cooling_down"}] = RunStore.list_pr_reviews(@other_repo_key)
+
+    ci_check = %{issue_id: "issue-shared", pr_url: "https://example.test/pr/1", commit_sha: "abc", status: "pending", updated_at: now}
+    assert :ok = RunStore.put_ci_check(Map.put(ci_check, :repo_key, @repo_key))
+    assert :ok = RunStore.put_ci_check(ci_check |> Map.put(:repo_key, @other_repo_key) |> Map.put(:status, "green"))
+    assert :ok = RunStore.delete_ci_check(@repo_key, "issue-shared")
+
+    assert [] = RunStore.list_ci_checks(@repo_key)
+    assert [%{repo_key: @other_repo_key, status: "green"}] = RunStore.list_ci_checks(@other_repo_key)
+
+    allocation = %{
+      run_id: "run-shared",
+      issue_id: "issue-shared",
+      port: 4010,
+      status: "allocated",
+      allocated_at: now,
+      updated_at: now
+    }
+
+    assert :ok = RunStore.put_verification_allocation(Map.put(allocation, :repo_key, @repo_key))
+
+    other_allocation =
+      allocation
+      |> Map.put(:repo_key, @other_repo_key)
+      |> Map.put(:port, 4011)
+
+    assert :ok = RunStore.put_verification_allocation(other_allocation)
+
+    assert :ok = RunStore.update_verification_allocation(@repo_key, "run-shared", %{status: "released"})
+
+    assert [%{repo_key: @repo_key, status: "released", port: 4010}] =
+             RunStore.list_verification_allocations(@repo_key)
+
+    assert [%{repo_key: @other_repo_key, status: "allocated", port: 4011}] =
+             RunStore.list_verification_allocations(@other_repo_key)
+
+    eval_log = %{
+      eval_id: "eval-shared",
+      run_id: "run-shared",
+      outcome: "success",
+      agent_kind: "codex",
+      logged_at: now,
+      date: DateTime.to_date(now)
+    }
+
+    assert :ok = RunStore.put_eval_log(Map.put(eval_log, :repo_key, @repo_key))
+
+    other_eval_log =
+      eval_log
+      |> Map.put(:repo_key, @other_repo_key)
+      |> Map.put(:outcome, "error")
+
+    assert :ok = RunStore.put_eval_log(other_eval_log)
+
+    assert [%{repo_key: @repo_key, outcome: "success"}] = RunStore.list_eval_logs(@repo_key, limit: :all)
+    assert [%{repo_key: @other_repo_key, outcome: "error"}] = RunStore.list_eval_logs(@other_repo_key, limit: :all)
+
+    learnings = [
+      %{repo_key: @repo_key, id: "learning-shared", rule: "Repo A rule.", created_at: now},
+      %{repo_key: @other_repo_key, id: "learning-shared", rule: "Repo B rule.", created_at: now}
+    ]
+
+    assert :ok = RunStore.put_learnings(learnings, 10)
+
+    assert [%{repo_key: @repo_key, rule: "Repo A rule."}] = RunStore.list_learnings(@repo_key)
+    assert [%{repo_key: @other_repo_key, rule: "Repo B rule."}] = RunStore.list_learnings(@other_repo_key)
   end
 
   defp attribute_position(attributes, field) do
@@ -380,5 +559,50 @@ defmodule SymphonyElixir.RunStoreTest do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid
     end
+  end
+
+  defp create_legacy_run_store_dir!(dir) do
+    expanded_dir = Path.expand(dir)
+    File.rm_rf!(expanded_dir)
+    File.mkdir_p!(expanded_dir)
+    Application.put_env(:mnesia, :dir, String.to_charlist(expanded_dir))
+    :ok = :mnesia.create_schema([node()])
+    :ok = :mnesia.start()
+
+    assert {:atomic, :ok} =
+             :mnesia.create_table(
+               :symphony_run_store_runs,
+               attributes: [:run_id, :record],
+               disc_copies: [node()]
+             )
+
+    stop_mnesia_for_test()
+  end
+
+  defp stop_mnesia_for_test do
+    case :mnesia.stop() do
+      :stopped -> :ok
+      :ok -> :ok
+      {:error, {:not_started, :mnesia}} -> :ok
+    end
+  end
+
+  defp stop_run_store_for_test do
+    case Process.whereis(RunStore) do
+      pid when is_pid(pid) ->
+        ref = Process.monitor(pid)
+        GenServer.stop(pid)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+        after
+          1_000 -> :ok
+        end
+
+      _pid ->
+        :ok
+    end
+  catch
+    :exit, _reason -> :ok
   end
 end

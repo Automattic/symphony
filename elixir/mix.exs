@@ -118,7 +118,8 @@ defmodule SymphonyElixir.MixProject do
     [
       setup: ["deps.get"],
       build: ["escript.build"],
-      lint: ["specs.check", "credo --strict"]
+      "audit.run_store": ["cmd elixir scripts/audit_run_store_repo_key.exs"],
+      lint: ["specs.check", "audit.run_store", "credo --strict"]
     ]
   end
 

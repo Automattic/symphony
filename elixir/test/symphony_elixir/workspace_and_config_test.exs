@@ -74,7 +74,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert {:ok, workspace} = Workspace.create_for_issue("MT-WT")
 
       assert {:ok, expected_workspace} =
-               SymphonyElixir.PathSafety.canonicalize(Path.join(workspace_root, "MT-WT"))
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "MT-WT"]))
 
       assert workspace == expected_workspace
       assert File.read!(Path.join(workspace, "README.md")) == "initial\n"
@@ -188,14 +188,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     try do
       workspace_root = Path.join(test_root, "workspaces")
-      stale_workspace = Path.join(workspace_root, "MT-STALE")
-      protected_workspace = Path.join(workspace_root, "MT-RUNNING")
-      recent_workspace = Path.join(workspace_root, "MT-RECENT")
+      stale_workspace = Path.join([workspace_root, "default", "MT-STALE"])
+      protected_workspace = Path.join([workspace_root, "default", "MT-RUNNING"])
+      recent_workspace = Path.join([workspace_root, "default", "MT-RECENT"])
+      other_repo_workspace = Path.join([workspace_root, "other", "MT-OTHER-STALE"])
 
-      Enum.each([stale_workspace, protected_workspace, recent_workspace], &File.mkdir_p!/1)
+      Enum.each([stale_workspace, protected_workspace, recent_workspace, other_repo_workspace], &File.mkdir_p!/1)
       old_timestamp = {{2026, 1, 1}, {0, 0, 0}}
       File.touch!(stale_workspace, old_timestamp)
       File.touch!(protected_workspace, old_timestamp)
+      File.touch!(other_repo_workspace, old_timestamp)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -210,6 +212,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       refute File.exists?(stale_workspace)
       assert File.exists?(protected_workspace)
       assert File.exists?(recent_workspace)
+      assert File.exists?(other_repo_workspace)
     after
       File.rm_rf(test_root)
     end
@@ -224,11 +227,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     try do
       workspace_root = Path.join(test_root, "workspaces")
-      tracked_workspace = Path.join(workspace_root, "MT-TRACKED")
-      orphan_workspace = Path.join(workspace_root, "MT-ORPHAN")
+      tracked_workspace = Path.join([workspace_root, "default", "MT-TRACKED"])
+      orphan_workspace = Path.join([workspace_root, "default", "MT-ORPHAN"])
+      other_repo_orphan = Path.join([workspace_root, "other", "MT-ORPHAN"])
 
       File.mkdir_p!(tracked_workspace)
       File.mkdir_p!(orphan_workspace)
+      File.mkdir_p!(other_repo_orphan)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -240,6 +245,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert Enum.any?(actions, &match?(%{identifier: "MT-ORPHAN", action: :deleted, reason: :orphan}, &1))
       assert File.exists?(tracked_workspace)
       refute File.exists?(orphan_workspace)
+      assert File.exists?(other_repo_orphan)
+
+      assert {:ok, other_actions} = Workspace.sweep_orphan_workspaces("other", [])
+      assert Enum.any?(other_actions, &match?(%{repo_key: "other", identifier: "MT-ORPHAN", action: :deleted, reason: :orphan}, &1))
+      refute File.exists?(other_repo_orphan)
     after
       File.rm_rf(test_root)
     end
@@ -255,7 +265,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       primary_repo = Path.join(test_root, "primary")
       workspace_root = Path.join(test_root, "workspaces")
-      stale_workspace = Path.join(workspace_root, "MT-STALE")
+      stale_workspace = Path.join([workspace_root, "default", "MT-STALE"])
 
       create_primary_repo!(primary_repo)
       File.mkdir_p!(stale_workspace)
@@ -290,7 +300,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       primary_repo = Path.join(test_root, "not-git")
       workspace_root = Path.join(test_root, "workspaces")
-      stale_workspace = Path.join(workspace_root, "MT-WT-LIST-FAIL")
+      stale_workspace = Path.join([workspace_root, "default", "MT-WT-LIST-FAIL"])
 
       File.mkdir_p!(primary_repo)
       File.mkdir_p!(stale_workspace)
@@ -328,6 +338,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, second_workspace} = Workspace.create_for_issue("MT/Det")
 
     assert first_workspace == second_workspace
+    assert Path.basename(Path.dirname(first_workspace)) == "default"
     assert Path.basename(first_workspace) == "MT_Det"
   end
 
@@ -375,8 +386,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       )
 
     try do
-      stale_workspace = Path.join(workspace_root, "MT-STALE")
-      File.mkdir_p!(workspace_root)
+      stale_workspace = Path.join([workspace_root, "default", "MT-STALE"])
+      File.mkdir_p!(Path.dirname(stale_workspace))
       File.write!(stale_workspace, "old state\n")
 
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
@@ -400,9 +411,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       outside_root = Path.join(test_root, "outside")
-      symlink_path = Path.join(workspace_root, "MT-SYM")
+      symlink_path = Path.join([workspace_root, "default", "MT-SYM"])
 
-      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(Path.dirname(symlink_path))
       File.mkdir_p!(outside_root)
       File.ln_s!(outside_root, symlink_path)
 
@@ -435,7 +446,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: linked_root)
 
       assert {:ok, canonical_workspace} =
-               SymphonyElixir.PathSafety.canonicalize(Path.join(actual_root, "MT-LINK"))
+               SymphonyElixir.PathSafety.canonicalize(Path.join([actual_root, "default", "MT-LINK"]))
 
       assert {:ok, workspace} = Workspace.create_for_issue("MT-LINK")
       assert workspace == canonical_workspace
@@ -517,7 +528,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
-      workspace = Path.join(workspace_root, "MT-608")
+      workspace = Path.join([workspace_root, "default", "MT-608"])
       assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
 
       assert {:ok, ^canonical_workspace} = Workspace.create_for_issue("MT-608")
@@ -536,8 +547,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       )
 
     try do
-      target_workspace = Path.join(workspace_root, "S_1")
-      untouched_workspace = Path.join(workspace_root, "OTHER-#{System.unique_integer([:positive])}")
+      target_workspace = Path.join([workspace_root, "default", "S_1"])
+      untouched_workspace = Path.join([workspace_root, "default", "OTHER-#{System.unique_integer([:positive])}"])
 
       File.mkdir_p!(target_workspace)
       File.mkdir_p!(untouched_workspace)
@@ -1527,7 +1538,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       File.mkdir_p!(workspace_root)
       File.mkdir_p!(outside_workspace)
       File.write!(Path.join(outside_workspace, "marker.txt"), "keep\n")
-      File.ln_s!(outside_workspace, Path.join(workspace_root, "MT-ESCAPE"))
+      escape_workspace = Path.join([workspace_root, "default", "MT-ESCAPE"])
+      File.mkdir_p!(Path.dirname(escape_workspace))
+      File.ln_s!(outside_workspace, escape_workspace)
 
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
@@ -2921,7 +2934,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       trace_file = Path.join(test_root, "ssh.trace")
       fake_ssh = Path.join(test_root, "ssh")
       workspace_root = "~/.symphony-remote-workspaces"
-      workspace_path = "/remote/home/.symphony-remote-workspaces/MT-SSH-WS"
+      workspace_path = "/remote/home/.symphony-remote-workspaces/default/MT-SSH-WS"
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
@@ -2961,7 +2974,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       trace = File.read!(trace_file)
       assert trace =~ "-p 2200 worker-01 bash -lc"
       assert trace =~ "__SYMPHONY_WORKSPACE__"
-      assert trace =~ "~/.symphony-remote-workspaces/MT-SSH-WS"
+      assert trace =~ "~/.symphony-remote-workspaces/default/MT-SSH-WS"
       assert trace =~ "${workspace#~/}"
       assert trace =~ "echo before-run"
       assert trace =~ "echo after-run"

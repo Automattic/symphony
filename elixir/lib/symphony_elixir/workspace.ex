@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Workspace do
 
   @type worker_host :: String.t() | nil
   @type lifecycle_action :: %{
+          optional(:repo_key) => String.t(),
           optional(:identifier) => String.t(),
           optional(:path) => Path.t(),
           optional(:destination) => Path.t(),
@@ -31,15 +32,16 @@ defmodule SymphonyElixir.Workspace do
     String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
-  @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
+  @spec create_for_issue(map() | String.t() | nil, worker_host(), String.t() | nil) ::
           {:ok, Path.t()} | {:error, term()}
-  def create_for_issue(issue_or_identifier, worker_host \\ nil) do
-    issue_context = issue_context(issue_or_identifier)
+  def create_for_issue(issue_or_identifier, worker_host \\ nil, repo_key \\ nil) do
+    issue_context = issue_context(issue_or_identifier, repo_key)
 
     try do
+      safe_repo_key = safe_identifier(issue_context.repo_key)
       safe_id = safe_identifier(issue_context.issue_identifier)
 
-      with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
+      with {:ok, workspace} <- workspace_path_for_issue(safe_repo_key, safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
            {:ok, workspace, created?} <- ensure_workspace(workspace, issue_context, worker_host),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
@@ -453,21 +455,30 @@ defmodule SymphonyElixir.Workspace do
   end
 
   @spec reclaim_stale_workspaces() :: {:ok, [lifecycle_action()]} | {:error, term()}
-  def reclaim_stale_workspaces, do: reclaim_stale_workspaces(MapSet.new(), DateTime.utc_now())
+  def reclaim_stale_workspaces, do: reclaim_stale_workspaces(Config.repo_key!(), MapSet.new(), DateTime.utc_now())
 
   @spec reclaim_stale_workspaces(term()) :: {:ok, [lifecycle_action()]} | {:error, term()}
   def reclaim_stale_workspaces(protected_identifiers),
-    do: reclaim_stale_workspaces(protected_identifiers, DateTime.utc_now())
+    do: reclaim_stale_workspaces(Config.repo_key!(), protected_identifiers, DateTime.utc_now())
+
+  @spec reclaim_stale_workspaces(String.t(), term()) :: {:ok, [lifecycle_action()]} | {:error, term()}
+  def reclaim_stale_workspaces(repo_key, protected_identifiers) when is_binary(repo_key),
+    do: reclaim_stale_workspaces(repo_key, protected_identifiers, DateTime.utc_now())
 
   @spec reclaim_stale_workspaces(term(), DateTime.t()) :: {:ok, [lifecycle_action()]} | {:error, term()}
   def reclaim_stale_workspaces(protected_identifiers, %DateTime{} = now) do
+    reclaim_stale_workspaces(Config.repo_key!(), protected_identifiers, now)
+  end
+
+  @spec reclaim_stale_workspaces(String.t(), term(), DateTime.t()) :: {:ok, [lifecycle_action()]} | {:error, term()}
+  def reclaim_stale_workspaces(repo_key, protected_identifiers, %DateTime{} = now) when is_binary(repo_key) do
     lifecycle = Config.settings!().workspace.lifecycle
 
     if lifecycle.age_gc_enabled == true do
       protected = normalize_identifier_set(protected_identifiers)
       cutoff = DateTime.to_unix(now) - lifecycle.max_age_days * 86_400
 
-      with {:ok, entries} <- local_workspace_entries() do
+      with {:ok, entries} <- local_workspace_entries(repo_key) do
         actions =
           entries
           |> Enum.filter(&(&1.mtime <= cutoff))
@@ -483,10 +494,15 @@ defmodule SymphonyElixir.Workspace do
 
   @spec sweep_orphan_workspaces(Enumerable.t()) :: {:ok, [lifecycle_action()]} | {:error, term()}
   def sweep_orphan_workspaces(tracked_identifiers) do
+    sweep_orphan_workspaces(Config.repo_key!(), tracked_identifiers)
+  end
+
+  @spec sweep_orphan_workspaces(String.t(), Enumerable.t()) :: {:ok, [lifecycle_action()]} | {:error, term()}
+  def sweep_orphan_workspaces(repo_key, tracked_identifiers) when is_binary(repo_key) do
     lifecycle = Config.settings!().workspace.lifecycle
     tracked = normalize_identifier_set(tracked_identifiers)
 
-    with {:ok, entries} <- local_workspace_entries() do
+    with {:ok, entries} <- local_workspace_entries(repo_key) do
       actions =
         entries
         |> Enum.reject(&MapSet.member?(tracked, &1.identifier))
@@ -498,8 +514,14 @@ defmodule SymphonyElixir.Workspace do
 
   @spec local_workspace_entries() :: {:ok, [map()]} | {:error, term()}
   def local_workspace_entries do
+    local_workspace_entries(Config.repo_key!())
+  end
+
+  @spec local_workspace_entries(String.t()) :: {:ok, [map()]} | {:error, term()}
+  def local_workspace_entries(repo_key) when is_binary(repo_key) do
     settings = Config.settings!()
-    root = settings.workspace.root
+    safe_repo_key = safe_identifier(repo_key)
+    root = Path.join(settings.workspace.root, safe_repo_key)
     trash_dir = settings.workspace.lifecycle.trash_dir |> Path.split() |> List.first()
 
     cond do
@@ -515,7 +537,7 @@ defmodule SymphonyElixir.Workspace do
             entries =
               names
               |> Enum.reject(&(&1 == trash_dir))
-              |> Enum.flat_map(&local_workspace_entry(root, &1))
+              |> Enum.flat_map(&local_workspace_entry(root, safe_repo_key, &1))
 
             {:ok, entries}
 
@@ -525,12 +547,12 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp local_workspace_entry(root, name) do
+  defp local_workspace_entry(root, repo_key, name) do
     path = Path.join(root, name)
 
     case File.stat(path, time: :posix) do
       {:ok, %{type: :directory, mtime: mtime}} when is_integer(mtime) ->
-        [%{identifier: safe_identifier(name), name: name, path: path, mtime: mtime}]
+        [%{repo_key: repo_key, identifier: safe_identifier(name), name: name, path: path, mtime: mtime}]
 
       _ ->
         []
@@ -557,9 +579,10 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp perform_orphan_action(entry, _lifecycle) do
-    Logger.warning("Workspace orphan found identifier=#{entry.identifier} workspace=#{entry.path} action=log")
+    Logger.warning("Workspace orphan found repo_key=#{entry.repo_key} identifier=#{entry.identifier} workspace=#{entry.path} action=log")
 
     %{
+      repo_key: entry.repo_key,
       identifier: entry.identifier,
       path: entry.path,
       worker_host: nil,
@@ -571,9 +594,10 @@ defmodule SymphonyElixir.Workspace do
   defp delete_lifecycle_workspace(entry, reason) do
     case remove(entry.path) do
       {:ok, _removed_paths} ->
-        Logger.warning("Workspace lifecycle removed identifier=#{entry.identifier} workspace=#{entry.path} reason=#{reason} action=delete")
+        Logger.warning("Workspace lifecycle removed repo_key=#{entry.repo_key} identifier=#{entry.identifier} workspace=#{entry.path} reason=#{reason} action=delete")
 
         %{
+          repo_key: entry.repo_key,
           identifier: entry.identifier,
           path: entry.path,
           worker_host: nil,
@@ -582,9 +606,10 @@ defmodule SymphonyElixir.Workspace do
         }
 
       {:error, error, output} ->
-        log_workspace_removal_failure(entry.path, issue_context(entry.identifier), nil, error, output)
+        log_workspace_removal_failure(entry.path, issue_context(%{identifier: entry.identifier, repo_key: entry.repo_key}), nil, error, output)
 
         %{
+          repo_key: entry.repo_key,
           identifier: entry.identifier,
           path: entry.path,
           worker_host: nil,
@@ -597,15 +622,16 @@ defmodule SymphonyElixir.Workspace do
 
   defp trash_lifecycle_workspace(entry, reason, lifecycle) do
     root = Config.settings!().workspace.root
-    trash_root = Path.join(root, lifecycle.trash_dir)
+    trash_root = Path.join([root, entry.repo_key, lifecycle.trash_dir])
     destination = unique_trash_destination(trash_root, entry.identifier)
 
     with :ok <- validate_workspace_path(entry.path, nil),
          :ok <- File.mkdir_p(trash_root),
          :ok <- File.rename(entry.path, destination) do
-      Logger.warning("Workspace orphan found identifier=#{entry.identifier} workspace=#{entry.path} action=trash destination=#{destination}")
+      Logger.warning("Workspace orphan found repo_key=#{entry.repo_key} identifier=#{entry.identifier} workspace=#{entry.path} action=trash destination=#{destination}")
 
       %{
+        repo_key: entry.repo_key,
         identifier: entry.identifier,
         path: entry.path,
         destination: destination,
@@ -615,9 +641,10 @@ defmodule SymphonyElixir.Workspace do
       }
     else
       {:error, error} ->
-        Logger.warning("Workspace lifecycle trash failed identifier=#{entry.identifier} workspace=#{entry.path} destination=#{destination} reason=#{inspect(error)}")
+        Logger.warning("Workspace lifecycle trash failed repo_key=#{entry.repo_key} identifier=#{entry.identifier} workspace=#{entry.path} destination=#{destination} reason=#{inspect(error)}")
 
         %{
+          repo_key: entry.repo_key,
           identifier: entry.identifier,
           path: entry.path,
           destination: destination,
@@ -677,9 +704,10 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp remove_issue_workspace(identifier, issue_context, worker_host) when is_binary(identifier) do
+    safe_repo_key = safe_identifier(issue_context.repo_key)
     safe_id = safe_identifier(identifier)
 
-    case workspace_path_for_issue(safe_id, worker_host) do
+    case workspace_path_for_issue(safe_repo_key, safe_id, worker_host) do
       {:ok, workspace} ->
         case remove_workspace(workspace, issue_context, worker_host) do
           {:ok, _removed_paths} ->
@@ -745,14 +773,16 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
+  defp workspace_path_for_issue(safe_repo_key, safe_id, nil) when is_binary(safe_repo_key) and is_binary(safe_id) do
     Config.settings!().workspace.root
+    |> Path.join(safe_repo_key)
     |> Path.join(safe_id)
     |> PathSafety.canonicalize()
   end
 
-  defp workspace_path_for_issue(safe_id, worker_host) when is_binary(safe_id) and is_binary(worker_host) do
-    {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
+  defp workspace_path_for_issue(safe_repo_key, safe_id, worker_host)
+       when is_binary(safe_repo_key) and is_binary(safe_id) and is_binary(worker_host) do
+    {:ok, Path.join([Config.settings!().workspace.root, safe_repo_key, safe_id])}
   end
 
   defp worktree_branch(%{issue_identifier: identifier}) when is_binary(identifier) and identifier != "" do
@@ -1114,42 +1144,64 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(worker_host), do: worker_host
 
   defp workspace_issue_context(workspace) do
+    path_parts = Path.split(Path.expand(workspace))
+
     %{
       issue_id: nil,
+      repo_key: workspace_repo_key(path_parts),
       issue_identifier: Path.basename(workspace),
       labels: []
     }
   end
 
-  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
+  defp issue_context(issue_or_identifier, repo_key \\ nil)
+
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue, repo_key) do
     %{
       issue_id: issue_id,
+      repo_key: issue_repo_key(issue, repo_key),
       issue_identifier: identifier || "issue",
       labels: issue_labels(issue)
     }
   end
 
-  defp issue_context(identifier) when is_binary(identifier) do
+  defp issue_context(identifier, repo_key) when is_binary(identifier) do
     %{
       issue_id: nil,
+      repo_key: normalize_repo_key(repo_key),
       issue_identifier: identifier,
       labels: []
     }
   end
 
-  defp issue_context(_identifier) do
+  defp issue_context(_identifier, repo_key) do
     %{
       issue_id: nil,
+      repo_key: normalize_repo_key(repo_key),
       issue_identifier: "issue",
       labels: []
     }
+  end
+
+  defp issue_repo_key(%{repo_key: repo_key}, _fallback), do: normalize_repo_key(repo_key)
+  defp issue_repo_key(%{"repo_key" => repo_key}, _fallback), do: normalize_repo_key(repo_key)
+  defp issue_repo_key(_issue, fallback), do: normalize_repo_key(fallback)
+
+  defp normalize_repo_key(repo_key) when is_binary(repo_key) and repo_key != "", do: repo_key
+  defp normalize_repo_key(_repo_key), do: Config.repo_key!()
+
+  defp workspace_repo_key(path_parts) when is_list(path_parts) do
+    case Enum.reverse(path_parts) do
+      [_identifier, repo_key | _rest] -> repo_key
+      _ -> Config.repo_key!()
+    end
   end
 
   defp issue_labels(%{labels: labels}) when is_list(labels), do: labels
   defp issue_labels(%{"labels" => labels}) when is_list(labels), do: labels
   defp issue_labels(_issue), do: []
 
-  defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
-    "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
+  defp issue_log_context(%{issue_id: issue_id, repo_key: repo_key, issue_identifier: issue_identifier}) do
+    "repo_key=#{repo_key || "default"} issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
   end
 end

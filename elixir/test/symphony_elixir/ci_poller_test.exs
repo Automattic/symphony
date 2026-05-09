@@ -4,6 +4,8 @@ defmodule SymphonyElixir.CiPollerTest do
   alias SymphonyElixir.CiPoller
   alias SymphonyElixir.Notifications
 
+  @repo_key "default"
+
   defmodule FakeTracker do
     alias SymphonyElixir.Linear.Issue
 
@@ -238,6 +240,7 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert :ok =
              RunStore.put_ci_check(%{
+               repo_key: @repo_key,
                issue_id: issue.id,
                issue_identifier: issue.identifier,
                issue_url: issue.url,
@@ -267,6 +270,7 @@ defmodule SymphonyElixir.CiPollerTest do
     Application.put_env(:symphony_elixir, :ci_test_status, failed_status("abc123"))
 
     Application.put_env(:symphony_elixir, :ci_test_ci_record, %{
+      repo_key: @repo_key,
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_url: issue.url,
@@ -304,6 +308,7 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert :ok =
              RunStore.put_ci_check(%{
+               repo_key: @repo_key,
                issue_id: issue.id,
                issue_identifier: issue.identifier,
                issue_url: issue.url,
@@ -336,6 +341,7 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert :ok =
              RunStore.put_ci_check(%{
+               repo_key: @repo_key,
                issue_id: issue.id,
                issue_identifier: issue.identifier,
                issue_url: issue.url,
@@ -370,6 +376,7 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert :ok =
              RunStore.put_ci_check(%{
+               repo_key: @repo_key,
                issue_id: issue.id,
                issue_identifier: issue.identifier,
                issue_url: issue.url,
@@ -414,6 +421,7 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert :ok =
              RunStore.put_ci_check(%{
+               repo_key: @repo_key,
                issue_id: "issue-2401",
                status: "dispatch_requested",
                ci_retry_count: 1,
@@ -422,6 +430,7 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert :ok =
              RunStore.put_pr_review(%{
+               repo_key: @repo_key,
                issue_id: "issue-2401",
                issue_identifier: "RSM-2401",
                pr_url: "https://github.com/example/repo/pull/2401",
@@ -482,6 +491,7 @@ defmodule SymphonyElixir.CiPollerTest do
 
   defp put_run(issue, now) do
     RunStore.put_run(%{
+      repo_key: @repo_key,
       run_id: "run-1",
       issue_id: issue.id,
       issue_identifier: issue.identifier,

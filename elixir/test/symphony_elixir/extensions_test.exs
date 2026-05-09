@@ -530,6 +530,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert :ok =
              RunStore.put_eval_log(%{
+               repo_key: "default",
                eval_id: "eval-api-1",
                run_id: "run-api-1",
                issue_id: "issue-api-1",
@@ -549,6 +550,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert :ok =
              RunStore.put_eval_log(%{
+               repo_key: "default",
                eval_id: "eval-api-2",
                run_id: "run-api-2",
                issue_id: "issue-api-2",
@@ -1026,6 +1028,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert :ok =
              RunStore.put_eval_log(%{
+               repo_key: "default",
                eval_id: "eval-live-1",
                run_id: "run-live-1",
                issue_id: "issue-live-1",
@@ -1046,6 +1049,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert :ok =
              RunStore.put_eval_log(%{
+               repo_key: "default",
                eval_id: "eval-live-2",
                run_id: "run-live-2",
                issue_id: "issue-live-2",
@@ -1089,6 +1093,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              RunStore.put_learnings(
                [
                  %{
+                   repo_key: "default",
                    id: "learning-live-1",
                    repo: "github.com/example/repo",
                    rule: "Prefer existing dashboard helpers.",
@@ -1101,6 +1106,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    created_at: now
                  },
                  %{
+                   repo_key: "default",
                    id: "learning-live-3",
                    repo: "github.com/example/repo",
                    rule: "Do not reconstruct Linear links without canonical issue URLs.",
@@ -1113,6 +1119,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    created_at: DateTime.add(now, -30, :second)
                  },
                  %{
+                   repo_key: "default",
                    id: "learning-live-2",
                    repo: "github.com/other/repo",
                    rule: "Keep unrelated records filterable.",

@@ -4,12 +4,13 @@ defmodule SymphonyElixir.Verification.PortPool do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.RunStore
+  alias SymphonyElixir.{Config, RunStore}
 
   @default_reconcile_interval_ms 5_000
 
   defstruct [
     :run_store,
+    :repo_key,
     :process_alive?,
     :reconcile_interval_ms,
     :timer_ref,
@@ -19,6 +20,7 @@ defmodule SymphonyElixir.Verification.PortPool do
 
   @type allocation :: %{
           run_id: String.t(),
+          repo_key: String.t(),
           issue_id: String.t() | nil,
           issue_identifier: String.t() | nil,
           port: pos_integer(),
@@ -119,6 +121,7 @@ defmodule SymphonyElixir.Verification.PortPool do
   def init(opts) do
     state = %__MODULE__{
       run_store: Keyword.get(opts, :run_store, RunStore),
+      repo_key: Keyword.get(opts, :repo_key, Config.repo_key!()),
       process_alive?: Keyword.get(opts, :process_alive?, &__MODULE__.os_pid_alive?/1),
       reconcile_interval_ms: Keyword.get(opts, :reconcile_interval_ms, @default_reconcile_interval_ms)
     }
@@ -201,6 +204,7 @@ defmodule SymphonyElixir.Verification.PortPool do
 
         allocation = %{
           run_id: run_id,
+          repo_key: Map.get(attrs, :repo_key) || state.repo_key,
           issue_id: Map.get(attrs, :issue_id),
           issue_identifier: Map.get(attrs, :issue_identifier),
           worker_host: Map.get(attrs, :worker_host),
@@ -234,7 +238,7 @@ defmodule SymphonyElixir.Verification.PortPool do
   defp fetch_port_range(_attrs), do: {:error, :invalid_port_range}
 
   defp reconcile_persisted_allocations(state) do
-    case state.run_store.list_verification_allocations() do
+    case state.run_store.list_verification_allocations(state.repo_key) do
       allocations when is_list(allocations) ->
         Enum.reduce(allocations, empty_allocations(state), &reconcile_allocation/2)
 
@@ -299,10 +303,11 @@ defmodule SymphonyElixir.Verification.PortPool do
     end
   end
 
-  defp release_persisted_allocation(state, %{run_id: run_id}, reason) do
+  defp release_persisted_allocation(state, %{run_id: run_id} = allocation, reason) do
     now = DateTime.utc_now()
 
     attrs = %{
+      repo_key: Map.get(allocation, :repo_key) || state.repo_key,
       status: "released",
       released_at: now,
       release_reason: reason,
@@ -313,7 +318,9 @@ defmodule SymphonyElixir.Verification.PortPool do
   end
 
   defp persist_allocation_update(state, run_id, attrs) do
-    case state.run_store.update_verification_allocation(run_id, attrs) do
+    repo_key = Map.get(attrs, :repo_key) || state.repo_key
+
+    case state.run_store.update_verification_allocation(repo_key, run_id, attrs) do
       :ok -> :ok
       {:error, :verification_allocation_not_found} -> :ok
       {:error, reason} -> Logger.warning("Failed to update verification allocation run_id=#{run_id}: #{inspect(reason)}")

@@ -28,11 +28,18 @@ defmodule SymphonyElixir.Application do
 
     children = child_specs_for_runtime()
 
-    Supervisor.start_link(
-      children,
-      strategy: :one_for_one,
-      name: SymphonyElixir.Supervisor
-    )
+    case Supervisor.start_link(
+           children,
+           strategy: :one_for_one,
+           name: SymphonyElixir.Supervisor
+         ) do
+      {:ok, _pid} = started ->
+        started
+
+      {:error, _reason} = error ->
+        clear_runtime_bootstrap_env()
+        error
+    end
   end
 
   @impl true
@@ -46,35 +53,42 @@ defmodule SymphonyElixir.Application do
   def child_specs_for_runtime(env \\ System.get_env()) when is_map(env) do
     system_config = Config.system!()
     primary_repo = SystemSchema.primary_repo(system_config)
-    Application.put_env(:symphony_elixir, :primary_repo_name, primary_repo.name)
-    SymphonyElixir.Workflow.set_workflow_file_path(primary_repo.workflow_path)
 
-    core_children =
-      [
-        {Phoenix.PubSub, name: SymphonyElixir.PubSub},
-        {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
-        {Registry, keys: :unique, name: SymphonyElixir.Repo.Registry},
-        repo_supervisor_specs(system_config.repos),
-        SymphonyElixir.Notifications.Notifier
-      ]
-      |> List.flatten()
+    try do
+      Application.put_env(:symphony_elixir, :primary_repo_name, primary_repo.name)
+      SymphonyElixir.Workflow.set_workflow_file_path(SystemSchema.repo_workflow_path(primary_repo))
 
-    if orchestrator_runtime_disabled?(env) do
-      core_children
-    else
-      (core_children ++
-         [
-           SymphonyElixir.RunStore
-         ] ++
-         SymphonyElixir.Verification.child_specs_for_runtime(Config.settings!()) ++
-         [
-           SymphonyElixir.Orchestrator,
-           pr_review_child_spec(),
-           ci_child_spec(),
-           SymphonyElixir.HttpServer,
-           SymphonyElixir.StatusDashboard
-         ])
-      |> Enum.reject(&is_nil/1)
+      core_children =
+        [
+          {Phoenix.PubSub, name: SymphonyElixir.PubSub},
+          {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+          {Registry, keys: :unique, name: SymphonyElixir.Repo.Registry},
+          repo_supervisor_specs(system_config.repos),
+          SymphonyElixir.Notifications.Notifier
+        ]
+        |> List.flatten()
+
+      if orchestrator_runtime_disabled?(env) do
+        core_children
+      else
+        (core_children ++
+           [
+             SymphonyElixir.RunStore
+           ] ++
+           SymphonyElixir.Verification.child_specs_for_runtime(Config.settings!()) ++
+           [
+             SymphonyElixir.Orchestrator,
+             pr_review_child_spec(),
+             ci_child_spec(),
+             SymphonyElixir.HttpServer,
+             SymphonyElixir.StatusDashboard
+           ])
+        |> Enum.reject(&is_nil/1)
+      end
+    rescue
+      exception ->
+        clear_runtime_bootstrap_env()
+        reraise exception, __STACKTRACE__
     end
   end
 
@@ -95,6 +109,12 @@ defmodule SymphonyElixir.Application do
     if settings.pr_review.mode == "polling" and settings.ci.enabled do
       SymphonyElixir.CiPoller
     end
+  end
+
+  defp clear_runtime_bootstrap_env do
+    Application.delete_env(:symphony_elixir, :primary_repo_name)
+    Application.delete_env(:symphony_elixir, :workflow_file_path)
+    :ok
   end
 
   defp orchestrator_runtime_disabled?(env) do

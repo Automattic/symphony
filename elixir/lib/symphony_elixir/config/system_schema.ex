@@ -27,7 +27,6 @@ defmodule SymphonyElixir.Config.SystemSchema do
       field(:name, :string)
       field(:path, :string)
       field(:workflow, :string, default: "WORKFLOW.md")
-      field(:workflow_path, :string, virtual: true)
       field(:team, :string)
       field(:labels, {:array, :string}, default: [])
       field(:projects, {:array, :string}, default: [])
@@ -137,8 +136,35 @@ defmodule SymphonyElixir.Config.SystemSchema do
   end
 
   @spec primary_repo(t()) :: Repo.t() | nil
-  def primary_repo(%__MODULE__{repos: [repo | _repos]}), do: repo
+  def primary_repo(%__MODULE__{repos: repos}) when is_list(repos) do
+    Enum.find(repos, & &1.default) || List.first(repos)
+  end
+
   def primary_repo(%__MODULE__{}), do: nil
+
+  @spec repo_workflow_path(Repo.t() | map()) :: Path.t()
+  def repo_workflow_path(%Repo{} = repo) do
+    repo
+    |> Map.from_struct()
+    |> repo_workflow_path()
+  end
+
+  def repo_workflow_path(repo) when is_map(repo) do
+    path = repo_value(repo, :path)
+    workflow = repo_value(repo, :workflow, "WORKFLOW.md")
+
+    if non_empty_string?(path) and non_empty_string?(workflow) do
+      Workflow.repo_workflow_file_path(%{path: path, workflow: workflow})
+    else
+      raise ArgumentError,
+            "repo workflow path requires non-empty `path` and `workflow`; got: #{inspect(repo)}"
+    end
+  end
+
+  def repo_workflow_path(repo) do
+    raise ArgumentError,
+          "repo workflow path requires a repo map or #{inspect(Repo)} struct; got: #{inspect(repo)}"
+  end
 
   defp changeset(attrs) do
     %__MODULE__{}
@@ -161,6 +187,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast_embed(:repos, with: &Repo.changeset/2, required: true)
     |> validate_length(:repos, min: 1)
     |> validate_unique_repo_names()
+    |> validate_single_default_repo()
   end
 
   defp reject_unknown_keys(config) do
@@ -227,6 +254,21 @@ defmodule SymphonyElixir.Config.SystemSchema do
     end
   end
 
+  defp validate_single_default_repo(changeset) do
+    default_count =
+      changeset
+      |> get_change(:repos, [])
+      |> Enum.count(&truthy_change?(&1, :default))
+
+    if default_count <= 1 do
+      changeset
+    else
+      add_error(changeset, :repos, "can include at most one default repo")
+    end
+  end
+
+  defp truthy_change?(changeset, field), do: get_field(changeset, field) == true
+
   defp duplicate_values(values) do
     {_seen, duplicates} =
       Enum.reduce(values, {MapSet.new(), MapSet.new()}, fn value, {seen, duplicates} ->
@@ -244,14 +286,25 @@ defmodule SymphonyElixir.Config.SystemSchema do
     repos =
       Enum.map(system_config.repos, fn %Repo{} = repo ->
         repo_path = resolve_path(repo.path)
-        workflow_path = Workflow.repo_workflow_file_path(%{path: repo_path, workflow: repo.workflow})
-        %{repo | path: repo_path, workflow_path: workflow_path}
+        %{repo | path: repo_path}
       end)
 
     %{system_config | repos: repos}
   end
 
   defp resolve_path(path) when is_binary(path), do: Path.expand(path)
+
+  defp repo_value(repo, key, default \\ nil) do
+    string_key = to_string(key)
+
+    cond do
+      Map.has_key?(repo, key) -> Map.get(repo, key)
+      Map.has_key?(repo, string_key) -> Map.get(repo, string_key)
+      true -> default
+    end
+  end
+
+  defp non_empty_string?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp agent_to_map(%Schema.Agent{} = agent) do
     agent

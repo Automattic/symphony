@@ -305,7 +305,7 @@ defmodule SymphonyElixir.Config do
   defp primary_repo_workflow(%SystemSchema{} = system_config) do
     case SystemSchema.primary_repo(system_config) do
       nil -> {:error, {:invalid_symphony_config, "repos must include at least one repo"}}
-      repo -> Workflow.load(repo.workflow_path)
+      repo -> Workflow.load(SystemSchema.repo_workflow_path(repo))
     end
   end
 

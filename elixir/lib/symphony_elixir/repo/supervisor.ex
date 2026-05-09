@@ -25,6 +25,7 @@ defmodule SymphonyElixir.Repo.Supervisor do
 
   @spec start_link(SystemSchema.Repo.t() | map()) :: Supervisor.on_start()
   def start_link(repo) do
+    validate_repo!(repo)
     Supervisor.start_link(__MODULE__, repo, name: supervisor_name(repo_name(repo)))
   end
 
@@ -96,17 +97,19 @@ defmodule SymphonyElixir.Repo.Supervisor do
     if repo_name(repo) == Application.get_env(:symphony_elixir, :primary_repo_name) do
       opts
     else
-      Keyword.put(opts, :path, repo_workflow_path(repo))
+      Keyword.put(opts, :path, SystemSchema.repo_workflow_path(repo))
     end
   end
 
   defp workflow_store_child_id(repo_name), do: {WorkflowStore, repo_name}
 
+  defp validate_repo!(repo) do
+    _name = repo_name(repo)
+    _workflow_path = SystemSchema.repo_workflow_path(repo)
+    :ok
+  end
+
   defp repo_name(%SystemSchema.Repo{name: name}), do: name
   defp repo_name(%{name: name}), do: name
   defp repo_name(%{"name" => name}), do: name
-
-  defp repo_workflow_path(%SystemSchema.Repo{workflow_path: workflow_path}), do: workflow_path
-  defp repo_workflow_path(%{workflow_path: workflow_path}), do: workflow_path
-  defp repo_workflow_path(%{"workflow_path" => workflow_path}), do: workflow_path
 end

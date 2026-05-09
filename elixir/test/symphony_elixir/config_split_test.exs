@@ -75,12 +75,85 @@ defmodule SymphonyElixir.ConfigSplitTest do
 
     assert {:ok, %SystemSchema{repos: [loaded_repo]}} = Config.system()
     assert loaded_repo.name == "app"
-    assert loaded_repo.workflow_path == Path.join(repo.path, "WORKFLOW.md")
+    assert SystemSchema.repo_workflow_path(loaded_repo) == Path.join(repo.path, "WORKFLOW.md")
 
     assert {:ok, settings} = Config.settings()
     assert settings.tracker.kind == "memory"
     assert settings.hooks.after_create == "echo setup"
     assert settings.verification.enabled == true
+  end
+
+  test "system schema uses explicit default repo as primary" do
+    assert {:ok, system_config} =
+             SystemSchema.parse(
+               system_config(%{
+                 "repos" => [
+                   repo_config("secondary"),
+                   repo_config("primary", %{"default" => true})
+                 ]
+               })
+             )
+
+    assert SystemSchema.primary_repo(system_config).name == "primary"
+  end
+
+  test "system schema rejects duplicate repo names and multiple defaults" do
+    assert {:error, {:invalid_symphony_config, duplicate_message}} =
+             SystemSchema.parse(
+               system_config(%{
+                 "repos" => [
+                   repo_config("app"),
+                   repo_config("app")
+                 ]
+               })
+             )
+
+    assert duplicate_message =~ "repos names must be unique"
+
+    assert {:error, {:invalid_symphony_config, default_message}} =
+             SystemSchema.parse(
+               system_config(%{
+                 "repos" => [
+                   repo_config("first", %{"default" => true}),
+                   repo_config("second", %{"default" => true})
+                 ]
+               })
+             )
+
+    assert default_message =~ "repos can include at most one default repo"
+  end
+
+  test "system schema rejects unknown top-level keys and empty repos" do
+    assert {:error, {:invalid_symphony_config, "unknown symphony.yml key `unknown`"}} =
+             SystemSchema.parse(system_config(%{"unknown" => true}))
+
+    assert {:error, {:invalid_symphony_config, empty_repos_message}} =
+             SystemSchema.parse(system_config(%{"repos" => []}))
+
+    assert empty_repos_message =~ "repos"
+    assert empty_repos_message =~ "can't be blank"
+  end
+
+  test "system schema applies operator aliases and expands repo paths" do
+    assert {:ok, system_config} =
+             SystemSchema.parse(
+               system_config(%{
+                 "dispatch" => %{"max_concurrent" => 3},
+                 "token_budget" => %{"max_per_issue" => 100, "total_per_day" => 200},
+                 "repos" => [
+                   repo_config("app", %{"path" => "relative/app", "workflow" => "config/Workflow.md"})
+                 ]
+               })
+             )
+
+    assert %SystemSchema{repos: [repo]} = system_config
+    assert repo.path == Path.expand("relative/app")
+    assert SystemSchema.repo_workflow_path(repo) == Path.expand("config/Workflow.md", repo.path)
+
+    config_map = SystemSchema.to_config_map(system_config)
+    assert get_in(config_map, ["agent", "max_concurrent_agents"]) == 3
+    assert get_in(config_map, ["agent", "max_tokens_per_issue"]) == 100
+    assert get_in(config_map, ["agent", "max_tokens_per_day"]) == 200
   end
 
   test "repo supervisors isolate invalid repo workflow failures", %{root: root} do
@@ -113,7 +186,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     first_before = GenServer.whereis(RepoSupervisor.workflow_store_name("first"))
     second_before = GenServer.whereis(RepoSupervisor.workflow_store_name("second"))
 
-    File.write!(first_repo.workflow_path, "Updated first prompt\n")
+    File.write!(SystemSchema.repo_workflow_path(first_repo), "Updated first prompt\n")
 
     assert :ok = RepoSupervisor.reload("first")
 
@@ -125,6 +198,56 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert second_after == second_before
     assert {:ok, %{prompt: "Updated first prompt"}} = RepoSupervisor.current_workflow("first")
     assert {:ok, %{prompt: "Second prompt"}} = RepoSupervisor.current_workflow("second")
+  end
+
+  test "repo supervisor reload returns a clear error for unknown repos" do
+    assert {:error, :repo_supervisor_not_found} = RepoSupervisor.reload("missing-repo")
+  end
+
+  test "repo supervisor rejects repo structs without path data" do
+    Application.put_env(:symphony_elixir, :primary_repo_name, nil)
+
+    repo = %SystemSchema.Repo{name: "broken", workflow: "WORKFLOW.md", team: "Test"}
+
+    assert_raise ArgumentError, ~r/repo workflow path requires non-empty `path` and `workflow`/, fn ->
+      RepoSupervisor.start_link(repo)
+    end
+  end
+
+  test "application child specs clear bootstrap env when later config loading fails", %{root: root} do
+    repo =
+      write_repo!(root, "invalid", """
+      ---
+      tracker:
+        kind: memory
+      ---
+      Invalid prompt
+      """)
+
+    write_symphony!(root, [repo])
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+    Application.put_env(:symphony_elixir, :primary_repo_name, "stale")
+    Application.put_env(:symphony_elixir, :workflow_file_path, "/tmp/stale-workflow.md")
+
+    assert_raise ArgumentError, ~r/WORKFLOW.md:.*symphony.yml/, fn ->
+      SymphonyElixir.Application.child_specs_for_runtime(%{})
+    end
+
+    refute Application.get_env(:symphony_elixir, :primary_repo_name)
+    refute Application.get_env(:symphony_elixir, :workflow_file_path)
+  end
+
+  test "application start clears bootstrap env when supervisor start fails", %{root: root} do
+    repo = write_repo!(root, "app", "Prompt\n")
+    write_symphony!(root, [repo])
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    blocker = Process.whereis(SymphonyElixir.Supervisor)
+    assert is_pid(blocker)
+
+    assert {:error, {:already_started, ^blocker}} = SymphonyElixir.Application.start(:normal, [])
+    refute Application.get_env(:symphony_elixir, :primary_repo_name)
+    refute Application.get_env(:symphony_elixir, :workflow_file_path)
   end
 
   defp write_symphony!(root, repos) do
@@ -150,6 +273,29 @@ defmodule SymphonyElixir.ConfigSplitTest do
     """)
   end
 
+  defp system_config(overrides) do
+    Map.merge(
+      %{
+        "tracker" => %{"kind" => "memory"},
+        "agent" => %{"kind" => "codex", "command" => "codex app-server"},
+        "repos" => [repo_config("app")]
+      },
+      overrides
+    )
+  end
+
+  defp repo_config(name, overrides \\ %{}) do
+    Map.merge(
+      %{
+        "name" => name,
+        "path" => "tmp/#{name}",
+        "workflow" => "WORKFLOW.md",
+        "team" => "Test"
+      },
+      overrides
+    )
+  end
+
   defp write_repo!(root, name, workflow_content) do
     repo_path = Path.join(root, name)
     workflow_path = Path.join(repo_path, "WORKFLOW.md")
@@ -160,7 +306,6 @@ defmodule SymphonyElixir.ConfigSplitTest do
       name: name,
       path: repo_path,
       workflow: "WORKFLOW.md",
-      workflow_path: workflow_path,
       team: "Test"
     }
   end

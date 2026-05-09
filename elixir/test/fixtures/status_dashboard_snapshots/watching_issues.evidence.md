@@ -6,7 +6,7 @@
 │ Runtime: 45m 0s
 │ Tokens: in 18,000 | out 2,200 | total 20,200
 │ Rate Limits: unavailable
-│ Project: https://linear.app/project/project/issues
+│ Repos: default
 │ Next refresh: n/a
 ├─ Running
 │

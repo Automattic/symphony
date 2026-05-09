@@ -83,6 +83,29 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert settings.verification.enabled == true
   end
 
+  test "startup config accepts single repo without repo-level routing selectors", %{root: root} do
+    repo = write_repo!(root, "app", "Prompt\n")
+
+    write_symphony_text!(root, """
+    tracker:
+      kind: linear
+      api_key: token
+      project_slug: project
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: app
+        path: #{repo.path}
+        workflow: WORKFLOW.md
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    assert {:ok, system_config} = Config.system()
+    assert [%SystemSchema.Repo{name: "app", team: nil}] = system_config.repos
+  end
+
   test "startup config rejects identical routing match rules", %{root: root} do
     write_symphony_text!(root, """
     tracker:

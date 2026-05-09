@@ -10,7 +10,6 @@ defmodule SymphonyElixir.AgentRunner do
     CiPoller,
     Config,
     Linear.Issue,
-    Notifications,
     PromptBuilder,
     PrReviewPoller,
     SelfReview,
@@ -442,7 +441,6 @@ defmodule SymphonyElixir.AgentRunner do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
         audit_linear_state_transition(issue, refreshed_issue, Keyword.get(opts, :run_id), opts)
-        emit_lifecycle_events(issue, refreshed_issue, opts)
 
         cond do
           post_pr_quiet_continuation?(issue, refreshed_issue) ->
@@ -499,34 +497,6 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp active_issue_state?(_state_name), do: false
-
-  defp emit_lifecycle_events(%Issue{}, %Issue{} = refreshed_issue, opts) do
-    cond do
-      active_issue_state?(refreshed_issue.state) ->
-        :ok
-
-      in_review_state?(refreshed_issue.state) ->
-        Notifications.emit_issue_event(:awaiting_review, refreshed_issue, notification_opts(opts))
-
-      done_state?(refreshed_issue.state) ->
-        Notifications.emit_issue_event(:issue_completed, refreshed_issue, notification_opts(opts))
-
-      true ->
-        :ok
-    end
-  end
-
-  defp notification_opts(opts) do
-    opts
-    |> Keyword.take([:repo_key])
-    |> Enum.into(%{})
-  end
-
-  defp in_review_state?(state_name) when is_binary(state_name), do: normalize_issue_state(state_name) == "in review"
-  defp in_review_state?(_state_name), do: false
-
-  defp done_state?(state_name) when is_binary(state_name), do: normalize_issue_state(state_name) == "done"
-  defp done_state?(_state_name), do: false
 
   defp selected_worker_host(nil, []), do: nil
 

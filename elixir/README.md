@@ -71,14 +71,19 @@ mise exec -- ./bin/symphony ./WORKFLOW.md
 
 ## Configuration
 
-Symphony reads a Markdown `WORKFLOW.md` file with YAML front matter for runtime configuration and a
-Markdown body for the Codex session prompt. Pass a custom workflow path when starting the service:
+Symphony reads operator configuration from `symphony.yml` and repo-local instructions from
+`WORKFLOW.md`. Pass a custom workflow path when starting the service:
 
 ```bash
 ./bin/symphony /path/to/custom/WORKFLOW.md
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+If no path is passed, Symphony defaults to `./WORKFLOW.md`. Pass `--config` to use an alternate
+operator config, such as the Claude runner variant:
+
+```bash
+./bin/symphony --config ./symphony.claude.yml ./WORKFLOW.md
+```
 
 ### Minimal config
 

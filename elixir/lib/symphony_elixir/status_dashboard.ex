@@ -346,8 +346,8 @@ defmodule SymphonyElixir.StatusDashboard do
         skipped = Map.get(snapshot, :skipped, [])
         rate_limits = Map.get(snapshot, :rate_limits)
         workspace_lifecycle = Map.get(snapshot, :workspace_lifecycle)
-        project_link_lines = format_project_link_lines()
-        project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
+        scope_link_lines = format_scope_link_lines()
+        refresh_line = format_refresh_line(Map.get(snapshot, :polling))
         workspace_lifecycle_lines = format_workspace_lifecycle_lines(workspace_lifecycle)
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
@@ -394,8 +394,8 @@ defmodule SymphonyElixir.StatusDashboard do
                colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
              colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
              workspace_lifecycle_lines,
-             project_link_lines,
-             project_refresh_line,
+             scope_link_lines,
+             refresh_line,
              colorize("├─ Running", @ansi_bold),
              "│",
              running_table_header_row(running_event_width),
@@ -423,8 +423,8 @@ defmodule SymphonyElixir.StatusDashboard do
           colorize("╭─ SYMPHONY STATUS", @ansi_bold),
           colorize("│ Orchestrator snapshot unavailable", @ansi_red),
           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
-          format_project_link_lines(),
-          format_project_refresh_line(nil),
+          format_scope_link_lines(),
+          format_refresh_line(nil),
           closing_border()
         ]
         |> List.flatten()
@@ -432,38 +432,58 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_project_link_lines do
-    project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
-          colorize(linear_project_url(project_slug), @ansi_cyan)
-
-        _ ->
-          colorize("n/a", @ansi_gray)
-      end
-
-    project_line = colorize("│ Project: ", @ansi_bold) <> project_part
+  defp format_scope_link_lines do
+    repo_line = colorize("│ Repos: ", @ansi_bold) <> format_repo_scope()
 
     case dashboard_url() do
       url when is_binary(url) ->
-        [project_line, colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
+        [repo_line, colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
 
       _ ->
-        [project_line]
+        [repo_line]
     end
   end
 
-  defp format_project_refresh_line(%{checking?: true}) do
+  defp format_repo_scope do
+    case Config.repos() do
+      {:ok, repos} ->
+        repos
+        |> Enum.map(&Map.get(&1, :name))
+        |> Enum.reject(&(not is_binary(&1) or String.trim(&1) == ""))
+        |> format_repo_names()
+
+      {:error, _reason} ->
+        colorize("n/a", @ansi_gray)
+    end
+  end
+
+  defp format_repo_names([]), do: colorize("n/a", @ansi_gray)
+  defp format_repo_names([name]), do: colorize(name, @ansi_cyan)
+
+  defp format_repo_names(names) do
+    visible_names = Enum.take(names, 4)
+    hidden_count = max(length(names) - length(visible_names), 0)
+
+    suffix =
+      case hidden_count do
+        0 -> ""
+        count -> ", +#{count}"
+      end
+
+    colorize(Enum.join(visible_names, ", ") <> suffix, @ansi_cyan)
+  end
+
+  defp format_refresh_line(%{checking?: true}) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("checking now…", @ansi_cyan)
   end
 
-  defp format_project_refresh_line(%{next_poll_in_ms: due_in_ms}) when is_integer(due_in_ms) do
+  defp format_refresh_line(%{next_poll_in_ms: due_in_ms}) when is_integer(due_in_ms) do
     due_in_ms = max(due_in_ms, 0)
     seconds = div(due_in_ms + 999, 1000)
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("#{seconds}s", @ansi_cyan)
   end
 
-  defp format_project_refresh_line(_) do
+  defp format_refresh_line(_) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
 
@@ -490,8 +510,6 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_workspace_lifecycle_lines(_lifecycle), do: []
-
-  defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())

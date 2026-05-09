@@ -407,11 +407,12 @@ Fields:
 Elixir implementation note: when `repos` is configured, Linear candidate polling is performed per
 repo with one server-side issue filter per repo. The service does not widen this into a team-union
 query. Duplicate issue IDs across repo result sets are classified as conflicts and excluded from
-dispatch. Repo polls are staggered across the configured `polling.interval_ms`, so the scheduler
-ticks roughly every `interval_ms / repo_count` while each healthy repo is still polled once per full
-interval. Dispatch stays empty until every repo cache has warmed once; after three consecutive cold
-failures for a repo, that repo is treated as warmed with an empty result so healthy repos can keep
-dispatching.
+dispatch. Repo-level `team`, `projects`, `labels`, and `assignee` selectors are optional; a single
+unscoped repo, or an explicit default repo, can rely on the tracker-level Linear scope. Repo polls
+are staggered across the configured `polling.interval_ms`, so the scheduler ticks roughly every
+`interval_ms / repo_count` while each healthy repo is still polled once per full interval. Dispatch
+stays empty until every repo cache has warmed once; after three consecutive cold failures for a repo,
+that repo is treated as warmed with an empty result so healthy repos can keep dispatching.
 
 #### 5.3.2 `polling` (object)
 
@@ -724,8 +725,9 @@ Validation checks:
 - Workflow file can be loaded and parsed.
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
-- At least one of `tracker.project_slug`, `tracker.team`, or non-empty
-  `tracker.labels` is present when `tracker.kind == "linear"`.
+- At least one Linear scoping filter is present when `tracker.kind == "linear"`. Core scope comes
+  from `tracker.project_slug`, `tracker.team`, or non-empty `tracker.labels`; implementations with
+  per-repo polling MAY also count repo-level `team`, `projects`, `labels`, or `assignee` selectors.
 - Blank `tracker.project_slug`, `tracker.team`, and `tracker.labels` entries do not count as
   configured Linear scoping filters.
 - `codex.command` is present and non-empty.
@@ -742,8 +744,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.project_slug`: string, OPTIONAL when `tracker.kind=linear`
 - `tracker.team`: optional Linear team key or team ID when `tracker.kind=linear`
 - `tracker.labels`: optional list of Linear label names when `tracker.kind=linear`
-- At least one of `tracker.project_slug`, `tracker.team`, or non-empty
-  `tracker.labels` is REQUIRED when `tracker.kind=linear`
+- At least one of `tracker.project_slug`, `tracker.team`, non-empty `tracker.labels`, or an
+  implementation-supported repo-level Linear selector is REQUIRED when `tracker.kind=linear`
 - Blank `tracker.project_slug`, `tracker.team`, and `tracker.labels` entries are ignored for the
   Linear scoping requirement.
 - `tracker.assignee`: optional string or `$VAR`, canonical env `LINEAR_ASSIGNEE` when
@@ -2511,6 +2513,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 - CLI accepts a positional workflow path argument (`path-to-WORKFLOW.md`)
 - CLI uses `./WORKFLOW.md` when no workflow path argument is provided
+- Implementations with split operator config MAY accept `--config path-to-symphony.yml` to select
+  an alternate operator config
 - CLI errors on nonexistent explicit workflow path or missing default `./WORKFLOW.md`
 - CLI surfaces startup failure cleanly
 - CLI exits with success when application starts and shuts down normally

@@ -272,8 +272,8 @@ defmodule SymphonyElixir.Config do
     "repos routing rules are invalid: #{details}"
   end
 
-  defp routing_repo_error_detail({:missing_team, repo}) do
-    "missing team for #{routing_repo_name(repo)}"
+  defp routing_repo_error_detail({:unscoped_repo, repo}) do
+    "missing routing selector for #{routing_repo_name(repo)}; add team, projects, labels, assignee, or default: true"
   end
 
   defp routing_repo_error_detail({:identical_match_rules, repos}) do

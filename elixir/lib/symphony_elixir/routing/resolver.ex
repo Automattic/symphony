@@ -3,8 +3,9 @@ defmodule SymphonyElixir.Routing.Resolver do
   Pure issue-to-repository routing for multi-repo orchestration.
 
   Repo route entries use the flat `repos:` shape from `symphony.yml`:
-  `team` is required; `projects`, `labels`, and `assignee` are optional
-  filters.
+  `team`, `projects`, `labels`, and `assignee` are optional filters.
+  A single unscoped repo, or an explicit default repo, can rely on the
+  tracker-level Linear scope.
 
   Call `validate_repos!/1` during startup after loading the repo list. The
   resolver functions assume startup structural validation has already rejected
@@ -25,7 +26,7 @@ defmodule SymphonyElixir.Routing.Resolver do
         }
   @type repo :: SystemSchema.Repo.t() | repo_map()
   @type validation_error ::
-          {:missing_team, repo()}
+          {:unscoped_repo, repo()}
           | {:identical_match_rules, [repo()]}
           | {:ambiguous_team_catch_all, String.t(), [repo()]}
           | {:multiple_defaults, String.t(), [repo()]}
@@ -46,7 +47,7 @@ defmodule SymphonyElixir.Routing.Resolver do
   def validate_repos(repos) when is_list(repos) do
     errors =
       Enum.concat([
-        missing_team_errors(repos),
+        unscoped_repo_errors(repos),
         identical_match_rule_errors(repos),
         ambiguous_team_catch_all_errors(repos),
         multiple_default_errors(repos)
@@ -78,10 +79,12 @@ defmodule SymphonyElixir.Routing.Resolver do
 
   def matches?(_issue, _repo), do: false
 
-  defp missing_team_errors(repos) do
+  defp unscoped_repo_errors([_repo]), do: []
+
+  defp unscoped_repo_errors(repos) do
     repos
-    |> Enum.reject(&present_string?(match_rule(&1).team))
-    |> Enum.map(&{:missing_team, &1})
+    |> Enum.filter(&(unscoped?(&1) and not default?(&1)))
+    |> Enum.map(&{:unscoped_repo, &1})
   end
 
   defp identical_match_rule_errors(repos) do
@@ -125,10 +128,10 @@ defmodule SymphonyElixir.Routing.Resolver do
   defp match_signature(repo) do
     rule = match_rule(repo)
 
-    if present_string?(rule.team) do
+    if scoped?(rule) do
       {rule.team, rule.projects, rule.labels, rule.assignee}
     else
-      :invalid
+      :unscoped
     end
   end
 
@@ -147,9 +150,15 @@ defmodule SymphonyElixir.Routing.Resolver do
     present_string?(rule.team) and rule.projects == [] and rule.labels == [] and is_nil(rule.assignee)
   end
 
+  defp unscoped?(repo), do: not scoped?(match_rule(repo))
+
+  defp scoped?(rule) do
+    present_string?(rule.team) or rule.projects != [] or rule.labels != [] or not is_nil(rule.assignee)
+  end
+
   defp default?(repo), do: repo_value(repo, :default) == true
 
-  defp team_matches?(_issue, nil), do: false
+  defp team_matches?(_issue, nil), do: true
 
   defp team_matches?(issue, team) do
     issue

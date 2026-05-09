@@ -2373,12 +2373,12 @@ defmodule SymphonyElixir.CoreTest do
 
       assert session_id == "thread-live-turn-live"
 
-      assert_receive {:notification_event,
+      refute_receive {:notification_event,
                       %SymphonyElixir.Notifications.Event{
                         event: "issue_completed",
                         issue_identifier: "MT-99"
                       }},
-                     500
+                     50
 
       refute_receive {:notification_event,
                       %SymphonyElixir.Notifications.Event{

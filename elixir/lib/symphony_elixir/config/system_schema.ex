@@ -40,7 +40,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:name, :path, :workflow, :team, :labels, :projects, :assignee, :default], empty_values: [])
-      |> validate_required([:name, :path, :workflow, :team])
+      |> validate_required([:name, :path, :workflow])
       |> validate_string(:name)
       |> validate_string(:path)
       |> validate_string(:workflow)

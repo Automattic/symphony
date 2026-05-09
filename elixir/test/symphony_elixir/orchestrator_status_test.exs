@@ -1981,6 +1981,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [watching_issue])
+    assert :ok = SymphonyElixir.Notifications.subscribe()
 
     orchestrator_name = Module.concat(__MODULE__, :WatchRestartOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -2006,6 +2007,130 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                pull_request_url: ^pull_request_url
              }
            ] = snapshot.watching
+
+    assert_receive {:notification_event,
+                    %SymphonyElixir.Notifications.Event{
+                      event: "awaiting_review",
+                      issue_identifier: ^issue_identifier
+                    }},
+                   500
+
+    run_record = wait_for_run_record(&(&1.run_id == "run-watch-restart"))
+    assert %DateTime{} = run_record.awaiting_review_notified_at
+
+    GenServer.stop(pid)
+    flush_notification_events()
+
+    restart_name = Module.concat(__MODULE__, :WatchRestartOrchestratorAgain)
+    {:ok, restarted_pid} = Orchestrator.start_link(name: restart_name)
+
+    on_exit(fn ->
+      if Process.alive?(restarted_pid), do: Process.exit(restarted_pid, :normal)
+    end)
+
+    send(restarted_pid, :run_poll_cycle)
+
+    assert %{watching: [%{identifier: ^issue_identifier}]} =
+             wait_for_snapshot(restarted_pid, fn
+               %{watching: [%{identifier: ^issue_identifier}]} -> true
+               _ -> false
+             end)
+
+    refute_receive {:notification_event,
+                    %SymphonyElixir.Notifications.Event{
+                      event: "awaiting_review",
+                      issue_identifier: ^issue_identifier
+                    }},
+                   100
+  end
+
+  test "orchestrator persists terminal notification markers across restarts" do
+    issue_id = "issue-terminal-restart"
+    issue_identifier = "MT-DONE-R"
+    issue_url = "https://linear.app/example/issue/MT-DONE-R"
+    pull_request_url = "https://github.com/example/repo/pull/790"
+    run_id = "run-terminal-restart"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Done", "Canceled"]
+    )
+
+    :ok = RunStore.clear()
+
+    ended_at = DateTime.add(DateTime.utc_now(), -3_600, :second)
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: Config.repo_key!(),
+               run_id: run_id,
+               issue_id: issue_id,
+               issue_identifier: issue_identifier,
+               title: "Terminal on restart",
+               state: "In Review",
+               status: "success",
+               attempt: 1,
+               started_at: DateTime.add(ended_at, -120, :second),
+               ended_at: ended_at,
+               error: nil,
+               pull_request_url: pull_request_url,
+               runtime_seconds: 120
+             })
+
+    done_issue = %Issue{
+      id: issue_id,
+      identifier: issue_identifier,
+      title: "Terminal on restart",
+      state: "Done",
+      url: issue_url
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [done_issue])
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
+    orchestrator_name = Module.concat(__MODULE__, :TerminalRestartOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    assert_receive {:notification_event,
+                    %SymphonyElixir.Notifications.Event{
+                      event: "issue_completed",
+                      issue_identifier: ^issue_identifier
+                    }},
+                   500
+
+    run_record = wait_for_run_record(&(&1.run_id == run_id))
+    assert %DateTime{} = run_record.issue_completed_notified_at
+    assert %DateTime{} = run_record.watch_closed_at
+
+    GenServer.stop(pid)
+    flush_notification_events()
+
+    restart_name = Module.concat(__MODULE__, :TerminalRestartOrchestratorAgain)
+    {:ok, restarted_pid} = Orchestrator.start_link(name: restart_name)
+
+    on_exit(fn ->
+      if Process.alive?(restarted_pid), do: Process.exit(restarted_pid, :normal)
+    end)
+
+    send(restarted_pid, :run_poll_cycle)
+    Process.sleep(50)
+
+    refute_receive {:notification_event,
+                    %SymphonyElixir.Notifications.Event{
+                      event: "issue_completed",
+                      issue_identifier: ^issue_identifier
+                    }},
+                   100
+
+    state = get_orchestrator_state(restarted_pid)
+    refute Map.has_key?(state.completed_run_metadata, issue_id)
   end
 
   test "orchestrator startup marks interrupted dispatched runs as failures" do
@@ -2522,7 +2647,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered =~ "Timestamp:"
   end
 
-  test "status dashboard renders linear project link in header" do
+  test "status dashboard renders repo scope in header" do
     snapshot_data =
       {:ok,
        %{
@@ -2534,7 +2659,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
 
-    assert rendered =~ "https://linear.app/project/project/issues"
+    assert rendered =~ "│ Repos:"
+    assert rendered =~ "default"
+    refute rendered =~ "https://linear.app/project/project/issues"
     refute rendered =~ "Dashboard:"
   end
 
@@ -2562,8 +2689,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
 
-    assert rendered =~ "│ Project:"
-    assert rendered =~ "https://linear.app/project/project/issues"
+    assert rendered =~ "│ Repos:"
+    assert rendered =~ "default"
     assert rendered =~ "│ Dashboard:"
     assert rendered =~ "http://127.0.0.1:4000/"
   end
@@ -3499,6 +3626,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   defp wait_for_file_contents(path, expected, timeout_ms) when is_binary(path) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_file_contents(path, expected, deadline_ms)
+  end
+
+  defp flush_notification_events do
+    receive do
+      {:notification_event, _event} -> flush_notification_events()
+    after
+      0 -> :ok
+    end
   end
 
   defp do_wait_for_file_contents(path, expected, deadline_ms) do

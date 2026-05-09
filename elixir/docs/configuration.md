@@ -1,7 +1,8 @@
 # Symphony Elixir Configuration Reference
 
-This is the full reference for the Elixir implementation's `WORKFLOW.md` front matter, startup
-flags, defaults, and supported values. For the shortest setup path, start with
+This is the full reference for the Elixir implementation's `symphony.yml` operator config,
+repo-local `WORKFLOW.md` front matter, startup flags, defaults, and supported values. For the
+shortest setup path, start with
 [`../README.md`](../README.md).
 
 ## Startup
@@ -16,6 +17,9 @@ If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
 Optional flags:
 
+- `--config` selects an alternate operator config file (default: `./symphony.yml`). For example,
+  `./bin/symphony --config ./symphony.claude.yml ./WORKFLOW.md` runs the same repo workflow with
+  the Claude runner config.
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`).
   Application logs are written under `<logs-root>/log/`; audit events are written under
   `<logs-root>/audit/`.
@@ -175,10 +179,11 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   least one of `project_slug`, `team`, or `labels`; these filters are combined server-side. Example:
   `team: "RSM"` with `labels: ["backend", "infra"]`.
 - When `repos` is configured, candidate polling fans out one server-side Linear query per repo
-  instead of issuing a team-union query. Each repo query includes active states plus that repo's
-  `team`, `projects`, `labels`, and `assignee` selectors. `projects` match Linear project name or
-  slug, and labels use AND semantics for repo routes. For compatibility, a repo that omits
-  `projects`, `labels`, or `assignee` inherits the corresponding legacy `tracker.project_slug`,
+  instead of issuing a team-union query. Each repo query includes active states plus any configured
+  repo-level `team`, `projects`, `labels`, and `assignee` selectors. `projects` match Linear project
+  name or slug, and labels use AND semantics for repo routes. A single unscoped repo, or an explicit
+  default repo, can rely on the tracker-level scope. For compatibility, a repo that omits `projects`,
+  `labels`, or `assignee` inherits the corresponding legacy `tracker.project_slug`,
   `tracker.labels`, or `tracker.assignee` selector. Issues returned by two or more repo queries are
   placed in the conflict bucket and excluded from dispatch.
 - Repo polls are staggered over `polling.interval_ms`. With 10 repos and `interval_ms: 5000`, the
@@ -303,7 +308,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   active issues in the configured Linear scope are eligible. `tracker.assignee` reads from
   `LINEAR_ASSIGNEE` when unset or when value is `$LINEAR_ASSIGNEE`.
 - `tracker.project_slug` is optional. Linear tracker configs must set at least one of
-  `tracker.project_slug`, `tracker.team`, or a non-empty `tracker.labels` list.
+  `tracker.project_slug`, `tracker.team`, a non-empty `tracker.labels` list, or repo-level
+  `team`, `projects`, `labels`, or `assignee` selectors.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` and `workspace.repo` resolve `$VAR`
   before path handling. For Codex, `agent.command` stays a shell command string and any `$VAR`

@@ -49,6 +49,12 @@ defmodule SymphonyElixir.Routing.ResolverTest do
       assert Resolver.resolve(missing_label_issue, [repo]) == :unmatched
     end
 
+    test "matches labels without requiring a team selector" do
+      repo = repo("web", labels: ["Backend"])
+
+      assert Resolver.resolve(issue(team: %{key: "RSM"}, labels: ["backend"]), [repo]) == {:matched, repo}
+    end
+
     test "matches team plus assignee by id, name, or email" do
       id_repo = repo("by-id", team: "RSM", assignee: "user-1")
       name_repo = repo("by-name", team: "RSM", assignee: "Chi Hsuan")
@@ -119,7 +125,6 @@ defmodule SymphonyElixir.Routing.ResolverTest do
     end
 
     test "returns false for invalid routes" do
-      refute Resolver.matches?(issue(team: %{key: "RSM"}), repo("missing-team"))
       refute Resolver.matches?(issue(team: %{key: "RSM"}), :not_a_repo)
       refute Resolver.matches?(nil, repo("web", team: "RSM"))
       refute Resolver.matches?(:not_an_issue, repo("web", team: "RSM"))
@@ -136,20 +141,26 @@ defmodule SymphonyElixir.Routing.ResolverTest do
                ])
     end
 
-    test "rejects repos without a team" do
-      web = repo("web", labels: ["web"])
-
-      assert {:error, errors} = Resolver.validate_repos([web])
-      assert Enum.any?(errors, &match?({:missing_team, ^web}, &1))
+    test "accepts single unscoped repo" do
+      assert :ok = Resolver.validate_repos([repo("web")])
     end
 
-    test "rejects blank and missing flat team rules" do
+    test "accepts routes scoped without a team" do
+      web = repo("web", labels: ["web"])
+      api = repo("api", projects: ["API"])
+
+      assert :ok = Resolver.validate_repos([web, api])
+    end
+
+    test "rejects unscoped non-default repos when multiple repos are configured" do
       blank_team = repo("blank", team: " ")
       missing_team = %{"name" => "missing"}
 
       assert {:error, errors} = Resolver.validate_repos([blank_team, missing_team])
-      assert Enum.any?(errors, &match?({:missing_team, ^blank_team}, &1))
-      assert Enum.any?(errors, &match?({:missing_team, ^missing_team}, &1))
+      assert Enum.any?(errors, &match?({:unscoped_repo, ^blank_team}, &1))
+      assert Enum.any?(errors, &match?({:unscoped_repo, ^missing_team}, &1))
+
+      assert :ok = Resolver.validate_repos([Map.put(blank_team, :default, true), repo("api", labels: ["api"])])
     end
 
     test "rejects identical match rules across repos" do
@@ -210,7 +221,7 @@ defmodule SymphonyElixir.Routing.ResolverTest do
 
     test "raises on invalid repo rules" do
       assert_raise ArgumentError, ~r/invalid routing repos/, fn ->
-        Resolver.validate_repos!([repo("web")])
+        Resolver.validate_repos!([repo("web"), repo("api")])
       end
     end
   end

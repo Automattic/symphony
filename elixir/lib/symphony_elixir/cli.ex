@@ -6,11 +6,12 @@ defmodule SymphonyElixir.CLI do
   alias SymphonyElixir.{AuditLog, LogFile}
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
-  @switches [{@acknowledgement_switch, :boolean}, host: :string, logs_root: :string, port: :integer]
+  @switches [{@acknowledgement_switch, :boolean}, config: :string, host: :string, logs_root: :string, port: :integer]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
           file_regular?: (String.t() -> boolean()),
+          set_symphony_file_path: (String.t() -> :ok | {:error, term()}),
           set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
           set_server_host_override: (String.t() | nil -> :ok | {:error, term()}),
@@ -35,6 +36,7 @@ defmodule SymphonyElixir.CLI do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
+             :ok <- maybe_set_symphony_config(opts, deps),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_host(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
@@ -43,6 +45,7 @@ defmodule SymphonyElixir.CLI do
 
       {opts, [workflow_path], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
+             :ok <- maybe_set_symphony_config(opts, deps),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_host(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
@@ -75,19 +78,32 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--host <host>] [--port <port>] [path-to-WORKFLOW.md]"
+    "Usage: symphony [--config <path-to-symphony.yml>] [--logs-root <path>] [--host <host>] [--port <port>] [path-to-WORKFLOW.md]"
   end
 
   @spec runtime_deps() :: deps()
   defp runtime_deps do
     %{
       file_regular?: &File.regular?/1,
+      set_symphony_file_path: &SymphonyElixir.Workflow.set_symphony_file_path/1,
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_logs_root: &set_logs_root/1,
       set_server_host_override: &set_server_host_override/1,
       set_server_port_override: &set_server_port_override/1,
       ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end
     }
+  end
+
+  defp maybe_set_symphony_config(opts, deps) do
+    with_last_opt(opts, :config, fn raw ->
+      path = Path.expand(raw)
+
+      if deps.file_regular?.(path) do
+        :ok = deps.set_symphony_file_path.(path)
+      else
+        {:error, "Symphony config file not found: #{path}"}
+      end
+    end)
   end
 
   defp maybe_set_logs_root(opts, deps) do

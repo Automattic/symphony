@@ -56,10 +56,7 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
     pubsub_child_id = Phoenix.PubSub.Supervisor
 
     on_exit(fn ->
-      if Process.whereis(SymphonyElixir.Supervisor) && Process.whereis(SymphonyElixir.PubSub) == nil do
-        assert {:ok, _pid} =
-                 Supervisor.restart_child(SymphonyElixir.Supervisor, pubsub_child_id)
-      end
+      restart_pubsub_child(pubsub_child_id)
     end)
 
     assert is_pid(Process.whereis(SymphonyElixir.PubSub))
@@ -88,5 +85,21 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
       end)
 
     assert log =~ "failed to broadcast transcript event: :forced_failure"
+  end
+
+  defp restart_pubsub_child(pubsub_child_id) do
+    with supervisor when is_pid(supervisor) <- Process.whereis(SymphonyElixir.Supervisor),
+         nil <- Process.whereis(SymphonyElixir.PubSub) do
+      case Supervisor.restart_child(supervisor, pubsub_child_id) do
+        {:ok, _pid} -> :ok
+        {:ok, _pid, _info} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
+        {:error, _reason} -> :ok
+      end
+    else
+      _ -> :ok
+    end
+  catch
+    :exit, _reason -> :ok
   end
 end

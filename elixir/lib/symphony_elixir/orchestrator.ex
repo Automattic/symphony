@@ -729,18 +729,24 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
-        maybe_emit_issue_completed(issue, state.repo_key)
 
-        terminate_running_issue(state, issue.id, true)
+        running_entry = Map.get(state.running, issue.id)
+
+        state
+        |> terminate_running_issue(issue.id, true)
+        |> maybe_emit_issue_completed(issue, running_entry)
 
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
 
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
-        maybe_emit_awaiting_review(issue, state.repo_key)
 
-        terminate_running_issue(state, issue.id, false, track_completed_run: true)
+        running_entry = Map.get(state.running, issue.id)
+
+        state
+        |> terminate_running_issue(issue.id, false, track_completed_run: true)
+        |> maybe_emit_awaiting_review(issue, running_entry)
     end
   end
 
@@ -796,8 +802,10 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(state_name, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{state_name}; removing from watching")
-        maybe_emit_issue_completed(issue, state.repo_key)
-        forget_completed_issue(state, issue_id)
+
+        state
+        |> maybe_emit_issue_completed(issue, Map.get(state.completed_run_metadata, issue_id, %{}))
+        |> forget_completed_issue(issue_id)
 
       watching_issue_state?(state_name, active_states, terminal_states) ->
         put_watching_issue(state, issue)
@@ -1846,6 +1854,8 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
+        state = maybe_emit_issue_completed(state, issue)
+
         issue
         |> issue_workspace_context(retry_repo_key(state, metadata, %{}))
         |> cleanup_issue_workspace(metadata[:worker_host])
@@ -2102,24 +2112,129 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_emit_awaiting_review(%Issue{state: state} = issue, repo_key) do
-    if in_review_state?(state) do
-      Notifications.emit_issue_event(:awaiting_review, issue, repo_key_attrs(repo_key))
+  defp maybe_emit_awaiting_review(state, issue, source)
+
+  defp maybe_emit_awaiting_review(%State{} = state, %Issue{state: issue_state} = issue, source) do
+    if in_review_state?(issue_state) do
+      maybe_emit_lifecycle_event(state, :awaiting_review, issue, source)
+    else
+      state
     end
   end
 
-  defp maybe_emit_awaiting_review(_issue, _repo_key), do: :ok
+  defp maybe_emit_awaiting_review(state, _issue, _source), do: state
 
-  defp maybe_emit_issue_completed(%Issue{state: state} = issue, repo_key) do
-    if done_state?(state) do
-      Notifications.emit_issue_event(:issue_completed, issue, repo_key_attrs(repo_key))
+  defp maybe_emit_issue_completed(state, issue, source \\ %{})
+
+  defp maybe_emit_issue_completed(%State{} = state, %Issue{state: issue_state} = issue, source) do
+    if done_state?(issue_state) do
+      maybe_emit_lifecycle_event(state, :issue_completed, issue, source, close_watch: true)
+    else
+      state
     end
   end
 
-  defp maybe_emit_issue_completed(_issue, _repo_key), do: :ok
+  defp maybe_emit_issue_completed(state, _issue, _source), do: state
 
-  defp repo_key_attrs(repo_key) when is_binary(repo_key), do: %{repo_key: repo_key}
-  defp repo_key_attrs(_repo_key), do: %{}
+  defp maybe_emit_lifecycle_event(state, event, issue, source, opts \\ [])
+
+  defp maybe_emit_lifecycle_event(%State{} = state, event, %Issue{id: issue_id} = issue, source, opts)
+       when is_binary(issue_id) do
+    marker = lifecycle_notification_marker(event)
+    metadata = lifecycle_metadata(state, issue_id, source)
+
+    if lifecycle_event_notified?(metadata, marker) do
+      state
+    else
+      Notifications.emit_issue_event(event, issue, lifecycle_notification_attrs(state, metadata))
+      mark_lifecycle_event_notified(state, issue_id, metadata, marker, issue.state, opts)
+    end
+  end
+
+  defp maybe_emit_lifecycle_event(state, _event, _issue, _source, _opts), do: state
+
+  defp lifecycle_notification_marker(:awaiting_review), do: :awaiting_review_notified_at
+  defp lifecycle_notification_marker(:issue_completed), do: :issue_completed_notified_at
+
+  defp lifecycle_event_notified?(metadata, marker) when is_map(metadata), do: present_value?(Map.get(metadata, marker))
+
+  defp lifecycle_metadata(%State{} = state, issue_id, source) do
+    state.completed_run_metadata
+    |> Map.get(issue_id, %{})
+    |> Map.merge(lifecycle_source_metadata(source))
+    |> Map.put_new(:repo_key, state.repo_key)
+  end
+
+  defp lifecycle_source_metadata(source) when is_map(source) do
+    %{}
+    |> put_present(:repo_key, Map.get(source, :repo_key))
+    |> put_present(:run_id, Map.get(source, :run_id))
+    |> put_present(:session_id, Map.get(source, :session_id))
+    |> put_present(:pull_request_url, URLUtils.pull_request_url(source))
+    |> put_present(:awaiting_review_notified_at, Map.get(source, :awaiting_review_notified_at))
+    |> put_present(:issue_completed_notified_at, Map.get(source, :issue_completed_notified_at))
+    |> put_present(:watch_closed_at, Map.get(source, :watch_closed_at))
+    |> put_present(:tokens, lifecycle_tokens(source))
+  end
+
+  defp lifecycle_source_metadata(_source), do: %{}
+
+  defp lifecycle_tokens(%{tokens: tokens}) when is_map(tokens), do: tokens
+
+  defp lifecycle_tokens(source) when is_map(source) do
+    if Map.has_key?(source, :codex_total_tokens), do: run_tokens(source)
+  end
+
+  defp lifecycle_notification_attrs(%State{} = state, metadata) when is_map(metadata) do
+    %{}
+    |> put_present(:repo_key, Map.get(metadata, :repo_key) || state.repo_key)
+    |> put_present(:run_id, Map.get(metadata, :run_id))
+    |> put_present(:session_id, Map.get(metadata, :session_id))
+    |> put_present(:pr_url, URLUtils.pull_request_url(metadata))
+    |> put_present(:tokens, Map.get(metadata, :tokens))
+  end
+
+  defp mark_lifecycle_event_notified(%State{} = state, issue_id, metadata, marker, issue_state, opts) do
+    now = DateTime.utc_now()
+
+    attrs =
+      %{
+        marker => now,
+        last_observed_state: issue_state,
+        updated_at: now
+      }
+      |> maybe_put_watch_closed_at(now, Keyword.get(opts, :close_watch, false))
+
+    persist_lifecycle_event_marker(state, metadata, attrs)
+    update_completed_run_metadata(state, issue_id, attrs, Keyword.get(opts, :close_watch, false))
+  end
+
+  defp maybe_put_watch_closed_at(attrs, now, true), do: Map.put(attrs, :watch_closed_at, now)
+  defp maybe_put_watch_closed_at(attrs, _now, _close_watch?), do: attrs
+
+  defp persist_lifecycle_event_marker(%State{} = state, metadata, attrs) when is_map(metadata) do
+    repo_key = Map.get(metadata, :repo_key) || state.repo_key
+    run_id = Map.get(metadata, :run_id)
+
+    if is_binary(repo_key) and is_binary(run_id) do
+      repo_key
+      |> RunStore.update_run(run_id, attrs)
+      |> ignore_missing_run()
+      |> log_run_store_error("persist lifecycle notification marker")
+    end
+  end
+
+  defp update_completed_run_metadata(%State{} = state, issue_id, attrs, _close_watch?) do
+    if Map.has_key?(state.completed_run_metadata, issue_id) do
+      %{state | completed_run_metadata: Map.update!(state.completed_run_metadata, issue_id, &Map.merge(&1, attrs))}
+    else
+      state
+    end
+  end
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, _key, ""), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 
   defp emit_run_failed(running_entry, reason, next_attempt) when is_map(running_entry) do
     emit_running_event(:run_failed, running_entry, %{
@@ -2711,17 +2826,22 @@ defmodule SymphonyElixir.Orchestrator do
       runs when is_list(runs) ->
         runs
         |> Enum.filter(&(Map.get(&1, :status) in @watchable_run_statuses))
-        |> Enum.reject(&Map.has_key?(retry_attempts, Map.get(&1, :issue_id)))
+        |> Enum.reject(&(watch_closed_run?(&1) or Map.has_key?(retry_attempts, Map.get(&1, :issue_id))))
         |> Enum.filter(&is_binary(Map.get(&1, :issue_id)))
         |> Enum.group_by(&Map.get(&1, :issue_id))
         |> Enum.reduce(%{}, fn {issue_id, issue_runs}, acc ->
           most_recent = List.first(issue_runs)
 
           metadata = %{
+            repo_key: Map.get(most_recent, :repo_key) || repo_key,
+            run_id: Map.get(most_recent, :run_id),
             identifier: Map.get(most_recent, :issue_identifier),
             url: nil,
             pull_request_url: URLUtils.pull_request_url(most_recent),
-            last_ran_at: Map.get(most_recent, :ended_at) || Map.get(most_recent, :started_at)
+            last_ran_at: Map.get(most_recent, :ended_at) || Map.get(most_recent, :started_at),
+            awaiting_review_notified_at: Map.get(most_recent, :awaiting_review_notified_at),
+            issue_completed_notified_at: Map.get(most_recent, :issue_completed_notified_at),
+            watch_closed_at: Map.get(most_recent, :watch_closed_at)
           }
 
           Map.put(acc, issue_id, metadata)
@@ -2734,6 +2854,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp hydrate_completed_run_metadata(_repo_key, _retry_attempts), do: %{}
+
+  defp watch_closed_run?(run) when is_map(run) do
+    present_value?(Map.get(run, :watch_closed_at)) or present_value?(Map.get(run, :issue_completed_notified_at))
+  end
+
+  defp watch_closed_run?(_run), do: false
+
+  defp present_value?(nil), do: false
+  defp present_value?(""), do: false
+  defp present_value?(_value), do: true
 
   defp hydrate_budget_daily_used(repo_key, %Date{} = day) do
     case RunStore.list_runs(repo_key, :all) do
@@ -3570,6 +3700,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     %{
       repo_key: Map.get(running_entry, :repo_key),
+      run_id: Map.get(running_entry, :run_id),
       identifier: Map.get(running_entry, :identifier) || issue_identifier(issue),
       url: issue_url(issue),
       pull_request_url: URLUtils.pull_request_url(running_entry) || URLUtils.pull_request_url(issue),
@@ -3581,9 +3712,14 @@ defmodule SymphonyElixir.Orchestrator do
     completed_metadata = Map.get(state.completed_run_metadata, issue_id, %{})
     existing = Map.get(state.watching, issue_id, %{})
 
-    if existing == %{} do
-      maybe_emit_awaiting_review(issue, state.repo_key)
-    end
+    state =
+      if existing == %{} do
+        maybe_emit_awaiting_review(state, issue, completed_metadata)
+      else
+        state
+      end
+
+    completed_metadata = Map.get(state.completed_run_metadata, issue_id, completed_metadata)
 
     watching_entry = %{
       repo_key: state.repo_key,

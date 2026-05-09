@@ -13,6 +13,10 @@ defmodule SymphonyElixir.CLITest do
         send(parent, :file_checked)
         true
       end,
+      set_symphony_file_path: fn _path ->
+        send(parent, :symphony_set)
+        :ok
+      end,
       set_workflow_file_path: fn _path ->
         send(parent, :workflow_set)
         :ok
@@ -41,6 +45,7 @@ defmodule SymphonyElixir.CLITest do
     assert banner =~ "SymphonyElixir is not a supported product and is presented as-is."
     assert banner =~ @ack_flag
     refute_received :file_checked
+    refute_received :symphony_set
     refute_received :workflow_set
     refute_received :logs_root_set
     refute_received :host_set
@@ -84,6 +89,54 @@ defmodule SymphonyElixir.CLITest do
     assert :ok = CLI.evaluate([@ack_flag, workflow_path], deps)
     assert_received {:workflow_checked, ^expanded_path}
     assert_received {:workflow_set, ^expanded_path}
+  end
+
+  test "uses an explicit symphony config path override when provided" do
+    parent = self()
+    config_path = "tmp/custom/symphony.claude.yml"
+    workflow_path = "tmp/custom/WORKFLOW.md"
+    expanded_config_path = Path.expand(config_path)
+    expanded_workflow_path = Path.expand(workflow_path)
+
+    deps = %{
+      file_regular?: fn path ->
+        send(parent, {:file_checked, path})
+        path in [expanded_config_path, expanded_workflow_path]
+      end,
+      set_symphony_file_path: fn path ->
+        send(parent, {:symphony_set, path})
+        :ok
+      end,
+      set_workflow_file_path: fn path ->
+        send(parent, {:workflow_set, path})
+        :ok
+      end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_host_override: fn _host -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+    }
+
+    assert :ok = CLI.evaluate([@ack_flag, "--config", config_path, workflow_path], deps)
+    assert_received {:file_checked, ^expanded_config_path}
+    assert_received {:symphony_set, ^expanded_config_path}
+    assert_received {:file_checked, ^expanded_workflow_path}
+    assert_received {:workflow_set, ^expanded_workflow_path}
+  end
+
+  test "returns not found when explicit symphony config does not exist" do
+    deps = %{
+      file_regular?: fn _path -> false end,
+      set_symphony_file_path: fn _path -> :ok end,
+      set_workflow_file_path: fn _path -> :ok end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_host_override: fn _host -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+    }
+
+    assert {:error, message} = CLI.evaluate([@ack_flag, "--config", "missing.yml", "WORKFLOW.md"], deps)
+    assert message =~ "Symphony config file not found:"
   end
 
   test "accepts --logs-root and passes an expanded root to runtime deps" do

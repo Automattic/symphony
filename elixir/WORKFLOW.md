@@ -242,6 +242,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
     - Prefer a targeted proof that directly demonstrates the behavior you changed.
     - For the full Elixir gate in a sandboxed workspace, prefer `HEX_HOME=/private/tmp/symphony-hex-home make all`.
     - For long-running validation, use long waits and sparse polling so progress-only terminal output does not create many tiny transcript events.
+    - Keep terminal output fed back into the model small: preserve failing command, exit code, and the most relevant error lines; summarize successful or repetitive output instead of pasting complete logs.
     - You may make temporary local proof edits to validate assumptions (for example: tweak a local build input for `make`, or hardcode a UI account / response path) when this increases confidence.
     - Revert every temporary proof edit before commit/push.
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
@@ -279,6 +280,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `In Review`.
     - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `In Review` with the blocker brief and explicit unblock actions.
+    - After the PR is attached and the issue is moved to `In Review`, end the turn. Do not continue ordinary implementation work unless Symphony injects reviewer, CI, self-review, or operator rework context.
 13. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.

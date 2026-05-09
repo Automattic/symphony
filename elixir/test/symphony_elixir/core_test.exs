@@ -826,6 +826,114 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 250, 1_100)
   end
 
+  test "active issue with completed PR is watched instead of immediately re-dispatched" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_active_states: ["Todo", "In Progress", "Rework"],
+      tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    )
+
+    issue_id = "issue-post-pr-quiet"
+    last_ran_at = DateTime.utc_now()
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-PR-QUIET",
+      title: "Post PR quiet",
+      state: "In Progress",
+      pull_request_url: "https://github.com/example/repo/pull/123",
+      updated_at: DateTime.add(last_ran_at, -10, :second)
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new(),
+      budget_exhausted: MapSet.new(),
+      max_concurrent_agents: 1,
+      completed_run_metadata: %{
+        issue_id => %{
+          pull_request_url: "https://github.com/example/repo/pull/123",
+          last_ran_at: last_ran_at
+        }
+      }
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+    assert Orchestrator.should_dispatch_issue_for_test(%{issue | updated_at: DateTime.add(last_ran_at, 1, :second)}, state)
+    assert Orchestrator.should_dispatch_issue_for_test(%{issue | state: "Rework"}, state)
+  end
+
+  test "retry for active completed PR moves issue to in review and watching" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_active_states: ["Todo", "In Progress", "Rework"],
+      tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    )
+
+    issue_id = "issue-post-pr-review"
+    retry_token = make_ref()
+    last_ran_at = DateTime.utc_now()
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      %Issue{
+        id: issue_id,
+        identifier: "MT-PR-REVIEW",
+        title: "Post PR review",
+        state: "In Progress",
+        pull_request_url: "https://github.com/example/repo/pull/124",
+        updated_at: DateTime.add(last_ran_at, -10, :second)
+      }
+    ])
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+    end)
+
+    orchestrator_name = Module.concat(__MODULE__, :PostPrReviewOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:completed_run_metadata, %{
+        issue_id => %{
+          identifier: "MT-PR-REVIEW",
+          pull_request_url: "https://github.com/example/repo/pull/124",
+          last_ran_at: last_ran_at
+        }
+      })
+      |> Map.put(:retry_attempts, %{
+        issue_id => %{
+          attempt: 1,
+          timer_ref: nil,
+          retry_token: retry_token,
+          due_at_ms: System.monotonic_time(:millisecond),
+          identifier: "MT-PR-REVIEW"
+        }
+      })
+    end)
+
+    send(pid, {:retry_issue, issue_id, retry_token})
+
+    assert_receive {:memory_tracker_state_update, ^issue_id, "In Review"}, 500
+
+    state = :sys.get_state(pid)
+    refute MapSet.member?(state.claimed, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert %{state: "In Review", pull_request_url: "https://github.com/example/repo/pull/124"} = state.watching[issue_id]
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])

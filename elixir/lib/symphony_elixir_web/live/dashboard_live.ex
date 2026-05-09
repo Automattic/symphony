@@ -184,6 +184,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="metric-detail numeric">
               <%= format_compact_int(@payload.codex_totals.input_tokens) %> in / <%= format_compact_int(@payload.codex_totals.output_tokens) %> out
             </p>
+            <p class="metric-detail numeric">
+              <%= format_compact_int(@payload.codex_totals.uncached_input_tokens) %> uncached / <%= format_compact_int(@payload.codex_totals.cached_input_tokens) %> cached
+            </p>
           </article>
 
           <article class="metric-card">
@@ -309,6 +312,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           <span class="muted">Budget: <%= format_issue_budget_remaining(entry.tokens.total_tokens, @payload.budget.per_issue_limit) %> left</span>
                         <% end %>
                         <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
+                        <span class="muted">Uncached <%= format_int(entry.tokens.uncached_input_tokens) %> / Cached <%= format_int(entry.tokens.cached_input_tokens) %></span>
                       </div>
                     </td>
                     <td>

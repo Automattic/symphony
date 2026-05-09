@@ -19,6 +19,7 @@ defmodule SymphonyElixir.QualityTest do
       },
       session_id: "session-1",
       codex_input_tokens: 10,
+      codex_cached_input_tokens: 7,
       codex_output_tokens: 4,
       codex_total_tokens: 14,
       started_at: started_at
@@ -37,7 +38,15 @@ defmodule SymphonyElixir.QualityTest do
     assert eval.outcome == "pr_opened"
     assert eval.agent_kind == "codex"
     assert eval.issue_labels == ["bug"]
-    assert eval.tokens == %{input_tokens: 10, output_tokens: 4, total_tokens: 14}
+
+    assert eval.tokens == %{
+             input_tokens: 10,
+             cached_input_tokens: 7,
+             uncached_input_tokens: 3,
+             output_tokens: 4,
+             total_tokens: 14
+           }
+
     assert eval.duration_seconds == 90
     assert eval.tests_run == true
     assert eval.error_kind == nil

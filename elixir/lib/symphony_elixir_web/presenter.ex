@@ -7,6 +7,8 @@ defmodule SymphonyElixirWeb.Presenter do
 
   @empty_codex_totals %{
     input_tokens: 0,
+    cached_input_tokens: 0,
+    uncached_input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
     seconds_running: 0
@@ -98,6 +100,8 @@ defmodule SymphonyElixirWeb.Presenter do
                turn_count: Map.get(running, :turn_count, 0),
                tokens: %{
                  input_tokens: running.codex_input_tokens,
+                 cached_input_tokens: Map.get(running, :codex_cached_input_tokens, 0),
+                 uncached_input_tokens: uncached_input_tokens(running.codex_input_tokens, Map.get(running, :codex_cached_input_tokens, 0)),
                  output_tokens: running.codex_output_tokens,
                  total_tokens: running.codex_total_tokens
                },
@@ -180,6 +184,8 @@ defmodule SymphonyElixirWeb.Presenter do
       last_event_at: iso8601(Map.get(entry, :last_event_at) || entry.last_codex_timestamp),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
+        cached_input_tokens: Map.get(entry, :codex_cached_input_tokens, 0),
+        uncached_input_tokens: uncached_input_tokens(entry.codex_input_tokens, Map.get(entry, :codex_cached_input_tokens, 0)),
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
       },
@@ -261,6 +267,8 @@ defmodule SymphonyElixirWeb.Presenter do
       last_event_at: iso8601(Map.get(running, :last_event_at) || running.last_codex_timestamp),
       tokens: %{
         input_tokens: running.codex_input_tokens,
+        cached_input_tokens: Map.get(running, :codex_cached_input_tokens, 0),
+        uncached_input_tokens: uncached_input_tokens(running.codex_input_tokens, Map.get(running, :codex_cached_input_tokens, 0)),
         output_tokens: running.codex_output_tokens,
         total_tokens: running.codex_total_tokens
       }
@@ -340,7 +348,13 @@ defmodule SymphonyElixirWeb.Presenter do
   defp self_review_payload(_run_id, _self_review_by_run), do: nil
 
   defp normalize_codex_totals(totals) when is_map(totals) do
-    Map.merge(@empty_codex_totals, totals)
+    normalized = Map.merge(@empty_codex_totals, totals)
+
+    Map.put(
+      normalized,
+      :uncached_input_tokens,
+      uncached_input_tokens(Map.get(normalized, :input_tokens), Map.get(normalized, :cached_input_tokens))
+    )
   end
 
   defp normalize_codex_totals(_totals), do: @empty_codex_totals
@@ -507,6 +521,12 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp uncached_input_tokens(input_tokens, cached_input_tokens) when is_integer(input_tokens) and is_integer(cached_input_tokens) do
+    max(input_tokens - cached_input_tokens, 0)
+  end
+
+  defp uncached_input_tokens(_input_tokens, _cached_input_tokens), do: 0
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

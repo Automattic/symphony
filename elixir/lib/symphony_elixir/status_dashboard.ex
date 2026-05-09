@@ -691,8 +691,6 @@ defmodule SymphonyElixir.StatusDashboard do
     [header | blocker_lines]
   end
 
-  defp format_dispatch_lines(_), do: []
-
   defp format_blocker_line(%{kind: :manual, reason: reason}) do
     case reason do
       reason when is_binary(reason) and reason != "" -> "manually paused: #{reason}"

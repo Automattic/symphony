@@ -180,8 +180,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     Process.exit(manual_pid, :normal)
 
     restart_result =
-      workflow_store_supervisor()
-      |> Supervisor.restart_child(workflow_store_child_id())
+      case workflow_store_supervisor() do
+        nil -> WorkflowStore.start_link()
+        supervisor -> Supervisor.restart_child(supervisor, workflow_store_child_id())
+      end
 
     assert match?({:ok, _pid}, restart_result) or
              match?({:error, {:already_started, _pid}}, restart_result)
@@ -1563,18 +1565,34 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp terminate_workflow_store do
-    case Supervisor.terminate_child(workflow_store_supervisor(), workflow_store_child_id()) do
-      :ok -> :ok
-      {:error, :not_found} -> stop_unsupervised_workflow_store()
-      {:error, reason} -> {:error, reason}
+    case workflow_store_supervisor() do
+      nil ->
+        stop_unsupervised_workflow_store()
+
+      supervisor ->
+        case Supervisor.terminate_child(supervisor, workflow_store_child_id()) do
+          :ok -> :ok
+          {:error, :not_found} -> stop_unsupervised_workflow_store()
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 
   defp restart_workflow_store do
-    case Supervisor.restart_child(workflow_store_supervisor(), workflow_store_child_id()) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, reason} -> {:error, reason}
+    case workflow_store_supervisor() do
+      nil ->
+        case WorkflowStore.start_link() do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      supervisor ->
+        case Supervisor.restart_child(supervisor, workflow_store_child_id()) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 
@@ -1588,7 +1606,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   defp workflow_store_supervisor do
     case workflow_store_repo_name() do
-      nil -> SymphonyElixir.Supervisor
+      nil -> nil
       repo_name -> SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
     end
     |> fallback_workflow_store_supervisor()
@@ -1613,10 +1631,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
-  defp fallback_workflow_store_supervisor(SymphonyElixir.Supervisor) do
+  defp fallback_workflow_store_supervisor(nil) do
     case supervised_repo_child() do
       {_repo_name, repo_pid} -> repo_pid
-      nil -> SymphonyElixir.Supervisor
+      nil -> nil
     end
   end
 

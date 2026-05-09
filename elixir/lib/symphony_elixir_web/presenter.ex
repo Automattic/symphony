@@ -25,6 +25,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
         %{
           generated_at: generated_at,
+          repos: repo_keys(snapshot),
           counts: %{
             running: length(snapshot.running),
             watching: length(Map.get(snapshot, :watching, [])),
@@ -226,6 +227,7 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       linear_state: Map.get(entry, :linear_state),
       url: URLUtils.present_url(Map.get(entry, :url)),
+      conflicts: Map.get(entry, :repo_keys, []),
       repo_keys: Map.get(entry, :repo_keys, [])
     }
   end
@@ -246,6 +248,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp awaiting_clarification_entry_payload(entry) do
     %{
       issue_id: Map.get(entry, :issue_id),
+      repo_key: Map.get(entry, :repo_key),
       issue_identifier: quality_gate_identifier(entry),
       url: URLUtils.present_url(Map.get(entry, :url)),
       score: Map.get(entry, :score),
@@ -259,6 +262,7 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       kind: entry |> Map.get(:kind) |> quality_gate_kind(),
       issue_id: Map.get(entry, :issue_id),
+      repo_key: Map.get(entry, :repo_key),
       issue_identifier: quality_gate_identifier(entry),
       url: URLUtils.present_url(Map.get(entry, :url)),
       score: Map.get(entry, :score),
@@ -377,6 +381,21 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp normalize_codex_totals(_totals), do: @empty_codex_totals
+
+  defp repo_keys(snapshot) when is_map(snapshot) do
+    [
+      snapshot |> Map.get(:running, []) |> Enum.map(&Map.get(&1, :repo_key)),
+      snapshot |> Map.get(:watching, []) |> Enum.map(&Map.get(&1, :repo_key)),
+      snapshot |> Map.get(:retrying, []) |> Enum.map(&Map.get(&1, :repo_key)),
+      snapshot |> Map.get(:awaiting_clarification, []) |> Enum.map(&Map.get(&1, :repo_key)),
+      snapshot |> Map.get(:skipped, []) |> Enum.map(&Map.get(&1, :repo_key)),
+      snapshot |> Map.get(:conflicts, []) |> Enum.flat_map(&(Map.get(&1, :repo_keys, []) || []))
+    ]
+    |> List.flatten()
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
 
   defp normalize_pause(pause) when is_map(pause) do
     %{

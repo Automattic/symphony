@@ -81,6 +81,29 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec repo_key() :: {:ok, String.t()} | {:error, term()}
+  def repo_key do
+    with {:ok, system_config} <- system(),
+         %SystemSchema.Repo{name: name} when is_binary(name) and name != "" <-
+           SystemSchema.primary_repo(system_config) do
+      {:ok, name}
+    else
+      nil -> {:error, :missing_primary_repo}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec repo_key!() :: String.t()
+  def repo_key! do
+    case repo_key() do
+      {:ok, repo_key} ->
+        repo_key
+
+      {:error, reason} ->
+        raise ArgumentError, message: format_config_error(reason)
+    end
+  end
+
   @spec settings!() :: Schema.t()
   def settings! do
     case settings() do

@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Verification do
 
   @type context :: %{
           run_id: String.t(),
+          repo_key: String.t(),
           port: pos_integer(),
           issue_id: String.t() | nil,
           issue_identifier: String.t() | nil
@@ -45,15 +46,18 @@ defmodule SymphonyElixir.Verification do
     settings = Keyword.get(opts, :settings, Config.settings!())
 
     if enabled?(settings) do
+      repo_key = Keyword.get(opts, :repo_key, Config.repo_key!())
+
       attrs = %{
         run_id: run_id,
+        repo_key: repo_key,
         issue_id: issue.id,
         issue_identifier: issue.identifier,
         worker_host: worker_host,
         port_range: settings.verification.port_allocation.range
       }
 
-      case PortPool.allocate(attrs) do
+      case PortPool.allocate(attrs, repo_key: repo_key) do
         {:ok, allocation} -> {:ok, allocation_context(allocation)}
         {:error, reason} -> {:error, reason}
       end
@@ -117,12 +121,16 @@ defmodule SymphonyElixir.Verification do
 
   @doc false
   @spec release(context() | nil, String.t()) :: :ok
+  def release(%{run_id: run_id, repo_key: repo_key}, reason) when is_binary(run_id),
+    do: PortPool.release(run_id, reason, repo_key: repo_key)
+
   def release(%{run_id: run_id}, reason) when is_binary(run_id), do: PortPool.release(run_id, reason)
   def release(_context, _reason), do: :ok
 
   defp allocation_context(allocation) when is_map(allocation) do
     %{
       run_id: Map.fetch!(allocation, :run_id),
+      repo_key: Map.fetch!(allocation, :repo_key),
       port: Map.fetch!(allocation, :port),
       issue_id: Map.get(allocation, :issue_id),
       issue_identifier: Map.get(allocation, :issue_identifier)

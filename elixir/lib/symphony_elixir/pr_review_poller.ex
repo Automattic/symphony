@@ -87,23 +87,24 @@ defmodule SymphonyElixir.PrReviewPoller do
   @spec pending_reviewer_comments(String.t(), keyword()) :: [map()]
   def pending_reviewer_comments(issue_id, opts \\ []) do
     run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = repo_key_from_opts(opts)
     now = Keyword.get(opts, :now, DateTime.utc_now())
 
-    pending_reviewer_comments(issue_id, run_store, now)
+    pending_reviewer_comments(issue_id, run_store, repo_key, now)
   end
 
-  defp pending_reviewer_comments(issue_id, run_store, now) when is_binary(issue_id) do
-    case list_pr_reviews(run_store) do
+  defp pending_reviewer_comments(issue_id, run_store, repo_key, now) when is_binary(issue_id) do
+    case list_pr_reviews(run_store, repo_key) do
       {:ok, reviews} ->
         comments_from_review_record(reviews, issue_id, run_store, now)
 
       {:error, reason} ->
-        record_pending_comment_lookup_error(run_store, issue_id, reason, now)
+        record_pending_comment_lookup_error(run_store, repo_key, issue_id, reason, now)
         []
     end
   end
 
-  defp pending_reviewer_comments(_issue_id, _run_store, _now), do: []
+  defp pending_reviewer_comments(_issue_id, _run_store, _repo_key, _now), do: []
 
   defp comments_from_review_record(reviews, issue_id, run_store, now) do
     case Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
@@ -131,16 +132,17 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp do_complete_pending_reviewer_comments(issue_id, opts) do
     run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = repo_key_from_opts(opts)
 
-    case fetch_pr_review_record(run_store, issue_id) do
+    case fetch_pr_review_record(run_store, repo_key, issue_id) do
       {:ok, record} -> complete_reviewer_comment_record(record, opts)
       :missing -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp fetch_pr_review_record(run_store, issue_id) do
-    case list_pr_reviews(run_store) do
+  defp fetch_pr_review_record(run_store, repo_key, issue_id) do
+    case list_pr_reviews(run_store, repo_key) do
       {:ok, reviews} ->
         case Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
           %{} = record -> {:ok, record}
@@ -223,10 +225,11 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp do_poll_once(settings, opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
     run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = repo_key_from_opts(opts)
     tracker = Keyword.get(opts, :tracker, Tracker)
 
-    with {:ok, discovered} <- discover_reviews(run_store, tracker, now),
-         {:ok, reviews} <- list_pr_reviews(run_store) do
+    with {:ok, discovered} <- discover_reviews(run_store, tracker, repo_key, now),
+         {:ok, reviews} <- list_pr_reviews(run_store, repo_key) do
       actions =
         reviews
         |> Enum.map(&process_review(&1, settings, opts, now))
@@ -235,22 +238,22 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp discover_reviews(run_store, tracker, now) do
+  defp discover_reviews(run_store, tracker, repo_key, now) do
     with {:ok, issues} <- tracker.fetch_issues_by_states([@in_review_state]),
-         {:ok, runs} <- list_runs(run_store),
-         {:ok, existing} <- list_pr_reviews(run_store) do
+         {:ok, runs} <- list_runs(run_store, repo_key),
+         {:ok, existing} <- list_pr_reviews(run_store, repo_key) do
       existing_by_issue = Map.new(existing, &{Map.get(&1, :issue_id), &1})
 
       discovered =
         issues
         |> Enum.filter(&match?(%Issue{}, &1))
-        |> Enum.count(&persist_discovered_review?(&1, runs, existing_by_issue, run_store, now))
+        |> Enum.count(&persist_discovered_review?(&1, runs, existing_by_issue, run_store, repo_key, now))
 
       {:ok, discovered}
     end
   end
 
-  defp persist_discovered_review?(%Issue{} = issue, runs, existing_by_issue, run_store, now) do
+  defp persist_discovered_review?(%Issue{} = issue, runs, existing_by_issue, run_store, repo_key, now) do
     existing = Map.get(existing_by_issue, issue.id)
 
     case discover_review_record(issue, runs, existing, now) do
@@ -258,7 +261,7 @@ defmodule SymphonyElixir.PrReviewPoller do
         false
 
       record ->
-        case persist_pr_review(run_store, record) do
+        case persist_pr_review(run_store, Map.put(record, :repo_key, repo_key)) do
           :ok ->
             true
 
@@ -806,14 +809,20 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp delete_review_after_cleanup(run_store, record, reason) do
-    case run_store.delete_pr_review(Map.get(record, :issue_id)) do
-      :ok ->
-        {:cleanup, Map.get(record, :issue_id), reason}
+    case Map.get(record, :repo_key) do
+      repo_key when is_binary(repo_key) ->
+        case delete_pr_review_record(run_store, repo_key, Map.get(record, :issue_id)) do
+          :ok ->
+            {:cleanup, Map.get(record, :issue_id), reason}
 
-      {:error, delete_reason} ->
-        Logger.warning("Failed to delete PR review record issue_id=#{Map.get(record, :issue_id)} after cleanup: #{inspect(delete_reason)}")
+          {:error, delete_reason} ->
+            Logger.warning("Failed to delete PR review record issue_id=#{Map.get(record, :issue_id)} after cleanup: #{inspect(delete_reason)}")
 
-        {:cleanup_error, Map.get(record, :issue_id), delete_reason}
+            {:cleanup_error, Map.get(record, :issue_id), delete_reason}
+        end
+
+      _repo_key ->
+        {:cleanup_error, Map.get(record, :issue_id), :missing_repo_key}
     end
   end
 
@@ -1068,17 +1077,58 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp normalize_decision(_value), do: nil
 
-  defp list_runs(run_store) do
-    case run_store.list_runs(:all) do
+  defp list_runs(run_store, repo_key) do
+    case list_run_records(run_store, repo_key) do
       runs when is_list(runs) -> {:ok, runs}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp list_pr_reviews(run_store) do
-    case run_store.list_pr_reviews() do
+  defp list_pr_reviews(run_store, repo_key) do
+    case list_pr_review_records(run_store, repo_key) do
       reviews when is_list(reviews) -> {:ok, reviews}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp list_run_records(run_store, repo_key) do
+    cond do
+      function_exported?(run_store, :list_runs, 2) ->
+        run_store.list_runs(repo_key, :all)
+
+      function_exported?(run_store, :list_runs, 1) ->
+        run_store.list_runs(:all)
+
+      true ->
+        {:error, :runs_unsupported}
+    end
+  end
+
+  defp list_pr_review_records(run_store, repo_key) do
+    cond do
+      function_exported?(run_store, :list_pr_reviews, 1) ->
+        run_store.list_pr_reviews(repo_key)
+
+      function_exported?(run_store, :list_pr_reviews, 0) ->
+        run_store.list_pr_reviews()
+
+      true ->
+        {:error, :pr_reviews_unsupported}
+    end
+  end
+
+  defp repo_key_from_opts(opts), do: Keyword.get_lazy(opts, :repo_key, &Config.repo_key!/0)
+
+  defp delete_pr_review_record(run_store, repo_key, issue_id) do
+    cond do
+      function_exported?(run_store, :delete_pr_review, 2) ->
+        run_store.delete_pr_review(repo_key, issue_id)
+
+      function_exported?(run_store, :delete_pr_review, 1) ->
+        run_store.delete_pr_review(issue_id)
+
+      true ->
+        {:error, :pr_reviews_unsupported}
     end
   end
 
@@ -1094,7 +1144,7 @@ defmodule SymphonyElixir.PrReviewPoller do
         updated_at: now
       }
 
-      case update_review_direct(run_store, issue_id, attrs) do
+      case update_review_direct(run_store, Map.fetch!(record, :repo_key), issue_id, attrs) do
         :ok ->
           :ok
 
@@ -1104,7 +1154,7 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp record_pending_comment_lookup_error(run_store, issue_id, reason, now) do
+  defp record_pending_comment_lookup_error(run_store, repo_key, issue_id, reason, now) do
     Logger.warning("Failed to load pending PR review comments issue_id=#{issue_id}: #{inspect(reason)}")
 
     attrs = %{
@@ -1113,7 +1163,7 @@ defmodule SymphonyElixir.PrReviewPoller do
       updated_at: now
     }
 
-    case update_review_direct(run_store, issue_id, attrs) do
+    case update_review_direct(run_store, repo_key, issue_id, attrs) do
       :ok ->
         :ok
 
@@ -1122,18 +1172,26 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp update_review_direct(run_store, issue_id, attrs) when is_binary(issue_id) do
-    if function_exported?(run_store, :update_pr_review, 2) do
-      case run_store.update_pr_review(issue_id, attrs) do
-        :ok -> :ok
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      {:error, :update_pr_review_unavailable}
+  defp update_review_direct(run_store, repo_key, issue_id, attrs) when is_binary(issue_id) do
+    cond do
+      function_exported?(run_store, :update_pr_review, 3) ->
+        case run_store.update_pr_review(repo_key, issue_id, attrs) do
+          :ok -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      function_exported?(run_store, :update_pr_review, 2) ->
+        case run_store.update_pr_review(issue_id, attrs) do
+          :ok -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      true ->
+        {:error, :update_pr_review_unavailable}
     end
   end
 
-  defp update_review_direct(_run_store, _issue_id, _attrs), do: {:error, :invalid_issue_id}
+  defp update_review_direct(_run_store, _repo_key, _issue_id, _attrs), do: {:error, :invalid_issue_id}
 
   defp persist_pr_review(run_store, record) do
     case run_store.put_pr_review(record) do
@@ -1146,23 +1204,29 @@ defmodule SymphonyElixir.PrReviewPoller do
     run_store = Keyword.get(opts, :run_store, RunStore)
     issue_id = Map.get(record, :issue_id)
 
-    case run_store.update_pr_review(issue_id, attrs) do
-      :ok ->
-        :ok
+    case Map.get(record, :repo_key) || Keyword.get(opts, :repo_key) do
+      repo_key when is_binary(repo_key) ->
+        case update_review_direct(run_store, repo_key, issue_id, attrs) do
+          :ok ->
+            :ok
 
-      {:error, :pr_review_not_found} ->
-        upsert_review(run_store, record, attrs)
+          {:error, :pr_review_not_found} ->
+            upsert_review(run_store, repo_key, record, attrs)
 
-      {:error, reason} ->
-        log_review_store_error("update", issue_id, attrs, reason)
-        {:error, {:update_pr_review_failed, reason}}
+          {:error, reason} ->
+            log_review_store_error("update", issue_id, attrs, reason)
+            {:error, {:update_pr_review_failed, reason}}
+        end
+
+      _repo_key ->
+        {:error, :missing_repo_key}
     end
   end
 
-  defp upsert_review(run_store, record, attrs) do
+  defp upsert_review(run_store, repo_key, record, attrs) do
     issue_id = Map.get(record, :issue_id)
 
-    case run_store.put_pr_review(Map.merge(record, attrs)) do
+    case run_store.put_pr_review(record |> Map.merge(attrs) |> Map.put(:repo_key, repo_key)) do
       :ok ->
         :ok
 

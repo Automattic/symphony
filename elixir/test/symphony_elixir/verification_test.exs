@@ -51,6 +51,7 @@ defmodule SymphonyElixir.VerificationTest do
 
     assert :ok =
              RunStore.put_verification_allocation(%{
+               repo_key: "default",
                run_id: "live-run",
                issue_id: "issue-live",
                issue_identifier: "RSM-LIVE",
@@ -63,6 +64,7 @@ defmodule SymphonyElixir.VerificationTest do
 
     assert :ok =
              RunStore.put_verification_allocation(%{
+               repo_key: "default",
                run_id: "stale-run",
                issue_id: "issue-stale",
                issue_identifier: "RSM-STALE",

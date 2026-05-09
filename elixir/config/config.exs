@@ -17,5 +17,5 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
 
 if config_env() == :test do
   config :symphony_elixir,
-    run_store_dir: Path.join(System.tmp_dir!(), "symphony_elixir_run_store_test")
+    run_store_dir: Path.join(System.tmp_dir!(), "symphony-elixir-test-run-store-#{System.unique_integer([:positive])}")
 end

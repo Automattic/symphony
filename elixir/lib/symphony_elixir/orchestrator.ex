@@ -45,6 +45,7 @@ defmodule SymphonyElixir.Orchestrator do
     """
 
     defstruct [
+      :repo_key,
       :poll_interval_ms,
       :max_concurrent_agents,
       :next_poll_due_at_ms,
@@ -86,20 +87,22 @@ defmodule SymphonyElixir.Orchestrator do
   def init(_opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
+    repo_key = Config.repo_key!()
     log_quality_gate_config(config.quality_gate)
     :ok = ensure_run_store_started()
-    {retry_attempts, claimed} = hydrate_retry_attempts()
+    {retry_attempts, claimed} = hydrate_retry_attempts(repo_key)
     codex_totals = persisted_codex_totals()
     pause = persisted_pause_state()
     quality_gate_cache = hydrate_quality_gate_cache()
     quality_gate_comment_keys = hydrate_quality_gate_comment_keys()
     budget_day_started_on = Date.utc_today()
-    budget_daily_used = hydrate_budget_daily_used(budget_day_started_on)
-    budget_exhausted = hydrate_budget_exhausted()
+    budget_daily_used = hydrate_budget_daily_used(repo_key, budget_day_started_on)
+    budget_exhausted = hydrate_budget_exhausted(repo_key)
 
-    completed_run_metadata = hydrate_completed_run_metadata(retry_attempts)
+    completed_run_metadata = hydrate_completed_run_metadata(repo_key, retry_attempts)
 
     state = %State{
+      repo_key: repo_key,
       poll_interval_ms: config.polling.interval_ms,
       max_concurrent_agents: config.agent.max_concurrent_agents,
       next_poll_due_at_ms: now_ms,
@@ -122,7 +125,7 @@ defmodule SymphonyElixir.Orchestrator do
       quality_gate_comment_keys: quality_gate_comment_keys
     }
 
-    mark_interrupted_runs()
+    mark_interrupted_runs(repo_key)
     tick_token = make_ref()
     send(self(), {:tick, tick_token})
     state = %{state | tick_token: tick_token, next_poll_due_at_ms: now_ms}
@@ -133,7 +136,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def handle_continue({:startup_workspace_lifecycle, now_ms}, state) do
-    run_terminal_workspace_cleanup()
+    run_terminal_workspace_cleanup(state.repo_key)
     {:noreply, run_startup_workspace_lifecycle(state, now_ms)}
   end
 
@@ -669,7 +672,7 @@ defmodule SymphonyElixir.Orchestrator do
         worker_host = Map.get(running_entry, :worker_host)
 
         if cleanup_workspace do
-          cleanup_issue_workspace(identifier, worker_host)
+          cleanup_issue_workspace(%{identifier: identifier, repo_key: state.repo_key}, worker_host)
         end
 
         %{
@@ -1312,7 +1315,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
     run_id = new_run_id(issue.id)
 
-    case Verification.allocate_for_dispatch(issue, run_id, worker_host) do
+    case Verification.allocate_for_dispatch(issue, run_id, worker_host, repo_key: state.repo_key) do
       {:ok, verification} ->
         spawn_allocated_issue_on_worker_host(state, issue, attempt, recipient, worker_host, run_id, verification)
 
@@ -1340,6 +1343,7 @@ defmodule SymphonyElixir.Orchestrator do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient,
              attempt: attempt,
+             repo_key: state.repo_key,
              worker_host: worker_host,
              run_id: run_id,
              verification: verification
@@ -1355,6 +1359,7 @@ defmodule SymphonyElixir.Orchestrator do
           pid: pid,
           ref: ref,
           run_id: run_id,
+          repo_key: state.repo_key,
           identifier: issue.identifier,
           issue: issue,
           worker_host: worker_host,
@@ -1383,7 +1388,7 @@ defmodule SymphonyElixir.Orchestrator do
         }
 
         persist_run_start(issue, running_entry, attempt)
-        delete_persisted_retry(issue.id)
+        state = delete_persisted_retry(state, issue.id)
 
         state = clear_quality_gate_blocking_cache_entry(state, issue.id)
         running = Map.put(state.running, issue.id, running_entry)
@@ -1430,7 +1435,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
   defp complete_issue(%State{} = state, issue_id, running_entry) do
-    delete_persisted_retry(issue_id)
+    state = delete_persisted_retry(state, issue_id)
     state = remember_completed_run(state, issue_id, running_entry)
 
     %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}
@@ -1454,6 +1459,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
 
     persist_retry(%{
+      repo_key: state.repo_key,
       issue_id: issue_id,
       identifier: identifier,
       attempt: next_attempt,
@@ -1503,7 +1509,7 @@ defmodule SymphonyElixir.Orchestrator do
           elapsed_ms: Map.get(retry_entry, :elapsed_ms)
         }
 
-        delete_persisted_retry(issue_id)
+        state = delete_persisted_retry(state, issue_id)
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
 
       _ ->
@@ -1538,7 +1544,10 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
-        cleanup_issue_workspace(issue, metadata[:worker_host])
+        issue
+        |> issue_workspace_context(state.repo_key)
+        |> cleanup_issue_workspace(metadata[:worker_host])
+
         {:noreply, state |> forget_completed_issue(issue_id) |> release_issue_claim(issue_id)}
 
       retry_candidate_issue?(issue, terminal_states) ->
@@ -1563,14 +1572,8 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state |> forget_completed_issue(issue_id) |> release_issue_claim(issue_id)}
   end
 
-  defp cleanup_issue_workspace(identifier, worker_host \\ nil)
-
-  defp cleanup_issue_workspace(%Issue{} = issue, worker_host) do
+  defp cleanup_issue_workspace(%{identifier: identifier} = issue, worker_host) when is_binary(identifier) do
     Workspace.remove_issue_workspaces(issue, worker_host)
-  end
-
-  defp cleanup_issue_workspace(identifier, worker_host) when is_binary(identifier) do
-    Workspace.remove_issue_workspaces(identifier, worker_host)
   end
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
@@ -1589,13 +1592,15 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp run_terminal_workspace_cleanup do
+  defp run_terminal_workspace_cleanup(repo_key) do
     case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
       {:ok, issues} ->
         issues
         |> Enum.each(fn
           %Issue{} = issue ->
-            cleanup_issue_workspace(issue)
+            issue
+            |> issue_workspace_context(repo_key)
+            |> cleanup_issue_workspace(nil)
 
           _ ->
             :ok
@@ -1615,9 +1620,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_startup_orphan_sweep(%State{} = state) do
-    case startup_tracked_workspace_identifiers() do
+    case startup_tracked_workspace_identifiers(state.repo_key) do
       {:ok, tracked_identifiers} ->
-        case Workspace.sweep_orphan_workspaces(tracked_identifiers) do
+        case Workspace.sweep_orphan_workspaces(state.repo_key, tracked_identifiers) do
           {:ok, actions} ->
             log_workspace_lifecycle_summary("startup orphan sweep", actions)
             state
@@ -1633,11 +1638,11 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp startup_tracked_workspace_identifiers do
+  defp startup_tracked_workspace_identifiers(repo_key) do
     with {:ok, candidate_issues} <- Tracker.fetch_candidate_issues(),
          {:ok, terminal_issues} <- Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states),
-         runs when is_list(runs) <- RunStore.list_runs(:all),
-         retries when is_list(retries) <- RunStore.list_retries() do
+         runs when is_list(runs) <- RunStore.list_runs(repo_key, :all),
+         retries when is_list(retries) <- RunStore.list_retries(repo_key) do
       identifiers =
         issue_identifiers(candidate_issues ++ terminal_issues) ++
           run_identifiers(runs) ++ retry_identifiers(retries)
@@ -1668,7 +1673,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_workspace_age_gc(%State{} = state) do
-    case Workspace.reclaim_stale_workspaces(active_workspace_identifiers(state)) do
+    case Workspace.reclaim_stale_workspaces(state.repo_key, active_workspace_identifiers(state)) do
       {:ok, actions} ->
         log_workspace_lifecycle_summary("age GC", actions)
         state
@@ -1897,7 +1902,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
-    delete_persisted_retry(issue_id)
+    state = delete_persisted_retry(state, issue_id)
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
@@ -2039,6 +2044,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp find_running_issue(_running, _issue_id_or_identifier), do: nil
 
+  defp running_entry_repo_key(%{repo_key: repo_key}) when is_binary(repo_key), do: repo_key
+  defp running_entry_repo_key(_running_entry), do: nil
+
   defp start_stop_agent_session_cleanup(%{run_id: run_id} = running_entry) do
     if stop_agent_session_configured?(running_entry),
       do: start_stop_agent_session_cleanup_task(running_entry, run_id),
@@ -2048,16 +2056,26 @@ defmodule SymphonyElixir.Orchestrator do
   defp start_stop_agent_session_cleanup(_running_entry), do: :ok
 
   defp start_stop_agent_session_cleanup_task(running_entry, run_id) do
+    case running_entry_repo_key(running_entry) do
+      repo_key when is_binary(repo_key) ->
+        start_stop_agent_session_cleanup_task(running_entry, run_id, repo_key)
+
+      _repo_key ->
+        :ok
+    end
+  end
+
+  defp start_stop_agent_session_cleanup_task(running_entry, run_id, repo_key) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            running_entry
            |> stop_agent_session_with_timeout(@stop_session_cleanup_timeout_ms)
-           |> record_stop_agent_session_cleanup_result(run_id)
+           |> record_stop_agent_session_cleanup_result(repo_key, run_id)
          end) do
       {:ok, _pid} ->
         :ok
 
       {:error, reason} ->
-        record_stop_agent_session_cleanup_result(run_id, {:error, {:cleanup_task_start_failed, reason}})
+        record_stop_agent_session_cleanup_result({:error, {:cleanup_task_start_failed, reason}}, repo_key, run_id)
     end
   end
 
@@ -2153,19 +2171,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_stop_session_result({:error, reason}), do: {:error, reason}
   defp normalize_stop_session_result(other), do: {:error, {:unexpected_result, other}}
 
-  defp record_stop_agent_session_cleanup_result(:ok, _run_id), do: :ok
+  defp record_stop_agent_session_cleanup_result(:ok, _repo_key, _run_id), do: :ok
 
-  defp record_stop_agent_session_cleanup_result({:error, reason}, run_id) when is_binary(run_id) do
+  defp record_stop_agent_session_cleanup_result({:error, reason}, repo_key, run_id) when is_binary(repo_key) and is_binary(run_id) do
     message = "agent stopped by operator; stop_session cleanup failed: #{inspect(reason)}"
     Logger.warning("Agent stop_session cleanup failed while stopping issue run_id=#{run_id} reason=#{inspect(reason)}")
 
-    run_id
-    |> RunStore.update_run(%{error: message, updated_at: DateTime.utc_now()})
+    repo_key
+    |> RunStore.update_run(run_id, %{error: message, updated_at: DateTime.utc_now()})
     |> ignore_missing_run()
     |> log_run_store_error("record stop_session cleanup failure")
   end
 
-  defp record_stop_agent_session_cleanup_result({:error, reason}, _run_id) do
+  defp record_stop_agent_session_cleanup_result({:error, reason}, _repo_key, _run_id) do
     Logger.warning("Agent stop_session cleanup failed while stopping issue reason=#{inspect(reason)}")
     :ok
   end
@@ -2269,8 +2287,8 @@ defmodule SymphonyElixir.Orchestrator do
     |> log_run_store_error("persist quality gate comment keys")
   end
 
-  defp hydrate_retry_attempts do
-    case RunStore.list_retries() do
+  defp hydrate_retry_attempts(repo_key) do
+    case RunStore.list_retries(repo_key) do
       retries when is_list(retries) ->
         now = DateTime.utc_now()
         now_ms = System.monotonic_time(:millisecond)
@@ -2312,8 +2330,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   @watchable_run_statuses ["success", "stopped"]
 
-  defp hydrate_completed_run_metadata(retry_attempts) when is_map(retry_attempts) do
-    case RunStore.list_runs(500) do
+  defp hydrate_completed_run_metadata(repo_key, retry_attempts) when is_map(retry_attempts) do
+    case RunStore.list_runs(repo_key, 500) do
       runs when is_list(runs) ->
         runs
         |> Enum.filter(&(Map.get(&1, :status) in @watchable_run_statuses))
@@ -2339,10 +2357,10 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp hydrate_completed_run_metadata(_retry_attempts), do: %{}
+  defp hydrate_completed_run_metadata(_repo_key, _retry_attempts), do: %{}
 
-  defp hydrate_budget_daily_used(%Date{} = day) do
-    case RunStore.list_runs(:all) do
+  defp hydrate_budget_daily_used(repo_key, %Date{} = day) do
+    case RunStore.list_runs(repo_key, :all) do
       runs when is_list(runs) ->
         runs
         |> Enum.filter(&run_started_on_day?(&1, day))
@@ -2356,18 +2374,18 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp hydrate_budget_exhausted do
+  defp hydrate_budget_exhausted(repo_key) do
     case Config.settings!().agent.max_tokens_per_issue do
       limit when is_integer(limit) and limit > 0 ->
-        hydrate_budget_exhausted(limit)
+        hydrate_budget_exhausted(repo_key, limit)
 
       _limit ->
         MapSet.new()
     end
   end
 
-  defp hydrate_budget_exhausted(limit) do
-    case RunStore.list_runs(:all) do
+  defp hydrate_budget_exhausted(repo_key, limit) do
+    case RunStore.list_runs(repo_key, :all) do
       runs when is_list(runs) ->
         runs
         |> Enum.flat_map(&budget_exhausted_issue_id(&1, limit))
@@ -2410,8 +2428,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp retry_attempt(_attempt), do: 1
 
-  defp mark_interrupted_runs do
-    case RunStore.interrupt_running_runs("orchestrator restarted before worker exit") do
+  defp mark_interrupted_runs(repo_key) do
+    case RunStore.interrupt_running_runs(repo_key, "orchestrator restarted before worker exit") do
       {:ok, 0} ->
         :ok
 
@@ -2425,8 +2443,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp persisted_run_history do
-    case RunStore.list_runs(50) do
+  defp persisted_run_history(repo_key) do
+    case RunStore.list_runs(repo_key, 50) do
       runs when is_list(runs) ->
         runs
 
@@ -2444,11 +2462,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp persist_running_entry(running_entry) when is_map(running_entry) do
-    case Map.get(running_entry, :run_id) do
-      run_id when is_binary(run_id) ->
+    case {running_entry_repo_key(running_entry), Map.get(running_entry, :run_id)} do
+      {repo_key, run_id} when is_binary(repo_key) and is_binary(run_id) ->
         running_entry
         |> run_update_from_entry()
-        |> then(&RunStore.update_run(run_id, &1))
+        |> then(&RunStore.update_run(repo_key, run_id, &1))
         |> ignore_missing_run()
         |> log_run_store_error("persist running metadata")
 
@@ -2458,8 +2476,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp persist_run_completion(running_entry, status, error) when is_map(running_entry) and is_binary(status) do
-    case Map.get(running_entry, :run_id) do
-      run_id when is_binary(run_id) ->
+    case {running_entry_repo_key(running_entry), Map.get(running_entry, :run_id)} do
+      {repo_key, run_id} when is_binary(repo_key) and is_binary(run_id) ->
         now = DateTime.utc_now()
 
         attrs =
@@ -2473,8 +2491,8 @@ defmodule SymphonyElixir.Orchestrator do
             updated_at: now
           })
 
-        run_id
-        |> RunStore.update_run(attrs)
+        repo_key
+        |> RunStore.update_run(run_id, attrs)
         |> ignore_missing_run()
         |> log_run_store_error("persist run completion")
 
@@ -2540,16 +2558,13 @@ defmodule SymphonyElixir.Orchestrator do
     |> log_run_store_error("persist codex totals")
   end
 
-  defp delete_persisted_retry(issue_id) when is_binary(issue_id) do
-    issue_id
-    |> RunStore.delete_retry()
-    |> log_run_store_error("delete retry")
-  end
-
-  defp delete_persisted_retry(_issue_id), do: :ok
-
   defp delete_persisted_retry(%State{} = state, issue_id) do
-    delete_persisted_retry(issue_id)
+    if is_binary(issue_id) do
+      state.repo_key
+      |> RunStore.delete_retry(issue_id)
+      |> log_run_store_error("delete retry")
+    end
+
     state
   end
 
@@ -2559,6 +2574,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     %{
       run_id: Map.fetch!(running_entry, :run_id),
+      repo_key: Map.fetch!(running_entry, :repo_key),
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       title: issue.title,
@@ -2894,7 +2910,7 @@ defmodule SymphonyElixir.Orchestrator do
        retrying: retrying,
        awaiting_clarification: awaiting_clarification,
        skipped: skipped,
-       run_history: persisted_run_history(),
+       run_history: persisted_run_history(state.repo_key),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        pause: state.pause || unpaused_state(),
@@ -3203,6 +3219,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp forget_completed_issue(state, _issue_id), do: state
+
+  defp issue_workspace_context(%Issue{} = issue, repo_key) do
+    %{
+      id: issue.id,
+      identifier: issue.identifier,
+      repo_key: repo_key,
+      labels: issue.labels || []
+    }
+  end
 
   defp issue_identifier(%Issue{identifier: identifier}), do: identifier
   defp issue_identifier(_issue), do: nil

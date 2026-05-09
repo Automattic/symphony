@@ -566,7 +566,7 @@ defmodule SymphonyElixir.CoreTest do
 
     issue_id = "issue-2"
     issue_identifier = "MT-556"
-    workspace = Path.join(test_root, issue_identifier)
+    workspace = Path.join([test_root, "default", issue_identifier])
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
@@ -1300,6 +1300,7 @@ defmodule SymphonyElixir.CoreTest do
              RunStore.put_learnings(
                [
                  %{
+                   repo_key: "default",
                    id: "learning-prompt-test",
                    repo: "github.com/example/repo",
                    rule: "Always use this captured rule.",
@@ -1826,9 +1827,10 @@ defmodule SymphonyElixir.CoreTest do
         labels: ["backend"]
       }
 
-      before = MapSet.new(File.ls!(workspace_root))
+      repo_workspace_root = Path.join(workspace_root, "default")
+      before = if File.dir?(repo_workspace_root), do: MapSet.new(File.ls!(repo_workspace_root)), else: MapSet.new()
       assert :ok = AgentRunner.run(issue, nil, issue_enricher: fn _issue -> raise "boom" end)
-      entries_after = MapSet.new(File.ls!(workspace_root))
+      entries_after = MapSet.new(File.ls!(repo_workspace_root))
 
       created =
         MapSet.difference(entries_after, before) |> Enum.filter(&(&1 == "S-99"))
@@ -1839,7 +1841,7 @@ defmodule SymphonyElixir.CoreTest do
       workspace_name = created |> Enum.to_list() |> List.first()
       assert workspace_name == "S-99"
 
-      workspace = Path.join(workspace_root, workspace_name)
+      workspace = Path.join(repo_workspace_root, workspace_name)
       assert File.exists?(workspace)
       assert File.exists?(Path.join(workspace, "README.md"))
     after
@@ -2138,6 +2140,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert :ok =
                RunStore.put_pr_review(%{
+                 repo_key: "default",
                  issue_id: "issue-continue",
                  issue_identifier: "MT-247",
                  pr_url: "https://github.com/example/repo/pull/247",

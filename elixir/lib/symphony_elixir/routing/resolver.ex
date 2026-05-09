@@ -2,15 +2,28 @@ defmodule SymphonyElixir.Routing.Resolver do
   @moduledoc """
   Pure issue-to-repository routing for multi-repo orchestration.
 
-  Repo route entries use the `repos:` shape from the multi-repo design:
+  Repo route entries use the flat `repos:` shape from `symphony.yml`:
   `team` is required; `projects`, `labels`, and `assignee` are optional
-  filters. Validation is kept here so startup code can reject ambiguous repo
-  definitions before dispatch starts.
+  filters.
+
+  Call `validate_repos!/1` during startup after loading the repo list. The
+  resolver functions assume startup structural validation has already rejected
+  invalid or ambiguous repo definitions, and only evaluate match semantics.
   """
 
+  alias SymphonyElixir.Config.SystemSchema
   alias SymphonyElixir.Linear.Issue
 
-  @type repo :: map()
+  @type repo_map :: %{
+          optional(:name) => String.t(),
+          optional(:team) => String.t(),
+          optional(:projects) => [String.t()],
+          optional(:labels) => [String.t()],
+          optional(:assignee) => String.t(),
+          optional(:default) => boolean(),
+          optional(String.t()) => term()
+        }
+  @type repo :: SystemSchema.Repo.t() | repo_map()
   @type validation_error ::
           {:missing_team, repo()}
           | {:identical_match_rules, [repo()]}
@@ -25,18 +38,19 @@ defmodule SymphonyElixir.Routing.Resolver do
     case matches do
       [] -> :unmatched
       [repo] -> {:matched, repo}
-      repos -> {:conflict, repos}
+      matched -> {:conflict, matched}
     end
   end
 
   @spec validate_repos([repo()]) :: :ok | {:error, [validation_error()]}
   def validate_repos(repos) when is_list(repos) do
     errors =
-      []
-      |> Kernel.++(missing_team_errors(repos))
-      |> Kernel.++(identical_match_rule_errors(repos))
-      |> Kernel.++(ambiguous_team_catch_all_errors(repos))
-      |> Kernel.++(multiple_default_errors(repos))
+      Enum.concat([
+        missing_team_errors(repos),
+        identical_match_rule_errors(repos),
+        ambiguous_team_catch_all_errors(repos),
+        multiple_default_errors(repos)
+      ])
 
     case errors do
       [] -> :ok
@@ -166,9 +180,11 @@ defmodule SymphonyElixir.Routing.Resolver do
   defp assignee_matches?(_issue, nil), do: true
 
   defp assignee_matches?(issue, assignee) do
-    issue
-    |> candidate_values([:assignee], [:id, :name, :display_name, :displayName, :email])
-    |> Kernel.++(candidate_values(issue, [], [:assignee_id, :assignee_name, :assignee_email]))
+    [
+      candidate_values(issue, [:assignee], [:id, :name, :display_name, :displayName, :email]),
+      candidate_values(issue, [], [:assignee_id, :assignee_name, :assignee_email])
+    ]
+    |> Enum.concat()
     |> Enum.member?(assignee)
   end
 
@@ -203,12 +219,7 @@ defmodule SymphonyElixir.Routing.Resolver do
     end)
   end
 
-  defp repo_value(repo, key) do
-    case value_at(repo, key) do
-      nil -> repo |> value_at(:match) |> value_at(key)
-      value -> value
-    end
-  end
+  defp repo_value(repo, key), do: value_at(repo, key)
 
   defp value_at(nil, _key), do: nil
 

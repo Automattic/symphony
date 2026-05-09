@@ -83,6 +83,65 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert settings.verification.enabled == true
   end
 
+  test "startup config rejects identical routing match rules", %{root: root} do
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: web
+        path: #{Path.join(root, "web")}
+        workflow: WORKFLOW.md
+        team: RSM
+        labels:
+          - backend
+      - name: api
+        path: #{Path.join(root, "api")}
+        workflow: WORKFLOW.md
+        team: RSM
+        labels:
+          - backend
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    assert {:error, {:invalid_symphony_config, message}} = Config.system()
+    assert message =~ "repos routing rules are invalid"
+    assert message =~ "identical match rules"
+    assert message =~ "web"
+    assert message =~ "api"
+  end
+
+  test "startup config rejects ambiguous non-default catch-all routing", %{root: root} do
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: fallback
+        path: #{Path.join(root, "fallback")}
+        workflow: WORKFLOW.md
+        team: RSM
+      - name: api
+        path: #{Path.join(root, "api")}
+        workflow: WORKFLOW.md
+        team: RSM
+        labels:
+          - api
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    assert {:error, {:invalid_symphony_config, message}} = Config.system()
+    assert message =~ "repos routing rules are invalid"
+    assert message =~ "ambiguous team-only catch-all"
+    assert message =~ "fallback"
+  end
+
   test "system schema uses explicit default repo as primary" do
     assert {:ok, system_config} =
              SystemSchema.parse(
@@ -271,6 +330,10 @@ defmodule SymphonyElixir.ConfigSplitTest do
     repos:
     #{repos_yaml}
     """)
+  end
+
+  defp write_symphony_text!(root, content) do
+    File.write!(Path.join(root, "symphony.yml"), content)
   end
 
   defp system_config(overrides) do

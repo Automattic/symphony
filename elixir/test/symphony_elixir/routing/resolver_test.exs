@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.Routing.ResolverTest do
   use ExUnit.Case, async: true
 
+  alias SymphonyElixir.Config.SystemSchema
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Routing.Resolver
 
@@ -82,18 +83,37 @@ defmodule SymphonyElixir.Routing.ResolverTest do
 
       assert Resolver.resolve(issue, [repo]) == {:matched, repo}
     end
+
+    test "matches canonical repo structs from the system schema" do
+      repo =
+        struct!(SystemSchema.Repo,
+          name: "web",
+          path: "/tmp/web",
+          workflow: "WORKFLOW.md",
+          team: "RSM",
+          labels: ["backend"]
+        )
+
+      issue = issue(team: %{key: "RSM"}, labels: ["backend", "triaged"])
+
+      assert Resolver.resolve(issue, [repo]) == {:matched, repo}
+    end
   end
 
   describe "matches?/2" do
-    test "supports string-keyed repo entries and nested match maps" do
+    test "supports string-keyed repo entries" do
       issue = issue(team: %{name: "Radical Speed Month"}, labels: ["backend"])
 
-      assert Resolver.matches?(issue, %{"name" => "web", "match" => %{"team" => "Radical Speed Month", "labels" => ["backend"]}})
+      assert Resolver.matches?(issue, %{
+               "name" => "web",
+               "team" => "Radical Speed Month",
+               "labels" => ["backend"]
+             })
     end
 
     test "supports scalar project values and non-string label values" do
       issue = %{team: "RSM", project: "project-1", labels: ["backend"]}
-      repo = %{"name" => "web", "match" => %{"team" => "RSM", "projects" => "project-1", "labels" => [:Backend]}}
+      repo = %{"name" => "web", "team" => "RSM", "projects" => "project-1", "labels" => [:Backend]}
 
       assert Resolver.matches?(issue, repo)
     end
@@ -101,6 +121,8 @@ defmodule SymphonyElixir.Routing.ResolverTest do
     test "returns false for invalid routes" do
       refute Resolver.matches?(issue(team: %{key: "RSM"}), repo("missing-team"))
       refute Resolver.matches?(issue(team: %{key: "RSM"}), :not_a_repo)
+      refute Resolver.matches?(nil, repo("web", team: "RSM"))
+      refute Resolver.matches?(:not_an_issue, repo("web", team: "RSM"))
     end
   end
 
@@ -121,13 +143,13 @@ defmodule SymphonyElixir.Routing.ResolverTest do
       assert Enum.any?(errors, &match?({:missing_team, ^web}, &1))
     end
 
-    test "rejects blank team values and malformed nested match rules" do
+    test "rejects blank and missing flat team rules" do
       blank_team = repo("blank", team: " ")
-      malformed_match = %{name: "malformed", match: :bad}
+      missing_team = %{"name" => "missing"}
 
-      assert {:error, errors} = Resolver.validate_repos([blank_team, malformed_match])
+      assert {:error, errors} = Resolver.validate_repos([blank_team, missing_team])
       assert Enum.any?(errors, &match?({:missing_team, ^blank_team}, &1))
-      assert Enum.any?(errors, &match?({:missing_team, ^malformed_match}, &1))
+      assert Enum.any?(errors, &match?({:missing_team, ^missing_team}, &1))
     end
 
     test "rejects identical match rules across repos" do

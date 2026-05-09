@@ -408,7 +408,11 @@ Fields:
 Elixir implementation note: when `repos` is configured, Linear candidate polling is performed per
 repo with one server-side issue filter per repo. The service does not widen this into a team-union
 query. Duplicate issue IDs across repo result sets are classified as conflicts and excluded from
-dispatch.
+dispatch. Repo polls are staggered across the configured `polling.interval_ms`, so the scheduler
+ticks roughly every `interval_ms / repo_count` while each healthy repo is still polled once per full
+interval. Dispatch stays empty until every repo cache has warmed once; after three consecutive cold
+failures for a repo, that repo is treated as warmed with an empty result so healthy repos can keep
+dispatching.
 
 #### 5.3.2 `polling` (object)
 

@@ -325,6 +325,24 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   @doc false
+  @spec fetch_issues_by_states_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states_for_test(state_names, graphql_fun)
+      when is_list(state_names) and is_function(graphql_fun, 2) do
+    normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
+
+    if normalized_states == [] do
+      {:ok, []}
+    else
+      with {:ok, context} <- repo_poll_context(),
+           {:ok, repo_results} <-
+             fetch_repo_issue_results(context.repos, normalized_states, context.tracker, graphql_fun) do
+        {:ok, dedupe_repo_issues(repo_results)}
+      end
+    end
+  end
+
+  @doc false
   @spec fetch_candidate_issues_for_repo_for_test(term(), (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
           {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues_for_repo_for_test(repo, graphql_fun)
@@ -374,15 +392,29 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp fetch_repo_issue_results(repos, state_names, tracker, graphql_fun)
        when is_list(repos) and is_function(graphql_fun, 2) do
-    Enum.reduce_while(repos, {:ok, []}, fn repo, {:ok, acc} ->
-      case do_fetch_repo_by_states(repo, state_names, tracker, graphql_fun: graphql_fun) do
-        {:ok, issues} -> {:cont, {:ok, [{repo_key(repo), issues} | acc]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, results} -> {:ok, Enum.reverse(results)}
-      error -> error
+    {results, errors} =
+      Enum.reduce(repos, {[], []}, fn repo, {results, errors} ->
+        repo_key = repo_key(repo)
+
+        case do_fetch_repo_by_states(repo, state_names, tracker, graphql_fun: graphql_fun) do
+          {:ok, issues} -> {[{repo_key, issues} | results], errors}
+          {:error, reason} -> {results, [{repo_key, reason} | errors]}
+        end
+      end)
+
+    results = Enum.reverse(results)
+    errors = Enum.reverse(errors)
+
+    cond do
+      errors == [] ->
+        {:ok, results}
+
+      results != [] ->
+        Logger.warning("Linear repo poll returned partial results; failed repos: #{inspect(errors)}")
+        {:ok, results}
+
+      true ->
+        {:error, {:repo_poll_failed, errors}}
     end
   end
 

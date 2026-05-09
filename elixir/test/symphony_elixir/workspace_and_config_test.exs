@@ -1017,6 +1017,53 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute inspect([web_variables.filter, api_variables.filter]) =~ "legacy"
   end
 
+  test "linear client state reconciliation keeps partial repo successes when one repo errors" do
+    repo_root = Path.dirname(Workflow.workflow_file_path())
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      repos: [
+        %{
+          "name" => "web",
+          "path" => repo_root,
+          "workflow" => "WORKFLOW.md",
+          "team" => "RSM",
+          "labels" => ["web"]
+        },
+        %{
+          "name" => "api",
+          "path" => repo_root,
+          "workflow" => "WORKFLOW.md",
+          "team" => "RSM",
+          "labels" => ["api"]
+        }
+      ]
+    )
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:state_query, query, variables})
+
+      case get_in(variables, [:filter, "labels", "some", "name", "eqIgnoreCase"]) do
+        "web" ->
+          issue =
+            raw_linear_issue("issue-web", "RSM-WEB")
+            |> Map.put("state", %{"name" => "In Progress"})
+
+          {:ok, linear_page_response([issue])}
+
+        "api" ->
+          {:error, :linear_unavailable}
+      end
+    end
+
+    assert {:ok, issues} = Client.fetch_issues_by_states_for_test(["In Progress"], graphql_fun)
+
+    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"RSM-WEB", "web"}]
+    assert_receive {:state_query, query, web_variables}
+    assert_receive {:state_query, ^query, api_variables}
+    assert get_in(web_variables, [:filter, "labels", "some", "name", "eqIgnoreCase"]) == "web"
+    assert get_in(api_variables, [:filter, "labels", "some", "name", "eqIgnoreCase"]) == "api"
+  end
+
   test "linear client repeats candidate filter while paginating" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,

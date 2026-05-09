@@ -184,6 +184,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   `projects`, `labels`, or `assignee` inherits the corresponding legacy `tracker.project_slug`,
   `tracker.labels`, or `tracker.assignee` selector. Issues returned by two or more repo queries are
   placed in the conflict bucket and excluded from dispatch.
+- Repo polls are staggered over `polling.interval_ms`. With 10 repos and `interval_ms: 5000`, the
+  orchestrator wakes about every 500ms, but each healthy repo is still queried once per 5000ms.
+  Dispatchable candidates remain empty until every repo cache has warmed at least once, so conflicts
+  can be detected across staggered results. If a warmed repo poll fails, Symphony logs the error,
+  reuses that repo's cached issues, and retries that repo after the full polling interval. If a repo
+  keeps failing before it ever warms, three consecutive cold failures mark its cache as an empty
+  result so the other repos can continue dispatching.
 - Safer Codex defaults are used when policy fields are omitted:
   - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.

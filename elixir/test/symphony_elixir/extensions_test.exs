@@ -217,6 +217,23 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert SymphonyElixir.Tracker.adapter() == Adapter
   end
 
+  test "memory tracker repo fetch ignores unrouted issues" do
+    routed_issue = %Issue{
+      id: "issue-routed",
+      identifier: "RSM-ROUTED",
+      state: "Todo",
+      team: %{key: "RSM"},
+      labels: ["web"]
+    }
+
+    unrouted_issue = %Issue{id: "issue-unrouted", identifier: "RSM-UNROUTED", state: "Todo"}
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [routed_issue, unrouted_issue])
+
+    assert {:ok, [^routed_issue]} =
+             Memory.fetch_candidate_issues_for_repo(%{name: "web", team: "RSM", labels: ["web"]})
+  end
+
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 

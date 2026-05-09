@@ -32,6 +32,7 @@ defmodule SymphonyElixir.Orchestrator do
   @poll_transition_render_delay_ms 20
   @default_transcript_buffer_size 200
   @stop_session_cleanup_timeout_ms 5_000
+  @repo_poll_cold_failure_warm_after 3
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -44,6 +45,7 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
     defstruct [
       :repo_key,
       :poll_interval_ms,
@@ -462,9 +464,27 @@ defmodule SymphonyElixir.Orchestrator do
         {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
 
       {:error, reason} ->
-        retry_delay_ms = repo_poll_stagger_ms(state, repos)
-        state = put_repo_next_due(state, repo_name, now_ms + retry_delay_ms)
-        {:error, reason, state}
+        state = put_repo_next_due(state, repo_name, now_ms + repo_poll_retry_delay_ms(state, repos))
+
+        cond do
+          repo_poll_cache_warmed?(state, repo_name) ->
+            Logger.warning("Linear repo poll failed for #{repo_name}; using cached candidate issues: #{inspect(reason)}")
+            buckets = candidate_buckets_from_cache(state, repos)
+            {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+
+          repo_poll_failure_count(state, repo_name) + 1 >= @repo_poll_cold_failure_warm_after ->
+            failure_count = repo_poll_failure_count(state, repo_name) + 1
+
+            Logger.warning("Linear repo poll failed for #{repo_name} #{failure_count} consecutive times; treating cold cache as empty: #{inspect(reason)}")
+
+            state = put_repo_poll_cache(state, repo_name, [], now_ms)
+            buckets = candidate_buckets_from_cache(state, repos)
+            {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+
+          true ->
+            state = put_repo_cold_poll_failure(state, repo_name)
+            {:error, reason, state}
+        end
     end
   end
 
@@ -520,17 +540,19 @@ defmodule SymphonyElixir.Orchestrator do
         repo
 
       nil ->
-        sorted_repos
-        |> List.first()
-        |> then(fn
-          {repo, _due_at_ms} -> repo
-          nil -> nil
-        end)
+        nil
     end
   end
 
-  defp repo_poll_cache_warmed?(%State{} = state, repos) do
-    Enum.all?(repos, fn repo -> Map.has_key?(state.repo_poll_cache, repo_name(repo)) end)
+  defp repo_poll_cache_warmed?(%State{} = state, repos) when is_list(repos) do
+    Enum.all?(repos, &repo_poll_cache_warmed?(state, repo_name(&1)))
+  end
+
+  defp repo_poll_cache_warmed?(%State{} = state, repo_name) when is_binary(repo_name) do
+    case Map.get(state.repo_poll_cache, repo_name) do
+      nil -> false
+      cache_entry -> Map.get(cache_entry, :warmed?, true)
+    end
   end
 
   defp put_repo_poll_cache(%State{} = state, repo_name, issues, now_ms) do
@@ -541,6 +563,30 @@ defmodule SymphonyElixir.Orchestrator do
   defp put_repo_next_due(%State{} = state, repo_name, due_at_ms) do
     %{state | repo_poll_due_at_ms: Map.put(state.repo_poll_due_at_ms, repo_name, due_at_ms)}
   end
+
+  defp repo_poll_failure_count(%State{} = state, repo_name) do
+    state.repo_poll_cache
+    |> Map.get(repo_name, %{})
+    |> Map.get(:cold_failure_count, 0)
+  end
+
+  defp put_repo_cold_poll_failure(%State{} = state, repo_name) do
+    failure_entry = %{
+      issues: [],
+      fetched_at_ms: nil,
+      cold_failure_count: repo_poll_failure_count(state, repo_name) + 1,
+      warmed?: false
+    }
+
+    %{state | repo_poll_cache: Map.put(state.repo_poll_cache, repo_name, failure_entry)}
+  end
+
+  defp repo_poll_retry_delay_ms(%State{poll_interval_ms: interval_ms}, _repos)
+       when is_integer(interval_ms) and interval_ms > 0 do
+    interval_ms
+  end
+
+  defp repo_poll_retry_delay_ms(state, repos), do: repo_poll_stagger_ms(state, repos)
 
   defp put_conflict_bucket(%State{} = state, conflicts) when is_list(conflicts) do
     conflict_map =

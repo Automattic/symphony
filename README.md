@@ -29,6 +29,8 @@ recovered, so long-running queues do not need constant operator supervision.
 - **Run** — one attempt to make progress on a Linear issue.
 - **Workspace** — the isolated checkout or worktree for a run.
 - **Tracker** — the system Symphony polls for work, currently Linear in the reference implementation.
+- **Repo route** — an entry under `repos:` in `symphony.yml` that pairs a local checkout with its
+  `WORKFLOW.md` and optional Linear selectors. One Symphony process can supervise many repo routes.
 - **Quality gate** — the default pre-dispatch check that decides whether an issue is clear enough
   for an agent.
 - **Harness engineering** — the practice of preparing a codebase with scripts, tests, docs, and
@@ -38,6 +40,9 @@ recovered, so long-running queues do not need constant operator supervision.
 
 ## What's in the reference implementation
 
+- **Multi-repo orchestration** so one Symphony process can supervise several repositories from a
+  single `symphony.yml`, with per-repo Linear selectors and conflict detection for issues that
+  match more than one repo.
 - **LiveView dashboard** for active runs, the watching list, and the retry queue, with per-issue
   transcript views.
 - **Operator controls** for pause, resume, and stop, persisted across restarts so dispatch state
@@ -70,7 +75,7 @@ Run Symphony directly on a host you control. See [elixir/README.md](elixir/READM
 ask your favorite coding agent to handle it:
 
 > Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
+> https://github.com/chihsuan/symphony/blob/main/elixir/README.md
 
 ## Documentation
 

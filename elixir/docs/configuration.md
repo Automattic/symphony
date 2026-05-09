@@ -5,21 +5,39 @@ repo-local `WORKFLOW.md` front matter, startup flags, defaults, and supported va
 shortest setup path, start with
 [`../README.md`](../README.md).
 
+## Configuration files
+
+Symphony reads two complementary files:
+
+- **`symphony.yml`** — operator config: tracker, polling, workspace, agent, gates, pollers,
+  notifications, and the list of supervised repos (`repos:`). Plain YAML, no `---` fences.
+- **`WORKFLOW.md`** — repo-local file containing the Codex prompt body and per-repo `hooks`. YAML
+  front matter between two `---` lines, then the prompt template. Each repo listed under
+  `repos:` has its own `WORKFLOW.md`, located at `<repo.path>/<repo.workflow>`.
+
+The runtime settings used at dispatch time merge `symphony.yml` with the primary repo's
+`WORKFLOW.md` front matter; `WORKFLOW.md` keys override the matching `symphony.yml` keys for that
+repo. In practice, leave operator-wide concerns in `symphony.yml` and keep `WORKFLOW.md` focused
+on the prompt body and repo-local `hooks`.
+
 ## Startup
 
-Pass a custom workflow file path to `./bin/symphony` when starting the service:
+Pass a workflow file path to `./bin/symphony` when starting the service:
 
 ```bash
 ./bin/symphony /path/to/custom/WORKFLOW.md
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+If no path is passed, Symphony defaults to `./WORKFLOW.md`. The CLI argument is the bootstrap
+path; once Symphony loads `symphony.yml`, it uses each entry under `repos:` to resolve the actual
+per-repo `WORKFLOW.md` it dispatches against.
 
 Optional flags:
 
 - `--config` selects an alternate operator config file (default: `./symphony.yml`). For example,
-  `./bin/symphony --config ./symphony.claude.yml ./WORKFLOW.md` runs the same repo workflow with
-  the Claude runner config.
+  `./bin/symphony --config ./symphony.claude.yml ./WORKFLOW.md` runs the same repos with the
+  Claude runner config. Ship multiple `symphony.*.yml` files side by side and switch between them
+  with `--config`.
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`).
   Application logs are written under `<logs-root>/log/`; audit events are written under
   `<logs-root>/audit/`.
@@ -76,19 +94,67 @@ pruned by `max_total_per_repo` per repository. Phase 1 is capture-only: learning
 at `/learnings` and are not injected into agent prompts. Provider API keys are read from
 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
 
+## `repos` (list)
+
+Each entry under `repos:` declares a repository that Symphony supervises in this process. At
+least one entry is required.
+
+Per-repo fields:
+
+- `name` (string, REQUIRED) — unique identifier. Surfaced as `<repo_key>` in dashboard URLs.
+- `path` (string, REQUIRED) — local checkout path. `~` is expanded.
+- `workflow` (string, default `WORKFLOW.md`) — path to that repo's `WORKFLOW.md`, resolved
+  relative to `path`.
+- `team` (string, OPTIONAL) — Linear team key/ID for that repo's candidate query.
+- `projects` (list of strings, OPTIONAL) — Linear project names or slugs.
+- `labels` (list of strings, OPTIONAL) — Linear label names. AND semantics across the list for
+  repo routes.
+- `assignee` (string, OPTIONAL) — Linear user ID, or `me` to use the API token's viewer.
+- `default` (boolean, default `false`) — at most one repo across the list may be marked as
+  default. The default repo acts as the fallback when an issue does not match any other repo's
+  selectors and is also used to resolve the operator-wide primary `WORKFLOW.md` at boot.
+
+Validation:
+
+- Names must be unique.
+- At most one repo may set `default: true`.
+- Repo routing rules cannot be identical across repos, and a single team cannot have two
+  unscoped (catch-all) repos. Symphony refuses to start with a routing-rules error otherwise.
+
+Example multi-repo config:
+
+```yaml
+repos:
+  - name: web
+    path: ~/code/web
+    workflow: WORKFLOW.md
+    projects: ["Web platform"]
+  - name: api
+    path: ~/code/api
+    workflow: WORKFLOW.md
+    labels: ["backend"]
+    assignee: me
+  - name: mobile
+    path: ~/code/mobile
+    workflow: WORKFLOW.md
+    team: MOB
+    default: true
+```
+
+When an issue matches more than one repo's selectors it is placed in a conflict bucket and
+excluded from dispatch. Tighten overlapping selectors to resolve.
+
 ## Full example
 
-```md
----
+`symphony.yml`:
+
+```yaml
 tracker:
   kind: linear
   project_slug: "..."
   assignee: null
 workspace:
   root: ~/code/workspaces
-hooks:
-  after_create: |
-    git clone git@github.com:your-org/your-repo.git .
 verification:
   enabled: false
   port_allocation:
@@ -159,6 +225,19 @@ self_review:
   model: claude-haiku-4-5-20251001
   diff_max_lines: 600
   max_rounds: 1                 # v1 only supports one correction round
+repos:
+  - name: my-repo
+    path: ~/code/my-repo
+    workflow: WORKFLOW.md
+```
+
+`~/code/my-repo/WORKFLOW.md`:
+
+```md
+---
+hooks:
+  after_create: |
+    git clone git@github.com:your-org/your-repo.git .
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -178,14 +257,12 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 - For Linear trackers, `project_slug` is optional when another scoping filter is set. Configure at
   least one of `project_slug`, `team`, or `labels`; these filters are combined server-side. Example:
   `team: "RSM"` with `labels: ["backend", "infra"]`.
-- When `repos` is configured, candidate polling fans out one server-side Linear query per repo
-  instead of issuing a team-union query. Each repo query includes active states plus any configured
-  repo-level `team`, `projects`, `labels`, and `assignee` selectors. `projects` match Linear project
-  name or slug, and labels use AND semantics for repo routes. A single unscoped repo, or an explicit
-  default repo, can rely on the tracker-level scope. For compatibility, a repo that omits `projects`,
-  `labels`, or `assignee` inherits the corresponding legacy `tracker.project_slug`,
-  `tracker.labels`, or `tracker.assignee` selector. Issues returned by two or more repo queries are
-  placed in the conflict bucket and excluded from dispatch.
+- `repos:` is required and must contain at least one entry. See the [`repos` schema](#repos-list)
+  above for fields, validation, and a multi-repo example. Per-repo selectors (`team`, `projects`,
+  `labels`, `assignee`) drive that repo's Linear candidate query; a repo that omits one of these
+  inherits the corresponding tracker-level value (`tracker.project_slug`, `tracker.team`,
+  `tracker.labels`, `tracker.assignee`). Issues returned by two or more repo queries are placed
+  in the conflict bucket and excluded from dispatch.
 - Repo polls are staggered over `polling.interval_ms`. With 10 repos and `interval_ms: 5000`, the
   orchestrator wakes about every 500ms, but each healthy repo is still queried once per 5000ms.
   Dispatchable candidates remain empty until every repo cache has warmed at least once, so conflicts
@@ -193,6 +270,10 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   reuses that repo's cached issues, and retries that repo after the full polling interval. If a repo
   keeps failing before it ever warms, three consecutive cold failures mark its cache as an empty
   result so the other repos can continue dispatching.
+- The CLI's positional `[path-to-WORKFLOW.md]` argument is the bootstrap path; once `symphony.yml`
+  loads, each repo's own `<path>/<workflow>` is the source of truth Symphony dispatches against.
+  The dashboard transcript URL embeds the repo `name` as `<repo_key>` —
+  `/repos/<repo_key>/issues/<issue_identifier>/transcript`.
 - Safer Codex defaults are used when policy fields are omitted:
   - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.
@@ -258,8 +339,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   `run_stuck`, `issue_completed`, `budget_exceeded`, `reviewer_commented`, `rework_pushed`,
   `ci_failed`, and `ci_escalated`. Per-channel `events` filters limit delivery; omitting `events`
   sends all supported events to that channel. `redact_titles: true` suppresses issue and PR titles
-  while preserving identifiers and URLs. Slack and webhook URL/header values support the same `$VAR`
-  environment reference convention used by other secret-backed settings.
+  while preserving identifiers and URLs. `notifications.channels[].webhook_url`, `url`, and
+  `headers.*` values expand `$VAR` from the process environment at startup, so a config can ship a
+  literal `$SLACK_WEBHOOK_URL` placeholder in source control and resolve it from the operator's
+  shell.
+- Lifecycle notification emission is idempotent across restarts. Symphony persists per-run markers
+  in the durable run store, so events such as `pr_opened`, `awaiting_review`, and `issue_completed`
+  are not re-emitted for runs that already reached those milestones.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

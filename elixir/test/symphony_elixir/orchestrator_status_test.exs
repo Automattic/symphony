@@ -2289,6 +2289,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "watchdog does not restart workers after a recent transcript event" do
     write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
       tracker_api_token: nil,
       agent_stall_timeout_ms: 0,
       watchdog: %{enabled: true, tick_interval_ms: 60_000, no_progress_threshold_ms: 1_000}
@@ -2301,6 +2302,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       description: "Keep a progressing worker running",
       state: "In Progress"
     }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
 
     orchestrator_name = Module.concat(__MODULE__, :WatchdogFreshOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)

@@ -1061,11 +1061,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminate_task(pid) when is_pid(pid) do
-    case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
-      :ok ->
-        :ok
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      supervisor when is_pid(supervisor) ->
+        case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
+          :ok ->
+            :ok
 
-      {:error, :not_found} ->
+          {:error, :not_found} ->
+            Process.exit(pid, :shutdown)
+        end
+
+      nil ->
         Process.exit(pid, :shutdown)
     end
   end
@@ -1776,7 +1782,7 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state |> forget_completed_issue(issue_id) |> release_issue_claim(issue_id)}
 
       post_pr_quiet_active_issue?(issue, state) ->
-        handle_post_pr_quiet_active_issue(state, issue, issue_id)
+        handle_post_pr_quiet_active_issue(state, issue, issue_id, attempt, metadata)
 
       retry_candidate_issue?(issue, terminal_states) ->
         handle_quality_gated_active_retry(state, issue, attempt, metadata)
@@ -1800,23 +1806,33 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state |> forget_completed_issue(issue_id) |> release_issue_claim(issue_id)}
   end
 
-  defp handle_post_pr_quiet_active_issue(%State{} = state, %Issue{} = issue, issue_id) do
+  defp handle_post_pr_quiet_active_issue(%State{} = state, %Issue{} = issue, issue_id, attempt, metadata) do
     Logger.info("Issue has an opened PR and no rework signal; moving to #{@post_pr_review_state}: #{issue_context(issue)}")
-
-    reviewed_issue = %Issue{issue | state: @post_pr_review_state, updated_at: DateTime.utc_now()}
-
-    state =
-      state
-      |> put_watching_issue(reviewed_issue)
-      |> release_issue_claim(issue_id)
 
     case Tracker.update_issue_state(issue_id, @post_pr_review_state) do
       :ok ->
+        reviewed_issue = %Issue{issue | state: @post_pr_review_state, updated_at: DateTime.utc_now()}
+
+        state =
+          state
+          |> put_watching_issue(reviewed_issue)
+          |> release_issue_claim(issue_id)
+
         {:noreply, state}
 
       {:error, reason} ->
         Logger.warning("Failed to move post-PR issue to #{@post_pr_review_state}: #{issue_context(issue)} reason=#{inspect(reason)}")
-        {:noreply, state}
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue_id,
+           attempt,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "failed to move post-PR issue to #{@post_pr_review_state}: #{inspect(reason)}"
+           })
+         )}
     end
   end
 

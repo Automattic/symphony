@@ -13,30 +13,31 @@ defmodule SymphonyElixir.WorkflowStore do
   defmodule State do
     @moduledoc false
 
-    defstruct [:path, :stamp, :workflow]
+    defstruct [:path, :stamp, :workflow, :last_error, :follow_app_env?]
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @spec current() :: {:ok, Workflow.loaded_workflow()} | {:error, term()}
-  def current do
-    case Process.whereis(__MODULE__) do
+  @spec current(GenServer.server()) :: {:ok, Workflow.loaded_workflow()} | {:error, term()}
+  def current(server \\ __MODULE__) do
+    case resolve_server(server) do
       pid when is_pid(pid) ->
-        GenServer.call(__MODULE__, :current)
+        GenServer.call(pid, :current)
 
       _ ->
         Workflow.load()
     end
   end
 
-  @spec force_reload() :: :ok | {:error, term()}
-  def force_reload do
-    case Process.whereis(__MODULE__) do
+  @spec force_reload(GenServer.server()) :: :ok | {:error, term()}
+  def force_reload(server \\ __MODULE__) do
+    case resolve_server(server) do
       pid when is_pid(pid) ->
-        GenServer.call(__MODULE__, :force_reload)
+        GenServer.call(pid, :force_reload)
 
       _ ->
         case Workflow.load() do
@@ -47,11 +48,19 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   @impl true
-  def init(_opts) do
-    case load_state(Workflow.workflow_file_path()) do
+  def init(opts) do
+    follow_app_env? = not Keyword.has_key?(opts, :path)
+    path = Keyword.get(opts, :path, Workflow.workflow_file_path())
+    allow_invalid? = Keyword.get(opts, :allow_invalid?, false)
+
+    case load_state(path) do
       {:ok, state} ->
         schedule_poll()
-        {:ok, state}
+        {:ok, %{state | follow_app_env?: follow_app_env?}}
+
+      {:error, reason} when allow_invalid? ->
+        schedule_poll()
+        {:ok, %State{path: path, last_error: reason, follow_app_env?: follow_app_env?}}
 
       {:error, reason} ->
         {:stop, reason}
@@ -63,6 +72,9 @@ defmodule SymphonyElixir.WorkflowStore do
     case reload_state(state) do
       {:ok, new_state} ->
         {:reply, {:ok, new_state.workflow}, new_state}
+
+      {:error, reason, %State{workflow: nil} = new_state} ->
+        {:reply, {:error, reason}, new_state}
 
       {:error, _reason, new_state} ->
         {:reply, {:ok, new_state.workflow}, new_state}
@@ -94,7 +106,7 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   defp reload_state(%State{} = state) do
-    path = Workflow.workflow_file_path()
+    path = if state.follow_app_env?, do: Workflow.workflow_file_path(), else: state.path
 
     if path != state.path do
       reload_path(path, state)
@@ -106,7 +118,7 @@ defmodule SymphonyElixir.WorkflowStore do
   defp reload_path(path, state) do
     case load_state(path) do
       {:ok, new_state} ->
-        {:ok, new_state}
+        {:ok, %{new_state | follow_app_env?: state.follow_app_env?}}
 
       {:error, reason} ->
         log_reload_error(path, reason)
@@ -150,4 +162,16 @@ defmodule SymphonyElixir.WorkflowStore do
   defp log_reload_error(path, reason) do
     Logger.error("Failed to reload workflow path=#{path} reason=#{inspect(reason)}; keeping last known good configuration")
   end
+
+  defp resolve_server(server) when is_pid(server), do: server
+
+  defp resolve_server(server) when is_atom(server) do
+    Process.whereis(server)
+  end
+
+  defp resolve_server({:via, registry, _key} = server) when is_atom(registry) do
+    GenServer.whereis(server)
+  end
+
+  defp resolve_server(server), do: GenServer.whereis(server)
 end

@@ -162,7 +162,13 @@ defmodule SymphonyElixirWeb.QualityLive do
                     <span :if={entry.error} class="quality-reason" title={entry.error}><%= entry.error %></span>
                   </td>
                   <td><%= entry.agent_kind || "unknown" %></td>
-                  <td class="numeric"><%= format_int(get_in(entry, [:tokens, :total_tokens])) %></td>
+                  <td class="numeric">
+                    <div><%= format_int(get_in(entry, [:tokens, :total_tokens])) %></div>
+                    <div class="muted token-breakdown">
+                      uncached <%= format_int(get_in(entry, [:tokens, :uncached_input_tokens])) %> /
+                      cached <%= format_int(get_in(entry, [:tokens, :cached_input_tokens])) %>
+                    </div>
+                  </td>
                   <td><%= tests_run_label(entry.tests_run) %></td>
                   <td class="numeric"><%= format_duration(entry.duration_seconds) %></td>
                   <td class="numeric"><%= entry.date || "n/a" %></td>

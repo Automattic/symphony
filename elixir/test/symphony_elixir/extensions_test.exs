@@ -392,7 +392,13 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "tokens" => %{
+                   "input_tokens" => 4,
+                   "cached_input_tokens" => 0,
+                   "uncached_input_tokens" => 4,
+                   "output_tokens" => 8,
+                   "total_tokens" => 12
+                 },
                  "self_review" => nil
                }
              ],
@@ -445,6 +451,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              ],
              "codex_totals" => %{
                "input_tokens" => 4,
+               "cached_input_tokens" => 0,
+               "uncached_input_tokens" => 4,
                "output_tokens" => 8,
                "total_tokens" => 12,
                "seconds_running" => 42.5
@@ -491,7 +499,13 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               "tokens" => %{
+                 "input_tokens" => 4,
+                 "cached_input_tokens" => 0,
+                 "uncached_input_tokens" => 4,
+                 "output_tokens" => 8,
+                 "total_tokens" => 12
+               }
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
@@ -1221,6 +1235,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload["codex_totals"] == %{
              "input_tokens" => 4,
+             "cached_input_tokens" => 0,
+             "uncached_input_tokens" => 4,
              "output_tokens" => 8,
              "total_tokens" => 12,
              "seconds_running" => 0

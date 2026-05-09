@@ -741,6 +741,30 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
+  test "linear client normalizes team and project from graphql responses" do
+    raw_issue =
+      raw_linear_issue("issue-1", "MT-1", "user-1")
+      |> Map.merge(%{
+        "team" => %{"key" => "RSM", "name" => "Radical Speed Month"},
+        "project" => %{"id" => "project-1", "name" => "Multi-repo support"}
+      })
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:candidate_query, query, variables})
+
+      {:ok, linear_page_response([raw_issue])}
+    end
+
+    assert {:ok, [issue]} = Client.fetch_candidate_issues_for_test(graphql_fun)
+
+    assert issue.team == %{key: "RSM", name: "Radical Speed Month"}
+    assert issue.project == %{id: "project-1", name: "Multi-repo support"}
+
+    assert_receive {:candidate_query, query, _variables}
+    assert query =~ ~r/team\s*\{\s*key\s*name\s*\}/
+    assert query =~ ~r/project\s*\{\s*id\s*name\s*\}/
+  end
+
   test "linear client resolves assignee me before sending candidate filter" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_assignee: "me")
 
@@ -992,6 +1016,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, first: 50, relationFirst: 50}}
     assert query =~ "SymphonyLinearIssuesById"
+    assert query =~ ~r/team\s*\{\s*key\s*name\s*\}/
+    assert query =~ ~r/project\s*\{\s*id\s*name\s*\}/
 
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
   end

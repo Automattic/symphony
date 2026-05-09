@@ -170,10 +170,14 @@ defmodule SymphonyElixir.AuditLog do
   def latest_self_review_by_run(run_ids, opts \\ []) when is_list(run_ids) do
     wanted = run_ids |> Enum.filter(&is_binary/1) |> MapSet.new()
 
-    if MapSet.size(wanted) == 0, do: %{}, else: latest_self_review_by_wanted_runs(wanted, opts)
+    if MapSet.size(wanted) == 0 do
+      %{}
+    else
+      do_latest_self_review_by_run(wanted, opts)
+    end
   end
 
-  defp latest_self_review_by_wanted_runs(wanted, opts) do
+  defp do_latest_self_review_by_run(wanted, opts) do
     today = Date.utc_today()
     date_from = Keyword.get(opts, :date_from, Date.add(today, -1))
     date_to = Keyword.get(opts, :date_to, today)

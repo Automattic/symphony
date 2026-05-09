@@ -227,7 +227,6 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       linear_state: Map.get(entry, :linear_state),
       url: URLUtils.present_url(Map.get(entry, :url)),
-      conflicts: Map.get(entry, :repo_keys, []),
       repo_keys: Map.get(entry, :repo_keys, [])
     }
   end

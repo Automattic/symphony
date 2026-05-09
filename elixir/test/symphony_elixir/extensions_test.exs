@@ -915,7 +915,6 @@ defmodule SymphonyElixir.ExtensionsTest do
                "issue_identifier" => "MT-CONFLICT",
                "state" => "Conflict",
                "linear_state" => "Todo",
-               "conflicts" => ["api", "web"],
                "repo_keys" => ["api", "web"]
              }
            ] = payload["conflicts"]

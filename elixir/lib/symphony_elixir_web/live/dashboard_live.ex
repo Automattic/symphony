@@ -225,17 +225,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
-            <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_compact_int(@payload.codex_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              <%= format_compact_int(@payload.codex_totals.input_tokens) %> in / <%= format_compact_int(@payload.codex_totals.output_tokens) %> out
-            </p>
-            <p class="metric-detail numeric">
-              <%= format_compact_int(@payload.codex_totals.uncached_input_tokens) %> uncached / <%= format_compact_int(@payload.codex_totals.cached_input_tokens) %> cached
-            </p>
-          </article>
-
-          <article class="metric-card">
             <p class="metric-label">Daily tokens</p>
             <p class="metric-value numeric"><%= format_budget_usage(@payload.budget.daily_used, @payload.budget.daily_limit) %></p>
             <p class="metric-detail"><%= daily_budget_detail(@payload.budget) %></p>
@@ -249,7 +238,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <article class="metric-card">
             <p class="metric-label">Runtime</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@visible_payload, @now)) %></p>
+            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
             <p class="metric-detail">completed + active</p>
           </article>
         </section>
@@ -749,7 +738,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp repo_label(%{repo_key: repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
   defp repo_label(_entry), do: nil
 
-  defp conflict_repos(%{conflicts: repos}) when is_list(repos), do: repos
   defp conflict_repos(%{repo_keys: repos}) when is_list(repos), do: repos
   defp conflict_repos(_entry), do: []
 

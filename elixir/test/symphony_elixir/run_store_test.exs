@@ -467,6 +467,12 @@ defmodule SymphonyElixir.RunStoreTest do
     retry = %{issue_id: "issue-shared", issue_identifier: "RSM-1", identifier: "RSM-1", attempt: 1, due_at: now}
     assert :ok = RunStore.put_retry(Map.put(retry, :repo_key, @repo_key))
     assert :ok = RunStore.put_retry(retry |> Map.put(:repo_key, @other_repo_key) |> Map.put(:attempt, 2))
+
+    assert [
+             %{repo_key: @repo_key, attempt: 1},
+             %{repo_key: @other_repo_key, attempt: 2}
+           ] = RunStore.list_retries(:all) |> Enum.sort_by(& &1.repo_key)
+
     assert :ok = RunStore.delete_retry(@repo_key, "issue-shared")
 
     assert [] = RunStore.list_retries(@repo_key)

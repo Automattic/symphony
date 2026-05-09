@@ -99,7 +99,7 @@ defmodule SymphonyElixir.Orchestrator do
     repo_key = Config.repo_key!()
     log_quality_gate_config(config.quality_gate)
     :ok = ensure_run_store_started()
-    {retry_attempts, claimed} = hydrate_retry_attempts(repo_key)
+    {retry_attempts, claimed} = hydrate_retry_attempts()
     codex_totals = persisted_codex_totals()
     pause = persisted_pause_state()
     quality_gate_cache = hydrate_quality_gate_cache()
@@ -680,6 +680,12 @@ defmodule SymphonyElixir.Orchestrator do
   def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
       when is_function(issue_fetcher, 1) do
     revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_state_set())
+  end
+
+  @doc false
+  @spec dispatch_revalidated_issue_for_test(Issue.t(), boolean()) :: boolean()
+  def dispatch_revalidated_issue_for_test(%Issue{} = issue, sticky_route?) when is_boolean(sticky_route?) do
+    dispatch_revalidated_issue?(issue, terminal_state_set(), sticky_route?)
   end
 
   @doc false
@@ -2656,8 +2662,8 @@ defmodule SymphonyElixir.Orchestrator do
     |> log_run_store_error("persist quality gate comment keys")
   end
 
-  defp hydrate_retry_attempts(repo_key) do
-    case RunStore.list_retries(repo_key) do
+  defp hydrate_retry_attempts do
+    case RunStore.list_retries(:all) do
       retries when is_list(retries) ->
         now = DateTime.utc_now()
         now_ms = System.monotonic_time(:millisecond)

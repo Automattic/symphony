@@ -33,13 +33,6 @@ defmodule SymphonyElixirWeb.ObservabilityPubSub do
     Phoenix.PubSub.subscribe(@pubsub, transcript_topic())
   end
 
-  @spec broadcast_transcript_event(String.t(), map()) :: :ok
-  def broadcast_transcript_event(issue_id, event) when is_binary(issue_id) and is_map(event) do
-    broadcast_transcript_event(repo_key(nil), issue_id, event)
-  end
-
-  def broadcast_transcript_event(_issue_id, _event), do: :ok
-
   @spec broadcast_transcript_event(String.t() | nil, String.t(), map()) :: :ok
   def broadcast_transcript_event(repo_key, issue_id, event)
       when is_binary(issue_id) and is_map(event) do

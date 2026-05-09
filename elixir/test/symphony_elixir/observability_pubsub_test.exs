@@ -20,19 +20,12 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
     assert :ok = ObservabilityPubSub.subscribe_transcript()
     assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-123", event)
     assert_receive {:transcript_event, ^expected}
-    assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-123", :not_an_event)
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-123", :not_an_event)
   end
 
-  test "legacy transcript helpers use the flat topic and default repo payload" do
+  test "broadcast_transcript_event normalises blank/nil repo_key to default" do
     assert ObservabilityPubSub.transcript_topic() == "observability:transcript"
     assert :ok = ObservabilityPubSub.subscribe_transcript()
-
-    assert :ok =
-             ObservabilityPubSub.broadcast_transcript_event("issue-legacy", %{
-               event: :notification
-             })
-
-    assert_receive {:transcript_event, %{repo_key: "default", issue_id: "issue-legacy", event: :notification}}
 
     assert :ok =
              ObservabilityPubSub.broadcast_transcript_event(" ", "issue-blank", %{
@@ -40,6 +33,13 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
              })
 
     assert_receive {:transcript_event, %{repo_key: "default", issue_id: "issue-blank"}}
+
+    assert :ok =
+             ObservabilityPubSub.broadcast_transcript_event(nil, "issue-nil", %{
+               event: :notification
+             })
+
+    assert_receive {:transcript_event, %{repo_key: "default", issue_id: "issue-nil"}}
     assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", 123, %{event: :notification})
   end
 
@@ -64,7 +64,7 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
     refute Process.whereis(SymphonyElixir.PubSub)
 
     assert :ok = ObservabilityPubSub.broadcast_update()
-    assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-123", %{event: :notification})
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-123", %{event: :notification})
   end
 
   test "broadcast_transcript_event logs adapter errors without failing the caller" do
@@ -79,7 +79,7 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
     log =
       capture_log(fn ->
         assert :ok =
-                 ObservabilityPubSub.broadcast_transcript_event("issue-123", %{
+                 ObservabilityPubSub.broadcast_transcript_event("default", "issue-123", %{
                    event: :notification
                  })
       end)

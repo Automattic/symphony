@@ -1,0 +1,258 @@
+defmodule SymphonyElixir.Routing.Resolver do
+  @moduledoc """
+  Pure issue-to-repository routing for multi-repo orchestration.
+
+  Repo route entries use the `repos:` shape from the multi-repo design:
+  `team` is required; `projects`, `labels`, and `assignee` are optional
+  filters. Validation is kept here so startup code can reject ambiguous repo
+  definitions before dispatch starts.
+  """
+
+  alias SymphonyElixir.Linear.Issue
+
+  @type repo :: map()
+  @type validation_error ::
+          {:missing_team, repo()}
+          | {:identical_match_rules, [repo()]}
+          | {:ambiguous_team_catch_all, String.t(), [repo()]}
+          | {:multiple_defaults, String.t(), [repo()]}
+  @type result :: {:matched, repo()} | {:conflict, [repo()]} | :unmatched
+
+  @spec resolve(Issue.t() | map(), [repo()]) :: result()
+  def resolve(issue, repos) when is_list(repos) do
+    matches = Enum.filter(repos, &matches?(issue, &1))
+
+    case matches do
+      [] -> :unmatched
+      [repo] -> {:matched, repo}
+      repos -> {:conflict, repos}
+    end
+  end
+
+  @spec validate_repos([repo()]) :: :ok | {:error, [validation_error()]}
+  def validate_repos(repos) when is_list(repos) do
+    errors =
+      []
+      |> Kernel.++(missing_team_errors(repos))
+      |> Kernel.++(identical_match_rule_errors(repos))
+      |> Kernel.++(ambiguous_team_catch_all_errors(repos))
+      |> Kernel.++(multiple_default_errors(repos))
+
+    case errors do
+      [] -> :ok
+      errors -> {:error, errors}
+    end
+  end
+
+  @spec validate_repos!([repo()]) :: :ok
+  def validate_repos!(repos) when is_list(repos) do
+    case validate_repos(repos) do
+      :ok -> :ok
+      {:error, errors} -> raise ArgumentError, message: "invalid routing repos: #{inspect(errors)}"
+    end
+  end
+
+  @spec matches?(Issue.t() | map(), repo()) :: boolean()
+  def matches?(issue, repo) when is_map(repo) do
+    rule = match_rule(repo)
+
+    team_matches?(issue, rule.team) and
+      project_matches?(issue, rule.projects) and
+      labels_match?(issue, rule.labels) and
+      assignee_matches?(issue, rule.assignee)
+  end
+
+  def matches?(_issue, _repo), do: false
+
+  defp missing_team_errors(repos) do
+    repos
+    |> Enum.reject(&present_string?(match_rule(&1).team))
+    |> Enum.map(&{:missing_team, &1})
+  end
+
+  defp identical_match_rule_errors(repos) do
+    repos
+    |> Enum.group_by(&match_signature/1)
+    |> Enum.reject(fn {signature, grouped_repos} -> signature == :invalid or length(grouped_repos) == 1 end)
+    |> Enum.map(fn {_signature, grouped_repos} -> {:identical_match_rules, grouped_repos} end)
+  end
+
+  defp ambiguous_team_catch_all_errors(repos) do
+    repos
+    |> Enum.group_by(&match_rule(&1).team)
+    |> Enum.reject(fn {team, _team_repos} -> not present_string?(team) end)
+    |> Enum.flat_map(fn {team, team_repos} ->
+      catch_all_repos = Enum.filter(team_repos, &team_only?/1)
+
+      cond do
+        length(catch_all_repos) > 1 ->
+          [{:ambiguous_team_catch_all, team, catch_all_repos}]
+
+        length(team_repos) > 1 and single_non_default_catch_all?(catch_all_repos) ->
+          [{:ambiguous_team_catch_all, team, catch_all_repos}]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  defp multiple_default_errors(repos) do
+    repos
+    |> Enum.filter(&default?/1)
+    |> Enum.group_by(&match_rule(&1).team)
+    |> Enum.reject(fn {team, default_repos} -> not present_string?(team) or length(default_repos) == 1 end)
+    |> Enum.map(fn {team, default_repos} -> {:multiple_defaults, team, default_repos} end)
+  end
+
+  defp single_non_default_catch_all?([repo]), do: not default?(repo)
+  defp single_non_default_catch_all?(_repos), do: false
+
+  defp match_signature(repo) do
+    rule = match_rule(repo)
+
+    if present_string?(rule.team) do
+      {rule.team, rule.projects, rule.labels, rule.assignee}
+    else
+      :invalid
+    end
+  end
+
+  defp match_rule(repo) do
+    %{
+      team: repo_value(repo, :team) |> normalize_string(),
+      projects: repo_value(repo, :projects) |> normalize_string_list(:project),
+      labels: repo_value(repo, :labels) |> normalize_string_list(:label),
+      assignee: repo_value(repo, :assignee) |> normalize_string()
+    }
+  end
+
+  defp team_only?(repo) do
+    rule = match_rule(repo)
+
+    present_string?(rule.team) and rule.projects == [] and rule.labels == [] and is_nil(rule.assignee)
+  end
+
+  defp default?(repo), do: repo_value(repo, :default) == true
+
+  defp team_matches?(_issue, nil), do: false
+
+  defp team_matches?(issue, team) do
+    issue
+    |> candidate_values([:team], [:id, :key, :name])
+    |> Enum.member?(team)
+  end
+
+  defp project_matches?(_issue, []), do: true
+
+  defp project_matches?(issue, projects) do
+    issue
+    |> candidate_values([:project], [:id, :key, :name])
+    |> has_any?(projects)
+  end
+
+  defp labels_match?(_issue, []), do: true
+
+  defp labels_match?(issue, labels) do
+    issue_labels =
+      issue
+      |> value_at(:labels)
+      |> normalize_string_list(:label)
+      |> MapSet.new()
+
+    Enum.all?(labels, &MapSet.member?(issue_labels, &1))
+  end
+
+  defp assignee_matches?(_issue, nil), do: true
+
+  defp assignee_matches?(issue, assignee) do
+    issue
+    |> candidate_values([:assignee], [:id, :name, :display_name, :displayName, :email])
+    |> Kernel.++(candidate_values(issue, [], [:assignee_id, :assignee_name, :assignee_email]))
+    |> Enum.member?(assignee)
+  end
+
+  defp has_any?(left, right), do: Enum.any?(left, &(&1 in right))
+
+  defp candidate_values(source, nested_path, keys) do
+    nested = value_at_path(source, nested_path)
+
+    cond do
+      is_binary(nested) ->
+        [normalize_string(nested)]
+
+      is_map(nested) ->
+        keys
+        |> Enum.map(&value_at(nested, &1))
+        |> Enum.map(&normalize_string/1)
+        |> Enum.reject(&is_nil/1)
+
+      true ->
+        []
+    end
+  end
+
+  defp value_at_path(source, []), do: source
+
+  defp value_at_path(source, path) do
+    Enum.reduce_while(path, source, fn key, acc ->
+      case value_at(acc, key) do
+        nil -> {:halt, nil}
+        value -> {:cont, value}
+      end
+    end)
+  end
+
+  defp repo_value(repo, key) do
+    case value_at(repo, key) do
+      nil -> repo |> value_at(:match) |> value_at(key)
+      value -> value
+    end
+  end
+
+  defp value_at(nil, _key), do: nil
+
+  defp value_at(source, key) when is_map(source) do
+    Map.get(source, key) || Map.get(source, Atom.to_string(key))
+  end
+
+  defp value_at(_source, _key), do: nil
+
+  defp normalize_string(nil), do: nil
+
+  defp normalize_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_string(value), do: value |> to_string() |> normalize_string()
+
+  defp normalize_string_list(nil, _kind), do: []
+
+  defp normalize_string_list(values, kind) when is_list(values) do
+    values
+    |> Enum.map(&normalize_string/1)
+    |> Enum.reject(&is_nil/1)
+    |> normalize_list_values(kind)
+  end
+
+  defp normalize_string_list(value, kind), do: normalize_string_list([value], kind)
+
+  defp normalize_list_values(values, :label) do
+    values
+    |> Enum.map(&String.downcase/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp normalize_list_values(values, _kind) do
+    values
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp present_string?(value) when is_binary(value), do: value != ""
+  defp present_string?(_value), do: false
+end

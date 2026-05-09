@@ -26,6 +26,57 @@ defmodule SymphonyElixir.NotificationsTest do
              Notifier.deliver_for_test(event, config.notifications, opts)
   end
 
+  test "notification PubSub events carry repo_key" do
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+    assert :ok = SymphonyElixir.Notifications.emit_event(:run_failed, issue_identifier: "RSM-0")
+
+    assert_receive {:notification_event, %Event{repo_key: "default", issue_identifier: "RSM-0"}}
+  end
+
+  test "notifier delivers non-primary repo PubSub events" do
+    test_pid = self()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      notifications: %{
+        enabled: true,
+        channels: [
+          %{kind: "webhook", url: "https://webhook.test/events", events: ["run_failed"]}
+        ]
+      }
+    )
+
+    request_fun = fn url, payload, headers, _timeout_ms ->
+      send(test_pid, {:post, url, payload, headers})
+      {:ok, %{status: 200, body: "ok"}}
+    end
+
+    notifier_name = :"#{__MODULE__}.Notifier#{System.unique_integer([:positive])}"
+
+    {:ok, notifier_pid} =
+      Notifier.start_link(
+        name: notifier_name,
+        task_starter: fn fun ->
+          fun.()
+          :ok
+        end,
+        request_fun: request_fun
+      )
+
+    on_exit(fn ->
+      if Process.alive?(notifier_pid), do: GenServer.stop(notifier_pid)
+    end)
+
+    {:ok, event} =
+      Event.new(:run_failed,
+        repo_key: "github.com/acme/repo",
+        issue_identifier: "RSM-99"
+      )
+
+    send(notifier_pid, {:notification_event, event})
+
+    assert_receive {:post, "https://webhook.test/events", %{"repo_key" => "github.com/acme/repo", "issue_identifier" => "RSM-99"}, []}
+  end
+
   test "notifications resolve channel env values and optional headers" do
     slack_env = "SYMP_TEST_SLACK_WEBHOOK_#{System.unique_integer([:positive])}"
     webhook_env = "SYMP_TEST_NOTIFY_WEBHOOK_#{System.unique_integer([:positive])}"
@@ -165,6 +216,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
     {:ok, default_event} = Event.new(:run_failed)
     assert default_event.event == "run_failed"
+    assert default_event.repo_key == "default"
     assert default_event.issue_id == nil
     assert default_event.transcript_url == nil
 
@@ -185,7 +237,8 @@ defmodule SymphonyElixir.NotificationsTest do
     assert event.pr_title == nil
     assert event.reason == "{:exit, :killed}"
     assert event.state == "done"
-    assert event.transcript_url == "http://127.0.0.1:4105/issues/RSM-6/transcript"
+    assert event.repo_key == "default"
+    assert event.transcript_url == "http://127.0.0.1:4105/repos/default/issues/RSM-6/transcript"
 
     assert {:error, {:unknown_notification_event, 123}} = Event.new(123, %{})
     assert {:ok, %Event{issue_identifier: nil}} = Event.new(:run_failed, :invalid_attrs)
@@ -202,6 +255,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
     assert {:ok,
             %Event{
+              repo_key: "default",
               issue_id: "issue-7",
               issue_identifier: "RSM-7",
               issue_title: "Needs review",
@@ -268,6 +322,7 @@ defmodule SymphonyElixir.NotificationsTest do
     redacted = Formatter.webhook_payload(event, redact_titles: true)
 
     assert payload["event"] == "pr_opened"
+    assert payload["repo_key"] == "default"
     assert payload["issue_identifier"] == "RSM-1"
     assert payload["issue_title"] == "Sensitive title"
     assert payload["state_url"] == "https://github.test/org/repo/pull/1"

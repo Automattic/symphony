@@ -107,6 +107,18 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec repo_key_or_nil() :: String.t() | nil
+  def repo_key_or_nil do
+    case repo_key() do
+      {:ok, repo_key} ->
+        repo_key
+
+      {:error, reason} ->
+        warn_repo_key_unavailable_once(reason)
+        nil
+    end
+  end
+
   @spec settings!() :: Schema.t()
   def settings! do
     case settings() do
@@ -115,6 +127,15 @@ defmodule SymphonyElixir.Config do
 
       {:error, reason} ->
         raise ArgumentError, message: format_config_error(reason)
+    end
+  end
+
+  defp warn_repo_key_unavailable_once(reason) do
+    key = {__MODULE__, :repo_key_or_nil_warning, inspect(reason)}
+
+    unless :persistent_term.get(key, false) do
+      :persistent_term.put(key, true)
+      Logger.warning("repo_key unavailable; continuing without repo_key: #{inspect(reason)}")
     end
   end
 

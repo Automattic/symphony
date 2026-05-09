@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Notifications.Formatter do
 
     %{
       "event" => event.event,
+      "repo_key" => event.repo_key,
       "issue_id" => event.issue_id,
       "issue_identifier" => event.issue_identifier,
       "issue_url" => event.issue_url,

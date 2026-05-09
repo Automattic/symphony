@@ -60,6 +60,7 @@ defmodule SymphonyElixir.AuditLog do
 
     record(
       %{
+        repo_key: repo_key(issue, opts),
         issue_id: issue_id(issue),
         issue_identifier: issue_identifier(issue),
         run_id: run_id,
@@ -108,6 +109,7 @@ defmodule SymphonyElixir.AuditLog do
     if present?(from_state) and present?(to_state) and from_state != to_state do
       record(
         %{
+          repo_key: transition_repo_key(previous_issue, refreshed_issue, opts),
           issue_id: issue_id(refreshed_issue) || issue_id(previous_issue),
           issue_identifier: issue_identifier(refreshed_issue) || issue_identifier(previous_issue),
           run_id: run_id,
@@ -133,6 +135,7 @@ defmodule SymphonyElixir.AuditLog do
 
     record(
       %{
+        repo_key: repo_key(issue, opts),
         issue_id: issue_id(issue),
         issue_identifier: issue_identifier(issue),
         run_id: run_id,
@@ -222,6 +225,7 @@ defmodule SymphonyElixir.AuditLog do
       event =
         attrs
         |> normalize_value()
+        |> put_repo_key(repo_key(attrs, opts))
         |> Map.put_new("timestamp", DateTime.to_iso8601(timestamp))
         |> Map.put("event_type", event_type)
         |> Map.put_new("date", timestamp |> DateTime.to_date() |> Date.to_iso8601())
@@ -390,6 +394,7 @@ defmodule SymphonyElixir.AuditLog do
     issue = Map.get(running_entry, :issue) || %{}
 
     %{
+      repo_key: Map.get(running_entry, :repo_key) || repo_key_from_issue(issue) || default_repo_key(),
       issue_id: issue_id(issue) || Map.get(running_entry, :issue_id),
       issue_identifier: issue_identifier(issue) || Map.get(running_entry, :identifier),
       run_id: Map.get(running_entry, :run_id),
@@ -728,9 +733,33 @@ defmodule SymphonyElixir.AuditLog do
   defp issue_identifier(%{"issue_identifier" => identifier}) when is_binary(identifier), do: identifier
   defp issue_identifier(_issue), do: nil
 
+  defp repo_key(issue, opts) when is_list(opts) do
+    present_string(Keyword.get(opts, :repo_key)) || repo_key_from_issue(issue) || default_repo_key()
+  end
+
+  defp transition_repo_key(previous_issue, refreshed_issue, opts) when is_list(opts) do
+    present_string(Keyword.get(opts, :repo_key)) ||
+      repo_key_from_issue(refreshed_issue) ||
+      repo_key_from_issue(previous_issue) ||
+      default_repo_key()
+  end
+
+  defp repo_key_from_issue(%{repo_key: repo_key}) when is_binary(repo_key), do: present_string(repo_key)
+  defp repo_key_from_issue(%{"repo_key" => repo_key}) when is_binary(repo_key), do: present_string(repo_key)
+  defp repo_key_from_issue(_issue), do: nil
+
   defp issue_state(%{state: state}) when is_binary(state), do: state
   defp issue_state(%{"state" => state}) when is_binary(state), do: state
   defp issue_state(_issue), do: nil
+
+  defp put_repo_key(event, repo_key) when is_map(event) do
+    case present_string(Map.get(event, "repo_key")) || present_string(repo_key) do
+      nil -> event
+      present_repo_key -> Map.put(event, "repo_key", present_repo_key)
+    end
+  end
+
+  defp default_repo_key, do: Config.repo_key_or_nil()
 
   defp read_events_for_date(date, opts) do
     opts
@@ -1018,6 +1047,15 @@ defmodule SymphonyElixir.AuditLog do
 
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: value
+
+  defp present_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present_string(_value), do: nil
 
   defp present?(value) when is_binary(value), do: String.trim(value) != ""
   defp present?(_value), do: false

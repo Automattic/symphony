@@ -329,7 +329,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> enforce_issue_budget(issue_id)
 
         persist_running_entry(updated_running_entry)
-        notify_transcript(issue_id, update)
+        notify_transcript(state.repo_key, issue_id, update)
         notify_dashboard()
         {:noreply, state}
     end
@@ -707,7 +707,7 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
-        maybe_emit_issue_completed(issue)
+        maybe_emit_issue_completed(issue, state.repo_key)
 
         terminate_running_issue(state, issue.id, true)
 
@@ -721,7 +721,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
-        maybe_emit_awaiting_review(issue)
+        maybe_emit_awaiting_review(issue, state.repo_key)
 
         terminate_running_issue(state, issue.id, false, track_completed_run: true)
     end
@@ -779,7 +779,7 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(state_name, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{state_name}; removing from watching")
-        maybe_emit_issue_completed(issue)
+        maybe_emit_issue_completed(issue, state.repo_key)
         forget_completed_issue(state, issue_id)
 
       watching_issue_state?(state_name, active_states, terminal_states) ->
@@ -1714,6 +1714,7 @@ defmodule SymphonyElixir.Orchestrator do
       state
       | retry_attempts:
           Map.put(state.retry_attempts, issue_id, %{
+            repo_key: state.repo_key,
             attempt: next_attempt,
             timer_ref: timer_ref,
             retry_token: retry_token,
@@ -2006,11 +2007,11 @@ defmodule SymphonyElixir.Orchestrator do
     StatusDashboard.notify_update()
   end
 
-  defp notify_transcript(issue_id, event) when is_binary(issue_id) do
-    ObservabilityPubSub.broadcast_transcript_event(issue_id, event)
+  defp notify_transcript(repo_key, issue_id, event) when is_binary(repo_key) and is_binary(issue_id) do
+    ObservabilityPubSub.broadcast_transcript_event(repo_key, issue_id, event)
   end
 
-  defp notify_transcript(_issue_id, _event), do: :ok
+  defp notify_transcript(_repo_key, _issue_id, _event), do: :ok
 
   defp audit_agent_update(running_entry, update, token_delta) do
     running_entry
@@ -2030,21 +2031,24 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_emit_awaiting_review(%Issue{state: state} = issue) do
+  defp maybe_emit_awaiting_review(%Issue{state: state} = issue, repo_key) do
     if in_review_state?(state) do
-      Notifications.emit_issue_event(:awaiting_review, issue)
+      Notifications.emit_issue_event(:awaiting_review, issue, repo_key_attrs(repo_key))
     end
   end
 
-  defp maybe_emit_awaiting_review(_issue), do: :ok
+  defp maybe_emit_awaiting_review(_issue, _repo_key), do: :ok
 
-  defp maybe_emit_issue_completed(%Issue{state: state} = issue) do
+  defp maybe_emit_issue_completed(%Issue{state: state} = issue, repo_key) do
     if done_state?(state) do
-      Notifications.emit_issue_event(:issue_completed, issue)
+      Notifications.emit_issue_event(:issue_completed, issue, repo_key_attrs(repo_key))
     end
   end
 
-  defp maybe_emit_issue_completed(_issue), do: :ok
+  defp maybe_emit_issue_completed(_issue, _repo_key), do: :ok
+
+  defp repo_key_attrs(repo_key) when is_binary(repo_key), do: %{repo_key: repo_key}
+  defp repo_key_attrs(_repo_key), do: %{}
 
   defp emit_run_failed(running_entry, reason, next_attempt) when is_map(running_entry) do
     emit_running_event(:run_failed, running_entry, %{
@@ -2099,6 +2103,7 @@ defmodule SymphonyElixir.Orchestrator do
     attrs =
       attrs
       |> Map.put_new(:run_id, Map.get(running_entry, :run_id))
+      |> Map.put_new(:repo_key, Map.get(running_entry, :repo_key))
       |> Map.put_new(:session_id, Map.get(running_entry, :session_id))
       |> Map.put_new(:pr_url, URLUtils.pull_request_url(running_entry) || URLUtils.pull_request_url(issue))
       |> Map.put_new(:tokens, run_tokens(running_entry))
@@ -2575,6 +2580,7 @@ defmodule SymphonyElixir.Orchestrator do
     attempt = retry_attempt(Map.get(retry, :attempt))
 
     retry_entry = %{
+      repo_key: Map.get(retry, :repo_key),
       attempt: attempt,
       timer_ref: timer_ref,
       retry_token: retry_token,
@@ -3097,6 +3103,7 @@ defmodule SymphonyElixir.Orchestrator do
       |> Enum.map(fn {issue_id, metadata} ->
         %{
           issue_id: issue_id,
+          repo_key: Map.get(metadata, :repo_key),
           identifier: metadata.identifier,
           state: metadata.issue.state,
           url: issue_url(metadata.issue),
@@ -3126,6 +3133,7 @@ defmodule SymphonyElixir.Orchestrator do
       |> Enum.map(fn {issue_id, %{attempt: attempt, due_at_ms: due_at_ms} = retry} ->
         %{
           issue_id: issue_id,
+          repo_key: Map.get(retry, :repo_key) || state.repo_key,
           attempt: attempt,
           due_in_ms: max(0, due_at_ms - now_ms),
           identifier: Map.get(retry, :identifier),
@@ -3144,6 +3152,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         %{
           issue_id: issue_id,
+          repo_key: Map.get(watching_entry, :repo_key) || state.repo_key,
           identifier: Map.get(watching_entry, :identifier),
           state: Map.get(watching_entry, :state),
           url: URLUtils.present_url(Map.get(watching_entry, :url)),
@@ -3445,6 +3454,7 @@ defmodule SymphonyElixir.Orchestrator do
     issue = Map.get(running_entry, :issue)
 
     %{
+      repo_key: Map.get(running_entry, :repo_key),
       identifier: Map.get(running_entry, :identifier) || issue_identifier(issue),
       url: issue_url(issue),
       pull_request_url: URLUtils.pull_request_url(running_entry) || URLUtils.pull_request_url(issue),
@@ -3457,10 +3467,11 @@ defmodule SymphonyElixir.Orchestrator do
     existing = Map.get(state.watching, issue_id, %{})
 
     if existing == %{} do
-      maybe_emit_awaiting_review(issue)
+      maybe_emit_awaiting_review(issue, state.repo_key)
     end
 
     watching_entry = %{
+      repo_key: state.repo_key,
       identifier: watching_identifier(issue, issue_id, completed_metadata, existing),
       state: issue.state,
       url: watching_url(issue, completed_metadata, existing),

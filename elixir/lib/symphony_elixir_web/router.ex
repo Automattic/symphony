@@ -27,6 +27,7 @@ defmodule SymphonyElixirWeb.Router do
     live("/", DashboardLive, :index)
     live("/quality", QualityLive, :index)
     live("/learnings", LearningsLive, :index)
+    live("/repos/:repo_key/issues/:identifier/transcript", TranscriptLive, :show)
     live("/issues/:identifier/transcript", TranscriptLive, :show)
   end
 

@@ -376,6 +376,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
+             "repos" => ["default"],
              "counts" => %{"running" => 1, "watching" => 1, "conflicts" => 0, "retrying" => 1},
              "running" => [
                %{
@@ -778,12 +779,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Operations Dashboard"
     assert html =~ "Dispatch active"
-    assert html =~ "Pause Dispatch"
+    assert html =~ "Pause All"
     assert html =~ ~s(class="secondary pause-dispatch-button")
     assert html =~ ~s(href="/quality")
     assert html =~ "MT-HTTP"
     assert html =~ "MT-WATCH"
     assert html =~ "MT-RETRY"
+    assert html =~ ~s(class="repo-chip">default</span>)
+    assert html =~ "Conflict"
+    assert html =~ "No repo conflicts"
     assert html =~ "https://linear.app/example/issue/MT-WATCH"
     assert html =~ "https://linear.app/example/issue/MT-HTTP"
     assert html =~ "https://github.com/example/repo/pull/123"
@@ -851,14 +855,70 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     assert :ok = ObservabilityPubSub.broadcast_update("github.com/acme/other")
-    Process.sleep(50)
-    refute render(view) =~ "structured update"
-
-    assert :ok = ObservabilityPubSub.broadcast_update("default")
 
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
     end)
+  end
+
+  test "dashboard liveview narrows rows from repo query string and conflict filter" do
+    orchestrator_name = Module.concat(__MODULE__, :FilteredDashboardOrchestrator)
+    snapshot = multi_repo_snapshot()
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/?repo=api")
+
+    assert html =~ ~s(<option value="api" selected)
+    assert html =~ "MT-API"
+    assert html =~ "MT-API-WATCH"
+    assert html =~ "MT-CONFLICT"
+    assert html =~ ~s(class="repo-chip">api</span>)
+    refute html =~ "MT-HTTP"
+    refute html =~ "MT-WEB-RETRY"
+
+    {:ok, _view, html} = live(build_conn(), "/?repo=conflict")
+
+    assert html =~ ~s(<option value="conflict" selected)
+    assert html =~ "MT-CONFLICT"
+    assert html =~ ~s(class="repo-chip repo-chip-conflict">api</span>)
+    assert html =~ ~s(class="repo-chip repo-chip-conflict">web</span>)
+    refute html =~ "MT-API"
+    refute html =~ "MT-HTTP"
+    refute html =~ "MT-WEB-RETRY"
+  end
+
+  test "observability state payload exposes conflict row data shape" do
+    orchestrator_name = Module.concat(__MODULE__, :ConflictStateOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: multi_repo_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    payload = get(build_conn(), "/api/v1/state") |> json_response(200)
+
+    assert payload["repos"] == ["api", "default", "web"]
+
+    assert [
+             %{
+               "issue_id" => "issue-conflict",
+               "issue_identifier" => "MT-CONFLICT",
+               "state" => "Conflict",
+               "linear_state" => "Todo",
+               "conflicts" => ["api", "web"],
+               "repo_keys" => ["api", "web"]
+             }
+           ] = payload["conflicts"]
   end
 
   test "dashboard liveview renders empty retry and quality gate sections" do
@@ -897,6 +957,7 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           kind: :clarification,
           issue_id: "issue-await",
+          repo_key: "api",
           identifier: "MT-AWAIT",
           url: "https://example.org/MT-AWAIT",
           score: 5,
@@ -909,6 +970,7 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           kind: :scored,
           issue_id: "issue-skip",
+          repo_key: "web",
           identifier: "MT-SKIP",
           url: "https://example.org/MT-SKIP",
           score: 3,
@@ -918,6 +980,7 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           kind: :error,
           issue_id: "issue-error",
+          repo_key: "api",
           identifier: "MT-ERR",
           url: "https://example.org/MT-ERR",
           error: :llm_timeout,
@@ -936,10 +999,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
 
     assert html =~ "MT-AWAIT"
+    assert html =~ ~s(class="repo-chip">api</span>)
     assert html =~ "needs acceptance criteria"
     assert html =~ "https://example.org/MT-AWAIT"
     assert html =~ "2026-05-05T03:00:00Z"
     assert html =~ "MT-SKIP"
+    assert html =~ ~s(class="repo-chip">web</span>)
     assert html =~ "Scored"
     assert html =~ "vague description"
     assert html =~ "MT-ERR"
@@ -964,7 +1029,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Dispatch paused"
     assert html =~ "deploy window"
     assert html =~ "2026-05-06T08:30:00Z"
-    assert html =~ "Resume Dispatch"
+    assert html =~ "Resume All"
   end
 
   test "dashboard liveview renders operational dispatch_state blocker chips" do
@@ -1058,12 +1123,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, _html} = live(build_conn(), "/")
 
     assert view
-           |> element("button", "Pause Dispatch")
+           |> element("button", "Pause All")
            |> render_click() =~ "Confirm Pause"
 
     assert_eventually(fn ->
       html = render(view)
-      String.contains?(html, "Pause Dispatch") and not String.contains?(html, "Confirm Pause")
+      String.contains?(html, "Pause All") and not String.contains?(html, "Confirm Pause")
     end)
   end
 
@@ -1644,6 +1709,80 @@ defmodule SymphonyElixir.ExtensionsTest do
       },
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
+  end
+
+  defp multi_repo_snapshot do
+    now = DateTime.utc_now()
+
+    static_snapshot()
+    |> Map.put(:running, [
+      %{
+        issue_id: "issue-http",
+        repo_key: "default",
+        identifier: "MT-HTTP",
+        state: "In Progress",
+        url: "https://linear.app/example/issue/MT-HTTP",
+        session_id: "thread-default",
+        turn_count: 1,
+        codex_app_server_pid: nil,
+        last_codex_message: "default update",
+        last_codex_timestamp: nil,
+        last_codex_event: :notification,
+        codex_input_tokens: 1,
+        codex_output_tokens: 2,
+        codex_total_tokens: 3,
+        started_at: now
+      },
+      %{
+        issue_id: "issue-api",
+        repo_key: "api",
+        identifier: "MT-API",
+        state: "In Progress",
+        url: "https://linear.app/example/issue/MT-API",
+        session_id: "thread-api",
+        turn_count: 2,
+        codex_app_server_pid: nil,
+        last_codex_message: "api update",
+        last_codex_timestamp: nil,
+        last_codex_event: :notification,
+        codex_input_tokens: 5,
+        codex_output_tokens: 7,
+        codex_total_tokens: 12,
+        started_at: now
+      }
+    ])
+    |> Map.put(:watching, [
+      %{
+        issue_id: "issue-api-watch",
+        repo_key: "api",
+        identifier: "MT-API-WATCH",
+        state: "In Review",
+        url: "https://linear.app/example/issue/MT-API-WATCH",
+        pull_request_url: nil,
+        last_ran_at: DateTime.add(now, -600, :second),
+        seconds_since_last_run: 600
+      }
+    ])
+    |> Map.put(:retrying, [
+      %{
+        issue_id: "issue-web-retry",
+        repo_key: "web",
+        identifier: "MT-WEB-RETRY",
+        attempt: 3,
+        due_in_ms: 5_000,
+        error: "rate limited"
+      }
+    ])
+    |> Map.put(:conflicts, [
+      %{
+        issue_id: "issue-conflict",
+        identifier: "MT-CONFLICT",
+        state: "Conflict",
+        linear_state: "Todo",
+        url: "https://linear.app/example/issue/MT-CONFLICT",
+        repo_keys: ["api", "web"]
+      }
+    ])
   end
 
   defp wait_for_bound_port do

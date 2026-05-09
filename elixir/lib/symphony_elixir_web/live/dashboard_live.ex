@@ -12,10 +12,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @dashboard_pause_reason "Paused from dashboard"
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(params, _session, socket) do
+    payload = load_payload()
+    repo_filter = normalize_repo_filter(Map.get(params, "repo"), payload)
+
     socket =
       socket
-      |> assign(:payload, load_payload())
+      |> assign(:payload, payload)
+      |> assign(:repo_filter, repo_filter)
+      |> assign(:visible_payload, filter_payload(payload, repo_filter))
       |> assign(:now, DateTime.utc_now())
       |> assign(:pending_control, nil)
       |> assign(:pending_control_token, nil)
@@ -30,18 +35,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  def handle_params(params, _uri, socket) do
+    repo_filter = normalize_repo_filter(Map.get(params, "repo"), socket.assigns.payload)
+
+    {:noreply,
+     socket
+     |> assign(:repo_filter, repo_filter)
+     |> assign(:visible_payload, filter_payload(socket.assigns.payload, repo_filter))}
+  end
+
+  @impl true
   def handle_info(:runtime_tick, socket) do
     schedule_runtime_tick()
     {:noreply, assign(socket, :now, DateTime.utc_now())}
   end
 
-  def handle_info({:observability_updated, %{repo_key: repo_key}}, socket) do
-    if matching_repo_key?(repo_key) do
-      reload_dashboard(socket)
-    else
-      {:noreply, socket}
-    end
-  end
+  def handle_info({:observability_updated, %{repo_key: _repo_key}}, socket), do: reload_dashboard(socket)
 
   def handle_info({:disarm_control, token}, %{assigns: %{pending_control_token: token}} = socket) do
     {:noreply, disarm_control(socket)}
@@ -52,7 +61,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp reload_dashboard(socket) do
     {:noreply,
      socket
-     |> assign(:payload, load_payload())
+     |> assign_payload(load_payload())
      |> assign(:control_error, nil)
      |> assign(:now, DateTime.utc_now())}
   end
@@ -74,6 +83,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_event("resume-dispatch", _params, socket) do
     result = SymphonyElixir.Orchestrator.resume_dispatch(orchestrator())
     {:noreply, reload_after_control(socket, result)}
+  end
+
+  def handle_event("filter-repo", %{"repo" => repo_filter}, socket) do
+    {:noreply, push_patch(socket, to: dashboard_filter_path(repo_filter))}
   end
 
   def handle_event("arm-stop", %{"issue-id" => issue_id}, socket) do
@@ -103,6 +116,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
             <a class="action-pill" href="/quality">Quality Dashboard →</a>
             <a class="action-pill" href="/learnings">Learnings →</a>
+            <%= if !@payload[:error] && @payload.pause.paused do %>
+              <div class="system-paused-banner">
+                <strong>System paused</strong>
+                <span><%= @payload.pause.reason || "Dispatch is paused for all repos." %></span>
+              </div>
+            <% end %>
           </div>
 
           <div class="status-stack">
@@ -154,36 +173,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <%= if @pending_control == :resume do %>
                   <button type="button" phx-click="resume-dispatch">Confirm Resume</button>
                 <% else %>
-                  <button type="button" class="secondary" phx-click="arm-resume">Resume Dispatch</button>
+                  <button type="button" class="secondary" phx-click="arm-resume">Resume All</button>
                 <% end %>
               <% else %>
                 <%= if @pending_control == :pause do %>
                   <button type="button" class="danger-button" phx-click="pause-dispatch">Confirm Pause</button>
                 <% else %>
-                  <button type="button" class="secondary pause-dispatch-button" phx-click="arm-pause">Pause Dispatch</button>
+                  <button type="button" class="secondary pause-dispatch-button" phx-click="arm-pause">Pause All</button>
                 <% end %>
               <% end %>
             </div>
           </div>
         </section>
 
+        <section class="dashboard-filter-card">
+          <form phx-change="filter-repo">
+            <label class="dashboard-filter-field">
+              <span>View</span>
+              <select name="repo" aria-label="Dashboard repository filter">
+                <option value="" selected={@repo_filter == nil}>All</option>
+                <option :for={repo <- @payload.repos} value={repo} selected={@repo_filter == repo}><%= repo %></option>
+                <option value="conflict" selected={@repo_filter == "conflict"}>conflict</option>
+              </select>
+            </label>
+          </form>
+        </section>
+
         <section class="metric-grid dashboard-metrics">
           <article class="metric-card">
             <p class="metric-label">Running</p>
-            <p class="metric-value numeric"><%= @payload.counts.running %></p>
+            <p class="metric-value numeric"><%= @visible_payload.counts.running %></p>
             <p class="metric-detail">active</p>
           </article>
 
           <article class="metric-card">
             <p class="metric-label">Watching</p>
-            <p class="metric-value numeric"><%= @payload.counts.watching %></p>
+            <p class="metric-value numeric"><%= @visible_payload.counts.watching %></p>
             <p class="metric-detail">waiting</p>
           </article>
 
           <article class="metric-card">
             <p class="metric-label">Retrying</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
+            <p class="metric-value numeric"><%= @visible_payload.counts.retrying %></p>
             <p class="metric-detail">backoff</p>
+          </article>
+
+          <article class="metric-card">
+            <p class="metric-label">Conflict</p>
+            <p class="metric-value numeric"><%= @visible_payload.counts.conflicts %></p>
+            <p class="metric-detail">blocked</p>
           </article>
 
           <article class="metric-card">
@@ -211,7 +249,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <article class="metric-card">
             <p class="metric-label">Runtime</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
+            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@visible_payload, @now)) %></p>
             <p class="metric-detail">completed + active</p>
           </article>
         </section>
@@ -235,7 +273,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= if @payload.running == [] do %>
+          <%= if @visible_payload.running == [] do %>
             <p class="empty-state">No active sessions.</p>
           <% else %>
             <div class="table-wrap">
@@ -265,7 +303,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.running}>
+                  <tr :for={entry <- @visible_payload.running}>
                     <td>
                       <div class="issue-stack">
                         <%= if entry.url do %>
@@ -273,6 +311,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% else %>
                           <span class="issue-id"><%= entry.issue_identifier %></span>
                         <% end %>
+                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
                       </div>
                     </td>
                     <td>
@@ -377,7 +416,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= if @payload.watching == [] do %>
+          <%= if @visible_payload.watching == [] do %>
             <p class="empty-state">No watched issues.</p>
           <% else %>
             <div class="table-wrap">
@@ -397,7 +436,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.watching}>
+                  <tr :for={entry <- @visible_payload.watching}>
                     <td>
                       <div class="issue-stack">
                         <%= if entry.url do %>
@@ -405,6 +444,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% else %>
                           <span class="issue-id"><%= entry.issue_identifier %></span>
                         <% end %>
+                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
                       </div>
                     </td>
                     <td>
@@ -432,12 +472,65 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card">
           <div class="section-header">
             <div>
+              <h2 class="section-title">Conflict</h2>
+              <p class="section-copy">Issues currently claimed by more than one repo in the latest poll cycle.</p>
+            </div>
+          </div>
+
+          <%= if @visible_payload.conflicts == [] do %>
+            <p class="empty-state">No repo conflicts.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table data-table-conflict">
+                <colgroup>
+                  <col style="width: 12rem;" />
+                  <col style="width: 9rem;" />
+                  <col />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>State</th>
+                    <th>Conflicting repos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @visible_payload.conflicts}>
+                    <td>
+                      <div class="issue-stack">
+                        <%= if entry.url do %>
+                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                        <% else %>
+                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <% end %>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="state-badge state-badge-danger">Conflict</span>
+                    </td>
+                    <td>
+                      <div class="repo-chip-list">
+                        <%= for repo <- conflict_repos(entry) do %>
+                          <span class="repo-chip repo-chip-conflict"><%= repo %></span>
+                        <% end %>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
               <h2 class="section-title">Retry queue</h2>
               <p class="section-copy">Issues waiting for the next retry window.</p>
             </div>
           </div>
 
-          <%= if @payload.retrying == [] do %>
+          <%= if @visible_payload.retrying == [] do %>
             <p class="empty-state">No queued retries</p>
           <% else %>
             <div class="table-wrap">
@@ -451,10 +544,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.retrying}>
+                  <tr :for={entry <- @visible_payload.retrying}>
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -476,7 +570,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= if @payload.awaiting_clarification == [] do %>
+          <%= if @visible_payload.awaiting_clarification == [] do %>
             <p class="empty-state">No issues awaiting clarification</p>
           <% else %>
             <div class="table-wrap">
@@ -498,13 +592,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.awaiting_clarification}>
+                  <tr :for={entry <- @visible_payload.awaiting_clarification}>
                     <td>
-                      <%= if entry.url do %>
-                        <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
-                      <% else %>
-                        <span class="issue-id"><%= entry.issue_identifier %></span>
-                      <% end %>
+                      <div class="issue-stack">
+                        <%= if entry.url do %>
+                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                        <% else %>
+                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <% end %>
+                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
+                      </div>
                     </td>
                     <td class="numeric"><%= format_optional_int(entry.rounds_asked) %></td>
                     <td class="numeric"><%= format_optional_int(entry.score) %></td>
@@ -527,7 +624,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           </div>
 
-          <%= if @payload.skipped == [] do %>
+          <%= if @visible_payload.skipped == [] do %>
             <p class="empty-state">No issues skipped this session</p>
           <% else %>
             <div class="table-wrap">
@@ -549,13 +646,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={entry <- @payload.skipped}>
+                  <tr :for={entry <- @visible_payload.skipped}>
                     <td>
-                      <%= if entry.url do %>
-                        <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
-                      <% else %>
-                        <span class="issue-id"><%= entry.issue_identifier %></span>
-                      <% end %>
+                      <div class="issue-stack">
+                        <%= if entry.url do %>
+                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                        <% else %>
+                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <% end %>
+                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
+                      </div>
                     </td>
                     <td>
                       <span class={quality_gate_badge_class(entry)}>
@@ -584,9 +684,78 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
 
+  defp assign_payload(socket, payload) do
+    repo_filter = normalize_repo_filter(socket.assigns.repo_filter, payload)
+
+    socket
+    |> assign(:payload, payload)
+    |> assign(:repo_filter, repo_filter)
+    |> assign(:visible_payload, filter_payload(payload, repo_filter))
+  end
+
+  defp filter_payload(%{error: _} = payload, _repo_filter), do: payload
+
+  defp filter_payload(payload, nil), do: refresh_visible_counts(payload)
+
+  defp filter_payload(payload, "conflict") do
+    payload
+    |> Map.put(:running, [])
+    |> Map.put(:watching, [])
+    |> Map.put(:retrying, [])
+    |> Map.put(:awaiting_clarification, [])
+    |> Map.put(:skipped, [])
+    |> refresh_visible_counts()
+  end
+
+  defp filter_payload(payload, repo_filter) when is_binary(repo_filter) do
+    payload
+    |> Map.update(:running, [], &filter_repo_rows(&1, repo_filter))
+    |> Map.update(:watching, [], &filter_repo_rows(&1, repo_filter))
+    |> Map.update(:retrying, [], &filter_repo_rows(&1, repo_filter))
+    |> Map.update(:awaiting_clarification, [], &filter_repo_rows(&1, repo_filter))
+    |> Map.update(:skipped, [], &filter_repo_rows(&1, repo_filter))
+    |> Map.update(:conflicts, [], &filter_conflict_rows(&1, repo_filter))
+    |> refresh_visible_counts()
+  end
+
+  defp refresh_visible_counts(payload) do
+    Map.put(payload, :counts, %{
+      running: payload |> Map.get(:running, []) |> length(),
+      watching: payload |> Map.get(:watching, []) |> length(),
+      conflicts: payload |> Map.get(:conflicts, []) |> length(),
+      retrying: payload |> Map.get(:retrying, []) |> length()
+    })
+  end
+
+  defp filter_repo_rows(rows, repo_filter), do: Enum.filter(rows, &(Map.get(&1, :repo_key) == repo_filter))
+
+  defp filter_conflict_rows(rows, repo_filter) do
+    Enum.filter(rows, fn entry -> repo_filter in conflict_repos(entry) end)
+  end
+
+  defp normalize_repo_filter(value, _payload) when value in [nil, "", "all"], do: nil
+
+  defp normalize_repo_filter("conflict", _payload), do: "conflict"
+
+  defp normalize_repo_filter(value, payload) when is_binary(value) do
+    if value in Map.get(payload, :repos, []), do: value, else: nil
+  end
+
+  defp normalize_repo_filter(_value, _payload), do: nil
+
+  defp dashboard_filter_path(value) when value in [nil, "", "all"], do: "/"
+  defp dashboard_filter_path(value), do: "/?" <> URI.encode_query(%{"repo" => value})
+
+  defp repo_label(%{repo_key: repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
+  defp repo_label(_entry), do: nil
+
+  defp conflict_repos(%{conflicts: repos}) when is_list(repos), do: repos
+  defp conflict_repos(%{repo_keys: repos}) when is_list(repos), do: repos
+  defp conflict_repos(_entry), do: []
+
   defp reload_after_control(socket, result) do
     socket
-    |> assign(:payload, load_payload())
+    |> assign_payload(load_payload())
     |> disarm_control()
     |> assign(:control_error, control_error(result))
   end
@@ -849,9 +1018,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp transcript_path(entry) do
     URLUtils.transcript_path(Map.get(entry, :repo_key) || current_repo_key(), Map.get(entry, :issue_identifier)) || "#"
   end
-
-  defp matching_repo_key?(nil), do: true
-  defp matching_repo_key?(repo_key), do: repo_key == current_repo_key()
 
   defp current_repo_key, do: Config.repo_key_or_nil()
 

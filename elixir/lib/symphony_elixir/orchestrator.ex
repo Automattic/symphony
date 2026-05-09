@@ -1329,6 +1329,7 @@ defmodule SymphonyElixir.Orchestrator do
     %{
       kind: entry.kind,
       issue_id: entry.issue_id,
+      repo_key: Map.get(entry, :repo_key),
       identifier: entry.identifier,
       url: URLUtils.present_url(entry.url),
       score: Map.get(entry, :score),
@@ -1342,6 +1343,7 @@ defmodule SymphonyElixir.Orchestrator do
     %{
       kind: entry.kind,
       issue_id: entry.issue_id,
+      repo_key: Map.get(entry, :repo_key),
       identifier: entry.identifier,
       url: URLUtils.present_url(entry.url),
       score: Map.get(entry, :score),
@@ -1770,7 +1772,6 @@ defmodule SymphonyElixir.Orchestrator do
       state
       | retry_attempts:
           Map.put(state.retry_attempts, issue_id, %{
-            repo_key: state.repo_key,
             attempt: next_attempt,
             timer_ref: timer_ref,
             retry_token: retry_token,
@@ -2689,8 +2690,7 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path),
       reason: Map.get(retry, :reason),
-      elapsed_ms: Map.get(retry, :elapsed_ms),
-      repo_key: Map.get(retry, :repo_key)
+      elapsed_ms: Map.get(retry, :elapsed_ms)
     }
 
     {Map.put(retry_attempts, issue_id, retry_entry), MapSet.put(claimed, issue_id)}
@@ -3250,8 +3250,7 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path),
           reason: Map.get(retry, :reason),
-          elapsed_ms: Map.get(retry, :elapsed_ms),
-          repo_key: Map.get(retry, :repo_key)
+          elapsed_ms: Map.get(retry, :elapsed_ms)
         }
       end)
 

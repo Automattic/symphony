@@ -40,7 +40,11 @@ defmodule SymphonyElixir.TestSupport do
           )
 
         File.mkdir_p!(workflow_root)
-        workflow_file = Path.join(workflow_root, "WORKFLOW.md")
+        repo_root = Path.join(workflow_root, "repo")
+        File.mkdir_p!(repo_root)
+        workflow_file = Path.join(repo_root, "WORKFLOW.md")
+        Workflow.set_symphony_file_path(Path.join(workflow_root, "symphony.yml"))
+        Workflow.set_workflow_file_path(workflow_file)
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
         ensure_symphony_started!()
@@ -51,6 +55,8 @@ defmodule SymphonyElixir.TestSupport do
 
         on_exit(fn ->
           stop_verification_port_pool()
+          Application.delete_env(:symphony_elixir, :primary_repo_name)
+          Application.delete_env(:symphony_elixir, :symphony_file_path)
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_host_override)
           Application.delete_env(:symphony_elixir, :server_port_override)
@@ -65,8 +71,10 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   def write_workflow_file!(path, overrides \\ []) do
-    workflow = workflow_content(overrides)
-    File.write!(path, workflow)
+    {system_config, repo_config, prompt} = split_workflow_content(path, overrides)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, repo_workflow_content(repo_config, prompt))
+    File.write!(SymphonyElixir.Workflow.symphony_file_path(), symphony_content(system_config, path))
 
     if Process.whereis(SymphonyElixir.WorkflowStore) do
       try do
@@ -77,6 +85,47 @@ defmodule SymphonyElixir.TestSupport do
     end
 
     :ok
+  end
+
+  defp split_workflow_content(path, overrides) do
+    {:ok, {config, prompt}} = SymphonyElixir.Workflow.parse_document(workflow_content(overrides))
+
+    repo_config = Map.take(config, ["hooks", "verification"])
+
+    system_config =
+      config
+      |> Map.drop(["hooks", "verification"])
+      |> Map.put("repos", [
+        %{
+          "name" => "default",
+          "path" => Path.dirname(path),
+          "workflow" => Path.basename(path),
+          "team" => "Test"
+        }
+      ])
+
+    {system_config, repo_config, prompt}
+  end
+
+  defp symphony_content(config, _workflow_path) do
+    config
+    |> Enum.map_join("\n", fn {key, value} -> "#{key}: #{yaml_value(value)}" end)
+    |> Kernel.<>("\n")
+  end
+
+  defp repo_workflow_content(config, prompt) when map_size(config) == 0 do
+    prompt <> "\n"
+  end
+
+  defp repo_workflow_content(config, prompt) do
+    [
+      "---",
+      Enum.map_join(config, "\n", fn {key, value} -> "#{key}: #{yaml_value(value)}" end),
+      "---",
+      prompt
+    ]
+    |> Enum.join("\n")
+    |> Kernel.<>("\n")
   end
 
   def restore_env(key, nil), do: System.delete_env(key)
@@ -338,7 +387,13 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value) when is_binary(value) do
-    "\"" <> String.replace(value, "\"", "\\\"") <> "\""
+    escaped =
+      value
+      |> String.replace("\\", "\\\\")
+      |> String.replace("\"", "\\\"")
+      |> String.replace("\n", "\\n")
+
+    "\"" <> escaped <> "\""
   end
 
   defp yaml_value(value) when is_integer(value), do: to_string(value)

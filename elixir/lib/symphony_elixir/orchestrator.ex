@@ -252,6 +252,7 @@ defmodule SymphonyElixir.Orchestrator do
               state
               |> complete_issue(issue_id, running_entry)
               |> schedule_issue_retry(issue_id, 1, %{
+                repo_key: running_entry_repo_key(running_entry),
                 identifier: running_entry.identifier,
                 delay_type: :continuation,
                 worker_host: Map.get(running_entry, :worker_host),
@@ -267,6 +268,7 @@ defmodule SymphonyElixir.Orchestrator do
               emit_run_failed(running_entry, error, next_attempt)
 
               schedule_issue_retry(state, issue_id, next_attempt, %{
+                repo_key: running_entry_repo_key(running_entry),
                 identifier: running_entry.identifier,
                 error: error,
                 worker_host: Map.get(running_entry, :worker_host),
@@ -679,6 +681,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec handle_retry_issue_for_test(State.t(), String.t(), non_neg_integer(), map(), ([String.t()] -> term())) ::
+          {:noreply, State.t()}
+  def handle_retry_issue_for_test(%State{} = state, issue_id, attempt, metadata, issue_fetcher)
+      when is_binary(issue_id) and is_integer(attempt) and is_map(metadata) and is_function(issue_fetcher, 1) do
+    handle_retry_issue(state, issue_id, attempt, metadata, issue_fetcher)
+  end
+
+  @doc false
+  @spec persist_run_start_for_test(Issue.t(), map(), non_neg_integer() | nil) :: :ok
+  def persist_run_start_for_test(%Issue{} = issue, running_entry, attempt) when is_map(running_entry) do
+    persist_run_start(issue, running_entry, attempt)
+  end
+
+  @doc false
   @spec sort_issues_for_dispatch_for_test([Issue.t()]) :: [Issue.t()]
   def sort_issues_for_dispatch_for_test(issues) when is_list(issues) do
     sort_issues_for_dispatch(issues)
@@ -708,11 +724,6 @@ defmodule SymphonyElixir.Orchestrator do
         maybe_emit_issue_completed(issue)
 
         terminate_running_issue(state, issue.id, true)
-
-      !issue_routable_to_worker?(issue) ->
-        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
-
-        terminate_running_issue(state, issue.id, false)
 
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
@@ -849,7 +860,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.running, issue.id) do
       %{issue: _} = running_entry ->
-        %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: issue})}
+        refreshed_issue = freeze_issue_repo_key(issue, running_entry_repo_key(running_entry))
+        %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: refreshed_issue})}
 
       _ ->
         state
@@ -892,8 +904,13 @@ defmodule SymphonyElixir.Orchestrator do
         worker_host = Map.get(running_entry, :worker_host)
 
         if cleanup_workspace do
-          cleanup_issue_workspace(%{identifier: identifier, repo_key: state.repo_key}, worker_host)
+          cleanup_issue_workspace(
+            %{id: issue_id, identifier: identifier, repo_key: running_repo_key(state, running_entry)},
+            worker_host
+          )
         end
+
+        repo_key = running_repo_key(state, running_entry)
 
         %{
           state
@@ -901,7 +918,7 @@ defmodule SymphonyElixir.Orchestrator do
             claimed: MapSet.delete(state.claimed, issue_id),
             retry_attempts: Map.delete(state.retry_attempts, issue_id)
         }
-        |> delete_persisted_retry(issue_id)
+        |> delete_persisted_retry(issue_id, repo_key)
 
       _ ->
         release_issue_claim(state, issue_id)
@@ -944,6 +961,7 @@ defmodule SymphonyElixir.Orchestrator do
         error: "stalled for #{elapsed_ms}ms without codex activity"
       )
       |> schedule_issue_retry(issue_id, next_attempt, %{
+        repo_key: running_entry_repo_key(running_entry),
         identifier: identifier,
         error: "stalled for #{elapsed_ms}ms without codex activity"
       })
@@ -1049,6 +1067,7 @@ defmodule SymphonyElixir.Orchestrator do
       run_after_run_hook: true
     )
     |> schedule_issue_retry(issue_id, next_attempt, %{
+      repo_key: running_entry_repo_key(running_entry),
       identifier: identifier,
       error: error,
       reason: :stuck,
@@ -1445,6 +1464,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp issue_routable_to_worker?(_issue), do: true
 
+  defp active_retry_issue?(%Issue{state: state_name} = issue, terminal_states) do
+    active_issue_state?(state_name, active_state_set()) and
+      !terminal_issue_state?(state_name, terminal_states) and
+      !todo_issue_blocked_by_non_terminal?(issue, terminal_states)
+  end
+
+  defp active_retry_issue?(_issue, _terminal_states), do: false
+
   defp todo_issue_blocked_by_non_terminal?(
          %Issue{state: issue_state, blocked_by: blockers},
          terminal_states
@@ -1500,9 +1527,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
-    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
+    repo_key = dispatch_repo_key(state, issue)
+    sticky_route? = retry_attempt?(attempt)
+    terminal_states = terminal_state_set()
+    issue_fetcher = &Tracker.fetch_issue_states_by_ids/1
+
+    case revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_states, sticky_route?: sticky_route?) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        refreshed_issue = freeze_issue_repo_key(refreshed_issue, repo_key)
+        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, repo_key)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -1519,7 +1552,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, repo_key) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -1528,21 +1561,31 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, repo_key)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, repo_key) do
     run_id = new_run_id(issue.id)
 
-    case Verification.allocate_for_dispatch(issue, run_id, worker_host, repo_key: state.repo_key) do
+    case Verification.allocate_for_dispatch(issue, run_id, worker_host, repo_key: repo_key) do
       {:ok, verification} ->
-        spawn_allocated_issue_on_worker_host(state, issue, attempt, recipient, worker_host, run_id, verification)
+        spawn_allocated_issue_on_worker_host(
+          state,
+          issue,
+          attempt,
+          recipient,
+          worker_host,
+          run_id,
+          verification,
+          repo_key
+        )
 
       {:error, :exhausted} ->
         Logger.warning("Verification port allocation exhausted for #{issue_context(issue)}; waiting for a free port")
 
         schedule_issue_retry(state, issue.id, retry_attempt(attempt), %{
+          repo_key: repo_key,
           identifier: issue.identifier,
           error: "verification port allocation exhausted",
           worker_host: worker_host
@@ -1552,6 +1595,7 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Verification port allocation failed for #{issue_context(issue)}: #{inspect(reason)}")
 
         schedule_issue_retry(state, issue.id, retry_attempt(attempt), %{
+          repo_key: repo_key,
           identifier: issue.identifier,
           error: "verification port allocation failed: #{inspect(reason)}",
           worker_host: worker_host
@@ -1559,11 +1603,11 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp spawn_allocated_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, run_id, verification) do
+  defp spawn_allocated_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, run_id, verification, repo_key) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient,
              attempt: attempt,
-             repo_key: state.repo_key,
+             repo_key: repo_key,
              worker_host: worker_host,
              run_id: run_id,
              verification: verification
@@ -1579,7 +1623,7 @@ defmodule SymphonyElixir.Orchestrator do
           pid: pid,
           ref: ref,
           run_id: run_id,
-          repo_key: state.repo_key,
+          repo_key: repo_key,
           identifier: issue.identifier,
           issue: issue,
           worker_host: worker_host,
@@ -1608,7 +1652,7 @@ defmodule SymphonyElixir.Orchestrator do
         }
 
         persist_run_start(issue, running_entry, attempt)
-        state = delete_persisted_retry(state, issue.id)
+        state = delete_persisted_retry(state, issue.id, repo_key)
 
         state = clear_quality_gate_blocking_cache_entry(state, issue.id)
         running = Map.put(state.running, issue.id, running_entry)
@@ -1627,6 +1671,7 @@ defmodule SymphonyElixir.Orchestrator do
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
+          repo_key: repo_key,
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}",
           worker_host: worker_host
@@ -1634,11 +1679,18 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
+  defp revalidate_issue_for_dispatch(%Issue{id: issue_id} = issue, issue_fetcher, terminal_states)
        when is_binary(issue_id) and is_function(issue_fetcher, 1) do
+    revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_states, [])
+  end
+
+  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
+
+  defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states, opts)
+       when is_binary(issue_id) and is_function(issue_fetcher, 1) and is_list(opts) do
     case issue_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if retry_candidate_issue?(refreshed_issue, terminal_states) do
+        if dispatch_revalidated_issue?(refreshed_issue, terminal_states, Keyword.get(opts, :sticky_route?, false)) do
           {:ok, refreshed_issue}
         else
           {:skip, refreshed_issue}
@@ -1652,10 +1704,13 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
+  defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states, _opts), do: {:ok, issue}
+
+  defp dispatch_revalidated_issue?(%Issue{} = issue, terminal_states, true), do: active_retry_issue?(issue, terminal_states)
+  defp dispatch_revalidated_issue?(%Issue{} = issue, terminal_states, _sticky_route?), do: retry_candidate_issue?(issue, terminal_states)
 
   defp complete_issue(%State{} = state, issue_id, running_entry) do
-    state = delete_persisted_retry(state, issue_id)
+    state = delete_persisted_retry(state, issue_id, running_repo_key(state, running_entry))
     state = remember_completed_run(state, issue_id, running_entry)
 
     %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}
@@ -1673,13 +1728,14 @@ defmodule SymphonyElixir.Orchestrator do
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
     reason = metadata[:reason] || Map.get(previous_retry, :reason)
     elapsed_ms = metadata[:elapsed_ms] || Map.get(previous_retry, :elapsed_ms)
+    repo_key = retry_repo_key(state, metadata, previous_retry)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
     end
 
     persist_retry(%{
-      repo_key: state.repo_key,
+      repo_key: repo_key,
       issue_id: issue_id,
       identifier: identifier,
       attempt: next_attempt,
@@ -1712,7 +1768,8 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             workspace_path: workspace_path,
             reason: reason,
-            elapsed_ms: elapsed_ms
+            elapsed_ms: elapsed_ms,
+            repo_key: repo_key
           })
     }
   end
@@ -1726,10 +1783,11 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
           reason: Map.get(retry_entry, :reason),
-          elapsed_ms: Map.get(retry_entry, :elapsed_ms)
+          elapsed_ms: Map.get(retry_entry, :elapsed_ms),
+          repo_key: Map.get(retry_entry, :repo_key)
         }
 
-        state = delete_persisted_retry(state, issue_id)
+        state = delete_persisted_retry(state, issue_id, retry_repo_key(state, retry_entry, %{}))
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
 
       _ ->
@@ -1738,21 +1796,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
+    handle_retry_issue(state, issue_id, attempt, metadata, &Tracker.fetch_issue_states_by_ids/1)
+  end
+
+  defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata, issue_fetcher)
+       when is_function(issue_fetcher, 1) do
+    case issue_fetcher.([issue_id]) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
         |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
 
       {:error, reason} ->
-        Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+        Logger.warning("Retry issue refresh failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 
         {:noreply,
          schedule_issue_retry(
            state,
            issue_id,
            attempt + 1,
-           Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+           Map.merge(metadata, %{error: "retry issue refresh failed: #{inspect(reason)}"})
          )}
     end
   end
@@ -1765,12 +1828,13 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
         issue
-        |> issue_workspace_context(state.repo_key)
+        |> issue_workspace_context(retry_repo_key(state, metadata, %{}))
         |> cleanup_issue_workspace(metadata[:worker_host])
 
         {:noreply, state |> forget_completed_issue(issue_id) |> release_issue_claim(issue_id)}
 
-      retry_candidate_issue?(issue, terminal_states) ->
+      active_retry_issue?(issue, terminal_states) ->
+        issue = freeze_issue_repo_key(issue, retry_repo_key(state, metadata, %{}))
         handle_quality_gated_active_retry(state, issue, attempt, metadata)
 
       true ->
@@ -2100,7 +2164,7 @@ defmodule SymphonyElixir.Orchestrator do
            })
          )}
 
-      retry_candidate_issue?(issue, terminal_state_set()) and
+      active_retry_issue?(issue, terminal_state_set()) and
         dispatch_slots_available?(issue, state) and
           worker_slots_available?(state, metadata[:worker_host]) ->
         {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
@@ -2266,6 +2330,41 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp running_entry_repo_key(%{repo_key: repo_key}) when is_binary(repo_key), do: repo_key
   defp running_entry_repo_key(_running_entry), do: nil
+
+  defp dispatch_repo_key(%State{} = state, %Issue{} = issue), do: issue_repo_key(issue) || state.repo_key
+  defp dispatch_repo_key(%State{} = state, _issue), do: state.repo_key
+
+  defp freeze_issue_repo_key(%Issue{} = issue, repo_key) when is_binary(repo_key) and repo_key != "" do
+    %{issue | repo_key: repo_key}
+  end
+
+  defp freeze_issue_repo_key(%Issue{} = issue, _repo_key), do: issue
+
+  defp running_repo_key(%State{} = state, running_entry) when is_map(running_entry) do
+    running_entry_repo_key(running_entry) || state.repo_key
+  end
+
+  defp running_repo_key(%State{} = state, _running_entry), do: state.repo_key
+
+  defp retry_repo_key(%State{} = state, metadata, previous_retry) do
+    repo_key_from(metadata) || repo_key_from(previous_retry) || state.repo_key
+  end
+
+  defp retry_repo_key_from_state(%State{} = state, issue_id) when is_binary(issue_id) do
+    state.retry_attempts
+    |> Map.get(issue_id, %{})
+    |> repo_key_from()
+    |> Kernel.||(state.repo_key)
+  end
+
+  defp retry_repo_key_from_state(%State{} = state, _issue_id), do: state.repo_key
+
+  defp issue_repo_key(%Issue{repo_key: repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
+  defp issue_repo_key(_issue), do: nil
+
+  defp repo_key_from(%{repo_key: repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
+  defp repo_key_from(%{"repo_key" => repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
+  defp repo_key_from(_value), do: nil
 
   defp start_stop_agent_session_cleanup(%{run_id: run_id} = running_entry) do
     if stop_agent_session_configured?(running_entry),
@@ -2540,7 +2639,8 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path),
       reason: Map.get(retry, :reason),
-      elapsed_ms: Map.get(retry, :elapsed_ms)
+      elapsed_ms: Map.get(retry, :elapsed_ms),
+      repo_key: Map.get(retry, :repo_key)
     }
 
     {Map.put(retry_attempts, issue_id, retry_entry), MapSet.put(claimed, issue_id)}
@@ -2644,6 +2744,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_due_delay_ms(_due_at, _now), do: 0
+
+  defp retry_attempt?(attempt) when is_integer(attempt) and attempt > 0, do: true
+  defp retry_attempt?(_attempt), do: false
 
   defp retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp retry_attempt(_attempt), do: 1
@@ -2779,8 +2882,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp delete_persisted_retry(%State{} = state, issue_id) do
+    delete_persisted_retry(state, issue_id, retry_repo_key_from_state(state, issue_id))
+  end
+
+  defp delete_persisted_retry(%State{} = state, issue_id, repo_key) do
+    repo_key = repo_key_from(%{repo_key: repo_key}) || state.repo_key
+
     if is_binary(issue_id) do
-      state.repo_key
+      repo_key
       |> RunStore.delete_retry(issue_id)
       |> log_run_store_error("delete retry")
     end
@@ -3083,7 +3192,8 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path),
           reason: Map.get(retry, :reason),
-          elapsed_ms: Map.get(retry, :elapsed_ms)
+          elapsed_ms: Map.get(retry, :elapsed_ms),
+          repo_key: Map.get(retry, :repo_key)
         }
       end)
 

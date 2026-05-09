@@ -566,7 +566,7 @@ defmodule SymphonyElixir.CoreTest do
 
     issue_id = "issue-2"
     issue_identifier = "MT-556"
-    workspace = Path.join([test_root, "default", issue_identifier])
+    workspace = Path.join([test_root, "api", issue_identifier])
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
@@ -586,12 +586,14 @@ defmodule SymphonyElixir.CoreTest do
         end)
 
       state = %Orchestrator.State{
+        repo_key: "default",
         running: %{
           issue_id => %{
             pid: agent_pid,
             ref: nil,
+            repo_key: "api",
             identifier: issue_identifier,
-            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier, repo_key: "api"},
             started_at: DateTime.utc_now()
           }
         },
@@ -737,8 +739,8 @@ defmodule SymphonyElixir.CoreTest do
     assert updated_entry.issue.state == "In Progress"
   end
 
-  test "reconcile stops running issue when it is reassigned away from this worker" do
-    issue_id = "issue-reassigned"
+  test "reconcile keeps active run on its frozen repo when routing fields change" do
+    issue_id = "issue-route-sticky"
 
     agent_pid =
       spawn(fn ->
@@ -752,11 +754,15 @@ defmodule SymphonyElixir.CoreTest do
         issue_id => %{
           pid: agent_pid,
           ref: nil,
+          repo_key: "api",
           identifier: "MT-561",
           issue: %Issue{
             id: issue_id,
             identifier: "MT-561",
             state: "In Progress",
+            repo_key: "api",
+            labels: ["backend"],
+            project: %{id: "project-api", name: "API"},
             assigned_to_worker: true
           },
           started_at: DateTime.utc_now()
@@ -772,16 +778,147 @@ defmodule SymphonyElixir.CoreTest do
       identifier: "MT-561",
       state: "In Progress",
       title: "Reassigned active issue",
-      description: "Worker should stop",
-      labels: [],
+      description: "Worker should keep going",
+      repo_key: "web",
+      labels: ["frontend"],
+      project: %{id: "project-web", name: "Web"},
       assigned_to_worker: false
     }
 
     updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+    updated_entry = updated_state.running[issue_id]
 
-    refute Map.has_key?(updated_state.running, issue_id)
-    refute MapSet.member?(updated_state.claimed, issue_id)
-    refute Process.alive?(agent_pid)
+    assert Map.has_key?(updated_state.running, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert Process.alive?(agent_pid)
+    assert updated_entry.repo_key == "api"
+    assert updated_entry.issue.repo_key == "api"
+    assert updated_entry.issue.labels == ["frontend"]
+    assert updated_entry.issue.project == %{id: "project-web", name: "Web"}
+    assert updated_entry.issue.assigned_to_worker == false
+
+    send(agent_pid, :stop)
+  end
+
+  test "persisted run start records the dispatch-time repo_key" do
+    issue = %Issue{
+      id: "issue-persist-sticky-repo",
+      identifier: "MT-562",
+      title: "Persist sticky repo",
+      state: "In Progress",
+      repo_key: "web"
+    }
+
+    running_entry = %{
+      run_id: "run-persist-sticky-repo",
+      repo_key: "api",
+      identifier: issue.identifier,
+      issue: %{issue | repo_key: "api"},
+      started_at: DateTime.utc_now()
+    }
+
+    assert :ok = Orchestrator.persist_run_start_for_test(issue, running_entry, nil)
+
+    assert [%{run_id: "run-persist-sticky-repo", repo_key: "api", issue_identifier: "MT-562"}] =
+             RunStore.list_runs("api")
+
+    assert [] = RunStore.list_runs("web")
+  end
+
+  test "retry keeps the original repo_key when labels now match a different repo" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_concurrent_agents: 1,
+      quality_gate: %{enabled: false},
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    )
+
+    issue_id = "issue-label-rerouted"
+    metadata = %{repo_key: "api", identifier: "MT-563", worker_host: nil, workspace_path: nil}
+
+    refreshed_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-563",
+      title: "Label rerouted",
+      state: "In Progress",
+      repo_key: "web",
+      labels: ["frontend"],
+      assigned_to_worker: true
+    }
+
+    state = %Orchestrator.State{
+      repo_key: "default",
+      max_concurrent_agents: 0,
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_retry_issue_for_test(state, issue_id, 1, metadata, fn [^issue_id] ->
+               {:ok, [refreshed_issue]}
+             end)
+
+    assert %{
+             attempt: 2,
+             repo_key: "api",
+             identifier: "MT-563",
+             error: "no available orchestrator slots"
+           } = updated_state.retry_attempts[issue_id]
+
+    assert [%{issue_id: ^issue_id, repo_key: "api", identifier: "MT-563"}] =
+             RunStore.list_retries("api")
+
+    assert [] = RunStore.list_retries("web")
+  end
+
+  test "retry keeps the original repo_key when the issue no longer matches any repo" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_concurrent_agents: 1,
+      quality_gate: %{enabled: false},
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    )
+
+    issue_id = "issue-label-unrouted"
+    metadata = %{repo_key: "api", identifier: "MT-564", worker_host: nil, workspace_path: nil}
+
+    refreshed_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-564",
+      title: "Label unrouted",
+      state: "In Progress",
+      repo_key: nil,
+      labels: [],
+      assigned_to_worker: false
+    }
+
+    state = %Orchestrator.State{
+      repo_key: "default",
+      max_concurrent_agents: 0,
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    assert {:noreply, updated_state} =
+             Orchestrator.handle_retry_issue_for_test(state, issue_id, 1, metadata, fn [^issue_id] ->
+               {:ok, [refreshed_issue]}
+             end)
+
+    assert %{
+             attempt: 2,
+             repo_key: "api",
+             identifier: "MT-564",
+             error: "no available orchestrator slots"
+           } = updated_state.retry_attempts[issue_id]
+
+    assert [%{issue_id: ^issue_id, repo_key: "api", identifier: "MT-564"}] =
+             RunStore.list_retries("api")
+
+    assert [] = RunStore.list_retries("default")
   end
 
   test "normal worker exit schedules active-state continuation retry" do
@@ -803,8 +940,9 @@ defmodule SymphonyElixir.CoreTest do
     running_entry = %{
       pid: self(),
       ref: ref,
+      repo_key: "api",
       identifier: "MT-558",
-      issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"},
+      issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress", repo_key: "api"},
       started_at: DateTime.utc_now()
     }
 
@@ -821,7 +959,7 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+    assert %{attempt: 1, due_at_ms: due_at_ms, repo_key: "api"} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
     assert_due_in_range(due_at_ms, 250, 1_100)
   end
@@ -845,9 +983,10 @@ defmodule SymphonyElixir.CoreTest do
     running_entry = %{
       pid: self(),
       ref: ref,
+      repo_key: "api",
       identifier: "MT-559",
       retry_attempt: 2,
-      issue: %Issue{id: issue_id, identifier: "MT-559", state: "In Progress"},
+      issue: %Issue{id: issue_id, identifier: "MT-559", state: "In Progress", repo_key: "api"},
       started_at: DateTime.utc_now()
     }
 
@@ -862,7 +1001,7 @@ defmodule SymphonyElixir.CoreTest do
     Process.sleep(50)
     state = :sys.get_state(pid)
 
-    assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
+    assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", repo_key: "api", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
     assert_due_in_range(due_at_ms, 39_000, 40_500)

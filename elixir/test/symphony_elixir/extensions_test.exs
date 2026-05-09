@@ -717,6 +717,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~r|/vendor/phoenix_live_view/phoenix_live_view\.js\?v=[a-f0-9]{16}|
     assert html =~ ~s(phx-track-static)
     assert html =~ "TranscriptFilter"
+    assert html =~ "installRestartAwareReload"
+    assert html =~ "x-symphony-dashboard-reconnect"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
 

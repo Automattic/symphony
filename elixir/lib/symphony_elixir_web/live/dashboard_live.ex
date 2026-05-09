@@ -189,11 +189,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="dashboard-filter-card">
           <form phx-change="filter-repo">
             <label class="dashboard-filter-field">
-              <span>View</span>
+              <span>Repo</span>
               <select name="repo" aria-label="Dashboard repository filter">
                 <option value="" selected={@repo_filter == nil}>All</option>
                 <option :for={repo <- @payload.repos} value={repo} selected={@repo_filter == repo}><%= repo %></option>
-                <option value="conflict" selected={@repo_filter == "conflict"}>conflict</option>
               </select>
             </label>
           </form>
@@ -686,16 +685,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp filter_payload(payload, nil), do: refresh_visible_counts(payload)
 
-  defp filter_payload(payload, "conflict") do
-    payload
-    |> Map.put(:running, [])
-    |> Map.put(:watching, [])
-    |> Map.put(:retrying, [])
-    |> Map.put(:awaiting_clarification, [])
-    |> Map.put(:skipped, [])
-    |> refresh_visible_counts()
-  end
-
   defp filter_payload(payload, repo_filter) when is_binary(repo_filter) do
     payload
     |> Map.update(:running, [], &filter_repo_rows(&1, repo_filter))
@@ -723,8 +712,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp normalize_repo_filter(value, _payload) when value in [nil, "", "all"], do: nil
-
-  defp normalize_repo_filter("conflict", _payload), do: "conflict"
 
   defp normalize_repo_filter(value, payload) when is_binary(value) do
     if value in Map.get(payload, :repos, []), do: value, else: nil

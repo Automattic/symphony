@@ -861,7 +861,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
-  test "dashboard liveview narrows rows from repo query string and conflict filter" do
+  test "dashboard liveview narrows rows from repo query string" do
     orchestrator_name = Module.concat(__MODULE__, :FilteredDashboardOrchestrator)
     snapshot = multi_repo_snapshot()
 
@@ -876,6 +876,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/?repo=api")
 
     assert html =~ ~s(<option value="api" selected)
+    refute html =~ ~s(<option value="conflict")
     assert html =~ "MT-API"
     assert html =~ "MT-API-WATCH"
     assert html =~ "MT-CONFLICT"
@@ -885,13 +886,57 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, _view, html} = live(build_conn(), "/?repo=conflict")
 
-    assert html =~ ~s(<option value="conflict" selected)
+    assert html =~ ~s(<option value="" selected)
+    refute html =~ ~s(<option value="conflict")
+    assert html =~ "MT-API"
+    assert html =~ "MT-HTTP"
     assert html =~ "MT-CONFLICT"
-    assert html =~ ~s(class="repo-chip repo-chip-conflict">api</span>)
-    assert html =~ ~s(class="repo-chip repo-chip-conflict">web</span>)
+    assert html =~ "MT-WEB-RETRY"
+  end
+
+  test "dashboard liveview allows an actual repo named conflict" do
+    orchestrator_name = Module.concat(__MODULE__, :ConflictRepoDashboardOrchestrator)
+
+    snapshot =
+      multi_repo_snapshot()
+      |> Map.update!(:running, fn rows ->
+        [
+          %{
+            issue_id: "issue-conflict-repo",
+            repo_key: "conflict",
+            identifier: "MT-CONFLICT-REPO",
+            state: "In Progress",
+            url: "https://linear.app/example/issue/MT-CONFLICT-REPO",
+            session_id: "thread-conflict-repo",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "conflict repo update",
+            last_codex_timestamp: nil,
+            last_codex_event: :notification,
+            codex_input_tokens: 1,
+            codex_output_tokens: 2,
+            codex_total_tokens: 3,
+            started_at: DateTime.utc_now()
+          }
+          | rows
+        ]
+      end)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/?repo=conflict")
+
+    assert html =~ ~s(<option value="conflict" selected)
+    assert html =~ "MT-CONFLICT-REPO"
+    assert html =~ ~s(class="repo-chip">conflict</span>)
     refute html =~ "MT-API"
-    refute html =~ "MT-HTTP"
-    refute html =~ "MT-WEB-RETRY"
+    refute html =~ ~s(class="repo-chip repo-chip-conflict">api</span>)
   end
 
   test "observability state payload exposes conflict row data shape" do

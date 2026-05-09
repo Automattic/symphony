@@ -112,13 +112,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       timestamp: now
     }
 
-    assert :ok = ObservabilityPubSub.subscribe_transcript(issue_id)
+    repo_key = Config.repo_key!()
+
+    assert :ok = ObservabilityPubSub.subscribe_transcript()
 
     send(pid, {:codex_worker_update, issue_id, session_update})
-    assert_receive {:transcript_event, ^session_update}
+    assert_receive {:transcript_event, session_event}
+    assert Map.take(session_event, [:repo_key, :issue_id]) == %{repo_key: repo_key, issue_id: issue_id}
 
     send(pid, {:codex_worker_update, issue_id, notification_update})
-    assert_receive {:transcript_event, ^notification_update}
+    assert_receive {:transcript_event, notification_event}
+    assert Map.take(notification_event, [:repo_key, :issue_id]) == %{repo_key: repo_key, issue_id: issue_id}
 
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot

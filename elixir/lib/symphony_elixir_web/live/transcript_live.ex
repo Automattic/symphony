@@ -7,7 +7,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   require Logger
 
-  alias SymphonyElixir.StatusDashboard
+  alias SymphonyElixir.{Config, StatusDashboard}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @raw_limit 2_400
@@ -18,8 +18,9 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   }
 
   @impl true
-  def mount(%{"identifier" => issue_identifier}, _session, socket) do
-    payload = Presenter.transcript_payload(issue_identifier, orchestrator(), snapshot_timeout_ms())
+  def mount(%{"identifier" => issue_identifier} = params, _session, socket) do
+    repo_key = Map.get(params, "repo_key") || current_repo_key()
+    payload = Presenter.transcript_payload(repo_key, issue_identifier, orchestrator(), snapshot_timeout_ms())
 
     socket =
       case payload do
@@ -29,6 +30,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
           socket
           |> assign(:error, nil)
           |> assign(:issue, payload)
+          |> assign(:repo_key, payload.repo_key)
           |> assign(:issue_id, payload.issue_id)
           |> assign(:issue_identifier, payload.issue_identifier)
           |> assign(:event_count, length(entries))
@@ -41,6 +43,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
           socket
           |> assign(:error, error_message(reason))
           |> assign(:issue, nil)
+          |> assign(:repo_key, repo_key)
           |> assign(:issue_id, nil)
           |> assign(:issue_identifier, issue_identifier)
           |> assign(:event_count, 0)
@@ -51,14 +54,28 @@ defmodule SymphonyElixirWeb.TranscriptLive do
       end
 
     if connected?(socket) and is_nil(socket.assigns.error) do
-      subscribe_transcript(socket.assigns.issue_id)
+      subscribe_transcript()
     end
 
     {:ok, socket}
   end
 
   @impl true
+  def handle_info({:transcript_event, %{repo_key: repo_key, issue_id: issue_id} = event}, socket) do
+    if repo_key == socket.assigns.repo_key and issue_id == socket.assigns.issue_id do
+      handle_transcript_event(event, socket)
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info({:transcript_event, event}, socket) when is_map(event) do
+    handle_transcript_event(event, socket)
+  end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  defp handle_transcript_event(event, socket) do
     kind = event_kind(event)
     last = socket.assigns.last_agent_text_entry
     last_progress = socket.assigns.last_command_progress_entry
@@ -98,8 +115,6 @@ defmodule SymphonyElixirWeb.TranscriptLive do
          |> stream_insert(:events, entry)}
     end
   end
-
-  def handle_info(_message, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -513,8 +528,8 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   defp error_message(reason), do: Map.get(@error_messages, reason, "An unexpected error occurred.")
 
-  defp subscribe_transcript(issue_id) do
-    case ObservabilityPubSub.subscribe_transcript(issue_id) do
+  defp subscribe_transcript do
+    case ObservabilityPubSub.subscribe_transcript() do
       :ok ->
         :ok
 
@@ -523,6 +538,8 @@ defmodule SymphonyElixirWeb.TranscriptLive do
         :ok
     end
   end
+
+  defp current_repo_key, do: Config.repo_key_or_nil()
 
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator

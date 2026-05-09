@@ -1589,6 +1589,59 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "attempt=3"
   end
 
+  test "prompt builder exposes repo_key in template context" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Repo {{ repo_key }} issue_repo={{ issue.repo_key }} ticket={{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "S-REPO",
+      title: "Show repo context",
+      description: "Prompt should include repo identity",
+      state: "Todo",
+      url: "https://example.org/issues/S-REPO",
+      labels: []
+    }
+
+    assert PromptBuilder.build_prompt(issue, repo_key: "repo-alpha") ==
+             "Repo repo-alpha issue_repo=repo-alpha ticket=S-REPO"
+  end
+
+  test "prompt builder derives repo_key from issue maps" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Repo {{ repo_key }} issue_repo={{ issue.repo_key }}")
+
+    assert PromptBuilder.build_prompt(%{
+             identifier: "S-REPO-MAP",
+             title: "Show repo context",
+             description: "Prompt should include repo identity",
+             repo_key: "repo-from-atom"
+           }) == "Repo repo-from-atom issue_repo=repo-from-atom"
+
+    assert PromptBuilder.build_prompt(%{
+             "identifier" => "S-REPO-STRING",
+             "title" => "Show repo context",
+             "description" => "Prompt should include repo identity",
+             "repo_key" => "repo-from-string"
+           }) == "Repo repo-from-string issue_repo=repo-from-string"
+
+    assert PromptBuilder.build_prompt(%{
+             identifier: "S-REPO-BLANK",
+             title: "Show repo context",
+             description: "Prompt should include repo identity",
+             repo_key: " "
+           }) == "Repo default issue_repo=default"
+  end
+
+  test "prompt builder leaves repo_key absent when config cannot resolve a primary repo" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Repo {{ repo_key }}")
+    File.write!(Workflow.symphony_file_path(), "repos: []\n")
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert PromptBuilder.build_prompt(%{
+             identifier: "S-NO-REPO",
+             title: "No repo context",
+             description: "Prompt should still render"
+           }) == "Repo "
+  end
+
   test "prompt builder renders issue datetime fields without crashing" do
     workflow_prompt = "Ticket {{ issue.identifier }} created={{ issue.created_at }} updated={{ issue.updated_at }}"
 

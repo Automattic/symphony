@@ -49,6 +49,33 @@ defmodule SymphonyElixir.URLUtils do
 
   def transcript_url(_identifier, _host, _configured_port, _bound_port), do: nil
 
+  @spec transcript_url(
+          String.t() | nil,
+          String.t() | nil,
+          String.t() | nil,
+          non_neg_integer() | nil,
+          non_neg_integer() | nil
+        ) :: String.t() | nil
+  def transcript_url(repo_key, identifier, host, configured_port, bound_port)
+      when is_binary(repo_key) and is_binary(identifier) do
+    case dashboard_url(host, configured_port, bound_port) do
+      url when is_binary(url) ->
+        url <> String.trim_leading(transcript_path(repo_key, identifier), "/")
+
+      _ ->
+        nil
+    end
+  end
+
+  def transcript_url(_repo_key, _identifier, _host, _configured_port, _bound_port), do: nil
+
+  @spec transcript_path(String.t() | nil, String.t() | nil) :: String.t() | nil
+  def transcript_path(repo_key, identifier) when is_binary(repo_key) and is_binary(identifier) do
+    "/repos/" <> URI.encode_www_form(repo_key) <> "/issues/" <> URI.encode_www_form(identifier) <> "/transcript"
+  end
+
+  def transcript_path(_repo_key, _identifier), do: nil
+
   defp first_present_url(urls) when is_list(urls) do
     Enum.find_value(urls, &present_url/1)
   end

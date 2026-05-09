@@ -380,6 +380,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "running" => [
                %{
                  "issue_id" => "issue-http",
+                 "repo_key" => "default",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
                  "url" => "https://linear.app/example/issue/MT-HTTP",
@@ -405,6 +406,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "watching" => [
                %{
                  "issue_id" => "issue-watch",
+                 "repo_key" => "default",
                  "issue_identifier" => "MT-WATCH",
                  "state" => "In Review",
                  "url" => "https://linear.app/example/issue/MT-WATCH",
@@ -417,6 +419,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "retrying" => [
                %{
                  "issue_id" => "issue-retry",
+                 "repo_key" => "default",
                  "issue_identifier" => "MT-RETRY",
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
@@ -430,6 +433,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "run_history" => [
                %{
                  "run_id" => "run-http",
+                 "repo_key" => "default",
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "title" => "HTTP snapshot",
@@ -481,6 +485,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert issue_payload == %{
              "issue_identifier" => "MT-HTTP",
+             "repo_key" => "default",
              "issue_id" => "issue-http",
              "status" => "running",
              "workspace" => %{
@@ -489,6 +494,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              },
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
+               "repo_key" => "default",
                "worker_host" => nil,
                "workspace_path" => nil,
                "session_id" => "thread-http",
@@ -524,6 +530,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert watching_payload == %{
              "issue_identifier" => "MT-WATCH",
+             "repo_key" => "default",
              "issue_id" => "issue-watch",
              "status" => "watching",
              "workspace" => nil,
@@ -531,6 +538,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "running" => nil,
              "retry" => nil,
              "watching" => %{
+               "repo_key" => "default",
                "state" => "In Review",
                "url" => "https://linear.app/example/issue/MT-WATCH",
                "pull_request_url" => "https://github.com/example/repo/pull/123",
@@ -795,7 +803,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "thread-h…"
     assert html =~ "Codex update"
     assert html =~ "Budget: 488 left"
-    assert html =~ "/issues/MT-HTTP/transcript"
+    assert html =~ "/repos/default/issues/MT-HTTP/transcript"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -811,6 +819,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       put_in(snapshot.running, [
         %{
           issue_id: "issue-http",
+          repo_key: "default",
           identifier: "MT-HTTP",
           state: "In Progress",
           session_id: "thread-http",
@@ -841,7 +850,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       Keyword.put(state, :snapshot, updated_snapshot)
     end)
 
-    StatusDashboard.notify_update()
+    assert :ok = ObservabilityPubSub.broadcast_update("github.com/acme/other")
+    Process.sleep(50)
+    refute render(view) =~ "structured update"
+
+    assert :ok = ObservabilityPubSub.broadcast_update("default")
 
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
@@ -1322,7 +1335,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/issues/MT-HTTP/transcript")
+    {:ok, view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript")
     assert html =~ "Live Transcript"
     assert html =~ "MT-HTTP"
     assert html =~ ~s(phx-hook="TranscriptFilter")
@@ -1354,7 +1367,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       timestamp: DateTime.utc_now()
     }
 
-    assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-http", live_event)
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-http", live_event)
 
     assert_eventually(fn ->
       live_html = render(view)
@@ -1380,11 +1393,64 @@ defmodule SymphonyElixir.ExtensionsTest do
       timestamp: DateTime.utc_now()
     }
 
-    assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-http", live_progress_event)
-    assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-http", live_progress_continuation_event)
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-http", live_progress_event)
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-http", live_progress_continuation_event)
 
     assert_eventually(fn ->
       render(view) =~ "command output streaming: 2 progress dots"
+    end)
+  end
+
+  test "transcript liveview routes encoded non-default repo keys" do
+    orchestrator_name = Module.concat(__MODULE__, :EncodedRepoTranscriptOrchestrator)
+    repo_key = "github.com/acme/repo"
+
+    snapshot =
+      update_in(static_snapshot().running, fn [running] ->
+        [Map.put(running, :repo_key, repo_key)]
+      end)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    encoded_repo_key = URI.encode_www_form(repo_key)
+    {:ok, view, html} = live(build_conn(), "/repos/#{encoded_repo_key}/issues/MT-HTTP/transcript")
+
+    assert html =~ "Live Transcript"
+    assert html =~ "MT-HTTP"
+
+    ignored_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"delta" => "wrong repo event"}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-http", ignored_event)
+    Process.sleep(50)
+    refute render(view) =~ "wrong repo event"
+
+    matching_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"delta" => "encoded route event"}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event(repo_key, "issue-http", matching_event)
+
+    assert_eventually(fn ->
+      render(view) =~ "encoded route event"
     end)
   end
 
@@ -1400,7 +1466,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, _view, html} = live(build_conn(), "/issues/MT-MISSING/transcript")
+    {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-MISSING/transcript")
     assert html =~ "Transcript unavailable"
     assert html =~ "No running issue matched this identifier."
   end
@@ -1508,6 +1574,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       running: [
         %{
           issue_id: "issue-http",
+          repo_key: "default",
           identifier: "MT-HTTP",
           state: "In Progress",
           url: "https://linear.app/example/issue/MT-HTTP",
@@ -1526,6 +1593,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       watching: [
         %{
           issue_id: "issue-watch",
+          repo_key: "default",
           identifier: "MT-WATCH",
           state: "In Review",
           url: "https://linear.app/example/issue/MT-WATCH",
@@ -1537,6 +1605,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       retrying: [
         %{
           issue_id: "issue-retry",
+          repo_key: "default",
           identifier: "MT-RETRY",
           attempt: 2,
           due_in_ms: 2_000,
@@ -1546,6 +1615,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       run_history: [
         %{
           run_id: "run-http",
+          repo_key: "default",
           issue_id: "issue-http",
           issue_identifier: "MT-HTTP",
           title: "HTTP snapshot",

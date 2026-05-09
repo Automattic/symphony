@@ -270,7 +270,7 @@ defmodule SymphonyElixir.SelfReview do
       request = %{system: @system_prompt, user: user_prompt(source), max_tokens: @max_tokens}
       settings = Map.put(settings, :max_tokens, @max_tokens)
 
-      if function_exported?(provider, :review, 2) do
+      if Code.ensure_loaded?(provider) and function_exported?(provider, :review, 2) do
         provider.review(request, settings)
       else
         {:error, {:provider_missing_review_callback, provider}}

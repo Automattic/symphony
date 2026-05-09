@@ -36,42 +36,16 @@ defmodule SymphonyElixirWeb.Layouts do
 
             if (!window.Phoenix || !window.LiveView) return;
 
-            function installRestartAwareReload(liveSocket) {
-              var reloadTimer = null;
-              var reloadActive = false;
-              var reloadAttempts = 0;
-              var reloadStorageKey = "symphony-dashboard-reloads:" + window.location.pathname;
+            function installRestartAwareReconnect(liveSocket) {
+              var reconnectTimer = null;
+              var reconnectActive = false;
+              var reconnectAttempts = 0;
 
-              function storedReloadAttempts() {
-                try {
-                  var stored = window.localStorage.getItem(reloadStorageKey);
-                  var parsed = parseInt(stored || "0", 10);
-                  return Number.isNaN(parsed) ? 0 : parsed;
-                } catch (_error) {
-                  return 0;
-                }
+              function reconnectDelay() {
+                return Math.min(30000, Math.round(1000 * Math.pow(1.5, reconnectAttempts)));
               }
 
-              function storeReloadAttempt() {
-                try {
-                  window.localStorage.setItem(reloadStorageKey, String(storedReloadAttempts() + 1));
-                } catch (_error) {
-                }
-              }
-
-              function clearReloadAttempts() {
-                try {
-                  window.localStorage.removeItem(reloadStorageKey);
-                } catch (_error) {
-                }
-              }
-
-              function reloadDelay() {
-                var attempts = reloadAttempts + storedReloadAttempts();
-                return Math.min(30000, Math.round(1000 * Math.pow(1.5, attempts)));
-              }
-
-              function shouldCancelReload(view) {
+              function shouldCancelReconnect(view) {
                 return (
                   view &&
                   ((typeof view.isDestroyed === "function" && view.isDestroyed()) ||
@@ -79,48 +53,36 @@ defmodule SymphonyElixirWeb.Layouts do
                 );
               }
 
-              function scheduleReload(view, log) {
-                clearTimeout(reloadTimer);
+              function scheduleReconnect(view) {
+                clearTimeout(reconnectTimer);
 
-                reloadTimer = setTimeout(function () {
-                  if (shouldCancelReload(view)) {
-                    reloadActive = false;
+                reconnectTimer = setTimeout(function () {
+                  if (shouldCancelReconnect(view)) {
+                    reconnectActive = false;
+                    reconnectAttempts = 0;
                     return;
                   }
 
-                  reloadAttempts += 1;
+                  reconnectAttempts += 1;
 
-                  fetch(window.location.href, {
-                    cache: "no-store",
-                    headers: {"x-symphony-dashboard-reconnect": "1"}
-                  })
-                    .then(function (response) {
-                      if (!response.ok) {
-                        scheduleReload(view, log);
-                        return;
-                      }
+                  if (!liveSocket.isConnected()) {
+                    liveSocket.getSocket().connect();
+                  }
 
-                      storeReloadAttempt();
-                      if (typeof log === "function") log();
-                      window.location.reload();
-                    })
-                    .catch(function () {
-                      scheduleReload(view, log);
-                    });
-                }, reloadDelay());
+                  scheduleReconnect(view);
+                }, reconnectDelay());
               }
 
               liveSocket.reloadWithJitter = function (view, log) {
-                if (!reloadActive) {
-                  reloadActive = true;
-                  reloadAttempts = 0;
-                  liveSocket.disconnect();
+                if (typeof log === "function") log();
+
+                if (!reconnectActive) {
+                  reconnectActive = true;
+                  reconnectAttempts = 0;
                 }
 
-                scheduleReload(view, log);
+                scheduleReconnect(view);
               };
-
-              liveSocket.clearRestartReloads = clearReloadAttempts;
             }
 
             var transcriptFilterHook = {
@@ -196,19 +158,8 @@ defmodule SymphonyElixirWeb.Layouts do
               hooks: {TranscriptFilter: transcriptFilterHook}
             });
 
-            installRestartAwareReload(liveSocket);
+            installRestartAwareReconnect(liveSocket);
             liveSocket.connect();
-
-            var clearReloadTimer = setInterval(function () {
-              if (document.querySelector("[data-phx-main].phx-connected")) {
-                liveSocket.clearRestartReloads();
-                clearInterval(clearReloadTimer);
-              }
-            }, 500);
-
-            setTimeout(function () {
-              clearInterval(clearReloadTimer);
-            }, 10000);
 
             window.liveSocket = liveSocket;
           });

@@ -58,10 +58,12 @@ defmodule SymphonyElixir.AuditLogTest do
 
     assert length(lines) == 2
     refute contents =~ @linear_secret
+    assert Enum.all?(Enum.map(lines, &Jason.decode!/1), &(&1["repo_key"] == "default"))
 
     assert {:ok, [%{"event_type" => "prompt_sent"} = event]} =
              AuditLog.list_events("issue-1", ~D[2026-05-07], ~D[2026-05-07], dir: audit_dir)
 
+    assert event["repo_key"] == "default"
     assert event["run_id"] == "run-1"
     assert event["prompt_preview"] =~ "[REDACTED]"
     assert String.length(event["prompt_hash"]) == 64
@@ -203,6 +205,7 @@ defmodule SymphonyElixir.AuditLogTest do
              "pr_opened"
            ]
 
+    assert Enum.all?(events, &(&1["repo_key"] == "default"))
     assert Enum.find(events, &(&1["event_type"] == "linear_comment"))["comment_id"] == "comment-1"
     assert Enum.find(events, &(&1["event_type"] == "token_usage_delta"))["token_usage_delta"]["total_tokens"] == 5
 

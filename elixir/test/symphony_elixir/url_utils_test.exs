@@ -29,19 +29,26 @@ defmodule SymphonyElixir.URLUtilsTest do
   test "transcript_url builds local dashboard transcript deeplinks" do
     assert URLUtils.dashboard_url("0.0.0.0", 0, nil) == nil
 
-    assert URLUtils.transcript_url("RSM-1", "0.0.0.0", 0, 4100) ==
-             "http://127.0.0.1:4100/issues/RSM-1/transcript"
+    assert URLUtils.transcript_path("default", "RSM-1") == "/repos/default/issues/RSM-1/transcript"
 
-    assert URLUtils.transcript_url("RSM 2", "::1", 4101, nil) ==
-             "http://[::1]:4101/issues/RSM+2/transcript"
+    assert URLUtils.transcript_url("default", "RSM-1", "0.0.0.0", 0, 4100) ==
+             "http://127.0.0.1:4100/repos/default/issues/RSM-1/transcript"
 
-    assert URLUtils.transcript_url("RSM-3", " [::1] ", 4102, nil) ==
-             "http://[::1]:4102/issues/RSM-3/transcript"
+    assert URLUtils.transcript_url("github.com/acme/repo", "RSM 2", "::1", 4101, nil) ==
+             "http://[::1]:4101/repos/github.com%2Facme%2Frepo/issues/RSM+2/transcript"
 
-    assert URLUtils.transcript_url("RSM-4", " example.test ", 4103, nil) ==
-             "http://example.test:4103/issues/RSM-4/transcript"
+    assert URLUtils.transcript_url("default", "RSM-3", " [::1] ", 4102, nil) ==
+             "http://[::1]:4102/repos/default/issues/RSM-3/transcript"
 
+    assert URLUtils.transcript_url("default", "RSM-4", " example.test ", 4103, nil) ==
+             "http://example.test:4103/repos/default/issues/RSM-4/transcript"
+
+    assert URLUtils.transcript_url("RSM-5", "127.0.0.1", 4104, nil) ==
+             "http://127.0.0.1:4104/issues/RSM-5/transcript"
+
+    assert URLUtils.transcript_path("default", nil) == nil
     assert URLUtils.transcript_url("RSM-3", "127.0.0.1", nil, nil) == nil
+    assert URLUtils.transcript_url(nil, "RSM-3", "127.0.0.1", 4104, nil) == nil
     assert URLUtils.transcript_url(nil, "127.0.0.1", 4104, nil) == nil
   end
 end

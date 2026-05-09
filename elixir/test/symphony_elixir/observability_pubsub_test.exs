@@ -10,23 +10,53 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
   test "subscribe and broadcast_update deliver dashboard updates" do
     assert :ok = ObservabilityPubSub.subscribe()
     assert :ok = ObservabilityPubSub.broadcast_update()
-    assert_receive :observability_updated
+    assert_receive {:observability_updated, %{repo_key: "default"}}
   end
 
   test "subscribe_transcript and broadcast_transcript_event deliver issue events" do
     event = %{event: :notification, payload: %{message: "live"}, timestamp: DateTime.utc_now()}
+    expected = Map.merge(event, %{repo_key: "default", issue_id: "issue-123"})
 
-    assert :ok = ObservabilityPubSub.subscribe_transcript("issue-123")
-    assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-123", event)
-    assert_receive {:transcript_event, ^event}
+    assert :ok = ObservabilityPubSub.subscribe_transcript("default", "issue-123")
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", "issue-123", event)
+    assert_receive {:transcript_event, ^expected}
     assert :ok = ObservabilityPubSub.broadcast_transcript_event("issue-123", :not_an_event)
+  end
+
+  test "legacy transcript helpers use the flat topic and default repo payload" do
+    assert ObservabilityPubSub.transcript_topic("issue-legacy") == ObservabilityPubSub.transcript_topic()
+    assert :ok = ObservabilityPubSub.subscribe_transcript("issue-legacy")
+
+    assert :ok =
+             ObservabilityPubSub.broadcast_transcript_event("issue-legacy", %{
+               event: :notification
+             })
+
+    assert_receive {:transcript_event, %{repo_key: "default", issue_id: "issue-legacy", event: :notification}}
+
+    assert :ok =
+             ObservabilityPubSub.broadcast_transcript_event(" ", "issue-blank", %{
+               event: :notification
+             })
+
+    assert_receive {:transcript_event, %{repo_key: "default", issue_id: "issue-blank"}}
+    assert :ok = ObservabilityPubSub.broadcast_transcript_event("default", 123, %{event: :notification})
+  end
+
+  test "repo_key falls back to nil when config cannot resolve a primary repo" do
+    File.write!(Workflow.symphony_file_path(), "repos: []\n")
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert :ok = ObservabilityPubSub.subscribe()
+    assert :ok = ObservabilityPubSub.broadcast_update()
+    assert_receive {:observability_updated, %{repo_key: nil}}
   end
 
   test "broadcast_update is a no-op when pubsub is unavailable" do
     pubsub_child_id = Phoenix.PubSub.Supervisor
 
     on_exit(fn ->
-      if Process.whereis(SymphonyElixir.PubSub) == nil do
+      if Process.whereis(SymphonyElixir.Supervisor) && Process.whereis(SymphonyElixir.PubSub) == nil do
         assert {:ok, _pid} =
                  Supervisor.restart_child(SymphonyElixir.Supervisor, pubsub_child_id)
       end

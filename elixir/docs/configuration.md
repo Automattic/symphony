@@ -331,8 +331,9 @@ agent:
   local port. Set `server.port` or pass CLI `--port` to pin the port. Set
   `observability.dashboard_enabled: false` to keep the default observability service off unless
   `--port` is supplied for that run. The service exposes `/`,
-  `/issues/<issue_identifier>/transcript`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and
-  `/api/v1/refresh`. The state endpoint includes recent durable run history when available.
+  `/repos/<repo_key>/issues/<issue_identifier>/transcript`, `/api/v1/state`,
+  `/api/v1/<issue_identifier>`, and `/api/v1/refresh`. The state endpoint includes recent durable
+  run history when available.
 
 ## Quality gate
 

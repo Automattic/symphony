@@ -26,6 +26,13 @@ defmodule SymphonyElixir.NotificationsTest do
              Notifier.deliver_for_test(event, config.notifications, opts)
   end
 
+  test "notification PubSub events carry repo_key" do
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+    assert :ok = SymphonyElixir.Notifications.emit_event(:run_failed, issue_identifier: "RSM-0")
+
+    assert_receive {:notification_event, %Event{repo_key: "default", issue_identifier: "RSM-0"}}
+  end
+
   test "notifications resolve channel env values and optional headers" do
     slack_env = "SYMP_TEST_SLACK_WEBHOOK_#{System.unique_integer([:positive])}"
     webhook_env = "SYMP_TEST_NOTIFY_WEBHOOK_#{System.unique_integer([:positive])}"
@@ -165,6 +172,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
     {:ok, default_event} = Event.new(:run_failed)
     assert default_event.event == "run_failed"
+    assert default_event.repo_key == "default"
     assert default_event.issue_id == nil
     assert default_event.transcript_url == nil
 
@@ -185,7 +193,8 @@ defmodule SymphonyElixir.NotificationsTest do
     assert event.pr_title == nil
     assert event.reason == "{:exit, :killed}"
     assert event.state == "done"
-    assert event.transcript_url == "http://127.0.0.1:4105/issues/RSM-6/transcript"
+    assert event.repo_key == "default"
+    assert event.transcript_url == "http://127.0.0.1:4105/repos/default/issues/RSM-6/transcript"
 
     assert {:error, {:unknown_notification_event, 123}} = Event.new(123, %{})
     assert {:ok, %Event{issue_identifier: nil}} = Event.new(:run_failed, :invalid_attrs)
@@ -202,6 +211,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
     assert {:ok,
             %Event{
+              repo_key: "default",
               issue_id: "issue-7",
               issue_identifier: "RSM-7",
               issue_title: "Needs review",
@@ -268,6 +278,7 @@ defmodule SymphonyElixir.NotificationsTest do
     redacted = Formatter.webhook_payload(event, redact_titles: true)
 
     assert payload["event"] == "pr_opened"
+    assert payload["repo_key"] == "default"
     assert payload["issue_identifier"] == "RSM-1"
     assert payload["issue_title"] == "Sensitive title"
     assert payload["state_url"] == "https://github.test/org/repo/pull/1"

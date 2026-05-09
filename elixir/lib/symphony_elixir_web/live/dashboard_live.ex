@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.{Config, URLUtils}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
   @default_control_confirm_timeout_ms 10_000
@@ -34,13 +35,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply, assign(socket, :now, DateTime.utc_now())}
   end
 
+  def handle_info({:observability_updated, %{repo_key: repo_key}}, socket) do
+    if matching_repo_key?(repo_key) do
+      reload_dashboard(socket)
+    else
+      {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info(:observability_updated, socket) do
-    {:noreply,
-     socket
-     |> assign(:payload, load_payload())
-     |> assign(:control_error, nil)
-     |> assign(:now, DateTime.utc_now())}
+    reload_dashboard(socket)
   end
 
   def handle_info({:disarm_control, token}, %{assigns: %{pending_control_token: token}} = socket) do
@@ -48,6 +53,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_info({:disarm_control, _token}, socket), do: {:noreply, socket}
+
+  defp reload_dashboard(socket) do
+    {:noreply,
+     socket
+     |> assign(:payload, load_payload())
+     |> assign(:control_error, nil)
+     |> assign(:now, DateTime.utc_now())}
+  end
 
   @impl true
   def handle_event("arm-pause", _params, socket) do
@@ -325,7 +338,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td class="links-cell">
                       <div class="link-actions">
-                        <a class="action-pill" href={"/issues/#{entry.issue_identifier}/transcript"}>Transcript</a>
+                        <a class="action-pill" href={transcript_path(entry)}>Transcript</a>
                         <a class="action-pill" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                       </div>
                     </td>
@@ -406,7 +419,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <%= if entry.pull_request_url do %>
                           <a class="action-pill" href={entry.pull_request_url} target="_blank" rel="noreferrer">PR</a>
                         <% end %>
-                        <a class="action-pill" href={"/issues/#{entry.issue_identifier}/transcript"}>Transcript</a>
+                        <a class="action-pill" href={transcript_path(entry)}>Transcript</a>
                         <a class="action-pill" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                       </div>
                     </td>
@@ -833,6 +846,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp pending_stop?({:stop, issue_id}, issue_id), do: true
   defp pending_stop?(_pending_control, _issue_id), do: false
+
+  defp transcript_path(entry) do
+    URLUtils.transcript_path(Map.get(entry, :repo_key) || current_repo_key(), Map.get(entry, :issue_identifier)) || "#"
+  end
+
+  defp matching_repo_key?(nil), do: true
+  defp matching_repo_key?(repo_key), do: repo_key == current_repo_key()
+
+  defp current_repo_key do
+    case Config.repo_key() do
+      {:ok, repo_key} -> repo_key
+      {:error, _reason} -> nil
+    end
+  end
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

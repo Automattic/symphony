@@ -13,6 +13,7 @@ defmodule SymphonyElixir.PromptBuilder do
     reviewer_comments = sanitize_reviewer_comments(raw_reviewer_comments)
     ci_failure = normalize_ci_failure(Keyword.get(opts, :ci_failure))
     linear_input_warnings = linear_input_warnings(issue, raw_reviewer_comments)
+    repo_key = repo_key_for_prompt(issue, opts)
 
     template =
       Workflow.current()
@@ -23,7 +24,8 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> prompt_issue_map() |> to_solid_map(),
+        "repo_key" => repo_key,
+        "issue" => issue |> prompt_issue_map(repo_key) |> to_solid_map(),
         "reviewer_comments" => to_solid_value(reviewer_comments),
         "ci_failure" => to_solid_value(ci_failure)
       },
@@ -65,19 +67,20 @@ defmodule SymphonyElixir.PromptBuilder do
   defp to_solid_value(value) when is_list(value), do: Enum.map(value, &to_solid_value/1)
   defp to_solid_value(value), do: value
 
-  defp prompt_issue_map(%_{} = issue) do
+  defp prompt_issue_map(%_{} = issue, repo_key) do
     issue
     |> Map.from_struct()
-    |> sanitize_issue_map()
+    |> sanitize_issue_map(repo_key)
   end
 
-  defp prompt_issue_map(issue) when is_map(issue), do: sanitize_issue_map(issue)
+  defp prompt_issue_map(issue, repo_key) when is_map(issue), do: sanitize_issue_map(issue, repo_key)
 
-  defp sanitize_issue_map(issue) when is_map(issue) do
+  defp sanitize_issue_map(issue, repo_key) when is_map(issue) do
     issue
     |> update_string_field(:title, &PromptSafety.linear_issue_title/1)
     |> update_string_field(:description, &PromptSafety.linear_issue_body/1)
     |> update_list_field(:comments, &sanitize_issue_comments/1)
+    |> put_repo_key(repo_key)
   end
 
   defp sanitize_issue_comments(comments) when is_list(comments) do
@@ -142,6 +145,25 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp append_extra_prompt(prompt, _extra_prompt), do: prompt
+
+  defp repo_key_for_prompt(issue, opts) do
+    present_string(Keyword.get(opts, :repo_key)) || repo_key_from_issue(issue) || default_repo_key()
+  end
+
+  defp repo_key_from_issue(%_{} = issue), do: issue |> Map.from_struct() |> repo_key_from_issue()
+  defp repo_key_from_issue(%{repo_key: repo_key}), do: present_string(repo_key)
+  defp repo_key_from_issue(%{"repo_key" => repo_key}), do: present_string(repo_key)
+  defp repo_key_from_issue(_issue), do: nil
+
+  defp put_repo_key(issue, nil), do: issue
+  defp put_repo_key(issue, repo_key) when is_map(issue), do: Map.put(issue, :repo_key, repo_key)
+
+  defp default_repo_key do
+    case Config.repo_key() do
+      {:ok, repo_key} -> repo_key
+      {:error, _reason} -> nil
+    end
+  end
 
   defp append_reviewer_comments(prompt, []), do: prompt
 
@@ -307,6 +329,15 @@ defmodule SymphonyElixir.PromptBuilder do
       _value -> nil
     end
   end
+
+  defp present_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present_string(_value), do: nil
 
   defp update_string_field(map, key, fun) when is_map(map) and is_atom(key) do
     update_field(map, key, fn

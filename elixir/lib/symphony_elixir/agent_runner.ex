@@ -195,7 +195,7 @@ defmodule SymphonyElixir.AgentRunner do
 
     prompt = run_context.next_prompt || build_turn_prompt(issue, opts, turn_number, max_turns)
     run_context = %{run_context | next_prompt: nil}
-    audit_prompt_sent(issue, Keyword.get(opts, :run_id), prompt, turn_number, max_turns, agent_module)
+    audit_prompt_sent(issue, Keyword.get(opts, :run_id), prompt, turn_number, max_turns, agent_module, opts)
 
     with {:ok, turn_session} <-
            agent_module.run_turn(
@@ -347,13 +347,13 @@ defmodule SymphonyElixir.AgentRunner do
     review_opts = if provider_module, do: Keyword.put(review_opts, :provider_module, provider_module), else: review_opts
 
     result = SelfReview.evaluate(issue, workspace, config, review_opts)
-    audit_self_review(issue, Keyword.get(opts, :run_id), result, self_review_round(run_context))
+    audit_self_review(issue, Keyword.get(opts, :run_id), result, self_review_round(run_context), opts)
     result
   end
 
-  defp audit_self_review(issue, run_id, result, round) do
+  defp audit_self_review(issue, run_id, result, round, opts) do
     issue
-    |> AuditLog.record_self_review(run_id, result, round: round)
+    |> AuditLog.record_self_review(run_id, result, audit_opts(opts, round: round))
     |> log_audit_error("record self_review")
   end
 
@@ -389,14 +389,24 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
-  defp audit_prompt_sent(issue, run_id, prompt, turn_number, max_turns, agent_module) do
+  defp audit_prompt_sent(issue, run_id, prompt, turn_number, max_turns, agent_module, opts) do
     issue
-    |> AuditLog.record_prompt_sent(run_id, prompt,
-      turn_number: turn_number,
-      max_turns: max_turns,
-      agent: inspect(agent_module)
+    |> AuditLog.record_prompt_sent(
+      run_id,
+      prompt,
+      audit_opts(opts,
+        turn_number: turn_number,
+        max_turns: max_turns,
+        agent: inspect(agent_module)
+      )
     )
     |> log_audit_error("record prompt_sent")
+  end
+
+  defp audit_opts(opts, extra \\ []) do
+    opts
+    |> Keyword.take([:repo_key])
+    |> Keyword.merge(extra)
   end
 
   defp put_reviewer_comments(opts, issue) when is_list(opts) do
@@ -430,8 +440,8 @@ defmodule SymphonyElixir.AgentRunner do
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher, opts) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
-        audit_linear_state_transition(issue, refreshed_issue, Keyword.get(opts, :run_id))
-        emit_lifecycle_events(issue, refreshed_issue)
+        audit_linear_state_transition(issue, refreshed_issue, Keyword.get(opts, :run_id), opts)
+        emit_lifecycle_events(issue, refreshed_issue, opts)
 
         if active_issue_state?(refreshed_issue.state) do
           {:continue, refreshed_issue}
@@ -449,9 +459,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp continue_with_issue?(issue, _issue_state_fetcher, _opts), do: {:done, issue}
 
-  defp audit_linear_state_transition(issue, refreshed_issue, run_id) do
+  defp audit_linear_state_transition(issue, refreshed_issue, run_id, opts) do
     issue
-    |> AuditLog.record_linear_state_transition(refreshed_issue, run_id)
+    |> AuditLog.record_linear_state_transition(refreshed_issue, run_id, audit_opts(opts))
     |> log_audit_error("record linear_state_change")
   end
 
@@ -464,20 +474,26 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp active_issue_state?(_state_name), do: false
 
-  defp emit_lifecycle_events(%Issue{}, %Issue{} = refreshed_issue) do
+  defp emit_lifecycle_events(%Issue{}, %Issue{} = refreshed_issue, opts) do
     cond do
       active_issue_state?(refreshed_issue.state) ->
         :ok
 
       in_review_state?(refreshed_issue.state) ->
-        Notifications.emit_issue_event(:awaiting_review, refreshed_issue)
+        Notifications.emit_issue_event(:awaiting_review, refreshed_issue, notification_opts(opts))
 
       done_state?(refreshed_issue.state) ->
-        Notifications.emit_issue_event(:issue_completed, refreshed_issue)
+        Notifications.emit_issue_event(:issue_completed, refreshed_issue, notification_opts(opts))
 
       true ->
         :ok
     end
+  end
+
+  defp notification_opts(opts) do
+    opts
+    |> Keyword.take([:repo_key])
+    |> Enum.into(%{})
   end
 
   defp in_review_state?(state_name) when is_binary(state_name), do: normalize_issue_state(state_name) == "in review"

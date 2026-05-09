@@ -78,15 +78,23 @@ defmodule SymphonyElixirWeb.Presenter do
           {:ok, map()} | {:error, :issue_not_found | :snapshot_unavailable}
   def transcript_payload(issue_identifier, orchestrator, snapshot_timeout_ms)
       when is_binary(issue_identifier) do
+    transcript_payload(current_repo_key(), issue_identifier, orchestrator, snapshot_timeout_ms)
+  end
+
+  @spec transcript_payload(String.t() | nil, String.t(), GenServer.name(), timeout()) ::
+          {:ok, map()} | {:error, :issue_not_found | :snapshot_unavailable}
+  def transcript_payload(repo_key, issue_identifier, orchestrator, snapshot_timeout_ms)
+      when is_binary(issue_identifier) do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
-        case Enum.find(snapshot.running, &(&1.identifier == issue_identifier)) do
+        case Enum.find(snapshot.running, &(repo_key_matches?(&1, repo_key) and &1.identifier == issue_identifier)) do
           nil ->
             {:error, :issue_not_found}
 
           running ->
             {:ok,
              %{
+               repo_key: Map.get(running, :repo_key) || repo_key,
                issue_id: running.issue_id,
                issue_identifier: running.identifier,
                state: running.state,
@@ -121,6 +129,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp issue_payload_body(issue_identifier, running, retry, watching) do
     payload = %{
+      repo_key: repo_key_from_entries(running, retry, watching),
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry, watching),
       status: issue_status(running, retry, watching),
@@ -149,6 +158,9 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_id_from_entries(running, retry, watching),
     do: (running && running.issue_id) || (retry && retry.issue_id) || (watching && watching.issue_id)
 
+  defp repo_key_from_entries(running, retry, watching),
+    do: (running && Map.get(running, :repo_key)) || (retry && Map.get(retry, :repo_key)) || (watching && Map.get(watching, :repo_key))
+
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
@@ -163,6 +175,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp running_entry_payload(entry, self_review_by_run) do
     %{
+      repo_key: Map.get(entry, :repo_key),
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
@@ -187,6 +200,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp watching_entry_payload(entry) do
     %{
+      repo_key: Map.get(entry, :repo_key),
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
@@ -199,6 +213,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp retry_entry_payload(entry) do
     %{
+      repo_key: Map.get(entry, :repo_key),
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       attempt: entry.attempt,
@@ -236,6 +251,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp running_issue_payload(running) do
     %{
+      repo_key: Map.get(running, :repo_key),
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
       session_id: running.session_id,
@@ -256,6 +272,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp retry_issue_payload(retry) do
     %{
+      repo_key: Map.get(retry, :repo_key),
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
@@ -266,6 +283,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp watching_issue_payload(watching) do
     %{
+      repo_key: Map.get(watching, :repo_key),
       state: watching.state,
       url: URLUtils.present_url(watching.url),
       pull_request_url: URLUtils.pull_request_url(watching),
@@ -276,6 +294,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp run_history_payload(entry, self_review_by_run) do
     %{
+      repo_key: Map.get(entry, :repo_key),
       run_id: entry.run_id,
       issue_id: entry.issue_id,
       issue_identifier: entry.issue_identifier,
@@ -491,6 +510,16 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp transcript_events(%{transcript_buffer: events}) when is_list(events), do: events
   defp transcript_events(_running), do: []
+
+  defp repo_key_matches?(_entry, nil), do: true
+  defp repo_key_matches?(entry, repo_key), do: Map.get(entry, :repo_key) == repo_key
+
+  defp current_repo_key do
+    case Config.repo_key() do
+      {:ok, repo_key} -> repo_key
+      {:error, _reason} -> nil
+    end
+  end
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)

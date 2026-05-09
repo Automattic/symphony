@@ -20,6 +20,7 @@ defmodule SymphonyElixir.Notifications.Event do
 
   defstruct [
     :event,
+    :repo_key,
     :issue_id,
     :issue_identifier,
     :issue_title,
@@ -39,6 +40,7 @@ defmodule SymphonyElixir.Notifications.Event do
 
   @type t :: %__MODULE__{
           event: String.t(),
+          repo_key: String.t() | nil,
           issue_id: String.t() | nil,
           issue_identifier: String.t() | nil,
           issue_title: String.t() | nil,
@@ -66,10 +68,12 @@ defmodule SymphonyElixir.Notifications.Event do
     if event_name in @known_events do
       attrs = attrs_map(attrs)
       identifier = string_value(attrs, [:issue_identifier, "issue_identifier"])
+      repo_key = string_value(attrs, [:repo_key, "repo_key"]) || default_repo_key()
 
       event =
         %__MODULE__{
           event: event_name,
+          repo_key: repo_key,
           issue_id: string_value(attrs, [:issue_id, "issue_id"]),
           issue_identifier: identifier,
           issue_title: string_value(attrs, [:issue_title, "issue_title"]),
@@ -81,7 +85,7 @@ defmodule SymphonyElixir.Notifications.Event do
           run_id: string_value(attrs, [:run_id, "run_id"]),
           session_id: string_value(attrs, [:session_id, "session_id"]),
           attempt: integer_value(attrs, [:attempt, "attempt"]),
-          transcript_url: string_value(attrs, [:transcript_url, "transcript_url"]) || transcript_url(identifier),
+          transcript_url: string_value(attrs, [:transcript_url, "transcript_url"]) || transcript_url(repo_key, identifier),
           timestamp: timestamp_value(attrs),
           tokens: map_value(attrs, [:tokens, "tokens"]) || %{},
           metadata: map_value(attrs, [:metadata, "metadata"]) || %{}
@@ -222,12 +226,19 @@ defmodule SymphonyElixir.Notifications.Event do
     end
   end
 
-  defp transcript_url(identifier) when is_binary(identifier) do
+  defp transcript_url(repo_key, identifier) when is_binary(repo_key) and is_binary(identifier) do
     settings = Config.settings!()
-    URLUtils.transcript_url(identifier, settings.server.host, Config.server_port(), HttpServer.bound_port())
+    URLUtils.transcript_url(repo_key, identifier, settings.server.host, Config.server_port(), HttpServer.bound_port())
   rescue
     _error -> nil
   end
 
-  defp transcript_url(_identifier), do: nil
+  defp transcript_url(_repo_key, _identifier), do: nil
+
+  defp default_repo_key do
+    case Config.repo_key() do
+      {:ok, repo_key} -> repo_key
+      {:error, _reason} -> nil
+    end
+  end
 end

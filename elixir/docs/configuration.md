@@ -49,6 +49,12 @@ beyond `stale_days`. `cooldown_minutes`, `stale_days`, comment bot filters, and 
 flags are polling-only settings; polling mode defaults them to 10 minutes, 7 days, no ignored users,
 and no GitHub replies or review re-requests when omitted.
 
+When an agent run completes successfully after opening a PR, Symphony treats a still-active issue as
+post-PR quiet unless new work arrived after the run. Quiet issues are moved to `In Review` and
+watched instead of being immediately re-dispatched. Re-dispatch still happens when the issue is
+manually updated after the last run, is moved to `Rework`, or has pending reviewer/CI context from
+the pollers.
+
 CI polling is controlled by the optional `ci` block and is disabled by default. When
 `pr_review.mode: polling` and `ci.enabled: true` are both set, Symphony starts a `CiPoller` process
 that polls GitHub Actions status through `gh pr view --json statusCheckRollup`. Failed checks are
@@ -238,7 +244,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   usage. Per-issue exhausted runs are rehydrated from run history across restarts while the current
   limit still applies; raising or disabling the per-issue limit lets the issue dispatch again. The
   dashboard shows daily usage and remaining daily budget, and active session rows show per-issue
-  token usage with remaining headroom.
+  token usage with remaining headroom. Token displays include cached and uncached input when the
+  agent reports cached input tokens, so large gross totals can be distinguished from fresh context.
 - `watchdog` is enabled by default and protects running agent sessions from silent no-progress
   stalls. It checks running agents every `watchdog.tick_interval_ms` (default: `60000`) and
   compares the current time with the latest transcript event timestamp. When no event has arrived

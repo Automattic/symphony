@@ -43,10 +43,10 @@ workspace:
 agent:
   kind: codex
   max_concurrent_agents: 10
-  max_turns: 20
-  max_tokens_per_issue: 100000000
-  max_tokens_per_day: 1000000000
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_HEADLESS="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_ISOLATED="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_ACTION="5000"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_NAVIGATION="15000"' app-server
+  max_turns: 8
+  max_tokens_per_issue: 10000000
+  max_tokens_per_day: 100000000
+  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_HEADLESS="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_ISOLATED="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_ACTION="5000"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_NAVIGATION="15000"' app-server
   approval_policy: auto_approve_all
   thread_sandbox: workspace-write
   network_access:

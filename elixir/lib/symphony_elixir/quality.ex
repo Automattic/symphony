@@ -224,16 +224,26 @@ defmodule SymphonyElixir.Quality do
   end
 
   defp tokens_from_entry(%{tokens: tokens}) when is_map(tokens) do
+    input_tokens = integer_or_zero(Map.get(tokens, :input_tokens) || Map.get(tokens, "input_tokens"))
+    cached_input_tokens = integer_or_zero(Map.get(tokens, :cached_input_tokens) || Map.get(tokens, "cached_input_tokens"))
+
     %{
-      input_tokens: integer_or_zero(Map.get(tokens, :input_tokens) || Map.get(tokens, "input_tokens")),
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: integer_or_zero(Map.get(tokens, :uncached_input_tokens) || Map.get(tokens, "uncached_input_tokens") || max(input_tokens - cached_input_tokens, 0)),
       output_tokens: integer_or_zero(Map.get(tokens, :output_tokens) || Map.get(tokens, "output_tokens")),
       total_tokens: integer_or_zero(Map.get(tokens, :total_tokens) || Map.get(tokens, "total_tokens"))
     }
   end
 
   defp tokens_from_entry(running_entry) when is_map(running_entry) do
+    input_tokens = integer_or_zero(Map.get(running_entry, :codex_input_tokens))
+    cached_input_tokens = integer_or_zero(Map.get(running_entry, :codex_cached_input_tokens))
+
     %{
-      input_tokens: integer_or_zero(Map.get(running_entry, :codex_input_tokens)),
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
       output_tokens: integer_or_zero(Map.get(running_entry, :codex_output_tokens)),
       total_tokens: integer_or_zero(Map.get(running_entry, :codex_total_tokens))
     }

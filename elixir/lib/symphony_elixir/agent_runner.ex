@@ -15,6 +15,7 @@ defmodule SymphonyElixir.AgentRunner do
     PrReviewPoller,
     SelfReview,
     Tracker,
+    URLUtils,
     Verification,
     Workspace
   }
@@ -433,10 +434,16 @@ defmodule SymphonyElixir.AgentRunner do
         audit_linear_state_transition(issue, refreshed_issue, Keyword.get(opts, :run_id))
         emit_lifecycle_events(issue, refreshed_issue)
 
-        if active_issue_state?(refreshed_issue.state) do
-          {:continue, refreshed_issue}
-        else
-          {:done, refreshed_issue}
+        cond do
+          post_pr_quiet_continuation?(issue, refreshed_issue) ->
+            Logger.info("Stopping agent run for #{issue_context(refreshed_issue)} after PR opened; waiting for review, CI, or manual rework signal")
+            {:done, refreshed_issue}
+
+          active_issue_state?(refreshed_issue.state) ->
+            {:continue, refreshed_issue}
+
+          true ->
+            {:done, refreshed_issue}
         end
 
       {:ok, []} ->
@@ -448,6 +455,25 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp continue_with_issue?(issue, _issue_state_fetcher, _opts), do: {:done, issue}
+
+  defp post_pr_quiet_continuation?(%Issue{} = previous_issue, %Issue{} = refreshed_issue) do
+    if attached_pr?(previous_issue) or attached_pr?(refreshed_issue) do
+      active_issue_state?(refreshed_issue.state) and
+        !rework_state?(refreshed_issue.state) and
+        pending_reviewer_comments(refreshed_issue) == [] and
+        is_nil(pending_ci_failure(refreshed_issue))
+    else
+      false
+    end
+  end
+
+  defp attached_pr?(%Issue{} = issue), do: is_binary(URLUtils.pull_request_url(issue))
+
+  defp rework_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "rework"
+  end
+
+  defp rework_state?(_state_name), do: false
 
   defp audit_linear_state_transition(issue, refreshed_issue, run_id) do
     issue

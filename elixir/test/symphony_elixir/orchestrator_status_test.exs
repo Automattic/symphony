@@ -1897,6 +1897,44 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     GenServer.stop(restarted_pid)
   end
 
+  test "orchestrator rehydrates persisted retry queue entries from every repo partition" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    :ok = RunStore.clear()
+
+    due_at = DateTime.add(DateTime.utc_now(), 60_000, :millisecond)
+
+    assert :ok =
+             RunStore.put_retry(%{
+               repo_key: "api",
+               issue_id: "issue-api-retry",
+               identifier: "MT-API-RETRY",
+               attempt: 2,
+               due_at: due_at,
+               error: "agent exited: :boom",
+               workspace_path: "/tmp/workspaces/MT-API-RETRY"
+             })
+
+    orchestrator_name = Module.concat(__MODULE__, :AllRepoPersistedRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert [
+             %{
+               issue_id: "issue-api-retry",
+               identifier: "MT-API-RETRY",
+               attempt: 2,
+               error: "agent exited: :boom",
+               workspace_path: "/tmp/workspaces/MT-API-RETRY"
+             }
+           ] = snapshot.retrying
+
+    assert %{repo_key: "api", attempt: 2} = :sys.get_state(pid).retry_attempts["issue-api-retry"]
+    assert MapSet.member?(:sys.get_state(pid).claimed, "issue-api-retry")
+
+    GenServer.stop(pid)
+  end
+
   test "orchestrator rehydrates watching issues from completed run history on restart" do
     issue_id = "issue-watch-restart"
     issue_identifier = "MT-WATCHR"

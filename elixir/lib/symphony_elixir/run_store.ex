@@ -178,7 +178,17 @@ defmodule SymphonyElixir.RunStore do
   @spec list_retries() :: [map()] | {:error, term()}
   def list_retries, do: list_retries(Config.repo_key!())
 
-  @spec list_retries(String.t()) :: [map()] | {:error, term()}
+  @spec list_retries(String.t() | :all) :: [map()] | {:error, term()}
+  def list_retries(:all) do
+    with :ok <- ensure_started() do
+      transaction(fn ->
+        @retry_table
+        |> all_scoped_records()
+        |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :due_at)), :asc)
+      end)
+    end
+  end
+
   def list_retries(repo_key) when is_binary(repo_key) do
     with {:ok, repo_key} <- normalize_repo_key(repo_key),
          :ok <- ensure_started() do
@@ -975,6 +985,11 @@ defmodule SymphonyElixir.RunStore do
   defp scoped_records(table, repo_key) do
     :mnesia.match_object({table, :_, repo_key, :_, :_})
     |> Enum.map(fn {^table, _key, ^repo_key, _id, record} -> record end)
+  end
+
+  defp all_scoped_records(table) do
+    :mnesia.match_object({table, :_, :_, :_, :_})
+    |> Enum.map(fn {^table, _key, _repo_key, _id, record} -> record end)
   end
 
   defp all_eval_log_records(table, repo_key) do

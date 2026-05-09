@@ -921,6 +921,34 @@ defmodule SymphonyElixir.CoreTest do
     assert [] = RunStore.list_retries("default")
   end
 
+  test "sticky retry dispatch revalidation ignores mutable route fields but not terminal state" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    )
+
+    active_issue = %Issue{
+      id: "issue-sticky-active",
+      identifier: "MT-565",
+      title: "Sticky active",
+      state: "In Progress",
+      assigned_to_worker: true
+    }
+
+    routing_mismatch_issue = %{
+      active_issue
+      | id: "issue-sticky-rerouted",
+        assigned_to_worker: false
+    }
+
+    terminal_issue = %{routing_mismatch_issue | id: "issue-sticky-terminal", state: "Done"}
+
+    assert Orchestrator.dispatch_revalidated_issue_for_test(active_issue, true)
+    assert Orchestrator.dispatch_revalidated_issue_for_test(routing_mismatch_issue, true)
+    refute Orchestrator.dispatch_revalidated_issue_for_test(terminal_issue, true)
+    refute Orchestrator.dispatch_revalidated_issue_for_test(routing_mismatch_issue, false)
+  end
+
   test "normal worker exit schedules active-state continuation retry" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])

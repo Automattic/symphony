@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.{
     AgentRunner,
     AuditLog,
+    CiPoller,
     Config,
     Notifications,
     PrReviewPoller,
@@ -23,15 +24,17 @@ defmodule SymphonyElixir.Orchestrator do
     Workspace
   }
 
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Linear.{Client, Issue}
   alias SymphonyElixirWeb.ObservabilityPubSub
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @post_pr_review_state "In Review"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @default_transcript_buffer_size 200
   @stop_session_cleanup_timeout_ms 5_000
+  @repo_poll_cold_failure_warm_after 3
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -44,6 +47,7 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
     defstruct [
       :repo_key,
       :poll_interval_ms,
@@ -58,6 +62,9 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       completed_run_metadata: %{},
       watching: %{},
+      conflicts: %{},
+      repo_poll_cache: %{},
+      repo_poll_due_at_ms: %{},
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
@@ -75,6 +82,8 @@ defmodule SymphonyElixir.Orchestrator do
       quality_gate_comment_keys: MapSet.new(),
       quality_gate_skipped_errors: %{}
     ]
+
+    @type t :: %__MODULE__{}
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -186,9 +195,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(:run_poll_cycle, state) do
+    now_ms = System.monotonic_time(:millisecond)
     state = refresh_runtime_config(state)
-    state = maybe_dispatch(state)
-    state = schedule_tick(state, state.poll_interval_ms)
+    state = maybe_dispatch(state, now_ms)
+    state = schedule_tick(state, next_repo_poll_delay_ms(state, now_ms))
     state = %{state | poll_check_in_progress: false}
 
     notify_dashboard()
@@ -345,69 +355,281 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
-  defp maybe_dispatch(%State{} = state) do
+  defp maybe_dispatch(%State{} = state, now_ms) do
     state =
       state
       |> reconcile_running_issues()
       |> reconcile_watching_issues()
 
-    with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues() do
-      state =
-        state
-        |> prune_quality_gate_cache_to_active(issues)
-        |> clear_running_quality_gate_cache_entries()
+    case Config.validate!() do
+      :ok ->
+        case Config.repos() do
+          {:ok, repos} ->
+            dispatch_from_repo_poll(state, repos, now_ms)
 
-      if available_slots(state) > 0 do
-        {gated_issues, state} =
-          issues
-          |> reject_running_quality_gate_candidates(state)
-          |> apply_quality_gate(state)
-
-        choose_issues(gated_issues, state)
-      else
-        state
-      end
-    else
-      {:error, :missing_linear_api_token} ->
-        Logger.error("Linear API token missing in WORKFLOW.md")
-        state
-
-      {:error, :missing_linear_scoping_filter} ->
-        Logger.error("Linear scoping filter missing in WORKFLOW.md")
-        state
-
-      {:error, :missing_tracker_kind} ->
-        Logger.error("Tracker kind missing in WORKFLOW.md")
-
-        state
-
-      {:error, {:unsupported_tracker_kind, kind}} ->
-        Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
-
-        state
-
-      {:error, {:invalid_workflow_config, message}} ->
-        Logger.error("Invalid WORKFLOW.md config: #{message}")
-        state
-
-      {:error, {:missing_workflow_file, path, reason}} ->
-        Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
-        state
-
-      {:error, :workflow_front_matter_not_a_map} ->
-        Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
-        state
-
-      {:error, {:workflow_parse_error, reason}} ->
-        Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
-        state
+          {:error, reason} ->
+            log_poll_error(reason)
+            state
+        end
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        log_poll_error(reason)
         state
     end
   end
+
+  defp dispatch_from_repo_poll(%State{} = state, repos, now_ms) when is_list(repos) do
+    case poll_candidate_issue_buckets(state, repos, &Tracker.fetch_candidate_issues_for_repo/1, now_ms) do
+      {:ok, %{dispatchable: issues}, state} ->
+        state =
+          state
+          |> prune_quality_gate_cache_to_active(issues)
+          |> clear_running_quality_gate_cache_entries()
+
+        if available_slots(state) > 0 do
+          {gated_issues, state} =
+            issues
+            |> reject_running_quality_gate_candidates(state)
+            |> apply_quality_gate(state)
+
+          choose_issues(gated_issues, state)
+        else
+          state
+        end
+
+      {:error, reason, state} ->
+        log_poll_error(reason)
+        state
+    end
+  end
+
+  defp log_poll_error(:missing_linear_api_token), do: Logger.error("Linear API token missing in WORKFLOW.md")
+  defp log_poll_error(:missing_linear_scoping_filter), do: Logger.error("Linear scoping filter missing in WORKFLOW.md")
+  defp log_poll_error(:missing_tracker_kind), do: Logger.error("Tracker kind missing in WORKFLOW.md")
+
+  defp log_poll_error({:unsupported_tracker_kind, kind}) do
+    Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
+  end
+
+  defp log_poll_error({:invalid_workflow_config, message}), do: Logger.error("Invalid WORKFLOW.md config: #{message}")
+
+  defp log_poll_error({:missing_workflow_file, path, reason}) do
+    Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
+  end
+
+  defp log_poll_error(:workflow_front_matter_not_a_map) do
+    Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
+  end
+
+  defp log_poll_error({:workflow_parse_error, reason}), do: Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
+  defp log_poll_error(reason), do: Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+
+  @doc false
+  @spec poll_candidate_issue_buckets_for_test(
+          State.t(),
+          [term()],
+          (term() -> {:ok, [Issue.t()]} | {:error, term()}),
+          integer()
+        ) ::
+          {:ok, %{dispatchable: [Issue.t()], conflicts: [Issue.t()]}, State.t()}
+          | {:error, term(), State.t()}
+  def poll_candidate_issue_buckets_for_test(%State{} = state, repos, fetcher, now_ms)
+      when is_list(repos) and is_function(fetcher, 1) and is_integer(now_ms) do
+    poll_candidate_issue_buckets(state, repos, fetcher, now_ms)
+  end
+
+  defp poll_candidate_issue_buckets(%State{} = state, repos, fetcher, now_ms)
+       when is_list(repos) and is_function(fetcher, 1) and is_integer(now_ms) do
+    state = sync_repo_poll_state(state, repos, now_ms)
+
+    case next_due_repo(state, repos, now_ms) do
+      nil ->
+        buckets = candidate_buckets_from_cache(state, repos)
+        {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+
+      repo ->
+        poll_due_repo(state, repos, repo, fetcher, now_ms)
+    end
+  end
+
+  defp poll_due_repo(state, repos, repo, fetcher, now_ms) do
+    repo_name = repo_name(repo)
+
+    case fetcher.(repo) do
+      {:ok, issues} when is_list(issues) ->
+        state =
+          state
+          |> put_repo_poll_cache(repo_name, issues, now_ms)
+          |> put_repo_next_due(repo_name, now_ms + state.poll_interval_ms)
+
+        buckets = candidate_buckets_from_cache(state, repos)
+        {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+
+      {:error, reason} ->
+        state = put_repo_next_due(state, repo_name, now_ms + repo_poll_retry_delay_ms(state, repos))
+
+        cond do
+          repo_poll_cache_warmed?(state, repo_name) ->
+            Logger.warning("Linear repo poll failed for #{repo_name}; using cached candidate issues: #{inspect(reason)}")
+            buckets = candidate_buckets_from_cache(state, repos)
+            {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+
+          repo_poll_failure_count(state, repo_name) + 1 >= @repo_poll_cold_failure_warm_after ->
+            failure_count = repo_poll_failure_count(state, repo_name) + 1
+
+            Logger.warning("Linear repo poll failed for #{repo_name} #{failure_count} consecutive times; treating cold cache as empty: #{inspect(reason)}")
+
+            state = put_repo_poll_cache(state, repo_name, [], now_ms)
+            buckets = candidate_buckets_from_cache(state, repos)
+            {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+
+          true ->
+            state = put_repo_cold_poll_failure(state, repo_name)
+            {:error, reason, state}
+        end
+    end
+  end
+
+  defp candidate_buckets_from_cache(%State{} = state, repos) when is_list(repos) do
+    repo_results =
+      Enum.map(repos, fn repo ->
+        repo_name = repo_name(repo)
+        cache_entry = Map.get(state.repo_poll_cache, repo_name, %{issues: []})
+        {repo_name, Map.get(cache_entry, :issues, [])}
+      end)
+
+    buckets = Client.aggregate_repo_results(repo_results)
+
+    if repo_poll_cache_warmed?(state, repos) do
+      buckets
+    else
+      %{buckets | dispatchable: []}
+    end
+  end
+
+  defp sync_repo_poll_state(%State{} = state, repos, now_ms) do
+    repo_names = Enum.map(repos, &repo_name/1)
+    existing_due = state.repo_poll_due_at_ms || %{}
+    existing_cache = state.repo_poll_cache || %{}
+    stagger_ms = repo_poll_stagger_ms(state, repos)
+
+    repo_poll_due_at_ms =
+      repos
+      |> Enum.with_index()
+      |> Map.new(fn {repo, index} ->
+        name = repo_name(repo)
+        {name, Map.get(existing_due, name, now_ms + index * stagger_ms)}
+      end)
+
+    %{
+      state
+      | repo_poll_due_at_ms: repo_poll_due_at_ms,
+        repo_poll_cache: Map.take(existing_cache, repo_names),
+        conflicts: state.conflicts || %{}
+    }
+  end
+
+  defp next_due_repo(%State{} = state, repos, now_ms) do
+    sorted_repos =
+      repos
+      |> Enum.map(fn repo -> {repo, Map.get(state.repo_poll_due_at_ms, repo_name(repo), now_ms)} end)
+      |> Enum.sort_by(fn {repo, due_at_ms} -> {due_at_ms, repo_name(repo)} end)
+
+    sorted_repos
+    |> Enum.find(fn {_repo, due_at_ms} -> due_at_ms <= now_ms end)
+    |> case do
+      {repo, _due_at_ms} ->
+        repo
+
+      nil ->
+        nil
+    end
+  end
+
+  defp repo_poll_cache_warmed?(%State{} = state, repos) when is_list(repos) do
+    Enum.all?(repos, &repo_poll_cache_warmed?(state, repo_name(&1)))
+  end
+
+  defp repo_poll_cache_warmed?(%State{} = state, repo_name) when is_binary(repo_name) do
+    case Map.get(state.repo_poll_cache, repo_name) do
+      nil -> false
+      cache_entry -> Map.get(cache_entry, :warmed?, true)
+    end
+  end
+
+  defp put_repo_poll_cache(%State{} = state, repo_name, issues, now_ms) do
+    cache_entry = %{issues: issues, fetched_at_ms: now_ms}
+    %{state | repo_poll_cache: Map.put(state.repo_poll_cache, repo_name, cache_entry)}
+  end
+
+  defp put_repo_next_due(%State{} = state, repo_name, due_at_ms) do
+    %{state | repo_poll_due_at_ms: Map.put(state.repo_poll_due_at_ms, repo_name, due_at_ms)}
+  end
+
+  defp repo_poll_failure_count(%State{} = state, repo_name) do
+    state.repo_poll_cache
+    |> Map.get(repo_name, %{})
+    |> Map.get(:cold_failure_count, 0)
+  end
+
+  defp put_repo_cold_poll_failure(%State{} = state, repo_name) do
+    failure_entry = %{
+      issues: [],
+      fetched_at_ms: nil,
+      cold_failure_count: repo_poll_failure_count(state, repo_name) + 1,
+      warmed?: false
+    }
+
+    %{state | repo_poll_cache: Map.put(state.repo_poll_cache, repo_name, failure_entry)}
+  end
+
+  defp repo_poll_retry_delay_ms(%State{poll_interval_ms: interval_ms}, _repos)
+       when is_integer(interval_ms) and interval_ms > 0 do
+    interval_ms
+  end
+
+  defp repo_poll_retry_delay_ms(state, repos), do: repo_poll_stagger_ms(state, repos)
+
+  defp put_conflict_bucket(%State{} = state, conflicts) when is_list(conflicts) do
+    conflict_map =
+      conflicts
+      |> Enum.reject(&(issue_id(&1) == nil))
+      |> Map.new(fn issue -> {issue_id(issue), issue} end)
+
+    %{state | conflicts: conflict_map}
+  end
+
+  defp next_repo_poll_delay_ms(%State{} = state, now_ms) when is_integer(now_ms) do
+    state.repo_poll_due_at_ms
+    |> case do
+      due_at_ms when is_map(due_at_ms) and map_size(due_at_ms) > 0 ->
+        due_at_ms
+        |> Map.values()
+        |> Enum.min()
+        |> Kernel.-(now_ms)
+        |> max(0)
+
+      _ ->
+        state.poll_interval_ms
+    end
+  end
+
+  defp repo_poll_stagger_ms(%State{poll_interval_ms: interval_ms}, repos)
+       when is_integer(interval_ms) and interval_ms > 0 and is_list(repos) do
+    repo_count = max(length(repos), 1)
+    max(1, div(interval_ms, repo_count))
+  end
+
+  defp repo_poll_stagger_ms(_state, _repos), do: 1
+
+  defp repo_name(repo) when is_map(repo) do
+    Map.get(repo, :name) || Map.get(repo, "name") || inspect(repo)
+  end
+
+  defp repo_name(repo), do: inspect(repo)
+
+  defp issue_id(%Issue{id: id}) when is_binary(id) and id != "", do: id
+  defp issue_id(_issue), do: nil
 
   defp reconcile_running_issues(%State{} = state) do
     state = reconcile_stalled_running_issues(state)
@@ -839,11 +1061,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminate_task(pid) when is_pid(pid) do
-    case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
-      :ok ->
-        :ok
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      supervisor when is_pid(supervisor) ->
+        case Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, pid) do
+          :ok ->
+            :ok
 
-      {:error, :not_found} ->
+          {:error, :not_found} ->
+            Process.exit(pid, :shutdown)
+        end
+
+      nil ->
         Process.exit(pid, :shutdown)
     end
   end
@@ -1171,6 +1399,7 @@ defmodule SymphonyElixir.Orchestrator do
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      !post_pr_quiet_active_issue?(issue, state) and
       !MapSet.member?(claimed, issue.id) and
       !MapSet.member?(budget_exhausted, issue.id) and
       !Map.has_key?(running, issue.id) and
@@ -1377,9 +1606,11 @@ defmodule SymphonyElixir.Orchestrator do
           agent_module: nil,
           agent_session: nil,
           codex_input_tokens: 0,
+          codex_cached_input_tokens: 0,
           codex_output_tokens: 0,
           codex_total_tokens: 0,
           codex_last_reported_input_tokens: 0,
+          codex_last_reported_cached_input_tokens: 0,
           codex_last_reported_output_tokens: 0,
           codex_last_reported_total_tokens: 0,
           turn_count: 0,
@@ -1551,6 +1782,9 @@ defmodule SymphonyElixir.Orchestrator do
 
         {:noreply, state |> forget_completed_issue(issue_id) |> release_issue_claim(issue_id)}
 
+      post_pr_quiet_active_issue?(issue, state) ->
+        handle_post_pr_quiet_active_issue(state, issue, issue_id, attempt, metadata)
+
       retry_candidate_issue?(issue, terminal_states) ->
         handle_quality_gated_active_retry(state, issue, attempt, metadata)
 
@@ -1571,6 +1805,36 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
     {:noreply, state |> forget_completed_issue(issue_id) |> release_issue_claim(issue_id)}
+  end
+
+  defp handle_post_pr_quiet_active_issue(%State{} = state, %Issue{} = issue, issue_id, attempt, metadata) do
+    Logger.info("Issue has an opened PR and no rework signal; moving to #{@post_pr_review_state}: #{issue_context(issue)}")
+
+    case Tracker.update_issue_state(issue_id, @post_pr_review_state) do
+      :ok ->
+        reviewed_issue = %Issue{issue | state: @post_pr_review_state, updated_at: DateTime.utc_now()}
+
+        state =
+          state
+          |> put_watching_issue(reviewed_issue)
+          |> release_issue_claim(issue_id)
+
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.warning("Failed to move post-PR issue to #{@post_pr_review_state}: #{issue_context(issue)} reason=#{inspect(reason)}")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue_id,
+           attempt,
+           Map.merge(metadata, %{
+             identifier: issue.identifier,
+             error: "failed to move post-PR issue to #{@post_pr_review_state}: #{inspect(reason)}"
+           })
+         )}
+    end
   end
 
   defp cleanup_issue_workspace(%{identifier: identifier} = issue, worker_host) when is_binary(identifier) do
@@ -2627,8 +2891,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_tokens(running_entry) when is_map(running_entry) do
+    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    cached_input_tokens = Map.get(running_entry, :codex_cached_input_tokens, 0)
+
     %{
-      input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
       output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
       total_tokens: Map.get(running_entry, :codex_total_tokens, 0)
     }
@@ -2844,6 +3113,7 @@ defmodule SymphonyElixir.Orchestrator do
           transcript_path: Map.get(metadata, :transcript_path),
           codex_app_server_pid: Map.get(metadata, :codex_app_server_pid),
           codex_input_tokens: Map.get(metadata, :codex_input_tokens, 0),
+          codex_cached_input_tokens: Map.get(metadata, :codex_cached_input_tokens, 0),
           codex_output_tokens: Map.get(metadata, :codex_output_tokens, 0),
           codex_total_tokens: Map.get(metadata, :codex_total_tokens, 0),
           turn_count: Map.get(metadata, :turn_count, 0),
@@ -2892,6 +3162,20 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    conflicts =
+      state.conflicts
+      |> Map.values()
+      |> Enum.map(fn %Issue{} = issue ->
+        %{
+          issue_id: issue.id,
+          identifier: issue.identifier,
+          state: "Conflict",
+          linear_state: issue.state,
+          url: issue_url(issue),
+          repo_keys: issue.conflict_repo_keys
+        }
+      end)
+
     quality_gate_cache = quality_gate_snapshot_cache(state)
 
     cached_skipped =
@@ -2916,6 +3200,7 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        running: running,
        watching: watching,
+       conflicts: conflicts,
        retrying: retrying,
        awaiting_clarification: awaiting_clarification,
        skipped: skipped,
@@ -2952,12 +3237,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
     codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
+    codex_cached_input_tokens = Map.get(running_entry, :codex_cached_input_tokens, 0)
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
     codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
     transcript_path = Map.get(running_entry, :transcript_path)
     pull_request_url = URLUtils.pull_request_url(update) || URLUtils.pull_request_url(running_entry)
     last_reported_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
+    last_reported_cached_input = Map.get(running_entry, :codex_last_reported_cached_input_tokens, 0)
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
@@ -2981,9 +3268,11 @@ defmodule SymphonyElixir.Orchestrator do
         last_event_at: timestamp,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
+        codex_cached_input_tokens: codex_cached_input_tokens + token_delta.cached_input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
+        codex_last_reported_cached_input_tokens: max(last_reported_cached_input, token_delta.cached_input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
         turn_count: turn_count_for_update(turn_count, Map.get(running_entry, :session_id), update),
@@ -3254,6 +3543,7 @@ defmodule SymphonyElixir.Orchestrator do
         state.codex_totals,
         %{
           input_tokens: 0,
+          cached_input_tokens: 0,
           output_tokens: 0,
           total_tokens: 0,
           seconds_running: runtime_seconds
@@ -3479,6 +3769,60 @@ defmodule SymphonyElixir.Orchestrator do
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states)
   end
 
+  defp post_pr_quiet_active_issue?(%Issue{id: issue_id} = issue, %State{} = state)
+       when is_binary(issue_id) do
+    completed_metadata = Map.get(state.completed_run_metadata, issue_id, %{})
+
+    completed_run_has_pr?(completed_metadata) and
+      active_issue_state?(issue.state) and
+      !rework_state?(issue.state) and
+      !pending_rework_signal?(issue, completed_metadata)
+  end
+
+  defp post_pr_quiet_active_issue?(_issue, _state), do: false
+
+  defp completed_run_has_pr?(completed_metadata) when is_map(completed_metadata) do
+    is_binary(URLUtils.pull_request_url(completed_metadata))
+  end
+
+  defp completed_run_has_pr?(_completed_metadata), do: false
+
+  defp pending_rework_signal?(%Issue{} = issue, completed_metadata) do
+    issue_updated_after_last_run?(issue, completed_metadata) or
+      pending_reviewer_comments?(issue.id) or
+      pending_ci_failure?(issue.id)
+  end
+
+  defp issue_updated_after_last_run?(%Issue{updated_at: %DateTime{} = updated_at}, %{last_ran_at: %DateTime{} = last_ran_at}) do
+    DateTime.compare(updated_at, last_ran_at) == :gt
+  end
+
+  defp issue_updated_after_last_run?(_issue, _completed_metadata), do: false
+
+  defp pending_reviewer_comments?(issue_id) when is_binary(issue_id) do
+    PrReviewPoller.pending_reviewer_comments(issue_id) != []
+  end
+
+  defp pending_reviewer_comments?(_issue_id), do: false
+
+  defp pending_ci_failure?(issue_id) when is_binary(issue_id) do
+    not is_nil(CiPoller.pending_ci_failure(issue_id))
+  end
+
+  defp pending_ci_failure?(_issue_id), do: false
+
+  defp active_issue_state?(state_name) when is_binary(state_name) do
+    MapSet.member?(active_state_set(), normalize_issue_state(state_name))
+  end
+
+  defp active_issue_state?(_state_name), do: false
+
+  defp rework_state?(state_name) when is_binary(state_name) do
+    normalize_issue_state(state_name) == "rework"
+  end
+
+  defp rework_state?(_state_name), do: false
+
   defp dispatch_slots_available?(%Issue{} = issue, %State{} = state) do
     available_slots(state) > 0 and state_slots_available?(issue, state.running)
   end
@@ -3571,6 +3915,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_token_delta(codex_totals, token_delta) do
     input_tokens = Map.get(codex_totals, :input_tokens, 0) + token_delta.input_tokens
+    cached_input_tokens = Map.get(codex_totals, :cached_input_tokens, 0) + token_delta.cached_input_tokens
     output_tokens = Map.get(codex_totals, :output_tokens, 0) + token_delta.output_tokens
     total_tokens = Map.get(codex_totals, :total_tokens, 0) + token_delta.total_tokens
 
@@ -3579,6 +3924,8 @@ defmodule SymphonyElixir.Orchestrator do
 
     %{
       input_tokens: max(0, input_tokens),
+      cached_input_tokens: max(0, cached_input_tokens),
+      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
       output_tokens: max(0, output_tokens),
       total_tokens: max(0, total_tokens),
       seconds_running: max(0, seconds_running)
@@ -3598,6 +3945,12 @@ defmodule SymphonyElixir.Orchestrator do
       ),
       compute_token_delta(
         running_entry,
+        :cached_input,
+        usage,
+        :codex_last_reported_cached_input_tokens
+      ),
+      compute_token_delta(
+        running_entry,
         :output,
         usage,
         :codex_last_reported_output_tokens
@@ -3610,12 +3963,14 @@ defmodule SymphonyElixir.Orchestrator do
       )
     }
     |> Tuple.to_list()
-    |> then(fn [input, output, total] ->
+    |> then(fn [input, cached_input, output, total] ->
       %{
         input_tokens: input.delta,
+        cached_input_tokens: cached_input.delta,
         output_tokens: output.delta,
         total_tokens: total.delta,
         input_reported: input.reported,
+        cached_input_reported: cached_input.reported,
         output_reported: output.reported,
         total_reported: total.reported
       }
@@ -3797,6 +4152,9 @@ defmodule SymphonyElixir.Orchestrator do
       :totalTokens,
       :promptTokens,
       :completionTokens,
+      :cached_input_tokens,
+      :cachedInputTokens,
+      :cache_read_input_tokens,
       "input_tokens",
       "output_tokens",
       "total_tokens",
@@ -3806,7 +4164,10 @@ defmodule SymphonyElixir.Orchestrator do
       "outputTokens",
       "totalTokens",
       "promptTokens",
-      "completionTokens"
+      "completionTokens",
+      "cached_input_tokens",
+      "cachedInputTokens",
+      "cache_read_input_tokens"
     ]
 
     token_fields
@@ -3828,6 +4189,17 @@ defmodule SymphonyElixir.Orchestrator do
         :promptTokens,
         "inputTokens",
         :inputTokens
+      ])
+
+  defp get_token_usage(usage, :cached_input),
+    do:
+      payload_get(usage, [
+        "cached_input_tokens",
+        :cached_input_tokens,
+        "cachedInputTokens",
+        :cachedInputTokens,
+        "cache_read_input_tokens",
+        :cache_read_input_tokens
       ])
 
   defp get_token_usage(usage, :output),

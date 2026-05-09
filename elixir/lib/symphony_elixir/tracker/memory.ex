@@ -6,10 +6,16 @@ defmodule SymphonyElixir.Tracker.Memory do
   @behaviour SymphonyElixir.Tracker
 
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Routing.Resolver
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     {:ok, issue_entries()}
+  end
+
+  @spec fetch_candidate_issues_for_repo(term()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_candidate_issues_for_repo(repo) do
+    {:ok, Enum.filter(issue_entries(), &Resolver.matches?(&1, repo))}
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -46,8 +52,14 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
-    send_event({:memory_tracker_state_update, issue_id, state_name})
-    :ok
+    case Application.get_env(:symphony_elixir, :memory_tracker_update_issue_state_result, :ok) do
+      :ok ->
+        send_event({:memory_tracker_state_update, issue_id, state_name})
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp configured_issues do

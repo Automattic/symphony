@@ -62,6 +62,7 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          Application.delete_env(:symphony_elixir, :memory_tracker_update_issue_state_result)
           File.rm_rf(workflow_root)
         end)
 
@@ -91,18 +92,23 @@ defmodule SymphonyElixir.TestSupport do
     {:ok, {config, prompt}} = SymphonyElixir.Workflow.parse_document(workflow_content(overrides))
 
     repo_config = Map.take(config, ["hooks", "verification"])
+    repos = Map.get(config, "repos")
+    tracker_team = get_in(config, ["tracker", "team"])
+    default_team = if is_binary(tracker_team) and String.trim(tracker_team) != "", do: tracker_team, else: "Test"
+
+    default_repos = [
+      %{
+        "name" => "default",
+        "path" => Path.dirname(path),
+        "workflow" => Path.basename(path),
+        "team" => default_team
+      }
+    ]
 
     system_config =
       config
       |> Map.drop(["hooks", "verification"])
-      |> Map.put("repos", [
-        %{
-          "name" => "default",
-          "path" => Path.dirname(path),
-          "workflow" => Path.basename(path),
-          "team" => "Test"
-        }
-      ])
+      |> Map.put("repos", repos || default_repos)
 
     {system_config, repo_config, prompt}
   end
@@ -248,6 +254,7 @@ defmodule SymphonyElixir.TestSupport do
           learnings: nil,
           self_review: nil,
           notifications: nil,
+          repos: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -312,6 +319,7 @@ defmodule SymphonyElixir.TestSupport do
     learnings = Keyword.get(config, :learnings)
     self_review = Keyword.get(config, :self_review)
     notifications = Keyword.get(config, :notifications)
+    repos = Keyword.get(config, :repos)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -378,6 +386,7 @@ defmodule SymphonyElixir.TestSupport do
         learnings_yaml(learnings),
         self_review_yaml(self_review),
         notifications_yaml(notifications),
+        repos && "repos: #{yaml_value(repos)}",
         "---",
         prompt
       ]

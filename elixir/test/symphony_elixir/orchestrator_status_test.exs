@@ -297,9 +297,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       last_codex_timestamp: nil,
       last_codex_event: nil,
       codex_input_tokens: 0,
+      codex_cached_input_tokens: 0,
       codex_output_tokens: 0,
       codex_total_tokens: 0,
       codex_last_reported_input_tokens: 0,
+      codex_last_reported_cached_input_tokens: 0,
       codex_last_reported_output_tokens: 0,
       codex_last_reported_total_tokens: 0,
       started_at: started_at
@@ -697,6 +699,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                    },
                    "total_token_usage" => %{
                      "input_tokens" => 200,
+                     "cached_input_tokens" => 150,
                      "output_tokens" => 100,
                      "total_tokens" => 300
                    }
@@ -712,6 +715,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_input_tokens == 200
+    assert snapshot_entry.codex_cached_input_tokens == 150
     assert snapshot_entry.codex_output_tokens == 100
     assert snapshot_entry.codex_total_tokens == 300
   end
@@ -999,7 +1003,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     run_record = wait_for_run_record(&(&1.run_id == run_id))
     assert run_record.status == "budget_exhausted"
     assert run_record.error =~ "token budget exhausted"
-    assert run_record.tokens == %{input_tokens: 7, output_tokens: 5, total_tokens: 12}
+
+    assert run_record.tokens == %{
+             input_tokens: 7,
+             cached_input_tokens: 0,
+             uncached_input_tokens: 7,
+             output_tokens: 5,
+             total_tokens: 12
+           }
+
     refute Process.alive?(worker_pid)
 
     assert_receive {:notification_event,
@@ -1971,6 +1983,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       title: "Interrupted run",
       description: "Run should survive restart as failed history",
       state: "Todo",
+      team: %{key: "Test"},
       url: "https://example.org/issues/MT-502"
     }
 
@@ -2280,6 +2293,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "watchdog does not restart workers after a recent transcript event" do
     write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
       tracker_api_token: nil,
       agent_stall_timeout_ms: 0,
       watchdog: %{enabled: true, tick_interval_ms: 60_000, no_progress_threshold_ms: 1_000}
@@ -2292,6 +2306,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       description: "Keep a progressing worker running",
       state: "In Progress"
     }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
 
     orchestrator_name = Module.concat(__MODULE__, :WatchdogFreshOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)

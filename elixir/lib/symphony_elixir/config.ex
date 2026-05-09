@@ -177,8 +177,19 @@ defmodule SymphonyElixir.Config do
 
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
-    with {:ok, settings} <- settings() do
-      validate_semantics(settings)
+    with {:ok, system_config} <- system(),
+         {:ok, repo_workflow} <- primary_repo_workflow(system_config),
+         {:ok, settings} <- Schema.parse(merged_runtime_config(system_config, repo_workflow)) do
+      validate_semantics(settings, system_config)
+    else
+      {:error, {:invalid_symphony_config, message}} ->
+        {:error, {:invalid_workflow_config, "symphony.yml: #{message}"}}
+
+      {:error, {:invalid_repo_workflow_config, message}} ->
+        {:error, {:invalid_workflow_config, "WORKFLOW.md: #{message}"}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -209,7 +220,7 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp validate_semantics(settings) do
+  defp validate_semantics(settings, system_config) do
     cond do
       is_nil(settings.agent.kind) ->
         {:error,
@@ -220,7 +231,7 @@ defmodule SymphonyElixir.Config do
         {:error, {:unsupported_agent_kind, settings.agent.kind}}
 
       true ->
-        with :ok <- validate_tracker_semantics(settings),
+        with :ok <- validate_tracker_semantics(settings, system_config),
              :ok <- validate_workspace_semantics(settings),
              :ok <- validate_notifications_semantics(settings) do
           warn_if_deprecated_codex_approval_policy(settings)
@@ -285,7 +296,7 @@ defmodule SymphonyElixir.Config do
 
   defp codex_runtime_approval_policy(approval_policy), do: {approval_policy, false}
 
-  defp validate_tracker_semantics(settings) do
+  defp validate_tracker_semantics(settings, system_config) do
     cond do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
@@ -296,12 +307,22 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
-      settings.tracker.kind == "linear" and not linear_scoping_filter_configured?(settings.tracker) ->
+      settings.tracker.kind == "linear" and
+          not (linear_scoping_filter_configured?(settings.tracker) or repo_scoping_filter_configured?(system_config)) ->
         {:error, :missing_linear_scoping_filter}
 
       true ->
         :ok
     end
+  end
+
+  defp repo_scoping_filter_configured?(%SystemSchema{repos: repos}) when is_list(repos) do
+    Enum.any?(repos, fn repo ->
+      present_string?(Map.get(repo, :team)) or
+        non_empty_list?(Map.get(repo, :labels)) or
+        non_empty_list?(Map.get(repo, :projects)) or
+        present_string?(Map.get(repo, :assignee))
+    end)
   end
 
   defp default_server_port(settings) do

@@ -293,6 +293,8 @@ If Symphony documents token reporting externally, the contract should be:
 - Incremental usage may also be emitted, but Symphony does not use it for totals.
 - Turn-completed usage is event-specific and should not be assumed to be a fresh additive increment.
 - Reporting is thread-based, and multiple turns can occur on one thread.
+- Cached input tokens are tracked separately when Codex reports them. Gross totals remain the budget
+  source, while cached/uncached input breakdowns are display signals for understanding token burn.
 
 ## Implementation Checklist
 

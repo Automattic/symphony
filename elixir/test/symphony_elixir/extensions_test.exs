@@ -217,6 +217,23 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert SymphonyElixir.Tracker.adapter() == Adapter
   end
 
+  test "memory tracker repo fetch ignores unrouted issues" do
+    routed_issue = %Issue{
+      id: "issue-routed",
+      identifier: "RSM-ROUTED",
+      state: "Todo",
+      team: %{key: "RSM"},
+      labels: ["web"]
+    }
+
+    unrouted_issue = %Issue{id: "issue-unrouted", identifier: "RSM-UNROUTED", state: "Todo"}
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [routed_issue, unrouted_issue])
+
+    assert {:ok, [^routed_issue]} =
+             Memory.fetch_candidate_issues_for_repo(%{name: "web", team: "RSM", labels: ["web"]})
+  end
+
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
@@ -359,7 +376,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "watching" => 1, "retrying" => 1},
+             "counts" => %{"running" => 1, "watching" => 1, "conflicts" => 0, "retrying" => 1},
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -376,7 +393,13 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "tokens" => %{
+                   "input_tokens" => 4,
+                   "cached_input_tokens" => 0,
+                   "uncached_input_tokens" => 4,
+                   "output_tokens" => 8,
+                   "total_tokens" => 12
+                 },
                  "self_review" => nil
                }
              ],
@@ -392,6 +415,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "seconds_since_last_run" => 3_600
                }
              ],
+             "conflicts" => [],
              "retrying" => [
                %{
                  "issue_id" => "issue-retry",
@@ -431,6 +455,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              ],
              "codex_totals" => %{
                "input_tokens" => 4,
+               "cached_input_tokens" => 0,
+               "uncached_input_tokens" => 4,
                "output_tokens" => 8,
                "total_tokens" => 12,
                "seconds_running" => 42.5
@@ -479,7 +505,13 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               "tokens" => %{
+                 "input_tokens" => 4,
+                 "cached_input_tokens" => 0,
+                 "uncached_input_tokens" => 4,
+                 "output_tokens" => 8,
+                 "total_tokens" => 12
+               }
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
@@ -1212,6 +1244,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload["codex_totals"] == %{
              "input_tokens" => 4,
+             "cached_input_tokens" => 0,
+             "uncached_input_tokens" => 4,
              "output_tokens" => 8,
              "total_tokens" => 12,
              "seconds_running" => 0
@@ -1436,7 +1470,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "watching" => 1, "retrying" => 1}
+    assert response.body["counts"] == %{"running" => 1, "watching" => 1, "conflicts" => 0, "retrying" => 1}
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200

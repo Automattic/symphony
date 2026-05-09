@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Config do
 
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.SystemSchema
+  alias SymphonyElixir.Routing.Resolver, as: RoutingResolver
   alias SymphonyElixir.Workflow
 
   @default_prompt_template """
@@ -58,8 +59,10 @@ defmodule SymphonyElixir.Config do
 
   @spec system() :: {:ok, SystemSchema.t()} | {:error, term()}
   def system do
-    with {:ok, config} <- Workflow.load_symphony() do
-      SystemSchema.parse(config)
+    with {:ok, config} <- Workflow.load_symphony(),
+         {:ok, system_config} <- SystemSchema.parse(config),
+         :ok <- validate_routing_repos(system_config.repos) do
+      {:ok, system_config}
     end
   end
 
@@ -203,6 +206,51 @@ defmodule SymphonyElixir.Config do
         end
     end
   end
+
+  defp validate_routing_repos(repos) do
+    case RoutingResolver.validate_repos(repos) do
+      :ok ->
+        :ok
+
+      {:error, errors} ->
+        {:error, {:invalid_symphony_config, routing_repo_error_message(errors)}}
+    end
+  end
+
+  defp routing_repo_error_message(errors) do
+    details = Enum.map_join(errors, ", ", &routing_repo_error_detail/1)
+
+    "repos routing rules are invalid: #{details}"
+  end
+
+  defp routing_repo_error_detail({:missing_team, repo}) do
+    "missing team for #{routing_repo_name(repo)}"
+  end
+
+  defp routing_repo_error_detail({:identical_match_rules, repos}) do
+    "identical match rules for #{routing_repo_names(repos)}"
+  end
+
+  defp routing_repo_error_detail({:ambiguous_team_catch_all, team, repos}) do
+    "ambiguous team-only catch-all for team #{inspect(team)}: #{routing_repo_names(repos)}"
+  end
+
+  defp routing_repo_error_detail({:multiple_defaults, team, repos}) do
+    "multiple default repos for team #{inspect(team)}: #{routing_repo_names(repos)}"
+  end
+
+  defp routing_repo_names(repos) do
+    Enum.map_join(repos, ", ", &routing_repo_name/1)
+  end
+
+  defp routing_repo_name(repo) when is_map(repo) do
+    case Map.get(repo, :name) || Map.get(repo, "name") do
+      name when is_binary(name) and name != "" -> name
+      _name -> inspect(repo)
+    end
+  end
+
+  defp routing_repo_name(repo), do: inspect(repo)
 
   defp codex_runtime_approval_policy(@codex_auto_approve_all_approval_policy) do
     {@codex_auto_approve_all_wire_approval_policy, true}

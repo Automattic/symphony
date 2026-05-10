@@ -290,24 +290,33 @@ defmodule SymphonyElixir.CoreTest do
       Workflow.set_symphony_file_path(original_symphony_path)
     end)
 
-    Workflow.clear_symphony_file_path()
-    Workflow.clear_workflow_file_path()
+    Workflow.set_symphony_file_path(Path.expand("../../symphony.yml", __DIR__))
+    Workflow.set_workflow_file_path(Path.expand("../../WORKFLOW.md", __DIR__))
 
     assert {:ok, system_config} = Workflow.load_symphony()
 
     tracker = Map.get(system_config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
+    repos = Map.get(system_config, "repos")
+
+    assert is_binary(Map.get(tracker, "project_slug")) or
+             Enum.any?(repos, &(Map.get(&1, "projects", []) != []))
+
     workspace = Map.get(system_config, "workspace", %{})
     assert is_map(workspace)
-    assert Map.get(workspace, "strategy") == "worktree"
-    assert Map.get(workspace, "repo") == "~/Projects/symphony"
-    assert Map.get(workspace, "fetch_before_dispatch") == true
-    assert [%{"workflow" => "WORKFLOW.md"}] = Map.get(system_config, "repos")
+    refute Map.has_key?(workspace, "strategy")
+    refute Map.has_key?(workspace, "repo")
+
+    assert [%{"workflow" => "WORKFLOW.md", "workspace" => repo_workspace}] =
+             repos
+
+    assert Map.get(repo_workspace, "strategy") == "worktree"
+    assert Map.get(repo_workspace, "repo") == "~/Projects/symphony"
+    assert Map.get(repo_workspace, "fetch_before_dispatch") == true
 
     assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
     assert is_map(config)
@@ -1325,7 +1334,7 @@ defmodule SymphonyElixir.CoreTest do
       tick_timer_ref: nil,
       tick_token: stale_tick_token,
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
-      codex_rate_limits: nil
+      rate_limits: nil
     }
 
     assert {:reply, %{queued: true, coalesced: false}, refreshed_state} =
@@ -1629,8 +1638,8 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    assert PromptBuilder.build_prompt(issue, repo_key: "repo-alpha") ==
-             "Repo repo-alpha issue_repo=repo-alpha ticket=S-REPO"
+    assert PromptBuilder.build_prompt(issue, repo_key: "default") ==
+             "Repo default issue_repo=default ticket=S-REPO"
   end
 
   test "prompt builder derives repo_key from issue maps" do
@@ -1640,15 +1649,15 @@ defmodule SymphonyElixir.CoreTest do
              identifier: "S-REPO-MAP",
              title: "Show repo context",
              description: "Prompt should include repo identity",
-             repo_key: "repo-from-atom"
-           }) == "Repo repo-from-atom issue_repo=repo-from-atom"
+             repo_key: "default"
+           }) == "Repo default issue_repo=default"
 
     assert PromptBuilder.build_prompt(%{
              "identifier" => "S-REPO-STRING",
              "title" => "Show repo context",
              "description" => "Prompt should include repo identity",
-             "repo_key" => "repo-from-string"
-           }) == "Repo repo-from-string issue_repo=repo-from-string"
+             "repo_key" => "default"
+           }) == "Repo default issue_repo=default"
 
     assert PromptBuilder.build_prompt(%{
              identifier: "S-REPO-BLANK",

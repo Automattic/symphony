@@ -68,7 +68,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil,
+      rate_limits: nil,
       budget_day_started_on: nil,
       budget_daily_used: 0,
       budget_daily_paused_logged: false,
@@ -124,7 +124,7 @@ defmodule SymphonyElixir.Orchestrator do
       retry_attempts: retry_attempts,
       completed_run_metadata: completed_run_metadata,
       codex_totals: codex_totals,
-      codex_rate_limits: nil,
+      rate_limits: nil,
       pause: pause,
       budget_day_started_on: budget_day_started_on,
       budget_daily_used: budget_daily_used,
@@ -326,7 +326,7 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           state_after_tokens
           |> maybe_emit_daily_budget_exceeded(state, issue_id, updated_running_entry)
-          |> apply_codex_rate_limits(update)
+          |> apply_rate_limits(update)
           |> put_running_entry(issue_id, updated_running_entry)
           |> enforce_issue_budget(issue_id)
 
@@ -1592,8 +1592,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, repo_key) do
     run_id = new_run_id(issue.id)
+    settings = Config.settings_for_repo!(repo_key)
 
-    case Verification.allocate_for_dispatch(issue, run_id, worker_host, repo_key: repo_key) do
+    case Verification.allocate_for_dispatch(issue, run_id, worker_host,
+           repo_key: repo_key,
+           settings: settings
+         ) do
       {:ok, verification} ->
         spawn_allocated_issue_on_worker_host(
           state,
@@ -2600,7 +2604,8 @@ defmodule SymphonyElixir.Orchestrator do
            Workspace.run_after_run_hook(
              workspace,
              Map.get(running_entry, :issue) || Map.get(running_entry, :identifier),
-             Map.get(running_entry, :worker_host)
+             Map.get(running_entry, :worker_host),
+             repo_key: Map.get(running_entry, :repo_key)
            )
          end) do
       {:ok, _pid} ->
@@ -3451,7 +3456,7 @@ defmodule SymphonyElixir.Orchestrator do
        skipped: skipped,
        run_history: persisted_run_history(state.repo_key),
        codex_totals: state.codex_totals,
-       rate_limits: Map.get(state, :codex_rate_limits),
+       rate_limits: Map.get(state, :rate_limits),
        pause: state.pause || unpaused_state(),
        workspace_lifecycle: workspace_lifecycle_snapshot(state),
        budget: budget_snapshot(state),
@@ -4152,17 +4157,17 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_codex_token_delta(state, _token_delta), do: state
 
-  defp apply_codex_rate_limits(%State{} = state, update) when is_map(update) do
+  defp apply_rate_limits(%State{} = state, update) when is_map(update) do
     case extract_rate_limits(update) do
       %{} = rate_limits ->
-        %{state | codex_rate_limits: rate_limits}
+        %{state | rate_limits: rate_limits}
 
       _ ->
         state
     end
   end
 
-  defp apply_codex_rate_limits(state, _update), do: state
+  defp apply_rate_limits(state, _update), do: state
 
   defp apply_token_delta(codex_totals, token_delta) do
     input_tokens = Map.get(codex_totals, :input_tokens, 0) + token_delta.input_tokens

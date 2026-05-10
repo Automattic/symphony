@@ -55,16 +55,18 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp ensure_workspace(workspace, issue_context, worker_host) do
-    case Config.settings!().workspace.strategy do
+    settings = settings_for_issue_context(issue_context)
+
+    case settings.workspace.strategy do
       "worktree" ->
-        ensure_worktree_workspace(workspace, issue_context, worker_host)
+        ensure_worktree_workspace(workspace, issue_context, worker_host, settings)
 
       _strategy ->
-        ensure_directory_workspace(workspace, worker_host)
+        ensure_directory_workspace(workspace, issue_context, worker_host, settings)
     end
   end
 
-  defp ensure_directory_workspace(workspace, nil) do
+  defp ensure_directory_workspace(workspace, _issue_context, nil, _settings) do
     cond do
       File.dir?(workspace) ->
         {:ok, workspace, false}
@@ -78,7 +80,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp ensure_directory_workspace(workspace, worker_host) when is_binary(worker_host) do
+  defp ensure_directory_workspace(workspace, _issue_context, worker_host, settings) when is_binary(worker_host) do
     script =
       [
         "set -eu",
@@ -99,7 +101,7 @@ defmodule SymphonyElixir.Workspace do
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n")
 
-    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+    case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
       {:ok, {output, 0}} ->
         parse_remote_workspace_output(output)
 
@@ -111,16 +113,15 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp ensure_worktree_workspace(workspace, issue_context, nil) do
-    with {:ok, repo} <- local_worktree_repo(),
-         :ok <- maybe_fetch_worktree_repo(repo),
+  defp ensure_worktree_workspace(workspace, issue_context, nil, settings) do
+    with {:ok, repo} <- local_worktree_repo(settings),
+         :ok <- maybe_fetch_worktree_repo(repo, settings),
          {:ok, created?} <- add_or_reuse_local_worktree(repo, workspace, worktree_branch(issue_context)) do
       {:ok, workspace, created?}
     end
   end
 
-  defp ensure_worktree_workspace(workspace, issue_context, worker_host) when is_binary(worker_host) do
-    settings = Config.settings!()
+  defp ensure_worktree_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
     branch = worktree_branch(issue_context)
 
     script =
@@ -182,8 +183,8 @@ defmodule SymphonyElixir.Workspace do
     {:ok, workspace, true}
   end
 
-  defp local_worktree_repo do
-    repo = Config.settings!().workspace.repo
+  defp local_worktree_repo(settings) do
+    repo = settings.workspace.repo
 
     if is_binary(repo) and String.trim(repo) != "" do
       {:ok, Path.expand(repo)}
@@ -192,8 +193,8 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp maybe_fetch_worktree_repo(repo) do
-    case Config.settings!().workspace.fetch_before_dispatch do
+  defp maybe_fetch_worktree_repo(repo, settings) do
+    case settings.workspace.fetch_before_dispatch do
       true -> run_git(repo, ["fetch", "origin"])
       false -> :ok
     end
@@ -252,22 +253,26 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp remove_workspace(workspace, issue_context, nil) do
-    if Config.settings!().workspace.strategy == "worktree" do
-      remove_worktree_workspace(workspace, issue_context, nil)
+    settings = settings_for_issue_context(issue_context)
+
+    if settings.workspace.strategy == "worktree" do
+      remove_worktree_workspace(workspace, issue_context, nil, settings)
     else
-      remove_directory_workspace(workspace, issue_context, nil)
+      remove_directory_workspace(workspace, issue_context, nil, settings)
     end
   end
 
   defp remove_workspace(workspace, issue_context, worker_host) when is_binary(worker_host) do
-    if Config.settings!().workspace.strategy == "worktree" do
-      remove_worktree_workspace(workspace, issue_context, worker_host)
+    settings = settings_for_issue_context(issue_context)
+
+    if settings.workspace.strategy == "worktree" do
+      remove_worktree_workspace(workspace, issue_context, worker_host, settings)
     else
-      remove_directory_workspace(workspace, issue_context, worker_host)
+      remove_directory_workspace(workspace, issue_context, worker_host, settings)
     end
   end
 
-  defp remove_directory_workspace(workspace, issue_context, nil) do
+  defp remove_directory_workspace(workspace, issue_context, nil, _settings) do
     case File.exists?(workspace) do
       true ->
         case validate_workspace_path(workspace, nil) do
@@ -284,7 +289,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp remove_directory_workspace(workspace, issue_context, worker_host) when is_binary(worker_host) do
+  defp remove_directory_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
     maybe_run_before_remove_hook(workspace, issue_context, worker_host)
 
     script =
@@ -294,7 +299,7 @@ defmodule SymphonyElixir.Workspace do
       ]
       |> Enum.join("\n")
 
-    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+    case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
       {:ok, {_output, 0}} ->
         {:ok, []}
 
@@ -306,8 +311,8 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp remove_worktree_workspace(workspace, issue_context, nil) do
-    with {:ok, repo} <- local_worktree_repo(),
+  defp remove_worktree_workspace(workspace, issue_context, nil, settings) do
+    with {:ok, repo} <- local_worktree_repo(settings),
          :ok <- validate_workspace_path(workspace, nil),
          :ok <- remove_local_worktree(repo, workspace, issue_context) do
       {:ok, [workspace]}
@@ -317,8 +322,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp remove_worktree_workspace(workspace, issue_context, worker_host) when is_binary(worker_host) do
-    settings = Config.settings!()
+  defp remove_worktree_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
     branch = worktree_branch(issue_context)
 
     maybe_run_before_remove_hook(workspace, issue_context, worker_host)
@@ -377,9 +381,11 @@ defmodule SymphonyElixir.Workspace do
   end
 
   def remove_issue_workspaces(%{identifier: identifier} = issue, nil) when is_binary(identifier) do
-    case Config.settings!().worker.ssh_hosts do
+    issue_context = issue_context(issue)
+
+    case settings_for_issue_context(issue_context).worker.ssh_hosts do
       [] ->
-        remove_issue_workspace(identifier, issue_context(issue), nil)
+        remove_issue_workspace(identifier, issue_context, nil)
 
       worker_hosts ->
         Enum.each(worker_hosts, &remove_issue_workspaces(issue, &1))
@@ -395,7 +401,7 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
     issue_context = issue_context(identifier)
 
-    case Config.settings!().worker.ssh_hosts do
+    case settings_for_issue_context(issue_context).worker.ssh_hosts do
       [] ->
         remove_issue_workspace(identifier, issue_context, nil)
 
@@ -728,8 +734,8 @@ defmodule SymphonyElixir.Workspace do
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host(), keyword()) ::
           :ok | {:error, term()}
   def run_before_run_hook(workspace, issue_or_identifier, worker_host \\ nil, opts \\ []) when is_binary(workspace) do
-    issue_context = issue_context(issue_or_identifier)
-    hooks = Config.settings!().hooks
+    issue_context = issue_context(issue_or_identifier, Keyword.get(opts, :repo_key))
+    hooks = hooks_for_issue_context(issue_context, opts)
     env = Keyword.get(opts, :env, [])
 
     case hooks.before_run do
@@ -751,8 +757,8 @@ defmodule SymphonyElixir.Workspace do
 
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host(), keyword()) :: :ok
   def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil, opts \\ []) when is_binary(workspace) do
-    issue_context = issue_context(issue_or_identifier)
-    hooks = Config.settings!().hooks
+    issue_context = issue_context(issue_or_identifier, Keyword.get(opts, :repo_key))
+    hooks = hooks_for_issue_context(issue_context, opts)
     env = Keyword.get(opts, :env, [])
 
     case hooks.after_run do
@@ -792,7 +798,7 @@ defmodule SymphonyElixir.Workspace do
   defp worktree_branch(_issue_context), do: "auto/issue"
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-    hooks = Config.settings!().hooks
+    hooks = hooks_for_issue_context(issue_context)
 
     case created? do
       true ->
@@ -817,7 +823,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_before_remove_hook(workspace, issue_context, nil) do
-    hooks = Config.settings!().hooks
+    hooks = hooks_for_issue_context(issue_context)
 
     case File.dir?(workspace) do
       true ->
@@ -843,7 +849,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_before_remove_hook(workspace, issue_context, worker_host) when is_binary(worker_host) do
-    hooks = Config.settings!().hooks
+    hooks = hooks_for_issue_context(issue_context)
 
     case hooks.before_remove do
       nil ->
@@ -877,6 +883,34 @@ defmodule SymphonyElixir.Workspace do
             {:error, reason}
         end
         |> ignore_hook_failure()
+    end
+  end
+
+  defp hooks_for_issue_context(issue_context, opts \\ []) do
+    case Keyword.get(opts, :settings) do
+      %{hooks: hooks} ->
+        hooks
+
+      _settings ->
+        issue_context
+        |> Map.get(:repo_key)
+        |> settings_for_issue_context()
+        |> Map.fetch!(:hooks)
+    end
+  end
+
+  defp settings_for_issue_context(%{repo_key: repo_key}), do: settings_for_issue_context(repo_key)
+
+  defp settings_for_issue_context(repo_key) do
+    case Config.settings_for_repo(repo_key) do
+      {:ok, settings} ->
+        settings
+
+      {:error, {:unknown_repo_key, _repo_key}} ->
+        Config.settings!()
+
+      {:error, _reason} ->
+        Config.settings_for_repo!(repo_key)
     end
   end
 

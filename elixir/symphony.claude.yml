@@ -1,6 +1,5 @@
 tracker:
   kind: linear
-  project_slug: "building-the-harness-ai-agents-that-ship-production-code-safely-f469eb38bbc5"
   assignee: me
   active_states:
     - Todo
@@ -13,6 +12,30 @@ tracker:
     - Canceled
     - Duplicate
     - Done
+repos:
+  - name: symphony
+    projects: ["building-the-harness-ai-agents-that-ship-production-code-safely-f469eb38bbc5"]
+    workflow: WORKFLOW.md
+    workspace:
+      strategy: worktree
+      repo: ~/Projects/symphony
+      fetch_before_dispatch: true
+workspace:
+  root: ~/Projects/symphony-workspaces
+  lifecycle:
+    max_age_days: 14
+    gc_interval_ms: 3600000
+    orphan_action: log
+    trash_dir: .trash
+agent:
+  kind: claude
+  command: claude --model claude-opus-4-7 --dangerously-skip-permissions
+  max_concurrent_agents: 10
+  max_turns: 20
+  max_tokens_per_issue: 100000000
+  max_tokens_per_day: 1000000000
+  network_access:
+    mode: allowlist
 polling:
   interval_ms: 5000
 pr_review:
@@ -24,31 +47,6 @@ ci:
   flaky_retry: true
   max_retries: 3
   escalation_state: In Review
-observability:
-  transcript_buffer_size: 200
-watchdog:
-  enabled: true
-  tick_interval_ms: 60000
-  no_progress_threshold_ms: 600000
-workspace:
-  root: ~/Projects/symphony-workspaces
-  strategy: worktree
-  repo: ~/Projects/symphony
-  fetch_before_dispatch: true
-  lifecycle:
-    max_age_days: 14
-    gc_interval_ms: 3600000
-    orphan_action: log
-    trash_dir: .trash
-agent:
-  kind: claude
-  max_concurrent_agents: 10
-  max_turns: 20
-  max_tokens_per_issue: 100000000
-  max_tokens_per_day: 1000000000
-  command: claude --model claude-opus-4-7 --dangerously-skip-permissions
-  network_access:
-    mode: allowlist
 quality_gate:
   enabled: true
   provider: anthropic
@@ -69,10 +67,12 @@ self_review:
   model: claude-sonnet-4-6
   diff_max_lines: 600
   max_rounds: 1
-repos:
-  - name: symphony
-    path: .
-    workflow: WORKFLOW.md
+watchdog:
+  enabled: true
+  tick_interval_ms: 60000
+  no_progress_threshold_ms: 600000
+observability:
+  transcript_buffer_size: 200
 notifications:
   enabled: false
   channels:

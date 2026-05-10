@@ -24,9 +24,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
+    settings = settings_from_opts(opts)
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         {:ok, settings_path} <- write_claude_settings(expanded_workspace, worker_host) do
+    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, settings),
+         {:ok, settings_path} <- write_claude_settings(expanded_workspace, worker_host, settings) do
       {:ok, %{workspace: expanded_workspace, metadata: %{}, worker_host: worker_host, settings_path: settings_path}}
     end
   end
@@ -34,7 +35,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_turn(%{workspace: workspace, worker_host: worker_host} = _session, prompt, _issue, opts) do
     on_message = Keyword.get(opts, :on_message, fn _msg -> :ok end)
-    settings = Config.settings!()
+    settings = settings_from_opts(opts)
     command = settings.agent.command
     turn_timeout_ms = settings.agent.turn_timeout_ms
     command_timeout_ms = settings.agent.command_timeout_ms
@@ -96,6 +97,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
           | {:notification, String.t()}
           | {:turn_completed, map()}
           | {:turn_failed, String.t()}
+          | {:rate_limited, %{retry_after_seconds: nil | non_neg_integer(), message: String.t()}, String.t()}
           | {:malformed, String.t()}
   def parse_event(line) when is_binary(line) do
     case Jason.decode(line) do
@@ -113,7 +115,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
       {:ok, %{"type" => "result", "subtype" => "error"} = event} ->
         reason = Map.get(event, "error", "unknown error")
-        {:turn_failed, reason}
+        classify_error_event(reason)
 
       {:ok, _other} ->
         {:malformed, line}
@@ -123,11 +125,70 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
+  @rate_limit_pattern ~r/rate[\s_-]?limit|429|too many requests/i
+  @retry_after_pattern ~r/retry[\s_-]?after[^\d]{0,8}(\d+)|(\d+)\s*seconds?/i
+
+  defp classify_error_event(reason) when is_binary(reason) do
+    if Regex.match?(@rate_limit_pattern, reason) do
+      info = %{retry_after_seconds: extract_retry_after(reason), message: reason}
+      {:rate_limited, info, reason}
+    else
+      {:turn_failed, reason}
+    end
+  end
+
+  defp classify_error_event(reason), do: {:turn_failed, reason}
+
+  @doc false
+  @spec event_to_update(any()) :: map() | nil
+  def event_to_update({:rate_limited, info}) when is_map(info) do
+    %{
+      event: :rate_limited,
+      timestamp: DateTime.utc_now(),
+      rate_limits: build_throttle_rate_limits(info),
+      message: Map.get(info, :message)
+    }
+  end
+
+  def event_to_update(_), do: nil
+
+  defp build_throttle_rate_limits(info) do
+    primary =
+      case Map.get(info, :retry_after_seconds) do
+        nil -> %{remaining: 0}
+        seconds when is_integer(seconds) -> %{remaining: 0, reset_in_seconds: seconds}
+      end
+
+    %{limit_id: "claude-throttled", primary: primary}
+  end
+
+  defp extract_retry_after(reason) do
+    case Regex.run(@retry_after_pattern, reason, capture: :all_but_first) do
+      nil ->
+        nil
+
+      captures ->
+        captures
+        |> Enum.find(&(is_binary(&1) and &1 != ""))
+        |> case do
+          nil -> nil
+          digits -> String.to_integer(digits)
+        end
+    end
+  end
+
   # --- Private helpers ---
 
-  defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
+  defp settings_from_opts(opts) do
+    case Keyword.get(opts, :settings) do
+      %Schema{} = settings -> settings
+      _settings -> Config.settings!()
+    end
+  end
+
+  defp validate_workspace_cwd(workspace, nil, settings) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
+    expanded_root = Path.expand(settings.workspace.root)
     expanded_root_prefix = expanded_root <> "/"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
@@ -153,7 +214,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp validate_workspace_cwd(workspace, worker_host)
+  defp validate_workspace_cwd(workspace, worker_host, _settings)
        when is_binary(workspace) and is_binary(worker_host) do
     cond do
       String.trim(workspace) == "" ->
@@ -167,8 +228,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_claude_settings(workspace, worker_host) do
-    settings = Config.settings!()
+  defp write_claude_settings(workspace, worker_host, settings) do
     network_access = settings.agent.network_access
     sandbox_json = build_sandbox_settings(network_access)
     claude_dir = Path.join(workspace, ".claude")
@@ -438,6 +498,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         acc |> Map.merge(result) |> Map.put(:turn_completed, true)
 
       {:turn_failed, reason} ->
+        on_message.({:turn_failed, reason})
+        %{acc | turn_failed: reason}
+
+      {:rate_limited, info, reason} ->
+        on_message.({:rate_limited, info})
         on_message.({:turn_failed, reason})
         %{acc | turn_failed: reason}
 

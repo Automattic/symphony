@@ -25,8 +25,12 @@ defmodule SymphonyElixir.AgentRunner do
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
+    repo_key = run_repo_key(issue, opts)
+    settings = Config.settings_for_repo!(repo_key)
+    opts = opts |> Keyword.put(:repo_key, repo_key) |> Keyword.put(:settings, settings)
+
     # The orchestrator owns host retries so one worker lifetime never hops machines.
-    worker_host = selected_worker_host(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
+    worker_host = selected_worker_host(Keyword.get(opts, :worker_host), settings.worker.ssh_hosts)
 
     Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
@@ -42,6 +46,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
+    settings = Keyword.fetch!(opts, :settings)
 
     case Verification.context_for_agent(issue, Keyword.put(opts, :worker_host, worker_host)) do
       {:ok, verification} ->
@@ -52,15 +57,23 @@ defmodule SymphonyElixir.AgentRunner do
             send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
             try do
-              with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host, env: verification_env),
+              with :ok <-
+                     Workspace.run_before_run_hook(workspace, issue, worker_host,
+                       env: verification_env,
+                       settings: settings
+                     ),
                    {:ok, dev_server_pid} <-
-                     Verification.start_dev_server(verification, workspace, settings: Config.settings!()) do
+                     Verification.start_dev_server(verification, workspace, settings: settings) do
                 remember_verification_dev_server(dev_server_pid)
                 enriched_issue = enrich_issue_for_dispatch(issue, opts)
                 run_codex_turns(workspace, enriched_issue, codex_update_recipient, opts, worker_host)
               end
             after
-              Workspace.run_after_run_hook(workspace, issue, worker_host, env: verification_env)
+              Workspace.run_after_run_hook(workspace, issue, worker_host,
+                env: verification_env,
+                settings: settings
+              )
+
               stop_remembered_verification_dev_server()
               Verification.release(verification, "after_run completed")
             end
@@ -119,7 +132,8 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_codex_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:codex_worker_update, issue_id, message})
+    payload = SymphonyElixir.ClaudeCode.AppServer.event_to_update(message) || message
+    send(recipient, {:codex_worker_update, issue_id, payload})
     :ok
   end
 
@@ -158,11 +172,12 @@ defmodule SymphonyElixir.AgentRunner do
   defp send_agent_session_info(_recipient, _issue, _agent_module, _session), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
-    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
+    settings = Keyword.fetch!(opts, :settings)
+    max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
     with {:ok, agent_module} <- agent_module(),
-         {:ok, session} <- agent_module.start_session(workspace, worker_host: worker_host) do
+         {:ok, session} <- agent_module.start_session(workspace, worker_host: worker_host, settings: settings) do
       send_agent_session_info(codex_update_recipient, issue, agent_module, session)
 
       run_context = %{
@@ -202,7 +217,9 @@ defmodule SymphonyElixir.AgentRunner do
              app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message: codex_message_handler(codex_update_recipient, issue),
+             settings: Keyword.fetch!(opts, :settings),
+             repo_key: Keyword.get(opts, :repo_key)
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
@@ -259,7 +276,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp initial_self_review_state, do: %{phase: :not_run, request_change_rounds: 0}
 
   defp maybe_self_review_next_turn(run_context, turn_number, max_turns) do
-    config = Config.settings!().self_review
+    config = run_context.opts |> Keyword.fetch!(:settings) |> Map.fetch!(:self_review)
 
     if self_review_enabled?(config) do
       self_review_next_turn(run_context, config, turn_number, max_turns)
@@ -513,6 +530,15 @@ defmodule SymphonyElixir.AgentRunner do
       _ -> List.first(hosts)
     end
   end
+
+  defp run_repo_key(issue, opts) do
+    Keyword.get(opts, :repo_key) || issue_repo_key(issue) || Config.repo_key!()
+  end
+
+  defp issue_repo_key(%Issue{repo_key: repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
+  defp issue_repo_key(%{repo_key: repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
+  defp issue_repo_key(%{"repo_key" => repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
+  defp issue_repo_key(_issue), do: nil
 
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host

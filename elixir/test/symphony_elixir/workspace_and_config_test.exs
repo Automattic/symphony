@@ -124,6 +124,70 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "repo-level worktree settings select the matched repo primary clone" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-repo-worktree-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "api-primary")
+      workflow_dir = Path.join(test_root, "api-workflow")
+      workflow_path = Path.join(workflow_dir, "WORKFLOW.md")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo)
+      File.mkdir_p!(workflow_dir)
+
+      File.write!(workflow_path, """
+      ---
+      hooks:
+        after_create: echo api > repo-hook.txt
+      ---
+      API prompt
+      """)
+
+      File.write!(Workflow.symphony_file_path(), """
+      tracker:
+        kind: memory
+      workspace:
+        root: #{workspace_root}
+      agent:
+        kind: codex
+        command: codex app-server
+      repos:
+        - name: api
+          workflow: #{workflow_path}
+          team: Test
+          workspace:
+            strategy: worktree
+            repo: #{primary_repo}
+            fetch_before_dispatch: false
+      """)
+
+      issue = %Issue{id: "api-issue", identifier: "API-WT", repo_key: "api"}
+
+      assert :ok = Config.validate!()
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      assert {:ok, expected_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "api", "API-WT"]))
+
+      assert workspace == expected_workspace
+      assert File.read!(Path.join(workspace, "README.md")) == "initial\n"
+      assert File.read!(Path.join(workspace, "repo-hook.txt")) == "api\n"
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "auto/API-WT"
+      assert git_branch_exists?(primary_repo, "auto/API-WT")
+
+      assert :ok = Workspace.remove_issue_workspaces(issue)
+      refute File.exists?(workspace)
+      refute git_branch_exists?(primary_repo, "auto/API-WT")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace lifecycle config has conservative defaults and parses overrides" do
     lifecycle = Config.settings!().workspace.lifecycle
 
@@ -1418,6 +1482,59 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "run hooks use repo_key option for identifier-only context" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-repo-key-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace = Path.join(test_root, "workspace")
+      api_repo = Path.join(test_root, "api")
+      primary_marker = Path.join(test_root, "primary-after.log")
+      api_marker = Path.join(test_root, "api-after.log")
+
+      File.mkdir_p!(workspace)
+      File.mkdir_p!(api_repo)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        hook_after_run: "printf primary > #{primary_marker}",
+        repos: [
+          %{
+            "name" => "default",
+            "path" => Path.dirname(Workflow.workflow_file_path()),
+            "workflow" => Path.basename(Workflow.workflow_file_path()),
+            "team" => "Test",
+            "default" => true
+          },
+          %{
+            "name" => "api",
+            "path" => api_repo,
+            "workflow" => "WORKFLOW.md",
+            "team" => "Test",
+            "labels" => ["api"]
+          }
+        ]
+      )
+
+      File.write!(Path.join(api_repo, "WORKFLOW.md"), """
+      ---
+      hooks:
+        after_run: printf api > #{api_marker}
+      ---
+      API prompt
+      """)
+
+      assert :ok = Workspace.run_after_run_hook(workspace, "MT-API", nil, repo_key: "api")
+
+      assert File.read!(api_marker) == "api"
+      refute File.exists?(primary_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace cleanup logs removal failures while keeping fire-and-forget API" do
     test_root =
       Path.join(
@@ -1655,21 +1772,21 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       verification: %{enabled: true, port_allocation: %{range: [4102, 4100]}}
     )
 
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "verification.port_allocation.range"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       verification: %{enabled: true, port_allocation: %{range: [4100]}}
     )
 
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "must contain exactly two port integers"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       verification: %{enabled: true, port_allocation: %{range: [0, 70_000]}}
     )
 
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "must contain two port integers between 1 and 65535"
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -1679,7 +1796,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       }
     )
 
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "verification.dev_server.start_cmd is set"
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -1706,7 +1823,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       }
     )
 
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "verification.dev_server.stop_signal"
 
     dev_server_changeset =
@@ -1812,51 +1929,51 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ",")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "tracker.active_states"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_concurrent_agents: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.max_concurrent_agents"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_issue: 0)
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.max_tokens_per_issue"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_day: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.max_tokens_per_day"
 
     write_workflow_file!(Workflow.workflow_file_path(), worker_max_concurrent_agents_per_host: 0)
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "worker.max_concurrent_agents_per_host"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_turn_timeout_ms: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.turn_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_read_timeout_ms: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.read_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_stall_timeout_ms: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.stall_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_command_timeout_ms: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.command_timeout_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       watchdog: %{enabled: true, tick_interval_ms: 0, no_progress_threshold_ms: "bad"}
     )
 
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "watchdog.tick_interval_ms"
     assert message =~ "watchdog.no_progress_threshold_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), workspace_strategy: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "workspace.strategy"
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -1875,7 +1992,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       server_host: 123
     )
 
-    assert {:error, {:invalid_workflow_config, _message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, _message}} = Config.validate_repo_workflows()
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: "")
     assert :ok = Config.validate!()
@@ -1886,7 +2003,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().agent.thread_sandbox == ""
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_turn_sandbox_policy: "bad")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.turn_sandbox_policy"
 
     write_workflow_file!(Workflow.workflow_file_path(),

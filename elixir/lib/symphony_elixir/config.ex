@@ -7,8 +7,10 @@ defmodule SymphonyElixir.Config do
 
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.SystemSchema
+  alias SymphonyElixir.Repo.Supervisor, as: RepoSupervisor
   alias SymphonyElixir.Routing.Resolver, as: RoutingResolver
   alias SymphonyElixir.Workflow
+  alias SymphonyElixir.WorkflowStore
 
   @default_prompt_template """
   You are working on a Linear issue.
@@ -42,9 +44,57 @@ defmodule SymphonyElixir.Config do
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     with {:ok, system_config} <- system(),
-         {:ok, repo_workflow} <- primary_repo_workflow(system_config),
-         {:ok, settings} <- Schema.parse(merged_runtime_config(system_config, repo_workflow)) do
+         {:ok, repo} <- find_repo(system_config, nil),
+         {:ok, repo_workflow} <- load_repo_workflow(repo),
+         {:ok, settings} <- Schema.parse(merged_runtime_config(system_config, repo, repo_workflow)) do
       {:ok, settings}
+    else
+      {:error, {:invalid_symphony_config, message}} ->
+        {:error, {:invalid_workflow_config, "symphony.yml: #{message}"}}
+
+      {:error, {:invalid_repo_workflow_config, message}} ->
+        {:error, {:invalid_workflow_config, "WORKFLOW.md: #{message}"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec settings_for_repo(String.t() | nil) :: {:ok, Schema.t()} | {:error, term()}
+  def settings_for_repo(repo_key) do
+    with {:ok, system_config} <- system(),
+         {:ok, repo} <- find_repo(system_config, repo_key),
+         {:ok, repo_workflow} <- load_repo_workflow(repo),
+         {:ok, settings} <- Schema.parse(merged_runtime_config(system_config, repo, repo_workflow)) do
+      {:ok, settings}
+    else
+      {:error, {:invalid_symphony_config, message}} ->
+        {:error, {:invalid_workflow_config, "symphony.yml: #{message}"}}
+
+      {:error, {:invalid_repo_workflow_config, message}} ->
+        {:error, {:invalid_workflow_config, "WORKFLOW.md: #{message}"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec settings_for_repo!(String.t() | nil) :: Schema.t()
+  def settings_for_repo!(repo_key) do
+    case settings_for_repo(repo_key) do
+      {:ok, settings} ->
+        settings
+
+      {:error, reason} ->
+        raise ArgumentError, message: format_config_error(reason)
+    end
+  end
+
+  @spec workflow_for_repo(String.t() | nil) :: {:ok, Workflow.loaded_workflow()} | {:error, term()}
+  def workflow_for_repo(repo_key) do
+    with {:ok, system_config} <- system(),
+         {:ok, workflow} <- repo_workflow(system_config, repo_key) do
+      {:ok, workflow}
     else
       {:error, {:invalid_symphony_config, message}} ->
         {:error, {:invalid_workflow_config, "symphony.yml: #{message}"}}
@@ -163,9 +213,15 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  @spec workflow_prompt() :: String.t()
-  def workflow_prompt do
-    case Workflow.current() do
+  @spec workflow_prompt(String.t() | nil) :: String.t()
+  def workflow_prompt(repo_key \\ nil) do
+    workflow =
+      case repo_key do
+        repo_key when is_binary(repo_key) and repo_key != "" -> workflow_for_repo(repo_key)
+        _repo_key -> Workflow.current()
+      end
+
+    case workflow do
       {:ok, %{prompt_template: prompt}} ->
         if String.trim(prompt) == "", do: @default_prompt_template, else: prompt
 
@@ -193,9 +249,26 @@ defmodule SymphonyElixir.Config do
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
     with {:ok, system_config} <- system(),
-         {:ok, repo_workflow} <- primary_repo_workflow(system_config),
-         {:ok, settings} <- Schema.parse(merged_runtime_config(system_config, repo_workflow)) do
-      validate_semantics(settings, system_config)
+         :ok <- validate_workspace_strategy_scope(system_config),
+         {:ok, repo_settings} <- repo_runtime_settings(system_config, source: :store) do
+      validate_repo_semantics(repo_settings, system_config)
+    else
+      {:error, {:invalid_symphony_config, message}} ->
+        {:error, {:invalid_workflow_config, "symphony.yml: #{message}"}}
+
+      {:error, {:invalid_repo_workflow_config, message}} ->
+        {:error, {:invalid_workflow_config, "WORKFLOW.md: #{message}"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec validate_repo_workflows() :: :ok | {:error, term()}
+  def validate_repo_workflows do
+    with {:ok, system_config} <- system(),
+         {:ok, _repo_settings} <- repo_runtime_settings(system_config, source: :file) do
+      :ok
     else
       {:error, {:invalid_symphony_config, message}} ->
         {:error, {:invalid_workflow_config, "symphony.yml: #{message}"}}
@@ -219,19 +292,25 @@ defmodule SymphonyElixir.Config do
           {:ok, codex_runtime_settings()} | {:error, term()}
   def codex_runtime_settings(workspace \\ nil, opts \\ []) do
     with {:ok, settings} <- settings() do
-      {approval_policy, auto_approve_requests} = codex_runtime_approval_policy(settings.agent.approval_policy)
+      codex_runtime_settings(settings, workspace, opts)
+    end
+  end
 
-      with {:ok, turn_sandbox_policy} <-
-             Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
-        {:ok,
-         %{
-           approval_policy: approval_policy,
-           auto_approve_requests: auto_approve_requests,
-           thread_sandbox: settings.agent.thread_sandbox,
-           thread_config: Schema.resolve_codex_thread_config(settings),
-           turn_sandbox_policy: turn_sandbox_policy
-         }}
-      end
+  @spec codex_runtime_settings(Schema.t(), Path.t() | nil, keyword()) ::
+          {:ok, codex_runtime_settings()} | {:error, term()}
+  def codex_runtime_settings(%Schema{} = settings, workspace, opts) do
+    {approval_policy, auto_approve_requests} = codex_runtime_approval_policy(settings.agent.approval_policy)
+
+    with {:ok, turn_sandbox_policy} <-
+           Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
+      {:ok,
+       %{
+         approval_policy: approval_policy,
+         auto_approve_requests: auto_approve_requests,
+         thread_sandbox: settings.agent.thread_sandbox,
+         thread_config: Schema.resolve_codex_thread_config(settings),
+         turn_sandbox_policy: turn_sandbox_policy
+       }}
     end
   end
 
@@ -409,17 +488,131 @@ defmodule SymphonyElixir.Config do
 
   defp validate_workspace_semantics(_settings), do: :ok
 
-  defp primary_repo_workflow(%SystemSchema{} = system_config) do
-    case SystemSchema.primary_repo(system_config) do
-      nil -> {:error, {:invalid_symphony_config, "repos must include at least one repo"}}
-      repo -> Workflow.load(SystemSchema.repo_workflow_path(repo))
+  defp validate_workspace_strategy_scope(%SystemSchema{workspace: %{strategy: "worktree"}, repos: repos})
+       when is_list(repos) and length(repos) > 1 do
+    missing_overrides =
+      repos
+      |> Enum.filter(fn repo -> is_nil(repo.workspace) or is_nil(repo.workspace.strategy) end)
+      |> Enum.map(& &1.name)
+
+    case missing_overrides do
+      [] ->
+        :ok
+
+      repo_names ->
+        {:error, {:invalid_workflow_config, "workspace.strategy is global but repos is multi-repo; move worktree configuration to repos[].workspace for: #{Enum.join(repo_names, ", ")}"}}
     end
   end
 
-  defp merged_runtime_config(%SystemSchema{} = system_config, %{config: repo_config}) when is_map(repo_config) do
+  defp validate_workspace_strategy_scope(_system_config), do: :ok
+
+  defp repo_runtime_settings(%SystemSchema{} = system_config, opts) do
+    source = Keyword.get(opts, :source, :store)
+
+    system_config.repos
+    |> Enum.reduce_while({:ok, []}, fn repo, {:ok, acc} ->
+      case runtime_settings_for_repo(system_config, repo, source) do
+        {:ok, settings} ->
+          {:cont, {:ok, [{repo, settings} | acc]}}
+
+        {:error, reason} ->
+          {:halt, {:error, annotate_repo_config_error(repo, reason)}}
+      end
+    end)
+    |> case do
+      {:ok, settings} -> {:ok, Enum.reverse(settings)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp runtime_settings_for_repo(%SystemSchema{} = system_config, %SystemSchema.Repo{} = repo, source) do
+    with {:ok, repo_workflow} <- load_repo_workflow(repo, source),
+         {:ok, settings} <- Schema.parse(merged_runtime_config(system_config, repo, repo_workflow)) do
+      {:ok, settings}
+    end
+  end
+
+  defp validate_repo_semantics(repo_settings, %SystemSchema{} = system_config) do
+    Enum.reduce_while(repo_settings, :ok, fn {_repo, settings}, :ok ->
+      case validate_semantics(settings, system_config) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp annotate_repo_config_error(%SystemSchema.Repo{name: repo_name}, {:invalid_repo_workflow_config, message}) do
+    {:invalid_repo_workflow_config, "repo #{repo_name}: #{message}"}
+  end
+
+  defp annotate_repo_config_error(%SystemSchema.Repo{name: repo_name}, {:invalid_workflow_config, message}) do
+    {:invalid_workflow_config, "repo #{repo_name}: #{message}"}
+  end
+
+  defp annotate_repo_config_error(_repo, reason), do: reason
+
+  defp repo_workflow(%SystemSchema{} = system_config, repo_key) do
+    with {:ok, repo} <- find_repo(system_config, repo_key) do
+      load_repo_workflow(repo)
+    end
+  end
+
+  defp find_repo(%SystemSchema{} = system_config, repo_key) when is_binary(repo_key) and repo_key != "" do
+    case Enum.find(system_config.repos, &(&1.name == repo_key)) do
+      nil -> {:error, {:unknown_repo_key, repo_key}}
+      repo -> {:ok, repo}
+    end
+  end
+
+  defp find_repo(%SystemSchema{} = system_config, _repo_key) do
+    case SystemSchema.primary_repo(system_config) do
+      nil -> {:error, {:invalid_symphony_config, "repos must include at least one repo"}}
+      repo -> {:ok, repo}
+    end
+  end
+
+  defp load_repo_workflow(repo, source \\ :store)
+
+  defp load_repo_workflow(%SystemSchema.Repo{} = repo, :file) do
+    Workflow.load(SystemSchema.repo_workflow_path(repo))
+  end
+
+  defp load_repo_workflow(%SystemSchema.Repo{name: repo_name} = repo, _source) when is_binary(repo_name) and repo_name != "" do
+    server = RepoSupervisor.workflow_store_name(repo_name)
+
+    case safe_whereis(server) do
+      pid when is_pid(pid) -> WorkflowStore.current(server)
+      _pid -> Workflow.load(SystemSchema.repo_workflow_path(repo))
+    end
+  end
+
+  defp safe_whereis(server) do
+    GenServer.whereis(server)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp merged_runtime_config(%SystemSchema{} = system_config, %SystemSchema.Repo{} = repo, %{config: repo_config})
+       when is_map(repo_config) do
     system_config
     |> SystemSchema.to_config_map()
+    |> merge_repo_workspace(repo)
     |> Map.merge(repo_config)
+  end
+
+  defp merge_repo_workspace(config, %SystemSchema.Repo{workspace: nil}), do: config
+
+  defp merge_repo_workspace(config, %SystemSchema.Repo{workspace: workspace}) do
+    repo_workspace =
+      workspace
+      |> Map.from_struct()
+      |> Map.drop([:__meta__])
+      |> Enum.reduce(%{}, fn
+        {_key, nil}, acc -> acc
+        {key, value}, acc -> Map.put(acc, to_string(key), value)
+      end)
+
+    Map.update(config, "workspace", repo_workspace, &Map.merge(&1, repo_workspace))
   end
 
   defp validate_notifications_semantics(%Schema{notifications: %{enabled: true, channels: channels}})
@@ -531,6 +724,8 @@ defmodule SymphonyElixir.Config do
   defp format_config_error({:symphony_parse_error, raw_reason}), do: "Failed to parse symphony.yml: #{inspect(raw_reason)}"
 
   defp format_config_error({:workflow_parse_error, raw_reason}), do: "Failed to parse WORKFLOW.md: #{inspect(raw_reason)}"
+
+  defp format_config_error({:unknown_repo_key, repo_key}), do: "Unknown Symphony repo key: #{repo_key}"
 
   defp format_config_error(:symphony_file_not_a_map), do: "Failed to parse symphony.yml: file must decode to a map"
 

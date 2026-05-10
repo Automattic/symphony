@@ -104,6 +104,51 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:turn_failed, "unknown error"} = AppServer.parse_event(line)
     end
 
+    test "classifies rate_limit_error message as rate_limited" do
+      line =
+        ~s({"type":"result","subtype":"error","error":"rate_limit_error: Number of request tokens has exceeded your per-minute rate limit","session_id":"sess-rl"})
+
+      assert {:rate_limited, info, reason} = AppServer.parse_event(line)
+      assert info.retry_after_seconds == nil
+      assert reason =~ "rate_limit_error"
+      assert info.message == reason
+    end
+
+    test "classifies plain 'rate limit' phrase as rate_limited" do
+      line =
+        ~s({"type":"result","subtype":"error","error":"Rate limit exceeded, please slow down","session_id":"sess-rl"})
+
+      assert {:rate_limited, _info, _reason} = AppServer.parse_event(line)
+    end
+
+    test "classifies HTTP 429 message as rate_limited" do
+      line =
+        ~s({"type":"result","subtype":"error","error":"HTTP 429 Too Many Requests","session_id":"sess-rl"})
+
+      assert {:rate_limited, _info, _reason} = AppServer.parse_event(line)
+    end
+
+    test "extracts retry_after_seconds from 'retry after Ns' message" do
+      line =
+        ~s({"type":"result","subtype":"error","error":"rate limit reached, retry after 42 seconds","session_id":"sess-rl"})
+
+      assert {:rate_limited, %{retry_after_seconds: 42}, _reason} = AppServer.parse_event(line)
+    end
+
+    test "extracts retry_after_seconds from 'Retry-After: N' header-style message" do
+      line =
+        ~s({"type":"result","subtype":"error","error":"429 Too Many Requests Retry-After: 30","session_id":"sess-rl"})
+
+      assert {:rate_limited, %{retry_after_seconds: 30}, _reason} = AppServer.parse_event(line)
+    end
+
+    test "non-rate-limit errors stay as turn_failed" do
+      line =
+        ~s({"type":"result","subtype":"error","error":"connection refused","session_id":"sess-x"})
+
+      assert {:turn_failed, "connection refused"} = AppServer.parse_event(line)
+    end
+
     test "returns malformed for invalid JSON" do
       line = "not valid json {"
 
@@ -142,6 +187,33 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         ~s({"type":"assistant","message":{"id":"msg-3","type":"message","role":"assistant","content":"text response","model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":2}},"session_id":"sess-3"})
 
       assert {:notification, "assistant message"} = AppServer.parse_event(line)
+    end
+  end
+
+  describe "event_to_update/1" do
+    test "converts {:rate_limited, info} into a worker update map with synthesized rate_limits" do
+      info = %{retry_after_seconds: 60, message: "rate limit exceeded"}
+
+      assert %{event: :rate_limited, timestamp: %DateTime{}, rate_limits: rate_limits} =
+               AppServer.event_to_update({:rate_limited, info})
+
+      assert rate_limits.limit_id == "claude-throttled"
+      assert rate_limits.primary == %{remaining: 0, reset_in_seconds: 60}
+    end
+
+    test "omits reset_in_seconds when retry_after_seconds is nil" do
+      info = %{retry_after_seconds: nil, message: "rate limited"}
+
+      assert %{rate_limits: %{primary: primary}} =
+               AppServer.event_to_update({:rate_limited, info})
+
+      assert primary == %{remaining: 0}
+    end
+
+    test "returns nil for events that don't need orchestrator state" do
+      assert AppServer.event_to_update({:notification, "hello"}) == nil
+      assert AppServer.event_to_update({:turn_failed, "boom"}) == nil
+      assert AppServer.event_to_update({:session_started, "sess-1"}) == nil
     end
   end
 
@@ -997,6 +1069,49 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  AppServer.run_turn(session, "do the thing", %{}, on_message: on_message)
 
         assert_received {:turn_msg, {:turn_failed, "claude api error"}}
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "forwards rate_limited event and turn_failed when result/error is a rate limit" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-run-turn-rate-limited-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-RL")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"result","subtype":"error","error":"rate_limit_error: retry after 12 seconds","session_id":"sess-rl"}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+        test_pid = self()
+        on_message = fn msg -> send(test_pid, {:turn_msg, msg}) end
+
+        assert {:error, {:turn_failed, reason}} =
+                 AppServer.run_turn(session, "do the thing", %{}, on_message: on_message)
+
+        assert reason =~ "rate_limit_error"
+
+        assert_received {:turn_msg, {:rate_limited, %{retry_after_seconds: 12, message: ^reason}}}
+        assert_received {:turn_msg, {:turn_failed, ^reason}}
       after
         File.rm_rf(test_root)
       end

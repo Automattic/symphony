@@ -23,6 +23,31 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
     @primary_key false
 
+    defmodule Workspace do
+      @moduledoc false
+
+      use Ecto.Schema
+
+      import Ecto.Changeset
+
+      @primary_key false
+
+      embedded_schema do
+        field(:strategy, :string)
+        field(:repo, :string)
+        field(:fetch_before_dispatch, :boolean)
+      end
+
+      @type t :: %__MODULE__{}
+
+      @spec changeset(t(), map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:strategy, :repo, :fetch_before_dispatch], empty_values: [])
+        |> validate_inclusion(:strategy, ["clone", "worktree"])
+      end
+    end
+
     embedded_schema do
       field(:name, :string)
       field(:path, :string)
@@ -32,6 +57,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
       field(:projects, {:array, :string}, default: [])
       field(:assignee, :string)
       field(:default, :boolean, default: false)
+      embeds_one(:workspace, Workspace, on_replace: :update)
     end
 
     @type t :: %__MODULE__{}
@@ -40,9 +66,10 @@ defmodule SymphonyElixir.Config.SystemSchema do
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:name, :path, :workflow, :team, :labels, :projects, :assignee, :default], empty_values: [])
-      |> validate_required([:name, :path, :workflow])
+      |> cast_embed(:workspace, with: &Workspace.changeset/2)
+      |> validate_required([:name, :workflow])
       |> validate_string(:name)
-      |> validate_string(:path)
+      |> validate_optional_string(:path)
       |> validate_string(:workflow)
       |> validate_string(:team)
       |> normalize_string_list(:labels)
@@ -55,6 +82,21 @@ defmodule SymphonyElixir.Config.SystemSchema do
           []
         else
           [{field, "must be a non-empty string"}]
+        end
+      end)
+    end
+
+    defp validate_optional_string(changeset, field) do
+      validate_change(changeset, field, fn ^field, value ->
+        cond do
+          is_nil(value) ->
+            []
+
+          is_binary(value) and String.trim(value) != "" ->
+            []
+
+          true ->
+            [{field, "must be a non-empty string"}]
         end
       end)
     end
@@ -151,11 +193,16 @@ defmodule SymphonyElixir.Config.SystemSchema do
     path = repo_value(repo, :path)
     workflow = repo_value(repo, :workflow, "WORKFLOW.md")
 
-    if non_empty_string?(path) and non_empty_string?(workflow) do
-      Workflow.repo_workflow_file_path(%{path: path, workflow: workflow})
-    else
-      raise ArgumentError,
-            "repo workflow path requires non-empty `path` and `workflow`; got: #{inspect(repo)}"
+    cond do
+      non_empty_string?(path) and non_empty_string?(workflow) ->
+        Workflow.repo_workflow_file_path(%{path: path, workflow: workflow})
+
+      non_empty_string?(workflow) ->
+        workflow_path_from_symphony_file(workflow)
+
+      true ->
+        raise ArgumentError,
+              "repo workflow path requires non-empty `workflow`; got: #{inspect(repo)}"
     end
   end
 
@@ -282,7 +329,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
   defp finalize_repos(%__MODULE__{} = system_config) do
     repos =
       Enum.map(system_config.repos, fn %Repo{} = repo ->
-        repo_path = resolve_path(repo.path)
+        repo_path = resolve_optional_path(repo.path)
         %{repo | path: repo_path}
       end)
 
@@ -290,6 +337,15 @@ defmodule SymphonyElixir.Config.SystemSchema do
   end
 
   defp resolve_path(path) when is_binary(path), do: Path.expand(path)
+  defp resolve_optional_path(path) when is_binary(path), do: resolve_path(path)
+  defp resolve_optional_path(_path), do: nil
+
+  defp workflow_path_from_symphony_file(workflow) do
+    case Path.type(workflow) do
+      :absolute -> Path.expand(workflow)
+      _type -> Path.expand(workflow, Path.dirname(Workflow.symphony_file_path()))
+    end
+  end
 
   defp repo_value(repo, key, default \\ nil) do
     string_key = to_string(key)

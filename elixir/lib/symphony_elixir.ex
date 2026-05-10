@@ -55,6 +55,7 @@ defmodule SymphonyElixir.Application do
     primary_repo = SystemSchema.primary_repo(system_config)
 
     try do
+      validate_runtime_config!()
       Application.put_env(:symphony_elixir, :primary_repo_name, primary_repo.name)
       SymphonyElixir.Workflow.set_workflow_file_path(SystemSchema.repo_workflow_path(primary_repo))
 
@@ -94,6 +95,13 @@ defmodule SymphonyElixir.Application do
 
   defp repo_supervisor_specs(repos) do
     Enum.map(repos, &SymphonyElixir.Repo.Supervisor.child_spec/1)
+  end
+
+  defp validate_runtime_config! do
+    case Config.validate_repo_workflows() do
+      :ok -> :ok
+      {:error, reason} -> raise ArgumentError, message: inspect(reason)
+    end
   end
 
   defp pr_review_child_spec do

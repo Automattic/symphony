@@ -241,6 +241,94 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert get_in(config_map, ["agent", "max_tokens_per_day"]) == 200
   end
 
+  test "repo workflow path can be declared without a repo checkout path", %{root: root} do
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    assert {:ok, system_config} =
+             SystemSchema.parse(
+               system_config(%{
+                 "repos" => [
+                   %{
+                     "name" => "app",
+                     "workflow" => "workflows/app.md",
+                     "team" => "Test"
+                   }
+                 ]
+               })
+             )
+
+    assert %SystemSchema{repos: [repo]} = system_config
+    assert is_nil(repo.path)
+    assert SystemSchema.repo_workflow_path(repo) == Path.join(root, "workflows/app.md")
+  end
+
+  test "repo workspace overrides global workspace population settings", %{root: root} do
+    repo = write_repo!(root, "app", "Prompt\n")
+    workspace_root = Path.join(root, "workspaces")
+    primary_clone = Path.join(root, "primary")
+
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    workspace:
+      root: #{workspace_root}
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: app
+        workflow: #{SystemSchema.repo_workflow_path(repo)}
+        team: Test
+        workspace:
+          strategy: worktree
+          repo: #{primary_clone}
+          fetch_before_dispatch: false
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    settings = Config.settings_for_repo!("app")
+    assert settings.workspace.root == workspace_root
+    assert settings.workspace.strategy == "worktree"
+    assert settings.workspace.repo == primary_clone
+    refute settings.workspace.fetch_before_dispatch
+  end
+
+  test "multi-repo config rejects global worktree strategy without repo overrides", %{root: root} do
+    web_repo = write_repo!(root, "web", "Web prompt\n")
+    api_repo = write_repo!(root, "api", "API prompt\n")
+
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    workspace:
+      strategy: worktree
+      repo: #{Path.join(root, "primary")}
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: web
+        path: #{web_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        default: true
+      - name: api
+        path: #{api_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        labels: ["api"]
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "workspace.strategy is global"
+    assert message =~ "repos[].workspace"
+    assert message =~ "web"
+    assert message =~ "api"
+  end
+
   test "repo supervisors isolate invalid repo workflow failures", %{root: root} do
     valid_repo = write_repo!(root, "valid", "Valid prompt\n")
 
@@ -259,6 +347,121 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert {:ok, %{prompt: "Valid prompt"}} = RepoSupervisor.current_workflow("valid")
     assert {:error, {:invalid_repo_workflow_config, message}} = RepoSupervisor.current_workflow("invalid")
     assert message =~ "symphony.yml"
+  end
+
+  test "runtime validation uses cached repo workflows after invalid reload", %{root: root} do
+    valid_repo = write_repo!(root, "valid", "Valid prompt\n")
+    api_repo = write_repo!(root, "api", "API prompt\n")
+
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: valid
+        path: #{valid_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        default: true
+      - name: api
+        path: #{api_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        labels:
+          - api
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    start_repo_supervisor!(valid_repo)
+    start_repo_supervisor!(api_repo)
+
+    assert :ok = Config.validate!()
+    assert {:ok, %{prompt: "API prompt"}} = RepoSupervisor.current_workflow("api")
+
+    File.write!(SystemSchema.repo_workflow_path(api_repo), """
+    ---
+    tracker:
+      kind: memory
+    ---
+    Invalid prompt
+    """)
+
+    assert {:ok, %{prompt: "API prompt"}} = RepoSupervisor.current_workflow("api")
+    assert :ok = Config.validate!()
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
+    assert message =~ "WORKFLOW.md: repo api"
+    assert message =~ "symphony.yml"
+  end
+
+  test "repo-specific workflow is used for prompt and repo-local settings", %{root: root} do
+    web_repo =
+      write_repo!(root, "web", """
+      ---
+      hooks:
+        before_run: echo web
+      ---
+      Web {{ repo_key }} {{ issue.identifier }}
+      """)
+
+    api_repo =
+      write_repo!(root, "api", """
+      ---
+      hooks:
+        before_run: echo api
+      verification:
+        enabled: true
+        port_allocation:
+          range: [4300, 4301]
+      ---
+      API {{ repo_key }} {{ issue.identifier }}
+      """)
+
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: web
+        path: #{web_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        default: true
+      - name: api
+        path: #{api_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        labels:
+          - api
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    assert {:ok, %{prompt: "Web {{ repo_key }} {{ issue.identifier }}"}} =
+             Config.workflow_for_repo("web")
+
+    assert {:ok, %{prompt: "API {{ repo_key }} {{ issue.identifier }}"}} =
+             Config.workflow_for_repo("api")
+
+    assert Config.settings_for_repo!("web").hooks.before_run == "echo web"
+    assert Config.settings_for_repo!("api").hooks.before_run == "echo api"
+    assert Config.settings_for_repo!("api").verification.port_allocation.range == [4300, 4301]
+
+    issue = %SymphonyElixir.Linear.Issue{
+      id: "issue-api",
+      identifier: "RSM-API",
+      title: "Route to API",
+      state: "Todo",
+      repo_key: "api",
+      labels: ["api"]
+    }
+
+    assert SymphonyElixir.PromptBuilder.build_prompt(issue) == "API api RSM-API"
   end
 
   test "reloading one repo workflow restarts only that repo subtree", %{root: root} do
@@ -289,12 +492,12 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert {:error, :repo_supervisor_not_found} = RepoSupervisor.reload("missing-repo")
   end
 
-  test "repo supervisor rejects repo structs without path data" do
+  test "repo supervisor rejects repo structs without workflow data" do
     Application.put_env(:symphony_elixir, :primary_repo_name, nil)
 
-    repo = %SystemSchema.Repo{name: "broken", workflow: "WORKFLOW.md", team: "Test"}
+    repo = %SystemSchema.Repo{name: "broken", workflow: nil, team: "Test"}
 
-    assert_raise ArgumentError, ~r/repo workflow path requires non-empty `path` and `workflow`/, fn ->
+    assert_raise ArgumentError, ~r/repo workflow path requires non-empty `workflow`/, fn ->
       RepoSupervisor.start_link(repo)
     end
   end

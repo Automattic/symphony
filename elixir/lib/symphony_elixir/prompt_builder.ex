@@ -13,11 +13,12 @@ defmodule SymphonyElixir.PromptBuilder do
     reviewer_comments = sanitize_reviewer_comments(raw_reviewer_comments)
     ci_failure = normalize_ci_failure(Keyword.get(opts, :ci_failure))
     linear_input_warnings = linear_input_warnings(issue, raw_reviewer_comments)
-    repo_key = repo_key_for_prompt(issue, opts)
+    {repo_key, workflow_source} = repo_context_for_prompt(issue, opts)
 
     template =
-      Workflow.current()
+      workflow_for_prompt(workflow_source)
       |> prompt_template!()
+      |> default_prompt(workflow_source)
       |> parse_template!()
 
     template
@@ -38,7 +39,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> append_linear_input_warnings(linear_input_warnings)
   end
 
-  defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
+  defp prompt_template!({:ok, %{prompt_template: prompt}}), do: prompt
 
   defp prompt_template!({:error, reason}) do
     raise RuntimeError, "workflow_unavailable: #{inspect(reason)}"
@@ -129,13 +130,19 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Enum.map(fn {comment, index} -> {"reviewer_comments[#{index}].body", get_field(comment, :body)} end)
   end
 
-  defp default_prompt(prompt) when is_binary(prompt) do
+  defp default_prompt(prompt, workflow_source) when is_binary(prompt) do
     if String.trim(prompt) == "" do
-      Config.workflow_prompt()
+      fallback_prompt(workflow_source)
     else
       prompt
     end
   end
+
+  defp workflow_for_prompt({:repo, repo_key}), do: Config.workflow_for_repo(repo_key)
+  defp workflow_for_prompt(:current), do: Workflow.current()
+
+  defp fallback_prompt({:repo, repo_key}), do: Config.workflow_prompt(repo_key)
+  defp fallback_prompt(:current), do: Config.workflow_prompt()
 
   defp append_extra_prompt(prompt, extra_prompt) when is_binary(extra_prompt) do
     case String.trim(extra_prompt) do
@@ -146,8 +153,24 @@ defmodule SymphonyElixir.PromptBuilder do
 
   defp append_extra_prompt(prompt, _extra_prompt), do: prompt
 
-  defp repo_key_for_prompt(issue, opts) do
-    present_string(Keyword.get(opts, :repo_key)) || repo_key_from_issue(issue) || default_repo_key()
+  defp repo_context_for_prompt(issue, opts) do
+    explicit_repo_key = present_string(Keyword.get(opts, :repo_key))
+    issue_repo_key = repo_key_from_issue(issue)
+    default_repo_key = default_repo_key()
+
+    cond do
+      explicit_repo_key ->
+        {explicit_repo_key, {:repo, explicit_repo_key}}
+
+      issue_repo_key ->
+        {issue_repo_key, {:repo, issue_repo_key}}
+
+      default_repo_key ->
+        {default_repo_key, :current}
+
+      true ->
+        {nil, :current}
+    end
   end
 
   defp repo_key_from_issue(%_{} = issue), do: issue |> Map.from_struct() |> repo_key_from_issue()

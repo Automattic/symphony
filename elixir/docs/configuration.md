@@ -22,22 +22,23 @@ on the prompt body and repo-local `hooks`.
 
 ## Startup
 
-Pass a workflow file path to `./bin/symphony` when starting the service:
+Run `./bin/symphony` from a directory that contains `symphony.yml`:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/symphony
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`. The CLI argument is the bootstrap
-path; once Symphony loads `symphony.yml`, it uses each entry under `repos:` to resolve the actual
-per-repo `WORKFLOW.md` it dispatches against.
+If `symphony.yml` is missing in the current working directory and `--config` is not passed,
+Symphony exits with `Symphony config file not found: …`. Per-repo `WORKFLOW.md` files are
+resolved from each entry under `repos:` (`<repo.path>/<repo.workflow>`); they are never passed on
+the command line.
 
 Optional flags:
 
 - `--config` selects an alternate operator config file (default: `./symphony.yml`). For example,
-  `./bin/symphony --config ./symphony.claude.yml ./WORKFLOW.md` runs the same repos with the
-  Claude runner config. Ship multiple `symphony.*.yml` files side by side and switch between them
-  with `--config`.
+  `./bin/symphony --config ./symphony.claude.yml` runs the same repos with the Claude runner
+  config. Ship multiple `symphony.*.yml` files side by side and switch between them with
+  `--config`.
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`).
   Application logs are written under `<logs-root>/log/`; audit events are written under
   `<logs-root>/audit/`.
@@ -102,9 +103,14 @@ least one entry is required.
 Per-repo fields:
 
 - `name` (string, REQUIRED) — unique identifier. Surfaced as `<repo_key>` in dashboard URLs.
-- `path` (string, REQUIRED) — local checkout path. `~` is expanded.
-- `workflow` (string, default `WORKFLOW.md`) — path to that repo's `WORKFLOW.md`, resolved
-  relative to `path`.
+- `workflow` (string, default `WORKFLOW.md`) — path to that repo's `WORKFLOW.md`. Relative paths
+  resolve from the directory containing `symphony.yml` unless legacy `path` is set.
+- `path` (string, OPTIONAL) — legacy checkout path used only as the base for relative `workflow`
+  paths. `~` is expanded.
+- `workspace` (object, OPTIONAL) — per-repo workspace population settings:
+  - `strategy` (`clone` or `worktree`) — overrides the global workspace strategy for this repo.
+  - `repo` (string) — primary clone path when `strategy: worktree`.
+  - `fetch_before_dispatch` (boolean) — defaults to the global value, otherwise `true`.
 - `team` (string, OPTIONAL) — Linear team key/ID for that repo's candidate query.
 - `projects` (list of strings, OPTIONAL) — Linear project names or slugs.
 - `labels` (list of strings, OPTIONAL) — Linear label names. AND semantics across the list for
@@ -126,17 +132,22 @@ Example multi-repo config:
 ```yaml
 repos:
   - name: web
-    path: ~/code/web
-    workflow: WORKFLOW.md
+    workflow: ./workflows/web.md
+    workspace:
+      strategy: worktree
+      repo: ~/code/web
     projects: ["Web platform"]
   - name: api
-    path: ~/code/api
-    workflow: WORKFLOW.md
+    workflow: ./workflows/api.md
+    workspace:
+      strategy: clone
     labels: ["backend"]
     assignee: me
   - name: mobile
-    path: ~/code/mobile
-    workflow: WORKFLOW.md
+    workflow: ./workflows/mobile.md
+    workspace:
+      strategy: worktree
+      repo: ~/code/mobile
     team: MOB
     default: true
 ```
@@ -227,11 +238,10 @@ self_review:
   max_rounds: 1                 # v1 only supports one correction round
 repos:
   - name: my-repo
-    path: ~/code/my-repo
-    workflow: WORKFLOW.md
+    workflow: ./WORKFLOW.md
 ```
 
-`~/code/my-repo/WORKFLOW.md`:
+`./WORKFLOW.md`:
 
 ```md
 ---
@@ -270,9 +280,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   reuses that repo's cached issues, and retries that repo after the full polling interval. If a repo
   keeps failing before it ever warms, three consecutive cold failures mark its cache as an empty
   result so the other repos can continue dispatching.
-- The CLI's positional `[path-to-WORKFLOW.md]` argument is the bootstrap path; once `symphony.yml`
-  loads, each repo's own `<path>/<workflow>` is the source of truth Symphony dispatches against.
-  The dashboard transcript URL embeds the repo `name` as `<repo_key>` —
+- The CLI takes no positional arguments. Once `symphony.yml` loads, each repo's
+  `<path>/<workflow>` is the source of truth Symphony dispatches against. The dashboard transcript
+  URL embeds the repo `name` as `<repo_key>` —
   `/repos/<repo_key>/issues/<issue_identifier>/transcript`.
 - Safer Codex defaults are used when policy fields are omitted:
   - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
@@ -303,8 +313,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   issue workspace `.git` path. For local Git checkouts, Symphony asks Git for the actual
   `--git-dir` and `--git-common-dir` and includes those roots too, so branch, commit, fetch, and
   push operations can update metadata for both regular clones and linked worktrees. When those
-  roots cannot be discovered, `workspace.strategy: worktree` falls back to the configured
-  repository `.git` metadata root. Symphony prepends these managed roots before any
+  roots cannot be discovered, a worktree-backed repo falls back to its configured primary clone
+  `.git` metadata root. Symphony prepends these managed roots before any
   `writableRoots` already present in the configured policy, and deduplicates the combined list.
   Compatibility for the remaining fields still depends on the targeted Codex app-server version
   rather than local Symphony validation. For known Codex policies with a boolean `networkAccess`
@@ -350,13 +360,14 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
-- Set `workspace.strategy: worktree` to create each issue workspace from an existing local primary
-  clone instead of cloning in `hooks.after_create`. Configure `workspace.repo` with that primary
-  clone path; Symphony creates `auto/<issue-identifier>` branches with `git worktree add`, fetches
-  `origin` before dispatch by default, and removes worktree workspaces with `git worktree remove
-  --force` during cleanup.
-- With SSH workers, `workspace.root` and `workspace.repo` are both interpreted on the worker host.
-  Each worker host needs its own primary clone; Symphony surfaces a workspace error if it is missing.
+- Set `repos[].workspace.strategy: worktree` to create each issue workspace from that repo's
+  existing local primary clone instead of cloning in `hooks.after_create`. Configure
+  `repos[].workspace.repo` with that primary clone path; Symphony creates
+  `auto/<issue-identifier>` branches with `git worktree add`, fetches `origin` before dispatch by
+  default, and removes worktree workspaces with `git worktree remove --force` during cleanup.
+- With SSH workers, `workspace.root` and `repos[].workspace.repo` are both interpreted on the worker
+  host. Each worker host needs its own primary clone per worktree-backed repo; Symphony surfaces a
+  workspace error if it is missing.
 - `workspace.lifecycle.max_age_days` defaults to `14` and removes local workspaces older than that
   age on startup and then every `workspace.lifecycle.gc_interval_ms` milliseconds while Symphony is
   running. The age GC skips currently running workspaces, but does not require the associated issue
@@ -397,29 +408,30 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   `tracker.project_slug`, `tracker.team`, a non-empty `tracker.labels` list, or repo-level
   `team`, `projects`, `labels`, or `assignee` selectors.
 - For path values, `~` is expanded to the home directory.
-- For env-backed path values, use `$VAR`. `workspace.root` and `workspace.repo` resolve `$VAR`
-  before path handling. For Codex, `agent.command` stays a shell command string and any `$VAR`
-  expansion there happens in the launched shell; Claude Code commands are split into executable
-  arguments before launch.
+- For env-backed path values, use `$VAR`. `workspace.root` and `repos[].workspace.repo` resolve
+  `$VAR` before path handling. For Codex, `agent.command` stays a shell command string and any
+  `$VAR` expansion there happens in the launched shell; Claude Code commands are split into
+  executable arguments before launch.
 
 ```yaml
 tracker:
   api_key: $LINEAR_API_KEY
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
-  strategy: worktree
-  repo: $SOURCE_REPO_PATH
   lifecycle:
     max_age_days: 14
     gc_interval_ms: 3600000
     min_free_bytes: 10737418240
     orphan_action: log
-hooks:
-  after_create: |
-    mix deps.get
 agent:
   kind: codex
   command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
+repos:
+  - name: app
+    workflow: ./WORKFLOW.md
+    workspace:
+      strategy: worktree
+      repo: $SOURCE_REPO_PATH
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.

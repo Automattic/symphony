@@ -3,10 +3,6 @@
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
 
-> [!WARNING]
-> Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
-> We recommend implementing your own hardened version based on `SPEC.md`.
-
 ## Screenshot
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
@@ -62,13 +58,13 @@ mise exec -- elixir --version
 ## Run
 
 ```bash
-git clone https://github.com/openai/symphony
+git clone https://github.com/chihsuan/symphony
 cd symphony/elixir
 mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony
 ```
 
 ## Configuration
@@ -80,21 +76,22 @@ Symphony reads two files:
 - **`WORKFLOW.md`** — repo-local prompt body and per-repo `hooks`. YAML front matter between two
   `---` lines, then the prompt template. Each repo listed under `repos:` has its own `WORKFLOW.md`.
 
-Start Symphony with the path to a workflow (used as the bootstrap path; per-repo workflows are
-resolved from `symphony.yml`):
+Start Symphony from a directory containing `symphony.yml`:
 
 ```bash
-./bin/symphony ./WORKFLOW.md
+./bin/symphony
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`. Pass `--config` to select an alternate
-operator config — for example, the Claude runner variant shipped alongside Codex:
+Pass `--config` to point at a different operator config — for example, the Claude runner variant
+shipped alongside Codex:
 
 ```bash
-./bin/symphony --config ./symphony.claude.yml ./WORKFLOW.md
+./bin/symphony --config ./symphony.claude.yml
 ```
 
-If `--config` is omitted, Symphony reads `./symphony.yml`.
+If `--config` is omitted, Symphony reads `./symphony.yml` from the current working directory and
+exits with an error if it is missing. Per-repo `WORKFLOW.md` files are resolved from each entry
+under `repos:` and never need to be passed on the command line.
 
 ### Minimal config
 
@@ -104,7 +101,8 @@ Most local runs need these five pieces:
 2. A Linear tracker scope on `tracker` or per repo: `tracker.kind: linear` plus at least one of
    `project_slug`, `team`, `labels`, or a repo-level selector.
 3. A workspace root where Symphony can create per-issue directories.
-4. At least one entry under `repos:` pointing at the target checkout and its `WORKFLOW.md`.
+4. At least one entry under `repos:` pointing at its `WORKFLOW.md` and, for worktree-backed
+   workspaces, the repo's primary clone.
 5. A Codex app-server command (or Claude command — see `symphony.claude.yml`).
 
 The quality gate is enabled by default when the `quality_gate` block is omitted. Set
@@ -126,12 +124,11 @@ pr_review:
   mode: tracker
 repos:
   - name: my-repo
-    path: ~/code/my-repo
-    workflow: WORKFLOW.md
+    workflow: ./WORKFLOW.md
 # quality_gate is omitted here, so it uses the default enabled Anthropic scorer.
 ```
 
-`~/code/my-repo/WORKFLOW.md`:
+`./WORKFLOW.md`:
 
 ```md
 ---
@@ -151,30 +148,39 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 ### Multi-repo
 
 One Symphony process can supervise several repositories by listing them under `repos:`. Each entry
-points at a checkout and its `WORKFLOW.md`, and may scope candidate polling with optional Linear
-selectors:
+points at a `WORKFLOW.md`, optionally declares how issue workspaces are populated, and may scope
+candidate polling with optional Linear selectors:
 
 ```yaml
 repos:
   - name: web
-    path: ~/code/web
-    workflow: WORKFLOW.md
+    workflow: ./workflows/web.md
+    workspace:
+      strategy: worktree
+      repo: ~/code/web
     projects: ["Web platform"]
   - name: api
-    path: ~/code/api
-    workflow: WORKFLOW.md
+    workflow: ./workflows/api.md
+    workspace:
+      strategy: clone
     labels: ["backend"]
     assignee: me
   - name: mobile
-    path: ~/code/mobile
-    workflow: WORKFLOW.md
+    workflow: ./workflows/mobile.md
+    workspace:
+      strategy: worktree
+      repo: ~/code/mobile
     team: MOB
     default: true
 ```
 
 - `name` is required and must be unique. It also becomes the `<repo_key>` in dashboard URLs.
-- `path` is the local checkout; `~` is expanded.
-- `workflow` defaults to `WORKFLOW.md` and is resolved relative to `path`.
+- `workflow` defaults to `WORKFLOW.md`. Relative paths resolve from the directory containing
+  `symphony.yml` unless legacy `path` is set.
+- `path` is a legacy optional checkout path used only to resolve relative `workflow` paths.
+- `repos[].workspace.strategy` is `clone` or `worktree` for that repo. With `clone`, populate the
+  empty workspace from `hooks.after_create`; with `worktree`, set `repos[].workspace.repo` to that
+  repo's primary clone.
 - `team`, `projects`, `labels`, and `assignee` filter Linear issues server-side per repo. A repo
   that omits these inherits the corresponding tracker-level selector.
 - `default: true` marks one repo as the fallback when an issue is not pinned to any other repo;
@@ -188,8 +194,9 @@ stays empty until every repo's cache has warmed at least once.
 
 ### Common options
 
-- `workspace.strategy: worktree` creates each issue workspace from an existing local primary clone
-  instead of cloning in `hooks.after_create`. Set `workspace.repo` to that primary clone.
+- `repos[].workspace.strategy: worktree` creates each issue workspace from that repo's existing
+  local primary clone instead of cloning in `hooks.after_create`. Set `repos[].workspace.repo` to
+  the primary clone.
 - `workspace.lifecycle.*` controls workspace cleanup guardrails. By default Symphony removes local
   workspaces older than 14 days, logs startup orphans without deleting them, and leaves disk quota
   dispatch pauses disabled until `workspace.lifecycle.min_free_bytes` is configured.
@@ -245,7 +252,7 @@ If the dashboard is unavailable, use the mix task fallbacks against a named loca
 ```bash
 export SYMPHONY_COOKIE="replace-with-a-shared-cookie"
 export ELIXIR_ERL_OPTIONS="-name symphony@127.0.0.1 -setcookie $SYMPHONY_COOKIE"
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony
 ```
 
 Then, from another shell in `elixir/`:
@@ -344,8 +351,9 @@ implementation's expected toolchain.
 ### Workspace clone or setup fails
 
 Check `workspace.root` permissions, SSH access to the target repository, and the
-`hooks.after_create` script. For `workspace.strategy: worktree`, also check that `workspace.repo`
-points at an existing primary clone on the same host where Symphony creates workspaces.
+`hooks.after_create` script. For `repos[].workspace.strategy: worktree`, also check that
+`repos[].workspace.repo` points at an existing primary clone on the same host where Symphony creates
+workspaces.
 
 ### Codex reports a schema or config mismatch
 

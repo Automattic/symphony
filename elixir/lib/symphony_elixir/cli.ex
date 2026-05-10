@@ -1,18 +1,18 @@
 defmodule SymphonyElixir.CLI do
   @moduledoc """
-  Escript entrypoint for running Symphony with an explicit WORKFLOW.md path.
+  Escript entrypoint for running Symphony with an operator `symphony.yml`.
   """
 
   alias SymphonyElixir.{AuditLog, LogFile}
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @switches [{@acknowledgement_switch, :boolean}, config: :string, host: :string, logs_root: :string, port: :integer]
+  @default_symphony_file "symphony.yml"
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
           file_regular?: (String.t() -> boolean()),
           set_symphony_file_path: (String.t() -> :ok | {:error, term()}),
-          set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
           set_server_host_override: (String.t() | nil -> :ok | {:error, term()}),
           set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
@@ -36,20 +36,11 @@ defmodule SymphonyElixir.CLI do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- maybe_set_symphony_config(opts, deps),
+             :ok <- set_symphony_config(opts, deps),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_host(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
-          run(Path.expand("WORKFLOW.md"), deps)
-        end
-
-      {opts, [workflow_path], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- maybe_set_symphony_config(opts, deps),
-             :ok <- maybe_set_logs_root(opts, deps),
-             :ok <- maybe_set_server_host(opts, deps),
-             :ok <- maybe_set_server_port(opts, deps) do
-          run(workflow_path, deps)
+          start_runtime(deps)
         end
 
       _ ->
@@ -57,28 +48,19 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
-  @spec run(String.t(), deps()) :: :ok | {:error, String.t()}
-  def run(workflow_path, deps) do
-    expanded_path = Path.expand(workflow_path)
+  defp start_runtime(deps) do
+    case deps.ensure_all_started.() do
+      {:ok, _started_apps} ->
+        :ok
 
-    if deps.file_regular?.(expanded_path) do
-      :ok = deps.set_workflow_file_path.(expanded_path)
-
-      case deps.ensure_all_started.() do
-        {:ok, _started_apps} ->
-          :ok
-
-        {:error, reason} ->
-          {:error, "Failed to start Symphony with workflow #{expanded_path}: #{inspect(reason)}"}
-      end
-    else
-      {:error, "Workflow file not found: #{expanded_path}"}
+      {:error, reason} ->
+        {:error, "Failed to start Symphony: #{inspect(reason)}"}
     end
   end
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--config <path-to-symphony.yml>] [--logs-root <path>] [--host <host>] [--port <port>] [path-to-WORKFLOW.md]"
+    "Usage: symphony [--config <path-to-symphony.yml>] [--logs-root <path>] [--host <host>] [--port <port>]"
   end
 
   @spec runtime_deps() :: deps()
@@ -86,7 +68,6 @@ defmodule SymphonyElixir.CLI do
     %{
       file_regular?: &File.regular?/1,
       set_symphony_file_path: &SymphonyElixir.Workflow.set_symphony_file_path/1,
-      set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_logs_root: &set_logs_root/1,
       set_server_host_override: &set_server_host_override/1,
       set_server_port_override: &set_server_port_override/1,
@@ -94,16 +75,15 @@ defmodule SymphonyElixir.CLI do
     }
   end
 
-  defp maybe_set_symphony_config(opts, deps) do
-    with_last_opt(opts, :config, fn raw ->
-      path = Path.expand(raw)
+  defp set_symphony_config(opts, deps) do
+    raw = opts |> Keyword.get_values(:config) |> List.last() || @default_symphony_file
+    path = Path.expand(raw)
 
-      if deps.file_regular?.(path) do
-        :ok = deps.set_symphony_file_path.(path)
-      else
-        {:error, "Symphony config file not found: #{path}"}
-      end
-    end)
+    if deps.file_regular?.(path) do
+      :ok = deps.set_symphony_file_path.(path)
+    else
+      {:error, "Symphony config file not found: #{path}"}
+    end
   end
 
   defp maybe_set_logs_root(opts, deps) do

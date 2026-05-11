@@ -10,15 +10,19 @@ shortest setup path, start with
 Symphony reads two complementary files:
 
 - **`symphony.yml`** — operator config: tracker, polling, workspace, agent, gates, pollers,
-  notifications, and the list of supervised repos (`repos:`). Plain YAML, no `---` fences.
-- **`WORKFLOW.md`** — repo-local file containing the Codex prompt body and per-repo `hooks`. YAML
-  front matter between two `---` lines, then the prompt template. Each repo listed under
+  notifications, verification port defaults, and the list of supervised repos (`repos:`). Plain
+  YAML, no `---` fences.
+- **`WORKFLOW.md`** — repo-local file containing the Codex prompt body plus per-repo `hooks` and
+  verification dev-server overrides. YAML front matter between two `---` lines, then the prompt
+  template. Each repo listed under
   `repos:` has its own `WORKFLOW.md`, located at `<repo.path>/<repo.workflow>`.
 
 The runtime settings used at dispatch time merge `symphony.yml` with the primary repo's
 `WORKFLOW.md` front matter; `WORKFLOW.md` keys override the matching `symphony.yml` keys for that
-repo. In practice, leave operator-wide concerns in `symphony.yml` and keep `WORKFLOW.md` focused
-on the prompt body and repo-local `hooks`.
+repo. Nested maps are deep-merged, so a repo can override only
+`verification.dev_server.start_cmd` without repeating the operator-owned port range. In practice,
+leave operator-wide concerns in `symphony.yml` and keep `WORKFLOW.md` focused on the prompt body,
+repo-local `hooks`, and repo-specific verification dev-server commands.
 
 ## Startup
 
@@ -167,12 +171,9 @@ tracker:
 workspace:
   root: ~/code/workspaces
 verification:
-  enabled: false
+  enabled: true
   port_allocation:
     range: [4000, 4099]
-  dev_server:
-    start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
-    health_check_url: "http://localhost:${SYMPHONY_VERIFICATION_PORT}/healthz"
 agent:
   kind: codex
   max_concurrent_agents: 10
@@ -248,6 +249,10 @@ repos:
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
+verification:
+  dev_server:
+    start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
+    health_check_url: "http://localhost:${SYMPHONY_VERIFICATION_PORT}/healthz"
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -382,12 +387,15 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   `workspace.lifecycle.trash_dir` (default `.trash`).
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- Optional `verification` orchestration is disabled by default. When `verification.enabled: true`,
-  Symphony allocates one port per dispatched issue from `verification.port_allocation.range`
-  (default `[4000, 4099]`) and exposes it as `SYMPHONY_VERIFICATION_PORT` to `hooks.before_run`,
-  `hooks.after_run`, and the supervised `verification.dev_server.start_cmd`. Symphony does not set
-  `PORT`; wire the value explicitly for the tool you run, for example
-  `PORT=$SYMPHONY_VERIFICATION_PORT pnpm dev`, `pnpm dev --port $SYMPHONY_VERIFICATION_PORT`, or
+- Optional `verification` orchestration is disabled by default. Put process-wide defaults such as
+  `verification.enabled` and `verification.port_allocation.range` in `symphony.yml`; put
+  repo-specific `verification.dev_server` commands in that repo's `WORKFLOW.md` front matter.
+  When verification is enabled for a repo, Symphony allocates one port per dispatched issue from
+  the effective `verification.port_allocation.range` (default `[4000, 4099]`) and exposes it as
+  `SYMPHONY_VERIFICATION_PORT` to `hooks.before_run`, `hooks.after_run`, and the supervised
+  `verification.dev_server.start_cmd`. Symphony does not set `PORT`; wire the value explicitly for
+  the tool you run, for example `PORT=$SYMPHONY_VERIFICATION_PORT pnpm dev`,
+  `pnpm dev --port $SYMPHONY_VERIFICATION_PORT`, or
   `PORT=$SYMPHONY_VERIFICATION_PORT mix phx.server`. The port range is global to the Symphony
   process, including SSH worker pools; size it for total concurrently dispatched verification runs,
   not per-worker-host concurrency.

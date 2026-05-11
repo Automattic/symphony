@@ -83,6 +83,22 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert settings.verification.enabled == true
   end
 
+  test "system schema accepts operator-level verification defaults" do
+    assert {:ok, system_config} =
+             SystemSchema.parse(
+               system_config(%{
+                 "verification" => %{
+                   "enabled" => true,
+                   "port_allocation" => %{"range" => [4400, 4402]}
+                 }
+               })
+             )
+
+    config_map = SystemSchema.to_config_map(system_config)
+    assert get_in(config_map, ["verification", "enabled"]) == true
+    assert get_in(config_map, ["verification", "port_allocation", "range"]) == [4400, 4402]
+  end
+
   test "startup config accepts single repo without repo-level routing selectors", %{root: root} do
     repo = write_repo!(root, "app", "Prompt\n")
 
@@ -462,6 +478,108 @@ defmodule SymphonyElixir.ConfigSplitTest do
     }
 
     assert SymphonyElixir.PromptBuilder.build_prompt(issue) == "API api RSM-API"
+  end
+
+  test "repo workflow verification deep merges over operator defaults", %{root: root} do
+    web_repo =
+      write_repo!(root, "web", """
+      ---
+      verification:
+        enabled: false
+      ---
+      Web prompt
+      """)
+
+    api_repo =
+      write_repo!(root, "api", """
+      ---
+      verification:
+        dev_server:
+          start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
+          health_check_url: "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/"
+      ---
+      API prompt
+      """)
+
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    verification:
+      enabled: true
+      port_allocation:
+        range: [4400, 4402]
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: web
+        path: #{web_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        default: true
+      - name: api
+        path: #{api_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        labels:
+          - api
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    web_settings = Config.settings_for_repo!("web")
+    api_settings = Config.settings_for_repo!("api")
+
+    refute web_settings.verification.enabled
+    assert api_settings.verification.enabled
+    assert api_settings.verification.port_allocation.range == [4400, 4402]
+    assert api_settings.verification.dev_server.start_cmd == "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
+    assert api_settings.verification.dev_server.health_check_url == "http://127.0.0.1:${SYMPHONY_VERIFICATION_PORT}/"
+  end
+
+  test "application starts verification supervisors when any repo enables verification", %{root: root} do
+    web_repo = write_repo!(root, "web", "Web prompt\n")
+
+    api_repo =
+      write_repo!(root, "api", """
+      ---
+      verification:
+        enabled: true
+      ---
+      API prompt
+      """)
+
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: web
+        path: #{web_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        default: true
+      - name: api
+        path: #{api_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+        labels:
+          - api
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    verification_children = SymphonyElixir.Application.child_specs_for_runtime(%{})
+
+    dev_server_supervisor_child = {
+      DynamicSupervisor,
+      strategy: :one_for_one, name: SymphonyElixir.Verification.DevServerSupervisor
+    }
+
+    assert SymphonyElixir.Verification.PortPool in verification_children
+    assert dev_server_supervisor_child in verification_children
   end
 
   test "reloading one repo workflow restarts only that repo subtree", %{root: root} do

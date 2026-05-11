@@ -76,7 +76,7 @@ defmodule SymphonyElixir.Application do
            [
              SymphonyElixir.RunStore
            ] ++
-           SymphonyElixir.Verification.child_specs_for_runtime(Config.settings!()) ++
+           verification_child_specs(system_config) ++
            [
              SymphonyElixir.Orchestrator,
              pr_review_child_spec(),
@@ -102,6 +102,16 @@ defmodule SymphonyElixir.Application do
       :ok -> :ok
       {:error, reason} -> raise ArgumentError, message: inspect(reason)
     end
+  end
+
+  defp verification_child_specs(%SystemSchema{repos: repos}) do
+    Enum.find_value(repos, [], fn repo ->
+      settings = Config.settings_for_repo!(repo.name)
+
+      if SymphonyElixir.Verification.enabled?(settings) do
+        SymphonyElixir.Verification.child_specs_for_runtime(settings)
+      end
+    end)
   end
 
   defp pr_review_child_spec do

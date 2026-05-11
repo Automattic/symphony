@@ -64,6 +64,19 @@ defmodule SymphonyElixir.VerificationTest do
 
     assert :ok =
              RunStore.put_verification_allocation(%{
+               repo_key: "api",
+               run_id: "api-live-run",
+               issue_id: "issue-api-live",
+               issue_identifier: "RSM-API-LIVE",
+               port: 4122,
+               status: "dev_server_started",
+               dev_server_os_pid: 333,
+               allocated_at: now,
+               updated_at: now
+             })
+
+    assert :ok =
+             RunStore.put_verification_allocation(%{
                repo_key: "default",
                run_id: "stale-run",
                issue_id: "issue-stale",
@@ -80,11 +93,15 @@ defmodule SymphonyElixir.VerificationTest do
         reconcile_interval_ms: nil,
         process_alive?: fn
           111 -> true
+          333 -> true
           222 -> false
         end
       )
 
-    assert [%{run_id: "live-run", port: 4120}] = PortPool.active_allocations()
+    assert [
+             %{run_id: "live-run", port: 4120},
+             %{run_id: "api-live-run", port: 4122}
+           ] = PortPool.active_allocations()
 
     assert %{status: "released"} =
              RunStore.list_verification_allocations()

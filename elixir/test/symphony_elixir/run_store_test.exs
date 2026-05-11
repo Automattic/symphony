@@ -520,6 +520,11 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [%{repo_key: @other_repo_key, status: "allocated", port: 4011}] =
              RunStore.list_verification_allocations(@other_repo_key)
 
+    assert [
+             %{repo_key: @repo_key, status: "released", port: 4010},
+             %{repo_key: @other_repo_key, status: "allocated", port: 4011}
+           ] = RunStore.list_all_verification_allocations() |> Enum.sort_by(& &1.port)
+
     eval_log = %{
       eval_id: "eval-shared",
       run_id: "run-shared",

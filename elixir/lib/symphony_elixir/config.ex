@@ -527,9 +527,7 @@ defmodule SymphonyElixir.Config do
 
   defp runtime_settings_for_repo(%SystemSchema{} = system_config, %SystemSchema.Repo{} = repo, source) do
     with {:ok, repo_workflow} <- load_repo_workflow(repo, source),
-         {:ok, settings} <- Schema.parse(merged_runtime_config(system_config, repo, repo_workflow)) do
-      {:ok, settings}
-    end
+         do: Schema.parse(merged_runtime_config(system_config, repo, repo_workflow))
   end
 
   defp validate_repo_semantics(repo_settings, %SystemSchema{} = system_config) do
@@ -597,7 +595,7 @@ defmodule SymphonyElixir.Config do
     system_config
     |> SystemSchema.to_config_map()
     |> merge_repo_workspace(repo)
-    |> Map.merge(repo_config)
+    |> deep_merge(repo_config)
   end
 
   defp merge_repo_workspace(config, %SystemSchema.Repo{workspace: nil}), do: config
@@ -614,6 +612,14 @@ defmodule SymphonyElixir.Config do
 
     Map.update(config, "workspace", repo_workspace, &Map.merge(&1, repo_workspace))
   end
+
+  defp deep_merge(left, right) when is_map(left) and is_map(right) do
+    Map.merge(left, right, fn _key, left_value, right_value ->
+      deep_merge(left_value, right_value)
+    end)
+  end
+
+  defp deep_merge(_left, right), do: right
 
   defp validate_notifications_semantics(%Schema{notifications: %{enabled: true, channels: channels}})
        when is_list(channels) do

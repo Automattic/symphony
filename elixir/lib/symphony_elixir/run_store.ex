@@ -477,6 +477,17 @@ defmodule SymphonyElixir.RunStore do
     end
   end
 
+  @spec list_all_verification_allocations() :: [map()] | {:error, term()}
+  def list_all_verification_allocations do
+    with :ok <- ensure_started() do
+      transaction(fn ->
+        @verification_allocation_table
+        |> all_scoped_records()
+        |> Enum.sort_by(&datetime_sort_key(Map.get(&1, :allocated_at)), :asc)
+      end)
+    end
+  end
+
   @spec put_eval_log(map()) :: :ok | {:error, term()}
   def put_eval_log(%{repo_key: repo_key, eval_id: eval_id} = record) when is_binary(eval_id) do
     with {:ok, repo_key} <- normalize_repo_key(repo_key),

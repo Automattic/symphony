@@ -238,7 +238,7 @@ defmodule SymphonyElixir.Verification.PortPool do
   defp fetch_port_range(_attrs), do: {:error, :invalid_port_range}
 
   defp reconcile_persisted_allocations(state) do
-    case state.run_store.list_verification_allocations(state.repo_key) do
+    case state.run_store.list_all_verification_allocations() do
       allocations when is_list(allocations) ->
         Enum.reduce(allocations, empty_allocations(state), &reconcile_allocation/2)
 

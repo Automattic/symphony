@@ -413,6 +413,7 @@ Top-level keys accepted by the Elixir implementation:
 - `observability`
 - `pr_review`
 - `ci`
+- `verification`
 - `server`
 - `quality_gate`
 - `learnings`
@@ -454,7 +455,9 @@ operator-owned configuration to `symphony.yml`.
 
 Unless explicitly called out as repo-local, fields in this section live in `symphony.yml` and become
 part of the merged runtime config. Repo-local front matter contributes `hooks` and `verification`
-values to the runtime settings for that repo.
+values to the runtime settings for that repo. Nested repo-local maps are merged over the operator
+config so repos can override only their dev-server command while inheriting process-wide
+verification defaults such as port allocation.
 
 #### 5.4.1 `repos` (list)
 

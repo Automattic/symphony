@@ -11,7 +11,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
   @primary_key false
   @allowed_keys ~w(
     agent ci dispatch learnings notifications observability polling pr_review quality_gate repos self_review
-    server token_budget tracker watchdog worker workspace
+    server token_budget tracker verification watchdog worker workspace
   )
 
   defmodule Repo do
@@ -125,6 +125,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     embeds_one(:observability, Schema.Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:pr_review, Schema.PrReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:ci, Schema.Ci, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:verification, Schema.Verification, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Schema.Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, Schema.QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:learnings, Schema.Learnings, on_replace: :update, defaults_to_struct: true)
@@ -166,6 +167,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
       "observability" => struct_to_map(system_config.observability),
       "pr_review" => struct_to_map(system_config.pr_review),
       "ci" => struct_to_map(system_config.ci),
+      "verification" => struct_to_map(system_config.verification),
       "server" => struct_to_map(system_config.server),
       "quality_gate" => struct_to_map(system_config.quality_gate),
       "learnings" => struct_to_map(system_config.learnings),
@@ -223,6 +225,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast_embed(:observability, with: &Schema.Observability.changeset/2)
     |> cast_embed(:pr_review, with: &Schema.PrReview.changeset/2)
     |> cast_embed(:ci, with: &Schema.Ci.changeset/2)
+    |> cast_embed(:verification, with: &Schema.Verification.changeset/2)
     |> cast_embed(:server, with: &Schema.Server.changeset/2)
     |> cast_embed(:quality_gate, with: &Schema.QualityGate.changeset/2)
     |> cast_embed(:learnings, with: &Schema.Learnings.changeset/2)

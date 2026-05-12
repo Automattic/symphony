@@ -212,6 +212,7 @@ defmodule SymphonyElixir.QualityGateTest do
           max_rounds: 2,
           pass_threshold: 6,
           comment_posted?: true,
+          posted_at: nil,
           identifier: "RSM-ID-SELF",
           title: "Title",
           state: "Todo",
@@ -226,6 +227,139 @@ defmodule SymphonyElixir.QualityGateTest do
 
       assert result.passed == []
       assert [%{reason: "cached clarification", comment_posted?: true}] = result.awaiting_clarification
+    end
+
+    test "Linear bumping issue.updated_at after Symphony's own comment does not invalidate the cache" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+      cached_updated_at = ~U[2026-05-05 03:00:00Z]
+      posted_at = ~U[2026-05-05 04:00:00Z]
+      bumped_updated_at = ~U[2026-05-05 04:00:22Z]
+
+      symphony_comment = %{
+        author: "Symphony",
+        body: "Symphony quality gate: clarification requested (score 5 < pass_threshold 6; round 1/2).",
+        created_at: posted_at
+      }
+
+      bumped_issue =
+        issue("ID-BUMP",
+          comments: [symphony_comment],
+          updated_at: bumped_updated_at
+        )
+
+      cache = %{
+        "ID-BUMP" => %{
+          updated_at: cached_updated_at,
+          comment_signature: nil,
+          score: 5,
+          reason: "cached clarification",
+          passed?: false,
+          awaiting_clarification?: true,
+          questions: ["What is done?", "Where is it?", "What is excluded?"],
+          rounds_asked: 1,
+          max_rounds: 2,
+          pass_threshold: 6,
+          comment_posted?: true,
+          posted_at: posted_at,
+          identifier: "RSM-ID-BUMP",
+          title: "Title",
+          state: "Todo",
+          url: "https://linear.app/x/ID-BUMP",
+          scored_at: cached_updated_at
+        }
+      }
+
+      Process.put(:quality_gate_stub_results, %{"ID-BUMP" => {:ok, %{score: 9, reason: "should not be called"}}})
+
+      result = QualityGate.evaluate([bumped_issue], config, cache, provider_module: StubProvider)
+
+      assert result.passed == []
+      assert result.skipped == []
+      assert [%{reason: "cached clarification", rounds_asked: 1, comment_posted?: true}] = result.awaiting_clarification
+      assert Map.get(result.cache, "ID-BUMP").updated_at == bumped_updated_at
+      assert Map.get(result.cache, "ID-BUMP").posted_at == posted_at
+    end
+
+    test "an updated_at bump well outside the self-bump window still re-scores" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+      cached_updated_at = ~U[2026-05-05 03:00:00Z]
+      posted_at = ~U[2026-05-05 04:00:00Z]
+      far_future_updated_at = ~U[2026-05-05 04:30:00Z]
+
+      edited_issue = issue("ID-EDIT", updated_at: far_future_updated_at)
+
+      cache = %{
+        "ID-EDIT" => %{
+          updated_at: cached_updated_at,
+          comment_signature: nil,
+          score: 5,
+          reason: "cached clarification",
+          passed?: false,
+          awaiting_clarification?: true,
+          questions: ["q1", "q2", "q3"],
+          rounds_asked: 1,
+          max_rounds: 2,
+          pass_threshold: 6,
+          comment_posted?: true,
+          posted_at: posted_at,
+          identifier: "RSM-ID-EDIT",
+          title: "Title",
+          state: "Todo",
+          url: "https://linear.app/x/ID-EDIT",
+          scored_at: cached_updated_at
+        }
+      }
+
+      Process.put(:quality_gate_stub_results, %{"ID-EDIT" => {:ok, %{score: 8, reason: "rescored"}}})
+
+      result = QualityGate.evaluate([edited_issue], config, cache, provider_module: StubProvider)
+
+      assert [%Issue{id: "ID-EDIT"}] = result.passed
+      assert Map.get(result.cache, "ID-EDIT").reason == "rescored"
+    end
+
+    test "a new human comment within the self-bump window still re-scores" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+      cached_updated_at = ~U[2026-05-05 03:00:00Z]
+      posted_at = ~U[2026-05-05 04:00:00Z]
+      bumped_updated_at = ~U[2026-05-05 04:00:25Z]
+
+      bumped_issue =
+        issue("ID-HUMAN",
+          comments: [
+            %{author: "Reviewer", body: "Quick note from a human", created_at: ~U[2026-05-05 04:00:15Z]}
+          ],
+          updated_at: bumped_updated_at
+        )
+
+      cache = %{
+        "ID-HUMAN" => %{
+          updated_at: cached_updated_at,
+          comment_signature: nil,
+          score: 5,
+          reason: "cached clarification",
+          passed?: false,
+          awaiting_clarification?: true,
+          questions: ["q1", "q2", "q3"],
+          rounds_asked: 1,
+          max_rounds: 2,
+          pass_threshold: 6,
+          comment_posted?: true,
+          posted_at: posted_at,
+          identifier: "RSM-ID-HUMAN",
+          title: "Title",
+          state: "Todo",
+          url: "https://linear.app/x/ID-HUMAN",
+          scored_at: cached_updated_at
+        }
+      }
+
+      Process.put(:quality_gate_stub_results, %{"ID-HUMAN" => {:ok, %{score: 7, reason: "answered"}}})
+
+      result = QualityGate.evaluate([bumped_issue], config, cache, provider_module: StubProvider)
+
+      assert [%Issue{id: "ID-HUMAN"}] = result.passed
+      assert Map.get(result.cache, "ID-HUMAN").reason == "answered"
     end
 
     test "falls through to skip after max clarification rounds" do
@@ -595,8 +729,8 @@ defmodule SymphonyElixir.QualityGateTest do
     end
   end
 
-  describe "mark_comment_posted/2" do
-    test "flips comment_posted? to true for the matching cache entry" do
+  describe "mark_comment_posted/3" do
+    test "flips comment_posted? to true and stamps posted_at for the matching cache entry" do
       cache = %{
         "ID-1" => %{
           updated_at: ~U[2026-05-05 03:00:00Z],
@@ -604,6 +738,7 @@ defmodule SymphonyElixir.QualityGateTest do
           reason: "vague",
           passed?: false,
           comment_posted?: false,
+          posted_at: nil,
           identifier: nil,
           title: nil,
           state: nil,
@@ -612,12 +747,14 @@ defmodule SymphonyElixir.QualityGateTest do
         }
       }
 
-      updated = QualityGate.mark_comment_posted(cache, %{issue_id: "ID-1"})
+      posted_at = ~U[2026-05-05 03:30:00Z]
+      updated = QualityGate.mark_comment_posted(cache, %{issue_id: "ID-1"}, posted_at)
       assert Map.get(updated, "ID-1").comment_posted?
+      assert Map.get(updated, "ID-1").posted_at == posted_at
     end
 
     test "is a no-op when the cache has no entry for the skip" do
-      assert QualityGate.mark_comment_posted(%{}, %{issue_id: "ID-MISSING"}) == %{}
+      assert QualityGate.mark_comment_posted(%{}, %{issue_id: "ID-MISSING"}, DateTime.utc_now()) == %{}
     end
   end
 

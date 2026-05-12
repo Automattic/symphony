@@ -1190,7 +1190,8 @@ defmodule SymphonyElixir.Orchestrator do
     else
       case Tracker.create_comment(entry.issue_id, body) do
         :ok ->
-          {:posted, QualityGate.mark_comment_posted(cache, entry), MapSet.put(comment_keys, comment_key)}
+          {:posted, QualityGate.mark_comment_posted(cache, entry, DateTime.utc_now()),
+           MapSet.put(comment_keys, comment_key)}
 
         {:error, reason} ->
           Logger.warning("QualityGate #{quality_gate_comment_kind(entry)} post failed issue=#{entry.identifier || entry.issue_id} reason=#{inspect(reason)}")

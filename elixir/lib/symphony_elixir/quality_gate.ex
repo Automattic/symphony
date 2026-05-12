@@ -52,6 +52,7 @@ defmodule SymphonyElixir.QualityGate do
           required(:questions) => [String.t()],
           required(:rounds_asked) => non_neg_integer(),
           required(:comment_posted?) => boolean(),
+          required(:posted_at) => DateTime.t() | nil,
           required(:identifier) => String.t() | nil,
           required(:repo_key) => String.t() | nil,
           required(:title) => String.t() | nil,
@@ -253,14 +254,24 @@ defmodule SymphonyElixir.QualityGate do
   Used by the orchestrator after it successfully creates the comment, so
   subsequent poll cycles see `comment_posted?: true` for the same
   `updated_at` and do not double-post.
+
+  `posted_at` is stored on the entry so subsequent polls can recognize the
+  `updated_at` bump Linear performs on the issue when our own comment is
+  created, and avoid re-scoring it. See `cache_freshness/3`.
   """
-  @spec mark_comment_posted(cache(), gate_entry()) :: cache()
-  def mark_comment_posted(cache, %{issue_id: issue_id}) when is_binary(issue_id) do
+  @spec mark_comment_posted(cache(), gate_entry(), DateTime.t()) :: cache()
+  def mark_comment_posted(cache, %{issue_id: issue_id}, %DateTime{} = posted_at)
+      when is_binary(issue_id) do
     case Map.fetch(cache, issue_id) do
-      {:ok, entry} -> Map.put(cache, issue_id, %{entry | comment_posted?: true})
-      :error -> cache
+      {:ok, entry} ->
+        Map.put(cache, issue_id, %{entry | comment_posted?: true, posted_at: posted_at})
+
+      :error ->
+        cache
     end
   end
+
+  def mark_comment_posted(cache, _entry, _posted_at), do: cache
 
   @doc """
   Resolve provider credentials and runtime settings for `config`. Reads the
@@ -358,10 +369,17 @@ defmodule SymphonyElixir.QualityGate do
 
     case Map.get(cache, issue_id) do
       entry when is_map(entry) ->
-        if cache_entry_current?(entry, updated_at, comment_signature) do
-          cached_decision(issue, entry, config, cache, now, provider_override)
-        else
-          score_and_record(issue, config, cache, now, provider_override)
+        case cache_freshness(entry, updated_at, comment_signature) do
+          :current ->
+            cached_decision(issue, entry, config, cache, now, provider_override)
+
+          :self_bump ->
+            refreshed_entry = %{entry | updated_at: updated_at}
+            refreshed_cache = Map.put(cache, issue_id, refreshed_entry)
+            cached_decision(issue, refreshed_entry, config, refreshed_cache, now, provider_override)
+
+          :stale ->
+            score_and_record(issue, config, cache, now, provider_override)
         end
 
       _stale_or_missing ->
@@ -499,6 +517,7 @@ defmodule SymphonyElixir.QualityGate do
       pass_threshold: Keyword.get(opts, :pass_threshold),
       max_rounds_reached?: Keyword.get(opts, :max_rounds_reached?, false),
       comment_posted?: false,
+      posted_at: nil,
       repo_key: issue.repo_key,
       identifier: issue.identifier,
       title: issue.title,
@@ -563,9 +582,39 @@ defmodule SymphonyElixir.QualityGate do
     }
   end
 
-  defp cache_entry_current?(entry, updated_at, comment_signature) when is_map(entry) do
-    Map.get(entry, :updated_at) == updated_at and Map.get(entry, :comment_signature) == comment_signature
+  # Window within which a Linear `issue.updated_at` bump is attributed to a
+  # comment Symphony itself just posted (Linear bumps `updated_at` on comment
+  # creation but with some processing delay; observed ~20s).
+  @self_bump_tolerance_seconds 300
+
+  defp cache_freshness(entry, updated_at, comment_signature) when is_map(entry) do
+    cond do
+      Map.get(entry, :comment_signature) != comment_signature ->
+        :stale
+
+      Map.get(entry, :updated_at) == updated_at ->
+        :current
+
+      self_bumped?(entry, updated_at) ->
+        :self_bump
+
+      true ->
+        :stale
+    end
   end
+
+  defp self_bumped?(entry, %DateTime{} = new_updated_at) do
+    case Map.get(entry, :posted_at) do
+      %DateTime{} = posted_at ->
+        diff = DateTime.diff(new_updated_at, posted_at, :second)
+        diff >= -@self_bump_tolerance_seconds and diff <= @self_bump_tolerance_seconds
+
+      _ ->
+        false
+    end
+  end
+
+  defp self_bumped?(_entry, _new_updated_at), do: false
 
   defp pass_threshold(%Schema.QualityGate{pass_threshold: threshold}) when is_integer(threshold), do: threshold
   defp pass_threshold(%Schema.QualityGate{min_score: threshold}) when is_integer(threshold), do: threshold

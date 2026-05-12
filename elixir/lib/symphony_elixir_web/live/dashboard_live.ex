@@ -299,7 +299,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% else %>
                           <span class="issue-id"><%= entry.issue_identifier %></span>
                         <% end %>
-                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
+                        <.repo_chip repo={repo_label(entry)} />
                       </div>
                     </td>
                     <td>
@@ -432,7 +432,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% else %>
                           <span class="issue-id"><%= entry.issue_identifier %></span>
                         <% end %>
-                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
+                        <.repo_chip repo={repo_label(entry)} />
                       </div>
                     </td>
                     <td>
@@ -499,7 +499,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="repo-chip-list">
                         <%= for repo <- conflict_repos(entry) do %>
-                          <span class="repo-chip repo-chip-conflict"><%= repo %></span>
+                          <.repo_chip repo={repo} class="repo-chip-conflict" />
                         <% end %>
                       </div>
                     </td>
@@ -536,7 +536,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
+                        <.repo_chip repo={repo_label(entry)} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -588,7 +588,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% else %>
                           <span class="issue-id"><%= entry.issue_identifier %></span>
                         <% end %>
-                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
+                        <.repo_chip repo={repo_label(entry)} />
                       </div>
                     </td>
                     <td class="numeric"><%= format_optional_int(entry.rounds_asked) %></td>
@@ -642,7 +642,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% else %>
                           <span class="issue-id"><%= entry.issue_identifier %></span>
                         <% end %>
-                        <span :if={repo_label(entry)} class="repo-chip"><%= repo_label(entry) %></span>
+                        <.repo_chip repo={repo_label(entry)} />
                       </div>
                     </td>
                     <td>
@@ -724,6 +724,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp repo_label(%{repo_key: repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
   defp repo_label(_entry), do: nil
+
+  defp repo_chip(assigns) do
+    assigns = Map.put_new(assigns, :class, nil)
+
+    ~H"""
+    <span
+      :if={@repo}
+      class={["repo-chip", @class]}
+      title={@repo}
+      aria-label={"Repository #{@repo}"}
+    >
+      <span class="repo-chip-text"><%= @repo %></span>
+    </span>
+    """
+  end
 
   defp conflict_repos(%{repo_keys: repos}) when is_list(repos), do: repos
   defp conflict_repos(_entry), do: []

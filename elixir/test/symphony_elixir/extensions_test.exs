@@ -787,7 +787,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "MT-HTTP"
     assert html =~ "MT-WATCH"
     assert html =~ "MT-RETRY"
-    assert html =~ ~s(class="repo-chip">default</span>)
+    assert_repo_chip(html, "default")
     assert html =~ "Conflict"
     assert html =~ "No repo conflicts"
     assert html =~ "https://linear.app/example/issue/MT-WATCH"
@@ -882,7 +882,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "MT-API"
     assert html =~ "MT-API-WATCH"
     assert html =~ "MT-CONFLICT"
-    assert html =~ ~s(class="repo-chip">api</span>)
+    assert_repo_chip(html, "api")
     refute html =~ "MT-HTTP"
     refute html =~ "MT-WEB-RETRY"
 
@@ -936,9 +936,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ ~s(<option value="conflict" selected)
     assert html =~ "MT-CONFLICT-REPO"
-    assert html =~ ~s(class="repo-chip">conflict</span>)
+    assert_repo_chip(html, "conflict")
     refute html =~ "MT-API"
-    refute html =~ ~s(class="repo-chip repo-chip-conflict">api</span>)
+    refute html =~ conflict_repo_chip_pattern("api")
   end
 
   test "observability state payload exposes conflict row data shape" do
@@ -1045,12 +1045,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
 
     assert html =~ "MT-AWAIT"
-    assert html =~ ~s(class="repo-chip">api</span>)
+    assert_repo_chip(html, "api")
     assert html =~ "needs acceptance criteria"
     assert html =~ "https://example.org/MT-AWAIT"
     assert html =~ "2026-05-05T03:00:00Z"
     assert html =~ "MT-SKIP"
-    assert html =~ ~s(class="repo-chip">web</span>)
+    assert_repo_chip(html, "web")
     assert html =~ "Scored"
     assert html =~ "vague description"
     assert html =~ "MT-ERR"
@@ -1678,6 +1678,23 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp assert_repo_chip(html, repo) do
+    assert html =~ repo_chip_pattern(repo)
+    assert html =~ ~s(<span class="repo-chip-text">#{repo}</span>)
+  end
+
+  defp repo_chip_pattern(repo) do
+    escaped_repo = Regex.escape(repo)
+
+    ~r/<span(?=[^>]*class="[^"]*\brepo-chip\b[^"]*")(?=[^>]*title="#{escaped_repo}")(?=[^>]*aria-label="Repository #{escaped_repo}")/
+  end
+
+  defp conflict_repo_chip_pattern(repo) do
+    escaped_repo = Regex.escape(repo)
+
+    ~r/<span(?=[^>]*class="[^"]*\brepo-chip-conflict\b[^"]*")(?=[^>]*title="#{escaped_repo}")(?=[^>]*aria-label="Repository #{escaped_repo}")/
   end
 
   defp static_snapshot do

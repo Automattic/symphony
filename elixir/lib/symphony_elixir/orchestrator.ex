@@ -331,7 +331,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> enforce_issue_budget(issue_id)
 
         persist_running_entry(updated_running_entry)
-        notify_transcript(state.repo_key, issue_id, update)
+        notify_transcript(running_repo_key(state, updated_running_entry), issue_id, update)
         notify_dashboard()
         {:noreply, state}
     end
@@ -3763,7 +3763,7 @@ defmodule SymphonyElixir.Orchestrator do
     completed_metadata = Map.get(state.completed_run_metadata, issue_id, completed_metadata)
 
     watching_entry = %{
-      repo_key: state.repo_key,
+      repo_key: watching_repo_key(state, issue, completed_metadata, existing),
       identifier: watching_identifier(issue, issue_id, completed_metadata, existing),
       state: issue.state,
       url: watching_url(issue, completed_metadata, existing),
@@ -3783,6 +3783,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp put_watching_issue(state, _issue), do: state
+
+  defp watching_repo_key(%State{} = state, issue, completed_metadata, existing) do
+    issue_repo_key(issue) ||
+      repo_key_from(completed_metadata) ||
+      repo_key_from(existing) ||
+      state.repo_key
+  end
 
   defp watching_identifier(%Issue{identifier: identifier}, issue_id, completed_metadata, existing) do
     identifier ||

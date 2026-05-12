@@ -142,6 +142,64 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.transcript_buffer_size == 2
   end
 
+  test "orchestrator broadcasts transcript updates with the running entry repo key" do
+    issue_id = "issue-api-transcript"
+    repo_key = "api"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "API-188",
+      title: "Repo transcript test",
+      description: "Route transcript events by repo",
+      state: "In Progress",
+      url: "https://example.org/issues/API-188"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :RepoTranscriptOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      repo_key: repo_key,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    assert :ok = ObservabilityPubSub.subscribe_transcript()
+
+    update = %{
+      event: :notification,
+      payload: %{method: "some-event"},
+      timestamp: DateTime.utc_now()
+    }
+
+    send(pid, {:codex_worker_update, issue_id, update})
+
+    assert_receive {:transcript_event, transcript_event}
+    assert Map.take(transcript_event, [:repo_key, :issue_id]) == %{repo_key: repo_key, issue_id: issue_id}
+  end
+
   test "orchestrator keeps transcript available when running issue becomes watched" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -150,6 +208,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     issue_id = "issue-watch-transcript"
+    repo_key = "api"
     started_at = DateTime.utc_now()
     event_at = DateTime.add(started_at, 30, :second)
 
@@ -196,7 +255,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       pid: worker_pid,
       ref: nil,
       run_id: "run-watch-transcript",
-      repo_key: Config.repo_key!(),
+      repo_key: repo_key,
       identifier: running_issue.identifier,
       issue: running_issue,
       session_id: "thread-watch-transcript-turn-1",
@@ -236,6 +295,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert [
              %{
                issue_id: ^issue_id,
+               repo_key: ^repo_key,
                identifier: "MT-WATCH-TX",
                state: "In Review",
                session_id: "thread-watch-transcript-turn-1",

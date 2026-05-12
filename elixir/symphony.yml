@@ -86,7 +86,7 @@ watchdog:
 observability:
   transcript_buffer_size: 200
 notifications:
-  enabled: true
+  enabled: false
   channels:
     - kind: slack
       webhook_url: $SLACK_WEBHOOK_URL

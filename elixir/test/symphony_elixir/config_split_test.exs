@@ -3,6 +3,8 @@ defmodule SymphonyElixir.ConfigSplitTest do
 
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.SystemSchema
+  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.PromptBuilder
   alias SymphonyElixir.Repo.Supervisor, as: RepoSupervisor
 
   setup do
@@ -478,6 +480,43 @@ defmodule SymphonyElixir.ConfigSplitTest do
     }
 
     assert SymphonyElixir.PromptBuilder.build_prompt(issue) == "API api RSM-API"
+  end
+
+  test "repo workflow with an empty prompt falls back to the default prompt", %{root: root} do
+    api_repo =
+      write_repo!(root, "api", """
+      ---
+      ---
+      """)
+
+    write_symphony_text!(root, """
+    tracker:
+      kind: memory
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+      - name: api
+        path: #{api_repo.path}
+        workflow: WORKFLOW.md
+        team: Test
+    """)
+
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    issue = %Issue{
+      id: "issue-api-fallback",
+      identifier: "RSM-FALLBACK",
+      title: "Use default prompt",
+      state: "Todo",
+      repo_key: "api"
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "You are working on a Linear issue."
+    assert prompt =~ "Identifier: RSM-FALLBACK"
+    assert prompt =~ "Title: <linear_issue_title>\nUse default prompt\n</linear_issue_title>"
   end
 
   test "repo workflow verification deep merges over operator defaults", %{root: root} do

@@ -318,6 +318,41 @@ defmodule SymphonyElixir.QualityGateTest do
       assert Map.get(result.cache, "ID-EDIT").reason == "rescored"
     end
 
+    test "a non-DateTime updated_at value still invalidates the cached entry" do
+      config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
+      cached_updated_at = ~U[2026-05-05 03:00:00Z]
+      edited_issue = issue("ID-NON-DATETIME", updated_at: "2026-05-05T04:00:00Z")
+
+      cache = %{
+        "ID-NON-DATETIME" => %{
+          updated_at: cached_updated_at,
+          comment_signature: nil,
+          score: 5,
+          reason: "cached clarification",
+          passed?: false,
+          awaiting_clarification?: true,
+          questions: ["q1", "q2", "q3"],
+          rounds_asked: 1,
+          max_rounds: 2,
+          pass_threshold: 6,
+          comment_posted?: true,
+          posted_at: ~U[2026-05-05 04:00:00Z],
+          identifier: "RSM-ID-NON-DATETIME",
+          title: "Title",
+          state: "Todo",
+          url: "https://linear.app/x/ID-NON-DATETIME",
+          scored_at: cached_updated_at
+        }
+      }
+
+      Process.put(:quality_gate_stub_results, %{"ID-NON-DATETIME" => {:ok, %{score: 8, reason: "rescored"}}})
+
+      result = QualityGate.evaluate([edited_issue], config, cache, provider_module: StubProvider)
+
+      assert [%Issue{id: "ID-NON-DATETIME"}] = result.passed
+      assert Map.get(result.cache, "ID-NON-DATETIME").reason == "rescored"
+    end
+
     test "a new human comment within the self-bump window still re-scores" do
       config = config_enabled(pass_threshold: 6, clarification_floor: 4, max_clarification_rounds: 2)
       cached_updated_at = ~U[2026-05-05 03:00:00Z]
@@ -755,6 +790,26 @@ defmodule SymphonyElixir.QualityGateTest do
 
     test "is a no-op when the cache has no entry for the skip" do
       assert QualityGate.mark_comment_posted(%{}, %{issue_id: "ID-MISSING"}, DateTime.utc_now()) == %{}
+    end
+
+    test "is a no-op when the entry has no issue id" do
+      cache = %{
+        "ID-1" => %{
+          updated_at: ~U[2026-05-05 03:00:00Z],
+          score: 3,
+          reason: "vague",
+          passed?: false,
+          comment_posted?: false,
+          posted_at: nil,
+          identifier: nil,
+          title: nil,
+          state: nil,
+          url: nil,
+          scored_at: ~U[2026-05-05 03:00:00Z]
+        }
+      }
+
+      assert QualityGate.mark_comment_posted(cache, %{}, DateTime.utc_now()) == cache
     end
   end
 

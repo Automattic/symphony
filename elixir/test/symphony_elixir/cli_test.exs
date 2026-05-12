@@ -10,7 +10,10 @@ defmodule SymphonyElixir.CLITest do
       %{
         file_regular?: fn _path -> true end,
         set_symphony_file_path: fn _path -> :ok end,
+        set_state_root: fn _path -> :ok end,
+        set_state_root_from_env: fn -> :ok end,
         set_logs_root: fn _path -> :ok end,
+        set_logs_root_from_env: fn -> :ok end,
         set_server_host_override: fn _host -> :ok end,
         set_server_port_override: fn _port -> :ok end,
         ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
@@ -125,6 +128,84 @@ defmodule SymphonyElixir.CLITest do
     assert :ok = CLI.evaluate([@ack_flag, "--logs-root", "tmp/custom-logs"], deps)
     assert_received {:logs_root, expanded_path}
     assert expanded_path == Path.expand("tmp/custom-logs")
+  end
+
+  test "accepts --state-root and passes an expanded root to runtime deps" do
+    parent = self()
+
+    deps =
+      base_deps(%{
+        set_state_root: fn path ->
+          send(parent, {:state_root, path})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--state-root", "tmp/custom-state"], deps)
+    assert_received {:state_root, expanded_path}
+    assert expanded_path == Path.expand("tmp/custom-state")
+  end
+
+  test "configure applies runtime inputs without starting the application" do
+    parent = self()
+
+    deps =
+      base_deps(%{
+        set_state_root: fn path ->
+          send(parent, {:state_root, path})
+          :ok
+        end,
+        ensure_all_started: fn ->
+          send(parent, :started)
+          {:ok, [:symphony_elixir]}
+        end
+      })
+
+    assert :ok = CLI.configure([@ack_flag, "--state-root", "tmp/configure-state"], deps)
+    assert_received {:state_root, expanded_path}
+    assert expanded_path == Path.expand("tmp/configure-state")
+    refute_received :started
+  end
+
+  test "maybe_configure_burrito_runtime is a no-op outside Burrito" do
+    assert :ok = CLI.maybe_configure_burrito_runtime()
+  end
+
+  test "reads root env overrides before applying flag overrides" do
+    parent = self()
+
+    deps =
+      base_deps(%{
+        set_state_root_from_env: fn ->
+          send(parent, :state_root_from_env)
+          :ok
+        end,
+        set_logs_root_from_env: fn ->
+          send(parent, :logs_root_from_env)
+          :ok
+        end,
+        set_state_root: fn path ->
+          send(parent, {:state_root, path})
+          :ok
+        end,
+        set_logs_root: fn path ->
+          send(parent, {:logs_root, path})
+          :ok
+        end
+      })
+
+    assert :ok =
+             CLI.evaluate(
+               [@ack_flag, "--state-root", "tmp/custom-state", "--logs-root", "tmp/custom-logs"],
+               deps
+             )
+
+    assert_receive :state_root_from_env
+    assert_receive :logs_root_from_env
+    assert_receive {:state_root, state_root}
+    assert_receive {:logs_root, logs_root}
+    assert state_root == Path.expand("tmp/custom-state")
+    assert logs_root == Path.expand("tmp/custom-logs")
   end
 
   test "accepts --host and passes it to runtime deps" do

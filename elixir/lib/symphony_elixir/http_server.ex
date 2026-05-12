@@ -5,6 +5,7 @@ defmodule SymphonyElixir.HttpServer do
 
   alias SymphonyElixir.{Config, Orchestrator}
   alias SymphonyElixirWeb.Endpoint
+  require Logger
 
   @secret_key_bytes 48
   @secret_key_min_bytes 64
@@ -102,6 +103,7 @@ defmodule SymphonyElixir.HttpServer do
 
   defp load_or_create_secret_key_base do
     path = secret_key_base_path()
+    migrate_legacy_secret_key_base(path)
 
     with {:ok, contents} <- File.read(path),
          key = String.trim(contents),
@@ -127,6 +129,39 @@ defmodule SymphonyElixir.HttpServer do
   end
 
   defp secret_key_base_path do
+    SymphonyElixir.Paths.secret_key_base_file()
+  end
+
+  defp legacy_secret_key_base_path do
     Path.join([System.user_home!(), ".symphony", "secret_key_base"])
+  end
+
+  defp migrate_legacy_secret_key_base(new_path) do
+    old_path = legacy_secret_key_base_path()
+
+    if old_path != new_path and File.exists?(old_path) and not File.exists?(new_path) do
+      case File.mkdir_p(Path.dirname(new_path)) do
+        :ok ->
+          rename_legacy_secret_key_base(old_path, new_path)
+
+        {:error, reason} ->
+          Logger.warning("failed to migrate secret_key_base from ~/.symphony/ to #{new_path}: #{inspect(reason)}")
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp rename_legacy_secret_key_base(old_path, new_path) do
+    case File.rename(old_path, new_path) do
+      :ok ->
+        Logger.info("migrated secret_key_base from ~/.symphony/ to #{new_path}")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("failed to migrate secret_key_base from ~/.symphony/ to #{new_path}: #{inspect(reason)}")
+        :ok
+    end
   end
 end

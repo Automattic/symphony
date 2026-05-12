@@ -5,10 +5,10 @@ defmodule Mix.Tasks.Symphony.Audit do
 
   use Mix.Task
 
-  alias SymphonyElixir.AuditLog
+  alias SymphonyElixir.{AuditLog, Paths}
 
   @shortdoc "Print Symphony audit events for an issue"
-  @switches [from: :string, to: :string, logs_root: :string]
+  @switches [from: :string, to: :string, logs_root: :string, state_root: :string]
 
   @impl Mix.Task
   @spec run([String.t()]) :: :ok
@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Symphony.Audit do
 
     case {positional, invalid} do
       {[issue_id], []} ->
-        maybe_set_logs_root(opts)
+        maybe_set_audit_root(opts)
         print_events(issue_id, opts)
 
       _ ->
@@ -25,11 +25,23 @@ defmodule Mix.Tasks.Symphony.Audit do
     end
   end
 
-  defp maybe_set_logs_root(opts) do
+  defp maybe_set_audit_root(opts) do
+    case Keyword.get(opts, :state_root) do
+      nil -> maybe_set_legacy_logs_root(opts)
+      state_root -> set_state_root(state_root)
+    end
+  end
+
+  defp maybe_set_legacy_logs_root(opts) do
     case Keyword.get(opts, :logs_root) do
       nil -> :ok
       logs_root -> AuditLog.set_dir(AuditLog.default_dir(Path.expand(logs_root)))
     end
+  end
+
+  defp set_state_root(state_root) do
+    :ok = Paths.set_state_root(Path.expand(state_root))
+    AuditLog.set_dir(Paths.audit_dir())
   end
 
   defp print_events(issue_id, opts) do
@@ -49,6 +61,6 @@ defmodule Mix.Tasks.Symphony.Audit do
   end
 
   defp usage do
-    "Usage: mix symphony.audit ISSUE_ID [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--logs-root PATH]"
+    "Usage: mix symphony.audit ISSUE_ID [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--state-root PATH] [--logs-root PATH]"
   end
 end

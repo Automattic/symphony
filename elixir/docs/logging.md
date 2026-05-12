@@ -35,7 +35,7 @@ When logging Codex execution lifecycle events, include:
 ## Audit Events
 
 General application logs are not the audit trail. Symphony writes side-effect audit events to
-append-only NDJSON files under `<logs-root>/audit/YYYY-MM-DD.ndjson`. Events include the Linear
+append-only NDJSON files under `<state-root>/audit/YYYY-MM-DD.ndjson`. Events include the Linear
 issue ID, run ID, timestamp, event type, and structured details for prompt sends, tool calls, file
 changes, PR actions, Linear state/comment actions, and token usage deltas when those fields are
 available.
@@ -46,7 +46,7 @@ common API key environment variables are scrubbed before records are written.
 
 Each audit record includes `previous_hash` and `record_hash` fields. Use
 `SymphonyElixir.AuditLog.verify_file/1` to verify a daily file, or `mix symphony.audit ISSUE_ID
---from YYYY-MM-DD --to YYYY-MM-DD --logs-root /path/to/logs-root` to print an issue-scoped
+--from YYYY-MM-DD --to YYYY-MM-DD --state-root /path/to/state-root` to print an issue-scoped
 chronological event stream.
 
 ## Checklist For New Logs

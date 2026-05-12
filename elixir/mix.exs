@@ -81,6 +81,7 @@ defmodule SymphonyElixir.MixProject do
         plt_add_apps: [:mix, :mnesia]
       ],
       escript: escript(),
+      releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -109,6 +110,7 @@ defmodule SymphonyElixir.MixProject do
       {:yaml_elixir, "~> 2.12"},
       {:solid, "~> 1.2"},
       {:ecto, "~> 3.13"},
+      {:burrito, "~> 1.5", only: :prod, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]
@@ -129,6 +131,24 @@ defmodule SymphonyElixir.MixProject do
       main_module: SymphonyElixir.CLI,
       name: "symphony",
       path: "bin/symphony"
+    ]
+  end
+
+  defp releases do
+    [
+      symphony: [
+        include_executables_for: [:unix],
+        applications: [
+          symphony_elixir: :permanent
+        ],
+        steps: [:assemble, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            macos_arm64: [os: :darwin, cpu: :aarch64],
+            macos_x86_64: [os: :darwin, cpu: :x86_64]
+          ]
+        ]
+      ]
     ]
   end
 end

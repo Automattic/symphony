@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e
+.PHONY: help all setup deps build package fmt fmt-check lint test coverage ci dialyzer e2e
 
 MIX ?= mix
 
@@ -13,6 +13,12 @@ deps:
 
 build:
 	$(MIX) build
+
+package:
+	MIX_ENV=prod $(MIX) deps.get --only prod
+	MIX_ENV=prod $(MIX) release symphony --overwrite
+	@if [ -f burrito_out/symphony_macos_arm64 ]; then mv burrito_out/symphony_macos_arm64 burrito_out/symphony-macos-arm64; fi
+	@if [ -f burrito_out/symphony_macos_x86_64 ]; then mv burrito_out/symphony_macos_x86_64 burrito_out/symphony-macos-x86_64; fi
 
 fmt:
 	$(MIX) format

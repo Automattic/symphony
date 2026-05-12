@@ -311,8 +311,8 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(workspace, "strategy")
     refute Map.has_key?(workspace, "repo")
 
-    assert [%{"workflow" => "WORKFLOW.md", "workspace" => repo_workspace}] =
-             repos
+    assert %{"workflow" => "WORKFLOW.md", "workspace" => repo_workspace} =
+             Enum.find(repos, &(Map.get(&1, "name") == "symphony"))
 
     assert Map.get(repo_workspace, "strategy") == "worktree"
     assert Map.get(repo_workspace, "repo") == "~/Projects/symphony"

@@ -142,6 +142,119 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.transcript_buffer_size == 2
   end
 
+  test "orchestrator keeps transcript available when running issue becomes watched" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Done", "Canceled"]
+    )
+
+    issue_id = "issue-watch-transcript"
+    started_at = DateTime.utc_now()
+    event_at = DateTime.add(started_at, 30, :second)
+
+    running_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-WATCH-TX",
+      title: "Watch transcript",
+      description: "Keep transcript while issue is watched",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-WATCH-TX"
+    }
+
+    watched_issue = %{running_issue | state: "In Review"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [watched_issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :WatchingTranscriptOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        after
+          60_000 -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      if Process.alive?(worker_pid), do: Process.exit(worker_pid, :shutdown)
+    end)
+
+    transcript_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"delta" => "watched transcript"}
+      },
+      timestamp: event_at
+    }
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: nil,
+      run_id: "run-watch-transcript",
+      repo_key: Config.repo_key!(),
+      identifier: running_issue.identifier,
+      issue: running_issue,
+      session_id: "thread-watch-transcript-turn-1",
+      turn_count: 2,
+      transcript_buffer: :queue.from_list([transcript_event]),
+      transcript_buffer_size: 1,
+      last_codex_message: %{event: :notification},
+      last_codex_timestamp: event_at,
+      last_codex_event: :notification,
+      last_event_at: event_at,
+      codex_input_tokens: 9,
+      codex_cached_input_tokens: 3,
+      codex_output_tokens: 5,
+      codex_total_tokens: 14,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | running: %{issue_id => running_entry},
+          claimed: MapSet.put(state.claimed, issue_id),
+          retry_attempts: %{}
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{watching: [%{identifier: "MT-WATCH-TX", transcript_buffer: [^transcript_event]}]} -> true
+        _ -> false
+      end)
+
+    assert snapshot.running == []
+
+    assert [
+             %{
+               issue_id: ^issue_id,
+               identifier: "MT-WATCH-TX",
+               state: "In Review",
+               session_id: "thread-watch-transcript-turn-1",
+               started_at: ^started_at,
+               last_event_at: ^event_at,
+               turn_count: 2,
+               tokens: %{
+                 input_tokens: 9,
+                 cached_input_tokens: 3,
+                 uncached_input_tokens: 6,
+                 output_tokens: 5,
+                 total_tokens: 14
+               },
+               transcript_buffer: [^transcript_event],
+               transcript_buffer_size: 1
+             }
+           ] = snapshot.watching
+  end
+
   test "orchestrator transcript buffer is bounded by observability config" do
     write_workflow_file!(Workflow.workflow_file_path(), observability_transcript_buffer_size: 2)
 
@@ -1804,8 +1917,18 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "orchestrator watches completed issues in non-active non-terminal states" do
     issue_id = "issue-watch"
     last_ran_at = DateTime.add(DateTime.utc_now(), -7_200, :second)
+    started_at = DateTime.add(last_ran_at, -180, :second)
     issue_url = "https://linear.app/example/issue/MT-WATCH"
     pull_request_url = "https://github.com/example/repo/pull/456"
+
+    transcript_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"delta" => "ready for review"}
+      },
+      timestamp: last_ran_at
+    }
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -1841,7 +1964,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
             issue_id => %{
               identifier: "MT-WATCH",
               url: issue_url,
-              last_ran_at: last_ran_at
+              last_ran_at: last_ran_at,
+              session_id: "thread-watch-turn-watch",
+              started_at: started_at,
+              last_event_at: last_ran_at,
+              turn_count: 3,
+              tokens: %{
+                input_tokens: 10,
+                cached_input_tokens: 4,
+                uncached_input_tokens: 6,
+                output_tokens: 7,
+                total_tokens: 17
+              },
+              transcript_buffer: [transcript_event],
+              transcript_buffer_size: 1
             }
           },
           running: %{},
@@ -1869,7 +2005,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                url: ^issue_url,
                pull_request_url: ^pull_request_url,
                last_ran_at: ^last_ran_at,
-               seconds_since_last_run: seconds_since_last_run
+               seconds_since_last_run: seconds_since_last_run,
+               session_id: "thread-watch-turn-watch",
+               started_at: ^started_at,
+               last_event_at: ^last_ran_at,
+               turn_count: 3,
+               tokens: %{
+                 input_tokens: 10,
+                 cached_input_tokens: 4,
+                 uncached_input_tokens: 6,
+                 output_tokens: 7,
+                 total_tokens: 17
+               },
+               transcript_buffer: [^transcript_event],
+               transcript_buffer_size: 1
              }
            ] = snapshot.watching
 
@@ -2010,6 +2159,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     :ok = RunStore.clear()
 
     ended_at = DateTime.add(DateTime.utc_now(), -3_600, :second)
+    started_at = DateTime.add(ended_at, -120, :second)
+
+    transcript_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"delta" => "rehydrated transcript"}
+      },
+      timestamp: ended_at
+    }
 
     assert :ok =
              RunStore.put_run(%{
@@ -2021,10 +2180,22 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                state: "In Progress",
                status: "success",
                attempt: 1,
-               started_at: DateTime.add(ended_at, -120, :second),
+               started_at: started_at,
                ended_at: ended_at,
                error: nil,
                pull_request_url: pull_request_url,
+               session_id: "thread-watch-restart-turn-1",
+               last_event_at: ended_at,
+               turn_count: 4,
+               tokens: %{
+                 input_tokens: 20,
+                 cached_input_tokens: 5,
+                 uncached_input_tokens: 15,
+                 output_tokens: 8,
+                 total_tokens: 28
+               },
+               transcript_buffer: [transcript_event],
+               transcript_buffer_size: 1,
                runtime_seconds: 120
              })
 
@@ -2060,7 +2231,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                identifier: ^issue_identifier,
                state: "In Review",
                url: ^issue_url,
-               pull_request_url: ^pull_request_url
+               pull_request_url: ^pull_request_url,
+               session_id: "thread-watch-restart-turn-1",
+               started_at: ^started_at,
+               last_event_at: ^ended_at,
+               turn_count: 4,
+               tokens: %{
+                 input_tokens: 20,
+                 cached_input_tokens: 5,
+                 uncached_input_tokens: 15,
+                 output_tokens: 8,
+                 total_tokens: 28
+               },
+               transcript_buffer: [^transcript_event],
+               transcript_buffer_size: 1
              }
            ] = snapshot.watching
 

@@ -1947,7 +1947,8 @@ SHOULD return:
 - each running row SHOULD include `turn_count`
 - each running row SHOULD include `repo_key`
 - `watching` (list of recently completed issues now in non-active, non-terminal states)
-- each watching row SHOULD include issue identifier, current state, issue URL, and last-run time
+- each watching row SHOULD include issue identifier, current state, issue URL, last-run time, and
+  final transcript replay metadata while the watch remains open
 - `retrying` (list of retry queue rows)
 - each retry row SHOULD include `repo_key`
 - `repos` (list of repo keys observed in current snapshot rows)
@@ -2531,7 +2532,8 @@ function reconcile_watching_issues(state):
         identifier: issue.identifier or metadata.identifier or issue.id,
         state: issue.state,
         url: issue.url or metadata.url,
-        last_ran_at: metadata.last_ran_at or now_utc()
+        last_ran_at: metadata.last_ran_at or now_utc(),
+        transcript_buffer: metadata.transcript_buffer or []
       }
 
   remove missing issue IDs from completed_run_metadata and watching

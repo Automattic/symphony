@@ -92,30 +92,18 @@ defmodule SymphonyElixirWeb.Presenter do
       when is_binary(issue_identifier) do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
-        case Enum.find(snapshot.running, &(repo_key_matches?(&1, repo_key) and &1.identifier == issue_identifier)) do
-          nil ->
+        running = Enum.find(snapshot.running, &(repo_key_matches?(&1, repo_key) and &1.identifier == issue_identifier))
+        watching = snapshot |> Map.get(:watching, []) |> Enum.find(&(repo_key_matches?(&1, repo_key) and &1.identifier == issue_identifier))
+
+        case {running, watching} do
+          {nil, nil} ->
             {:error, :issue_not_found}
 
-          running ->
-            {:ok,
-             %{
-               repo_key: Map.get(running, :repo_key) || repo_key,
-               issue_id: running.issue_id,
-               issue_identifier: running.identifier,
-               state: running.state,
-               session_id: running.session_id,
-               started_at: iso8601(running.started_at),
-               last_event_at: iso8601(Map.get(running, :last_event_at) || running.last_codex_timestamp),
-               turn_count: Map.get(running, :turn_count, 0),
-               tokens: %{
-                 input_tokens: running.codex_input_tokens,
-                 cached_input_tokens: Map.get(running, :codex_cached_input_tokens, 0),
-                 uncached_input_tokens: uncached_input_tokens(running.codex_input_tokens, Map.get(running, :codex_cached_input_tokens, 0)),
-                 output_tokens: running.codex_output_tokens,
-                 total_tokens: running.codex_total_tokens
-               },
-               events: transcript_events(running)
-             }}
+          {%{} = running, _watching} ->
+            {:ok, running_transcript_payload(running, repo_key)}
+
+          {nil, %{} = watching} ->
+            {:ok, watching_transcript_payload(watching, repo_key)}
         end
 
       _ ->
@@ -551,6 +539,62 @@ defmodule SymphonyElixirWeb.Presenter do
       }
     ]
     |> Enum.reject(&is_nil(&1.at))
+  end
+
+  defp running_transcript_payload(running, repo_key) do
+    %{
+      repo_key: Map.get(running, :repo_key) || repo_key,
+      issue_id: running.issue_id,
+      issue_identifier: running.identifier,
+      state: running.state,
+      session_id: running.session_id,
+      started_at: iso8601(running.started_at),
+      last_event_at: iso8601(Map.get(running, :last_event_at) || running.last_codex_timestamp),
+      turn_count: Map.get(running, :turn_count, 0),
+      tokens: transcript_tokens(running),
+      events: transcript_events(running)
+    }
+  end
+
+  defp watching_transcript_payload(watching, repo_key) do
+    %{
+      repo_key: Map.get(watching, :repo_key) || repo_key,
+      issue_id: watching.issue_id,
+      issue_identifier: watching.identifier,
+      state: watching.state,
+      session_id: Map.get(watching, :session_id),
+      started_at: iso8601(Map.get(watching, :started_at) || Map.get(watching, :last_ran_at)),
+      last_event_at: iso8601(Map.get(watching, :last_event_at) || Map.get(watching, :last_ran_at)),
+      turn_count: Map.get(watching, :turn_count, 0),
+      tokens: transcript_tokens(watching),
+      events: transcript_events(watching)
+    }
+  end
+
+  defp transcript_tokens(%{tokens: tokens}) when is_map(tokens) do
+    input_tokens = Map.get(tokens, :input_tokens, 0)
+    cached_input_tokens = Map.get(tokens, :cached_input_tokens, 0)
+
+    %{
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: Map.get(tokens, :uncached_input_tokens, uncached_input_tokens(input_tokens, cached_input_tokens)),
+      output_tokens: Map.get(tokens, :output_tokens, 0),
+      total_tokens: Map.get(tokens, :total_tokens, 0)
+    }
+  end
+
+  defp transcript_tokens(entry) when is_map(entry) do
+    input_tokens = Map.get(entry, :codex_input_tokens, 0)
+    cached_input_tokens = Map.get(entry, :codex_cached_input_tokens, 0)
+
+    %{
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: uncached_input_tokens(input_tokens, cached_input_tokens),
+      output_tokens: Map.get(entry, :codex_output_tokens, 0),
+      total_tokens: Map.get(entry, :codex_total_tokens, 0)
+    }
   end
 
   defp transcript_events(%{transcript_buffer: events}) when is_list(events), do: events

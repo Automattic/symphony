@@ -276,7 +276,7 @@ transitions until dispatch resumes.
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
-- LiveView for a running issue transcript at `/repos/<repo_key>/issues/<issue_identifier>/transcript`,
+- LiveView for a running or watched issue transcript at `/repos/<repo_key>/issues/<issue_identifier>/transcript`,
   where `<repo_key>` is the `name` of the repo entry under `repos:` (multi-repo support changed
   this URL shape; old `/issues/<id>/transcript` bookmarks need updating)
 - JSON API for operational debugging under `/api/v1/*`

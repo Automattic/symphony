@@ -446,7 +446,8 @@ repos:
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `observability.transcript_buffer_size` controls how many recent Codex events each running issue
-  keeps for transcript replay. Default: `200`.
+  keeps for transcript replay. When a completed run moves into Watching, that final buffer is
+  retained for the watched issue until the watch closes. Default: `200`.
 - The Phoenix LiveView dashboard, transcript view, and JSON API start by default on an ephemeral
   local port. Set `server.port` or pass CLI `--port` to pin the port. Set
   `observability.dashboard_enabled: false` to keep the default observability service off unless

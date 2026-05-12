@@ -1512,6 +1512,61 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "transcript liveview replays watched issue buffered events" do
+    orchestrator_name = Module.concat(__MODULE__, :WatchingTranscriptOrchestrator)
+
+    watched_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/agentMessage/delta",
+        "params" => %{"delta" => "watched hello"}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    watched_at = DateTime.utc_now()
+
+    snapshot =
+      static_snapshot()
+      |> Map.put(:running, [])
+      |> update_in([:watching], fn [watching] ->
+        [
+          watching
+          |> Map.put(:session_id, "thread-watch-turn-1")
+          |> Map.put(:started_at, DateTime.add(watched_at, -300, :second))
+          |> Map.put(:last_event_at, watched_at)
+          |> Map.put(:turn_count, 4)
+          |> Map.put(:tokens, %{
+            input_tokens: 21,
+            cached_input_tokens: 5,
+            uncached_input_tokens: 16,
+            output_tokens: 13,
+            total_tokens: 34
+          })
+          |> Map.put(:transcript_buffer, [watched_event])
+          |> Map.put(:transcript_buffer_size, 1)
+        ]
+      end)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-WATCH/transcript")
+    assert html =~ "Live Transcript"
+    assert html =~ "MT-WATCH"
+    assert html =~ "In Review"
+    assert html =~ "thread-watch-turn-1"
+    assert html =~ "watched hello"
+    assert html =~ "34"
+    assert html =~ "buffered and live events for this issue"
+  end
+
   test "transcript liveview routes encoded non-default repo keys" do
     orchestrator_name = Module.concat(__MODULE__, :EncodedRepoTranscriptOrchestrator)
     repo_key = "github.com/acme/repo"

@@ -164,7 +164,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
           <div class="section-header">
             <div>
               <h2 class="section-title">Events</h2>
-              <p class="section-copy"><%= @event_count %> buffered and live events for this running issue.</p>
+              <p class="section-copy"><%= @event_count %> buffered and live events for this issue.</p>
             </div>
 
             <div class="transcript-filter-group" role="group" aria-label="Event type filters">

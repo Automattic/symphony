@@ -2846,7 +2846,15 @@ defmodule SymphonyElixir.Orchestrator do
             last_ran_at: Map.get(most_recent, :ended_at) || Map.get(most_recent, :started_at),
             awaiting_review_notified_at: Map.get(most_recent, :awaiting_review_notified_at),
             issue_completed_notified_at: Map.get(most_recent, :issue_completed_notified_at),
-            watch_closed_at: Map.get(most_recent, :watch_closed_at)
+            watch_closed_at: Map.get(most_recent, :watch_closed_at),
+            session_id: Map.get(most_recent, :session_id),
+            started_at: Map.get(most_recent, :started_at),
+            last_event_at: Map.get(most_recent, :last_event_at) || Map.get(most_recent, :ended_at),
+            turn_count: Map.get(most_recent, :turn_count, 0),
+            tokens: Map.get(most_recent, :tokens, %{}),
+            transcript_path: Map.get(most_recent, :transcript_path),
+            transcript_buffer: transcript_buffer_list(most_recent),
+            transcript_buffer_size: transcript_buffer_size(most_recent)
           }
 
           Map.put(acc, issue_id, metadata)
@@ -3112,6 +3120,8 @@ defmodule SymphonyElixir.Orchestrator do
       codex_app_server_pid: Map.get(running_entry, :codex_app_server_pid),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
+      transcript_buffer: transcript_buffer_list(running_entry),
+      transcript_buffer_size: transcript_buffer_size(running_entry),
       runtime_seconds: 0,
       last_event: Map.get(running_entry, :last_codex_event),
       last_event_at: Map.get(running_entry, :last_event_at) || Map.get(running_entry, :last_codex_timestamp),
@@ -3132,6 +3142,8 @@ defmodule SymphonyElixir.Orchestrator do
       codex_app_server_pid: Map.get(running_entry, :codex_app_server_pid),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
+      transcript_buffer: transcript_buffer_list(running_entry),
+      transcript_buffer_size: transcript_buffer_size(running_entry),
       runtime_seconds: running_seconds(Map.get(running_entry, :started_at), DateTime.utc_now()),
       last_event: Map.get(running_entry, :last_codex_event),
       last_event_at: Map.get(running_entry, :last_event_at) || Map.get(running_entry, :last_codex_timestamp),
@@ -3408,7 +3420,15 @@ defmodule SymphonyElixir.Orchestrator do
           url: URLUtils.present_url(Map.get(watching_entry, :url)),
           pull_request_url: URLUtils.pull_request_url(watching_entry),
           last_ran_at: last_ran_at,
-          seconds_since_last_run: seconds_since(last_ran_at, now)
+          seconds_since_last_run: seconds_since(last_ran_at, now),
+          session_id: Map.get(watching_entry, :session_id),
+          started_at: Map.get(watching_entry, :started_at),
+          last_event_at: Map.get(watching_entry, :last_event_at),
+          turn_count: Map.get(watching_entry, :turn_count, 0),
+          tokens: Map.get(watching_entry, :tokens, %{}),
+          transcript_path: Map.get(watching_entry, :transcript_path),
+          transcript_buffer: Map.get(watching_entry, :transcript_buffer, []),
+          transcript_buffer_size: Map.get(watching_entry, :transcript_buffer_size, 0)
         }
       end)
 
@@ -3572,6 +3592,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp transcript_buffer_list(_metadata), do: []
 
+  defp transcript_buffer_size(%{transcript_buffer: _buffer} = metadata),
+    do: length(transcript_buffer_list(metadata))
+
+  defp transcript_buffer_size(%{transcript_buffer_size: size}) when is_integer(size) and size >= 0,
+    do: size
+
+  defp transcript_buffer_size(metadata) when is_map(metadata), do: length(transcript_buffer_list(metadata))
+
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),
        do: pid
@@ -3709,7 +3737,15 @@ defmodule SymphonyElixir.Orchestrator do
       identifier: Map.get(running_entry, :identifier) || issue_identifier(issue),
       url: issue_url(issue),
       pull_request_url: URLUtils.pull_request_url(running_entry) || URLUtils.pull_request_url(issue),
-      last_ran_at: DateTime.utc_now()
+      last_ran_at: DateTime.utc_now(),
+      session_id: Map.get(running_entry, :session_id),
+      started_at: Map.get(running_entry, :started_at),
+      last_event_at: Map.get(running_entry, :last_event_at) || Map.get(running_entry, :last_codex_timestamp),
+      turn_count: Map.get(running_entry, :turn_count, 0),
+      tokens: run_tokens(running_entry),
+      transcript_path: Map.get(running_entry, :transcript_path),
+      transcript_buffer: transcript_buffer_list(running_entry),
+      transcript_buffer_size: transcript_buffer_size(running_entry)
     }
   end
 
@@ -3732,7 +3768,15 @@ defmodule SymphonyElixir.Orchestrator do
       state: issue.state,
       url: watching_url(issue, completed_metadata, existing),
       pull_request_url: watching_pull_request_url(issue, completed_metadata, existing),
-      last_ran_at: watching_last_ran_at(completed_metadata, existing)
+      last_ran_at: watching_last_ran_at(completed_metadata, existing),
+      session_id: watching_metadata(:session_id, completed_metadata, existing),
+      started_at: watching_metadata(:started_at, completed_metadata, existing),
+      last_event_at: watching_metadata(:last_event_at, completed_metadata, existing),
+      turn_count: watching_metadata(:turn_count, completed_metadata, existing, 0),
+      tokens: watching_metadata(:tokens, completed_metadata, existing, %{}),
+      transcript_path: watching_metadata(:transcript_path, completed_metadata, existing),
+      transcript_buffer: watching_metadata(:transcript_buffer, completed_metadata, existing, []),
+      transcript_buffer_size: watching_metadata(:transcript_buffer_size, completed_metadata, existing, 0)
     }
 
     %{state | watching: Map.put(state.watching, issue_id, watching_entry)}
@@ -3763,6 +3807,13 @@ defmodule SymphonyElixir.Orchestrator do
     Map.get(completed_metadata, :last_ran_at) ||
       Map.get(existing, :last_ran_at) ||
       DateTime.utc_now()
+  end
+
+  defp watching_metadata(key, completed_metadata, existing, default \\ nil) do
+    case Map.fetch(completed_metadata, key) do
+      {:ok, value} -> value
+      :error -> Map.get(existing, key, default)
+    end
   end
 
   defp forget_completed_issue(%State{} = state, issue_id) when is_binary(issue_id) do

@@ -20,6 +20,13 @@ repos:
       strategy: worktree
       repo: ~/Projects/symphony
       fetch_before_dispatch: true
+  - name: pinterest-for-woocommerce
+    team: PIN4WOO
+    workflow: ~/Projects/pinterest-for-woocommerce/WORKFLOW.md
+    workspace:
+      strategy: worktree
+      repo: ~/Projects/pinterest-for-woocommerce
+      fetch_before_dispatch: true
 workspace:
   root: ~/Projects/symphony-workspaces
   lifecycle:
@@ -79,7 +86,7 @@ watchdog:
 observability:
   transcript_buffer_size: 200
 notifications:
-  enabled: false
+  enabled: true
   channels:
     - kind: slack
       webhook_url: $SLACK_WEBHOOK_URL

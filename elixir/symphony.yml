@@ -22,7 +22,8 @@ repos:
       fetch_before_dispatch: true
   - name: pinterest-for-woocommerce
     team: PIN4WOO
-    workflow: ~/Projects/pinterest-for-woocommerce/WORKFLOW.md
+    base_branch: develop
+    workflow: WORKFLOW.md
     workspace:
       strategy: worktree
       repo: ~/Projects/pinterest-for-woocommerce

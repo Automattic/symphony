@@ -360,12 +360,19 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp evaluate_self_review(%{issue: issue, workspace: workspace, opts: opts, worker_host: worker_host} = run_context, config) do
     provider_module = Keyword.get(opts, :self_review_provider_module)
-    review_opts = [worker_host: worker_host]
+    review_opts = [worker_host: worker_host, base_branch: self_review_base_branch(opts)]
     review_opts = if provider_module, do: Keyword.put(review_opts, :provider_module, provider_module), else: review_opts
 
     result = SelfReview.evaluate(issue, workspace, config, review_opts)
     audit_self_review(issue, Keyword.get(opts, :run_id), result, self_review_round(run_context), opts)
     result
+  end
+
+  defp self_review_base_branch(opts) do
+    case Config.repo_base_branch(Keyword.get(opts, :repo_key)) do
+      {:ok, base_branch} -> base_branch
+      {:error, _reason} -> nil
+    end
   end
 
   defp audit_self_review(issue, run_id, result, round, opts) do

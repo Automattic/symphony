@@ -22,6 +22,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     import Ecto.Changeset
 
     @primary_key false
+    @fields [:name, :path, :workflow, :base_branch, :team, :labels, :projects, :assignee, :default]
 
     defmodule Workspace do
       @moduledoc false
@@ -52,6 +53,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
       field(:name, :string)
       field(:path, :string)
       field(:workflow, :string, default: "WORKFLOW.md")
+      field(:base_branch, :string)
       field(:team, :string)
       field(:labels, {:array, :string}, default: [])
       field(:projects, {:array, :string}, default: [])
@@ -65,12 +67,13 @@ defmodule SymphonyElixir.Config.SystemSchema do
     @spec changeset(t(), map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:name, :path, :workflow, :team, :labels, :projects, :assignee, :default], empty_values: [])
+      |> cast(attrs, @fields, empty_values: [])
       |> cast_embed(:workspace, with: &Workspace.changeset/2)
       |> validate_required([:name, :workflow])
       |> validate_string(:name)
       |> validate_optional_string(:path)
       |> validate_string(:workflow)
+      |> validate_optional_string(:base_branch)
       |> validate_string(:team)
       |> normalize_string_list(:labels)
       |> normalize_string_list(:projects)

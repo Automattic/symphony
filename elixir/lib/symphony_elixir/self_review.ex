@@ -74,6 +74,7 @@ defmodule SymphonyElixir.SelfReview do
           required(:linear_input_warnings) => [String.t()],
           required(:changed_paths) => [String.t()],
           required(:commit_messages) => String.t(),
+          required(:git_range) => String.t(),
           required(:diff) => String.t(),
           required(:diff_line_count) => non_neg_integer(),
           required(:diff_truncated?) => boolean()
@@ -241,10 +242,12 @@ defmodule SymphonyElixir.SelfReview do
 
   defp source_material(issue, workspace, config, opts) do
     worker_host = Keyword.get(opts, :worker_host)
+    comparison_base = comparison_base(workspace, opts, worker_host)
+    git_range = "#{comparison_base}..HEAD"
 
-    with {:ok, diff} <- git(workspace, ["diff", "origin/main..HEAD"], worker_host),
-         {:ok, changed_paths_output} <- git(workspace, ["diff", "--name-only", "origin/main..HEAD"], worker_host),
-         {:ok, commit_messages} <- git(workspace, ["log", "--reverse", "--format=%s%n%b%x1e", "origin/main..HEAD"], worker_host) do
+    with {:ok, diff} <- git(workspace, ["diff", git_range], worker_host),
+         {:ok, changed_paths_output} <- git(workspace, ["diff", "--name-only", git_range], worker_host),
+         {:ok, commit_messages} <- git(workspace, ["log", "--reverse", "--format=%s%n%b%x1e", git_range], worker_host) do
       changed_paths = split_lines(changed_paths_output)
       {review_diff, diff_line_count, truncated?} = truncate_diff(diff, changed_paths, config.diff_max_lines, issue)
       raw_acceptance_criteria = acceptance_criteria(issue.description)
@@ -257,6 +260,7 @@ defmodule SymphonyElixir.SelfReview do
          linear_input_warnings: linear_input_warnings(issue, raw_acceptance_criteria),
          changed_paths: changed_paths,
          commit_messages: String.trim(commit_messages),
+         git_range: git_range,
          diff: review_diff,
          diff_line_count: diff_line_count,
          diff_truncated?: truncated?
@@ -301,9 +305,39 @@ defmodule SymphonyElixir.SelfReview do
     Commit subjects and bodies:
     #{blank_fallback(source.commit_messages)}
 
-    Git diff origin/main..HEAD:
+    Git diff #{source.git_range}:
     #{blank_fallback(source.diff)}
     """
+  end
+
+  defp comparison_base(workspace, opts, worker_host) do
+    case configured_comparison_base(Keyword.get(opts, :base_branch)) do
+      nil -> origin_head_comparison_base(workspace, worker_host)
+      base -> base
+    end
+  end
+
+  defp configured_comparison_base(base_branch) when is_binary(base_branch) do
+    case String.trim(base_branch) do
+      "" -> nil
+      "origin/" <> branch -> "origin/#{branch}"
+      "refs/heads/" <> branch -> "origin/#{branch}"
+      branch -> "origin/#{branch}"
+    end
+  end
+
+  defp configured_comparison_base(_base_branch), do: nil
+
+  defp origin_head_comparison_base(workspace, worker_host) do
+    case git(workspace, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], worker_host) do
+      {:ok, output} ->
+        output
+        |> String.trim()
+        |> blank_fallback("origin/main")
+
+      {:error, _reason} ->
+        "origin/main"
+    end
   end
 
   defp truncate_diff(diff, changed_paths, max_lines, issue) do

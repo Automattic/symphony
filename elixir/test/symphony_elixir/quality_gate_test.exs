@@ -4,6 +4,7 @@ defmodule SymphonyElixir.QualityGateTest do
   alias SymphonyElixir.Config.Schema.QualityGate, as: QualityGateConfig
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.QualityGate
+  alias SymphonyElixir.Secret
 
   defmodule StubProvider do
     @behaviour SymphonyElixir.QualityGate.Provider
@@ -977,8 +978,11 @@ defmodule SymphonyElixir.QualityGateTest do
     test "resolves the OpenAI api key from the environment" do
       config = config_enabled(provider: "openai", model: "gpt-5")
 
-      assert {:ok, %{provider: "openai", model: "gpt-5", api_key: "test-openai-key"}} =
+      assert {:ok, %{provider: "openai", model: "gpt-5", api_key: api_key}} =
                QualityGate.provider_settings(config)
+
+      assert Secret.unwrap(api_key) == "test-openai-key"
+      assert inspect(api_key) == "#Secret<[FILTERED]>"
     end
 
     test "errors when the OpenAI api key is missing" do
@@ -1004,10 +1008,12 @@ defmodule SymphonyElixir.QualityGateTest do
     test "resolves provider/model from schema defaults" do
       assert {:ok,
               %{
-                api_key: "test-anthropic-key",
+                api_key: api_key,
                 provider: "anthropic",
                 model: "claude-haiku-4-5-20251001"
               }} = QualityGate.provider_settings(%SymphonyElixir.Config.Schema.QualityGate{})
+
+      assert Secret.unwrap(api_key) == "test-anthropic-key"
     end
 
     test "errors when provider/model are nil" do

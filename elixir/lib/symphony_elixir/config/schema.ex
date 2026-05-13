@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   import Ecto.Changeset
 
-  alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.{PathSafety, Secret}
 
   require Logger
 
@@ -90,6 +90,7 @@ defmodule SymphonyElixir.Config.Schema do
     import Ecto.Changeset
 
     @primary_key false
+    @derive {Inspect, except: [:api_key]}
 
     embedded_schema do
       field(:kind, :string)
@@ -916,6 +917,7 @@ defmodule SymphonyElixir.Config.Schema do
       import Ecto.Changeset
 
       @primary_key false
+      @derive {Inspect, except: [:webhook_url, :url, :headers]}
       @kinds ["slack", "webhook"]
       @events [
         "pr_opened",
@@ -1173,7 +1175,10 @@ defmodule SymphonyElixir.Config.Schema do
   defp finalize_settings(settings) do
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+      | api_key:
+          settings.tracker.api_key
+          |> resolve_secret_setting(System.get_env("LINEAR_API_KEY"))
+          |> Secret.wrap(),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
     }
 
@@ -1216,6 +1221,7 @@ defmodule SymphonyElixir.Config.Schema do
     value
     |> resolve_env_value(nil)
     |> normalize_notification_string()
+    |> Secret.wrap()
   end
 
   defp resolve_notification_value(_value), do: nil
@@ -1234,9 +1240,10 @@ defmodule SymphonyElixir.Config.Schema do
     value
     |> resolve_env_value(nil)
     |> normalize_notification_string()
+    |> Secret.wrap()
   end
 
-  defp normalize_notification_header_value(value) when is_integer(value) or is_boolean(value), do: to_string(value)
+  defp normalize_notification_header_value(value) when is_integer(value) or is_boolean(value), do: value |> to_string() |> Secret.wrap()
   defp normalize_notification_header_value(_value), do: nil
 
   defp normalize_notification_string(value) when is_binary(value) do

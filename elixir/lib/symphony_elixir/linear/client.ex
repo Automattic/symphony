@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.{AuditLog, Config, Linear.Issue, Secret}
 
   @issue_page_size 50
   @attachment_page_size 20
@@ -258,7 +258,7 @@ defmodule SymphonyElixir.Linear.Client do
         {:error, {:linear_api_status, response.status, Map.get(response, :body)}}
 
       {:error, reason} ->
-        Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
+        Logger.error("Linear GraphQL request failed: #{AuditLog.redact_for_log(reason)}")
         {:error, {:linear_api_request, reason}}
     end
   end
@@ -793,15 +793,15 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp summarize_error_body(body) when is_binary(body) do
     body
+    |> AuditLog.redact_for_log(printable_limit: @max_error_body_log_bytes)
     |> String.replace(~r/\s+/, " ")
     |> String.trim()
     |> truncate_error_body()
-    |> inspect()
   end
 
   defp summarize_error_body(body) do
     body
-    |> inspect(limit: 20, printable_limit: @max_error_body_log_bytes)
+    |> AuditLog.redact_for_log(limit: 20, printable_limit: @max_error_body_log_bytes)
     |> truncate_error_body()
   end
 
@@ -814,7 +814,7 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp graphql_headers do
-    case Config.settings!().tracker.api_key do
+    case Config.settings!().tracker.api_key |> Secret.unwrap() do
       nil ->
         {:error, :missing_linear_api_token}
 

@@ -6,6 +6,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.Verification.DevServer, as: DevServerConfig
   alias SymphonyElixir.Config.Schema.Workspace.Lifecycle, as: WorkspaceLifecycle
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.Secret
 
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
@@ -1278,6 +1279,31 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert log =~ "Variable \\\"$ids\\\" got invalid value"
   end
 
+  test "linear client redacts configured secrets from graphql request error logs" do
+    token = "linear-secret-token"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: token,
+      tracker_project_slug: "project"
+    )
+
+    reason = {:closed, %{headers: [{"authorization", "Bearer #{token}"}], body: "token=#{token}"}}
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, {:linear_api_request, ^reason}} =
+                 Client.graphql(
+                   "query Viewer { viewer { id } }",
+                   %{},
+                   request_fun: fn _payload, _headers -> {:error, reason} end
+                 )
+      end)
+
+    assert log =~ "Linear GraphQL request failed"
+    refute log =~ token
+    assert log =~ "[REDACTED]"
+  end
+
   test "orchestrator sorts dispatch by priority then oldest created_at" do
     issue_same_priority_older = %Issue{
       id: "issue-old-high",
@@ -2160,7 +2186,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     config = Config.settings!()
-    assert config.tracker.api_key == api_key
+    assert Secret.unwrap(config.tracker.api_key) == api_key
     assert config.workspace.root == Path.expand(workspace_root)
     assert config.agent.command == "#{codex_bin} app-server"
   end
@@ -2188,7 +2214,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     config = Config.settings!()
-    assert config.tracker.api_key == "env:#{api_key_env_var}"
+    assert Secret.unwrap(config.tracker.api_key) == "env:#{api_key_env_var}"
     assert config.workspace.root == "env:#{workspace_env_var}"
   end
 
@@ -2291,7 +2317,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                agent: %{kind: "codex", command: "codex app-server"}
              })
 
-    assert settings.tracker.api_key == "fallback-linear-token"
+    assert Secret.unwrap(settings.tracker.api_key) == "fallback-linear-token"
     assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
   end
 

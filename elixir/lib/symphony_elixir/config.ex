@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Config do
   alias SymphonyElixir.Config.SystemSchema
   alias SymphonyElixir.Repo.Supervisor, as: RepoSupervisor
   alias SymphonyElixir.Routing.Resolver, as: RoutingResolver
+  alias SymphonyElixir.Secret
   alias SymphonyElixir.Workflow
   alias SymphonyElixir.WorkflowStore
 
@@ -406,7 +407,7 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind not in ["linear", "memory"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
+      settings.tracker.kind == "linear" and not Secret.present?(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
       settings.tracker.kind == "linear" and
@@ -641,19 +642,27 @@ defmodule SymphonyElixir.Config do
 
   defp validate_notifications_semantics(_settings), do: :ok
 
-  defp validate_notification_channel(%{kind: "slack", webhook_url: url}) when is_binary(url), do: :ok
+  defp validate_notification_channel(%{kind: "slack", webhook_url: url}) do
+    if Secret.present?(url), do: :ok, else: invalid_notification_channel(:slack)
+  end
 
-  defp validate_notification_channel(%{kind: "slack"}) do
+  defp validate_notification_channel(%{kind: "slack"}), do: invalid_notification_channel(:slack)
+
+  defp validate_notification_channel(%{kind: "webhook", url: url}) do
+    if Secret.present?(url), do: :ok, else: invalid_notification_channel(:webhook)
+  end
+
+  defp validate_notification_channel(%{kind: "webhook"}), do: invalid_notification_channel(:webhook)
+
+  defp validate_notification_channel(_channel), do: :ok
+
+  defp invalid_notification_channel(:slack) do
     {:error, {:invalid_workflow_config, "notifications.channels entries with kind: slack require webhook_url (or a $VAR that resolves to one)"}}
   end
 
-  defp validate_notification_channel(%{kind: "webhook", url: url}) when is_binary(url), do: :ok
-
-  defp validate_notification_channel(%{kind: "webhook"}) do
+  defp invalid_notification_channel(:webhook) do
     {:error, {:invalid_workflow_config, "notifications.channels entries with kind: webhook require url (or a $VAR that resolves to one)"}}
   end
-
-  defp validate_notification_channel(_channel), do: :ok
 
   defp validate_local_worktree_repo(repo) when is_binary(repo) do
     with :ok <- validate_local_worktree_repo_path(repo),

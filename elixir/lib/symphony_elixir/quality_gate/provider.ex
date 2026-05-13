@@ -7,12 +7,12 @@ defmodule SymphonyElixir.QualityGate.Provider do
   string. The score must be an integer in the inclusive range 1..10.
   """
 
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.{Linear.Issue, Secret}
 
   @type settings :: %{
           required(:provider) => String.t(),
           required(:model) => String.t(),
-          required(:api_key) => String.t(),
+          required(:api_key) => String.t() | Secret.t(),
           optional(:timeout_ms) => pos_integer()
         }
 

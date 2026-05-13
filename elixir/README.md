@@ -400,6 +400,13 @@ Export it in the same shell that starts Symphony, then restart the process. If y
 `tracker.api_key: $LINEAR_API_KEY`, Symphony reads the environment value at startup; it does not
 prompt for the token or reload a missing token into a running process.
 
+### Where are BEAM crash dumps in releases?
+
+Production releases set `ERL_CRASH_DUMP_BYTES=0` during runtime startup. This prevents full
+`erl_crash.dump` heap snapshots from capturing prompts, HTTP bodies, or API tokens. Post-mortem
+debugging should use Logger output, run-store state, metrics, or an attached observer session
+instead of sharing crash dump files.
+
 ### `mise` is missing
 
 Install `mise`, or install the Elixir/Erlang versions from the repo's tool configuration with your

@@ -98,7 +98,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     tool_executor =
       Keyword.get_lazy(opts, :tool_executor, fn ->
-        dynamic_tool_executor(issue, workspace, opts)
+        dynamic_tool_executor(issue, workspace, command_security, opts)
       end)
 
     approval_context = %{
@@ -178,15 +178,18 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp dynamic_tool_executor(issue, workspace, opts) do
+  defp dynamic_tool_executor(issue, workspace, command_security, opts) do
     registry = Keyword.get(opts, :linear_comment_registry) || temporary_comment_registry()
 
     fn tool, arguments ->
-      DynamicTool.execute(tool, arguments,
-        issue: issue,
-        workspace: workspace,
-        comment_registry: registry
-      )
+      dynamic_tool_opts =
+        opts
+        |> Keyword.put(:issue, issue)
+        |> Keyword.put(:workspace, workspace)
+        |> Keyword.put(:command_security, command_security)
+        |> Keyword.put(:comment_registry, registry)
+
+      DynamicTool.execute(tool, arguments, dynamic_tool_opts)
     end
   end
 

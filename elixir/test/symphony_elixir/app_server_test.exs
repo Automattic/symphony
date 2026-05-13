@@ -630,6 +630,8 @@ defmodule SymphonyElixir.AppServerTest do
                    |> then(fn tool_names ->
                      "linear.get_current_issue" in tool_names and
                        "linear.update_state" in tool_names and
+                       "github.create_pull_request" in tool_names and
+                       "github.push_branch" in tool_names and
                        "linear_graphql" not in tool_names
                    end)
                else

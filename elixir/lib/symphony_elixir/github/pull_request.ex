@@ -356,7 +356,9 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   defp github_api_args("github.com", endpoint), do: ["api", endpoint]
   defp github_api_args(host, endpoint), do: ["api", "--hostname", host, endpoint]
 
-  defp run_gh(args, opts) when is_list(args) do
+  @doc false
+  @spec run_gh([String.t()], keyword()) :: {:ok, String.t()} | {:error, term()}
+  def run_gh(args, opts) when is_list(args) do
     cmd_opts = [stderr_to_stdout: true] ++ cwd_opt(Keyword.get(opts, :cwd))
 
     case gh_runner(opts).(args, cmd_opts) do

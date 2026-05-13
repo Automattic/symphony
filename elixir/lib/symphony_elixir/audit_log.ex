@@ -9,7 +9,7 @@ defmodule SymphonyElixir.AuditLog do
 
   require Logger
 
-  alias SymphonyElixir.{Config, Paths}
+  alias SymphonyElixir.{Config, Paths, Secret}
 
   @redacted "[REDACTED]"
   @preview_chars 500
@@ -36,6 +36,20 @@ defmodule SymphonyElixir.AuditLog do
     Keyword.get(opts, :dir) ||
       Application.get_env(:symphony_elixir, :audit_log_dir) ||
       Paths.audit_dir()
+  end
+
+  @doc """
+  Format a value for Logger output after applying the same configured secret
+  redaction used by audit entries.
+  """
+  @spec redact_for_log(term(), keyword()) :: String.t()
+  def redact_for_log(value, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 20)
+    printable_limit = Keyword.get(opts, :printable_limit, 1_000)
+
+    value
+    |> redact_value(configured_secret_values(opts))
+    |> inspect(limit: limit, printable_limit: printable_limit)
   end
 
   @spec set_dir(Path.t()) :: :ok
@@ -901,7 +915,7 @@ defmodule SymphonyElixir.AuditLog do
   defp settings_secret_values do
     case Config.settings() do
       {:ok, settings} ->
-        [settings.tracker.api_key | notification_secret_values(settings.notifications)]
+        [Secret.unwrap(settings.tracker.api_key) | notification_secret_values(settings.notifications)]
 
       _ ->
         []
@@ -910,8 +924,8 @@ defmodule SymphonyElixir.AuditLog do
 
   defp notification_secret_values(%{channels: channels}) when is_list(channels) do
     Enum.flat_map(channels, fn channel ->
-      [Map.get(channel, :webhook_url), Map.get(channel, :url)] ++
-        (channel |> Map.get(:headers, %{}) |> Map.values())
+      [channel |> Map.get(:webhook_url) |> Secret.unwrap(), channel |> Map.get(:url) |> Secret.unwrap()] ++
+        (channel |> Map.get(:headers, %{}) |> Map.values() |> Enum.map(&Secret.unwrap/1))
     end)
   end
 
@@ -951,6 +965,13 @@ defmodule SymphonyElixir.AuditLog do
 
   defp redact_value(value, secrets, _key) when is_list(value) do
     Enum.map(value, &redact_value(&1, secrets, nil))
+  end
+
+  defp redact_value(value, secrets, _key) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&redact_value(&1, secrets, nil))
+    |> List.to_tuple()
   end
 
   defp redact_value(value, secrets, _key) when is_map(value) do

@@ -5,13 +5,54 @@ defmodule SymphonyElixir.HttpServerTest do
 
   alias SymphonyElixir.HttpServer
 
+  @allow_remote_bind_env "SYMPHONY_ALLOW_REMOTE_BIND"
+
   setup do
     tmp =
       Path.join(System.tmp_dir!(), "symphony-http-server-test-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(tmp)
-    on_exit(fn -> File.rm_rf(tmp) end)
+    allow_remote_bind = System.get_env(@allow_remote_bind_env)
+
+    on_exit(fn ->
+      restore_env(@allow_remote_bind_env, allow_remote_bind)
+      File.rm_rf(tmp)
+    end)
+
     {:ok, tmp: tmp}
+  end
+
+  describe "start_link/1 remote bind guard" do
+    test "allows IPv4 loopback binds" do
+      start_supervised!({HttpServer, [host: "127.0.0.1", port: 0]})
+
+      assert is_integer(HttpServer.bound_port())
+    end
+
+    test "allows IPv6 loopback binds" do
+      start_supervised!({HttpServer, [host: "::1", port: 0]})
+
+      assert is_integer(HttpServer.bound_port())
+    end
+
+    test "refuses non-loopback binds without an explicit override" do
+      System.delete_env(@allow_remote_bind_env)
+
+      assert {:error, message} = HttpServer.start_link(host: "0.0.0.0", port: 0)
+
+      assert message =~ ~s(refusing to bind HTTP server to non-loopback host "0.0.0.0")
+      assert message =~ "the dashboard has no built-in auth"
+      assert message =~ "SYMPHONY_ALLOW_REMOTE_BIND=1"
+      assert HttpServer.bound_port() == nil
+    end
+
+    test "allows non-loopback binds with an explicit override" do
+      System.put_env(@allow_remote_bind_env, "1")
+
+      start_supervised!({HttpServer, [host: "0.0.0.0", port: 0]})
+
+      assert is_integer(HttpServer.bound_port())
+    end
   end
 
   describe "migrate_legacy_secret_key_base/2" do
@@ -75,4 +116,7 @@ defmodule SymphonyElixir.HttpServerTest do
       refute File.exists?(new_path)
     end
   end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
 end

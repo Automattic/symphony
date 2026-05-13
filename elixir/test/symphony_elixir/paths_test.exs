@@ -62,7 +62,7 @@ defmodule SymphonyElixir.PathsTest do
              Path.join([System.user_home!(), "Library", "Logs", "symphony", "release"])
   end
 
-  test "burrito release env defaults roots to a release subdirectory" do
+  test "release builds can be detected from the Burrito environment" do
     Application.delete_env(@app, :running_as_release)
     System.put_env(@burrito_env, "1")
 

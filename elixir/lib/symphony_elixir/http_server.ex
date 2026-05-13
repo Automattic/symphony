@@ -10,6 +10,7 @@ defmodule SymphonyElixir.HttpServer do
   @secret_key_bytes 48
   @secret_key_min_bytes 64
   @secret_key_env "SYMPHONY_SECRET_KEY_BASE"
+  @allow_remote_bind_env "SYMPHONY_ALLOW_REMOTE_BIND"
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -27,7 +28,8 @@ defmodule SymphonyElixir.HttpServer do
         orchestrator = Keyword.get(opts, :orchestrator, Orchestrator)
         snapshot_timeout_ms = Keyword.get(opts, :snapshot_timeout_ms, 15_000)
 
-        with {:ok, ip} <- parse_host(host) do
+        with {:ok, ip} <- parse_host(host),
+             :ok <- guard_remote_bind(ip, host) do
           endpoint_opts = [
             server: true,
             http: [ip: ip, port: port],
@@ -80,6 +82,27 @@ defmodule SymphonyElixir.HttpServer do
         end
     end
   end
+
+  defp guard_remote_bind(ip, host) do
+    cond do
+      loopback?(ip) ->
+        :ok
+
+      System.get_env(@allow_remote_bind_env) == "1" ->
+        :ok
+
+      true ->
+        {:error,
+         "refusing to bind HTTP server to non-loopback host #{inspect(host)}: " <>
+           "the dashboard has no built-in auth. Put a reverse proxy with auth in " <>
+           "front and keep SYMPHONY_SERVER_HOST=127.0.0.1, or set " <>
+           "#{@allow_remote_bind_env}=1 if you understand the risk."}
+    end
+  end
+
+  defp loopback?({127, _, _, _}), do: true
+  defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback?(_ip), do: false
 
   defp normalize_host(host) when host in ["", nil], do: "127.0.0.1"
   defp normalize_host(host) when is_binary(host), do: host

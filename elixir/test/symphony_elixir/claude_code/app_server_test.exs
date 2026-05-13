@@ -24,6 +24,26 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       result = AppServer.build_sandbox_settings(network_access)
 
       assert get_in(result, ["sandbox", "enabled"]) == true
+      assert get_in(result, ["sandbox", "allowUnsandboxedCommands"]) == false
+
+      assert get_in(result, ["sandbox", "filesystem", "denyRead"]) == [
+               "~/.ssh",
+               "~/.config/gh",
+               "~/.aws",
+               "~/.gnupg",
+               "~/Library/Application Support",
+               "~/.docker"
+             ]
+
+      assert get_in(result, ["sandbox", "filesystem", "denyWrite"]) == [
+               "./WORKFLOW.md",
+               "./symphony.yml",
+               "./symphony.local.yml",
+               "./.git/hooks",
+               "./mise.toml",
+               "./.tool-versions"
+             ]
+
       assert get_in(result, ["sandbox", "network", "allowManagedDomainsOnly"]) == true
 
       allowed = get_in(result, ["sandbox", "network", "allowedDomains"])

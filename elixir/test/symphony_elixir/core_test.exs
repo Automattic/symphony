@@ -3338,7 +3338,9 @@ defmodule SymphonyElixir.CoreTest do
       lines = String.split(trace, "\n", trim: true)
 
       assert argv_line = Enum.find(lines, fn line -> String.starts_with?(line, "ARGV:") end)
-      assert String.contains?(argv_line, "--config model=\"gpt-5.5\" app-server")
+      assert String.contains?(argv_line, "--config model=\"gpt-5.5\"")
+      assert String.contains?(argv_line, "--config default_permissions=\"workspace_write\"")
+      assert String.ends_with?(argv_line, " app-server")
       refute String.contains?(argv_line, "--ask-for-approval never")
       refute String.contains?(argv_line, "--sandbox danger-full-access")
     after

@@ -3,7 +3,8 @@ defmodule SymphonyElixir.NotificationsTest do
 
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Notifications.Channels.Slack
+  alias SymphonyElixir.Config.Schema.Notifications.Channel, as: NotificationChannel
+  alias SymphonyElixir.Notifications.Channels.{Slack, Webhook}
   alias SymphonyElixir.Notifications.Event
   alias SymphonyElixir.Notifications.Formatter
   alias SymphonyElixir.Notifications.Notifier
@@ -204,6 +205,84 @@ defmodule SymphonyElixir.NotificationsTest do
                  ]
                }
              })
+  end
+
+  test "notification schema validates webhook URL scheme and private literal hosts" do
+    invalid_urls = [
+      "http://notify.test/events",
+      "https://localhost/events",
+      "https://127.0.0.1/events",
+      "https://[::1]/events",
+      "https://169.254.169.254/latest/meta-data",
+      "https://10.0.0.1/events",
+      "https://172.16.0.1/events",
+      "https://192.168.0.1/events",
+      "https://[fe80::1]/events",
+      "https://[fd00::1]/events"
+    ]
+
+    for url <- invalid_urls do
+      assert {:error, {:invalid_workflow_config, message}} =
+               Schema.parse(%{
+                 "notifications" => %{
+                   "enabled" => true,
+                   "channels" => [%{"kind" => "webhook", "url" => url}]
+                 }
+               })
+
+      assert message =~ "notifications.channels"
+    end
+
+    assert {:ok,
+            %{
+              notifications: %{
+                channels: [
+                  %{kind: "webhook", url: "https://hooks.slack.com/services/T000/B000/XXX"},
+                  %{kind: "webhook", url: "https://discord.com/api/webhooks/123/secret"},
+                  %{kind: "webhook", url: "https://10.0.0.1/events", allow_private: true}
+                ]
+              }
+            }} =
+             Schema.parse(%{
+               "notifications" => %{
+                 "enabled" => true,
+                 "channels" => [
+                   %{"kind" => "webhook", "url" => "https://hooks.slack.com/services/T000/B000/XXX"},
+                   %{"kind" => "webhook", "url" => "https://discord.com/api/webhooks/123/secret"},
+                   %{"kind" => "webhook", "url" => "https://10.0.0.1/events", "allow_private" => true}
+                 ]
+               }
+             })
+  end
+
+  test "notification schema validates webhook URLs resolved from environment" do
+    unsafe_env = "SYMP_TEST_UNSAFE_NOTIFY_WEBHOOK_#{System.unique_integer([:positive])}"
+    previous_unsafe = System.get_env(unsafe_env)
+    System.put_env(unsafe_env, "https://169.254.169.254/latest/meta-data")
+
+    on_exit(fn -> restore_env(unsafe_env, previous_unsafe) end)
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{
+               "notifications" => %{
+                 "enabled" => true,
+                 "channels" => [%{"kind" => "webhook", "url" => "$#{unsafe_env}"}]
+               }
+             })
+
+    assert message =~ "notifications.channels[0].url"
+    assert message =~ "allow_private"
+  end
+
+  test "notification webhook URL validator handles empty, non-string, and public IP literals" do
+    assert :ok = NotificationChannel.validate_webhook_url(nil, false)
+    assert :ok = NotificationChannel.validate_webhook_url("  ", false)
+    assert :ok = NotificationChannel.validate_webhook_url("https://203.0.113.10/events", false)
+
+    assert {:error, "must be a string URL"} = NotificationChannel.validate_webhook_url(123, false)
+
+    assert {:error, message} = NotificationChannel.validate_webhook_url("https://[::ffff:127.0.0.1]/events", false)
+    assert message =~ "allow_private"
   end
 
   test "event builder normalizes attrs, issue structs, and transcript links" do
@@ -583,6 +662,27 @@ defmodule SymphonyElixir.NotificationsTest do
 
     assert {:retry, 3_000} =
              Slack.deliver(%{webhook_url: "https://slack.test"}, event, request_fun: request_fun)
+  end
+
+  test "webhook channel disables redirects for outbound requests" do
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-3022"})
+
+    request_fun = fn url, payload, headers, timeout_ms, request_opts ->
+      assert url == "https://webhook.test/events"
+      assert %{"event" => "run_failed"} = payload
+      assert headers == [{"Authorization", "token"}]
+      assert timeout_ms == 5_000
+      assert request_opts[:redirect] == false
+
+      {:ok, %{status: 302, body: "redirect"}}
+    end
+
+    assert {:error, {:http_status, 302, "redirect"}} =
+             Webhook.deliver(
+               %{url: "https://webhook.test/events", headers: %{"Authorization" => "token"}},
+               event,
+               request_fun: request_fun
+             )
   end
 
   test "notifier drops Slack delivery after max attempts" do

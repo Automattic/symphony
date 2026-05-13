@@ -915,6 +915,7 @@ defmodule SymphonyElixir.Config.Schema do
       @moduledoc false
       use Ecto.Schema
       import Ecto.Changeset
+      import Bitwise
 
       @primary_key false
       @derive {Inspect, except: [:webhook_url, :url, :headers]}
@@ -935,6 +936,7 @@ defmodule SymphonyElixir.Config.Schema do
         field(:kind, :string)
         field(:webhook_url, :string)
         field(:url, :string)
+        field(:allow_private, :boolean, default: false)
         field(:events, {:array, :string})
         field(:headers, :map, default: %{})
       end
@@ -942,13 +944,41 @@ defmodule SymphonyElixir.Config.Schema do
       @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
       def changeset(schema, attrs) do
         schema
-        |> cast(attrs, [:kind, :webhook_url, :url, :events, :headers], empty_values: [])
+        |> cast(attrs, [:kind, :webhook_url, :url, :allow_private, :events, :headers], empty_values: [])
         |> update_change(:kind, &normalize_string/1)
         |> update_change(:events, &normalize_events/1)
         |> update_change(:headers, &normalize_headers/1)
         |> validate_required([:kind])
         |> validate_inclusion(:kind, @kinds)
         |> validate_event_names()
+        |> validate_webhook_url_field(:webhook_url)
+        |> validate_webhook_url_field(:url)
+      end
+
+      @doc false
+      @spec validate_webhook_url(String.t() | nil, boolean()) :: :ok | {:error, String.t()}
+      def validate_webhook_url(value, allow_private), do: validate_webhook_url(value, allow_private, [])
+
+      @spec validate_webhook_url(String.t() | nil, boolean(), keyword()) :: :ok | {:error, String.t()}
+      def validate_webhook_url(nil, _allow_private, _opts), do: :ok
+
+      def validate_webhook_url(value, _allow_private, _opts) when not is_binary(value) do
+        {:error, "must be a string URL"}
+      end
+
+      def validate_webhook_url(value, allow_private, opts) do
+        value = String.trim(value)
+
+        cond do
+          value == "" ->
+            :ok
+
+          Keyword.get(opts, :allow_env_references, true) and env_reference?(value) ->
+            :ok
+
+          true ->
+            validate_parsed_webhook_url(value, allow_private)
+        end
       end
 
       defp normalize_events(events) when is_list(events) do
@@ -968,6 +998,65 @@ defmodule SymphonyElixir.Config.Schema do
         value
         |> String.trim()
         |> String.downcase()
+      end
+
+      defp validate_webhook_url_field(changeset, field) do
+        validate_change(changeset, field, fn ^field, value ->
+          case validate_webhook_url(value, get_field(changeset, :allow_private) == true) do
+            :ok -> []
+            {:error, message} -> [{field, message}]
+          end
+        end)
+      end
+
+      defp validate_parsed_webhook_url(value, allow_private) do
+        uri = URI.parse(value)
+        scheme = if is_binary(uri.scheme), do: String.downcase(uri.scheme)
+
+        cond do
+          scheme != "https" ->
+            {:error, "must use https://"}
+
+          not is_binary(uri.host) or String.trim(uri.host) == "" ->
+            {:error, "must include a valid host"}
+
+          not allow_private and blocked_webhook_host?(uri.host) ->
+            {:error, "must not target localhost, loopback, private, or link-local hosts unless allow_private is true"}
+
+          true ->
+            :ok
+        end
+      end
+
+      defp env_reference?("$" <> env_name), do: String.match?(env_name, ~r/^[A-Za-z_][A-Za-z0-9_]*$/)
+      defp env_reference?(_value), do: false
+
+      defp blocked_webhook_host?(host) do
+        host = host |> String.trim() |> String.downcase() |> String.trim_trailing(".")
+
+        host == "localhost" or blocked_ip_literal?(host)
+      end
+
+      defp blocked_ip_literal?(host) do
+        case :inet.parse_address(String.to_charlist(host)) do
+          {:ok, address} -> blocked_ip_address?(address)
+          {:error, _reason} -> false
+        end
+      end
+
+      defp blocked_ip_address?({127, _b, _c, _d}), do: true
+      defp blocked_ip_address?({10, _b, _c, _d}), do: true
+      defp blocked_ip_address?({172, b, _c, _d}) when b in 16..31, do: true
+      defp blocked_ip_address?({192, 168, _c, _d}), do: true
+      defp blocked_ip_address?({169, 254, _c, _d}), do: true
+      defp blocked_ip_address?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+      defp blocked_ip_address?({0, 0, 0, 0, 0, 65_535, high, low}), do: blocked_ipv4_mapped_ipv6?(high, low)
+      defp blocked_ip_address?({first, _b, _c, _d, _e, _f, _g, _h}) when (first &&& 0xFFC0) == 0xFE80, do: true
+      defp blocked_ip_address?({first, _b, _c, _d, _e, _f, _g, _h}) when (first &&& 0xFE00) == 0xFC00, do: true
+      defp blocked_ip_address?(_address), do: false
+
+      defp blocked_ipv4_mapped_ipv6?(high, low) do
+        blocked_ip_address?({high >>> 8, high &&& 0xFF, low >>> 8, low &&& 0xFF})
       end
 
       defp validate_event_names(changeset) do
@@ -1025,7 +1114,12 @@ defmodule SymphonyElixir.Config.Schema do
     |> apply_action(:validate)
     |> case do
       {:ok, settings} ->
-        {:ok, finalize_settings(settings)}
+        settings = finalize_settings(settings)
+
+        case validate_finalized_settings(settings) do
+          :ok -> {:ok, settings}
+          {:error, message} -> {:error, {:invalid_workflow_config, message}}
+        end
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
@@ -1203,8 +1297,37 @@ defmodule SymphonyElixir.Config.Schema do
     %{settings | tracker: tracker, workspace: workspace, agent: agent, notifications: notifications}
   end
 
+  defp validate_finalized_settings(settings) do
+    validate_finalized_notification_urls(settings.notifications)
+  end
+
   defp normalize_notifications(%Notifications{} = notifications) do
     %{notifications | channels: Enum.map(notifications.channels || [], &normalize_notification_channel/1)}
+  end
+
+  defp validate_finalized_notification_urls(%Notifications{channels: channels}) do
+    channels
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {channel, index}, :ok ->
+      case validate_finalized_notification_channel_url(channel, index, :webhook_url) do
+        :ok -> validate_finalized_notification_channel_url(channel, index, :url)
+        {:error, _message} = error -> error
+      end
+      |> case do
+        :ok -> {:cont, :ok}
+        {:error, _message} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_finalized_notification_channel_url(channel, index, field) do
+    value = Map.get(channel, field)
+    allow_private = Map.get(channel, :allow_private) == true
+
+    case Notifications.Channel.validate_webhook_url(value, allow_private, allow_env_references: false) do
+      :ok -> :ok
+      {:error, message} -> {:error, "notifications.channels[#{index}].#{field} #{message}"}
+    end
   end
 
   defp normalize_notification_channel(%Notifications.Channel{} = channel) do

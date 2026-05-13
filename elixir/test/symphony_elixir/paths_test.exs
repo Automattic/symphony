@@ -71,6 +71,11 @@ defmodule SymphonyElixir.PathsTest do
 
     assert Paths.logs_root() ==
              Path.join([System.user_home!(), "Library", "Logs", "symphony", "release"])
+
+    System.put_env(@burrito_env, "")
+
+    assert Paths.state_root() == Path.join([System.user_home!(), "Library", "Application Support", "symphony"])
+    assert Paths.logs_root() == Path.join([System.user_home!(), "Library", "Logs", "symphony"])
   end
 
   test "logs root precedence is flag override, env, app env, default" do

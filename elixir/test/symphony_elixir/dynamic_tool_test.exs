@@ -82,6 +82,103 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert query =~ "SymphonyAgentUpdateIssueState"
   end
 
+  test "update_state returns state_not_found with available states when name is unknown" do
+    response =
+      DynamicTool.execute(
+        "linear.update_state",
+        %{"state_name_or_id" => "Shipped"},
+        issue: %Issue{id: "issue-current"},
+        linear_client: fn query, _variables, _opts ->
+          true = query =~ "SymphonyAgentIssueTeamStates"
+
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "team" => %{
+                   "states" => %{
+                     "nodes" => [
+                       %{"id" => "state-1", "name" => "Todo", "type" => "unstarted"},
+                       %{"id" => "state-2", "name" => "In Progress", "type" => "started"},
+                       %{"id" => "state-3", "name" => "Done", "type" => "completed"}
+                     ]
+                   }
+                 }
+               }
+             }
+           }}
+        end
+      )
+
+    assert response["success"] == false
+
+    assert %{
+             "error" => %{
+               "code" => "state_not_found",
+               "available_states" => ["Todo", "In Progress", "Done"]
+             }
+           } = Jason.decode!(response["output"])
+  end
+
+  test "update_state skips team introspection when given a UUID state id" do
+    test_pid = self()
+    state_uuid = "11111111-2222-3333-4444-555555555555"
+
+    response =
+      DynamicTool.execute(
+        "linear.update_state",
+        %{"state_name_or_id" => state_uuid},
+        issue: %Issue{id: "issue-current"},
+        linear_client: fn query, variables, _opts ->
+          send(test_pid, {:linear_client_called, query, variables})
+
+          if query =~ "SymphonyAgentIssueTeamStates" do
+            flunk("team states introspection should be skipped for UUID state ids")
+          end
+
+          {:ok,
+           %{
+             "data" => %{
+               "issueUpdate" => %{
+                 "success" => true,
+                 "issue" => %{"id" => variables.id, "state" => %{"id" => variables.stateId}}
+               }
+             }
+           }}
+        end
+      )
+
+    assert response["success"] == true
+    assert_received {:linear_client_called, query, %{id: "issue-current", stateId: ^state_uuid}}
+    assert query =~ "SymphonyAgentUpdateIssueState"
+  end
+
+  test "add_comment surfaces commentCreate success=false from Linear as a failure" do
+    {:ok, registry} = CommentRegistry.start_link()
+
+    response =
+      DynamicTool.execute(
+        "linear.add_comment",
+        %{"body" => "blocked"},
+        issue: %Issue{id: "issue-current"},
+        comment_registry: registry,
+        linear_client: fn _query, _variables, _opts ->
+          {:ok, %{"data" => %{"commentCreate" => %{"success" => false, "comment" => nil}}}}
+        end
+      )
+
+    assert response["success"] == false
+
+    assert %{
+             "error" => %{
+               "code" => "linear_mutation_failed",
+               "field" => "commentCreate"
+             }
+           } = Jason.decode!(response["output"])
+
+    refute CommentRegistry.owned?(registry, "any-id")
+  end
+
   test "update_state rejects smuggled issue ids" do
     response =
       DynamicTool.execute(

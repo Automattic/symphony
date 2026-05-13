@@ -338,6 +338,27 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload({:state_not_found, available_states}) do
+    %{
+      "error" => %{
+        "code" => "state_not_found",
+        "message" => "Linear workflow state not found. Available states: #{Enum.join(available_states, ", ")}.",
+        "available_states" => available_states
+      }
+    }
+  end
+
+  defp tool_error_payload({:linear_mutation_failed, field, body}) do
+    %{
+      "error" => %{
+        "code" => "linear_mutation_failed",
+        "message" => "Linear `#{field}` mutation reported success=false.",
+        "field" => field,
+        "body" => body
+      }
+    }
+  end
+
   defp tool_error_payload(reason) do
     %{
       "error" => %{

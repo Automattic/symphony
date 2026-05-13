@@ -192,8 +192,12 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp temporary_comment_registry do
     case CommentRegistry.start_link() do
-      {:ok, pid} -> pid
-      {:error, _reason} -> nil
+      {:ok, pid} ->
+        pid
+
+      {:error, reason} ->
+        Logger.error("Failed to start Linear CommentRegistry: #{inspect(reason)}. Comment edits will be unavailable.")
+        nil
     end
   end
 

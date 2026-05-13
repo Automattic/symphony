@@ -15,6 +15,8 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @title_max_length 120
   @related_issue_first 50
 
+  @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
+
   @current_issue_query """
   query SymphonyAgentCurrentIssue($id: String!) {
     issue(id: $id) {
@@ -290,14 +292,9 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @spec update_state(context(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def update_state(context, state_name_or_id, opts) when is_binary(state_name_or_id) do
     with {:ok, issue_id} <- current_issue_id(context),
-         {:ok, target_state} <- resolve_state(issue_id, state_name_or_id, opts) do
-      case target_state do
-        nil ->
-          {:ok, %{success: true, noop: true, reason: :state_not_found}}
-
-        %{"id" => state_id} ->
-          graphql(@update_issue_state_mutation, %{id: issue_id, stateId: state_id}, opts)
-      end
+         {:ok, state_id} <- resolve_state_id(issue_id, state_name_or_id, opts),
+         {:ok, response} <- graphql(@update_issue_state_mutation, %{id: issue_id, stateId: state_id}, opts) do
+      check_mutation_success(response, "issueUpdate")
     end
   end
 
@@ -309,8 +306,9 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @spec set_assignee(context(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def set_assignee(context, assignee, opts) when is_binary(assignee) do
     with {:ok, issue_id} <- current_issue_id(context),
-         {:ok, assignee_id} <- resolve_assignee(assignee, opts) do
-      graphql(@set_assignee_mutation, %{id: issue_id, assigneeId: assignee_id}, opts)
+         {:ok, assignee_id} <- resolve_assignee(assignee, opts),
+         {:ok, response} <- graphql(@set_assignee_mutation, %{id: issue_id, assigneeId: assignee_id}, opts) do
+      check_mutation_success(response, "issueUpdate")
     end
   end
 
@@ -322,7 +320,8 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @spec add_comment(context(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def add_comment(context, body, opts) when is_binary(body) do
     with {:ok, issue_id} <- current_issue_id(context),
-         {:ok, response} <- graphql(@add_comment_mutation, %{issueId: issue_id, body: body}, opts) do
+         {:ok, response} <- graphql(@add_comment_mutation, %{issueId: issue_id, body: body}, opts),
+         {:ok, response} <- check_mutation_success(response, "commentCreate") do
       comment_id = get_in(response, ["data", "commentCreate", "comment", "id"])
       CommentRegistry.record(Map.get(context, :comment_registry), comment_id)
       {:ok, response}
@@ -336,8 +335,9 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   @spec update_comment(context(), String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def update_comment(context, comment_id, body, opts) when is_binary(comment_id) and is_binary(body) do
-    with :ok <- verify_comment_owner(context, comment_id) do
-      graphql(@update_comment_mutation, %{id: comment_id, body: body}, opts)
+    with :ok <- verify_comment_owner(context, comment_id),
+         {:ok, response} <- graphql(@update_comment_mutation, %{id: comment_id, body: body}, opts) do
+      check_mutation_success(response, "commentUpdate")
     end
   end
 
@@ -349,7 +349,8 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @spec delete_comment(context(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def delete_comment(context, comment_id, opts) when is_binary(comment_id) do
     with :ok <- verify_comment_owner(context, comment_id),
-         {:ok, response} <- graphql(@delete_comment_mutation, %{id: comment_id}, opts) do
+         {:ok, response} <- graphql(@delete_comment_mutation, %{id: comment_id}, opts),
+         {:ok, response} <- check_mutation_success(response, "commentDelete") do
       CommentRegistry.remove(Map.get(context, :comment_registry), comment_id)
       {:ok, response}
     end
@@ -364,8 +365,10 @@ defmodule SymphonyElixir.AgentTools.Linear do
   def attach_url(context, url, title, opts) when is_binary(url) do
     with {:ok, issue_id} <- current_issue_id(context),
          {:ok, normalized_url} <- validate_url(url),
-         {:ok, normalized_title} <- normalize_title(title) do
-      graphql(@attach_url_mutation, %{issueId: issue_id, url: normalized_url, title: normalized_title}, opts)
+         {:ok, normalized_title} <- normalize_title(title),
+         {:ok, response} <-
+           graphql(@attach_url_mutation, %{issueId: issue_id, url: normalized_url, title: normalized_title}, opts) do
+      check_mutation_success(response, "attachmentLinkURL")
     end
   end
 
@@ -382,29 +385,50 @@ defmodule SymphonyElixir.AgentTools.Linear do
          {:ok, normalized_title} <- normalize_title(title),
          {:ok, upload} <- request_file_upload(path, opts),
          :ok <- put_upload(path, upload, opts),
-         {:ok, asset_url} <- upload_asset_url(upload) do
-      graphql(
-        @attachment_create_mutation,
-        %{issueId: issue_id, url: asset_url, title: normalized_title || Path.basename(path)},
-        opts
-      )
+         {:ok, asset_url} <- upload_asset_url(upload),
+         {:ok, response} <-
+           graphql(
+             @attachment_create_mutation,
+             %{issueId: issue_id, url: asset_url, title: normalized_title || Path.basename(path)},
+             opts
+           ) do
+      check_mutation_success(response, "attachmentCreate")
     end
   end
 
   def attach_file(_context, _local_path, _title, _opts), do: {:error, :invalid_local_path}
 
-  defp resolve_state(issue_id, state_name_or_id, opts) do
-    normalized_state = String.trim(state_name_or_id)
+  defp resolve_state_id(issue_id, state_name_or_id, opts) do
+    normalized = String.trim(state_name_or_id)
 
+    cond do
+      normalized == "" ->
+        {:error, :invalid_state}
+
+      Regex.match?(@uuid_pattern, normalized) ->
+        {:ok, normalized}
+
+      true ->
+        lookup_state_id_by_name(issue_id, normalized, opts)
+    end
+  end
+
+  defp lookup_state_id_by_name(issue_id, name, opts) do
     with {:ok, body} <- graphql(@team_states_query, %{id: issue_id}, opts),
          {:ok, states} <- fetch_path(body, ["data", "issue", "team", "states", "nodes"], []) do
-      state =
-        Enum.find(states, fn state ->
-          state["id"] == normalized_state or String.downcase(to_string(state["name"])) == String.downcase(normalized_state)
-        end)
+      case Enum.find(states, &state_name_matches?(&1, name)) do
+        %{"id" => state_id} ->
+          {:ok, state_id}
 
-      {:ok, state}
+        _ ->
+          available = states |> Enum.map(& &1["name"]) |> Enum.reject(&is_nil/1)
+          {:error, {:state_not_found, available}}
+      end
     end
+  end
+
+  defp state_name_matches?(state, name) do
+    String.downcase(to_string(state["name"])) == String.downcase(name)
   end
 
   defp resolve_assignee(assignee, opts) do
@@ -432,17 +456,18 @@ defmodule SymphonyElixir.AgentTools.Linear do
   end
 
   defp request_file_upload(path, opts) do
-    stat = File.stat!(path)
-
-    variables = %{
-      filename: Path.basename(path),
-      contentType: content_type(path),
-      size: stat.size,
-      makePublic: true
-    }
-
-    with {:ok, body} <- graphql(@file_upload_mutation, variables, opts) do
-      fetch_path(body, ["data", "fileUpload", "uploadFile"], :upload_not_available)
+    with {:ok, %File.Stat{size: size}} <- file_stat(path),
+         {:ok, body} <-
+           graphql(
+             @file_upload_mutation,
+             %{filename: Path.basename(path), contentType: content_type(path), size: size, makePublic: true},
+             opts
+           ),
+         {:ok, upload_file} <- fetch_path(body, ["data", "fileUpload", "uploadFile"], :upload_not_available) do
+      case get_in(body, ["data", "fileUpload", "success"]) do
+        false -> {:error, {:linear_mutation_failed, "fileUpload", body}}
+        _ -> {:ok, upload_file}
+      end
     end
   end
 
@@ -454,14 +479,30 @@ defmodule SymphonyElixir.AgentTools.Linear do
       |> Map.get("headers", [])
       |> Enum.map(fn %{"key" => key, "value" => value} -> {key, value} end)
 
-    case upload_client.(upload_url, headers: headers, body: File.read!(path)) do
-      {:ok, %{status: status}} when status in 200..299 -> :ok
-      {:ok, %{status: status, body: body}} -> {:error, {:file_upload_status, status, body}}
-      {:error, reason} -> {:error, {:file_upload_failed, reason}}
+    with {:ok, contents} <- file_read(path) do
+      case upload_client.(upload_url, headers: headers, body: contents) do
+        {:ok, %{status: status}} when status in 200..299 -> :ok
+        {:ok, %{status: status, body: body}} -> {:error, {:file_upload_status, status, body}}
+        {:error, reason} -> {:error, {:file_upload_failed, reason}}
+      end
     end
   end
 
   defp put_upload(_path, _upload, _opts), do: {:error, :upload_url_missing}
+
+  defp file_stat(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{} = stat} -> {:ok, stat}
+      {:error, reason} -> {:error, {:file_stat_failed, reason}}
+    end
+  end
+
+  defp file_read(path) do
+    case File.read(path) do
+      {:ok, contents} -> {:ok, contents}
+      {:error, reason} -> {:error, {:file_read_failed, reason}}
+    end
+  end
 
   defp upload_asset_url(%{"assetUrl" => asset_url}) when is_binary(asset_url) and asset_url != "", do: {:ok, asset_url}
   defp upload_asset_url(_upload), do: {:error, :asset_url_missing}
@@ -606,6 +647,13 @@ defmodule SymphonyElixir.AgentTools.Linear do
         %{errors: errors} when is_list(errors) and errors != [] -> {:error, {:linear_graphql_errors, errors}}
         body -> {:ok, body}
       end
+    end
+  end
+
+  defp check_mutation_success(response, field) do
+    case get_in(response, ["data", field, "success"]) do
+      false -> {:error, {:linear_mutation_failed, field, response}}
+      _ -> {:ok, response}
     end
   end
 

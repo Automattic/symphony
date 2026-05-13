@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   require Logger
   alias SymphonyElixir.{AgentEnv, AuditLog, Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.Config.Schema
 
   @initialize_id 1
@@ -96,8 +97,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
 
     tool_executor =
-      Keyword.get(opts, :tool_executor, fn tool, arguments ->
-        DynamicTool.execute(tool, arguments)
+      Keyword.get_lazy(opts, :tool_executor, fn ->
+        dynamic_tool_executor(issue, workspace, opts)
       end)
 
     approval_context = %{
@@ -174,6 +175,29 @@ defmodule SymphonyElixir.Codex.AppServer do
     case Keyword.get(opts, :settings) do
       %Schema{} = settings -> settings
       _settings -> Config.settings!()
+    end
+  end
+
+  defp dynamic_tool_executor(issue, workspace, opts) do
+    registry = Keyword.get(opts, :linear_comment_registry) || temporary_comment_registry()
+
+    fn tool, arguments ->
+      DynamicTool.execute(tool, arguments,
+        issue: issue,
+        workspace: workspace,
+        comment_registry: registry
+      )
+    end
+  end
+
+  defp temporary_comment_registry do
+    case CommentRegistry.start_link() do
+      {:ok, pid} ->
+        pid
+
+      {:error, reason} ->
+        Logger.error("Failed to start Linear CommentRegistry: #{inspect(reason)}. Comment edits will be unavailable.")
+        nil
     end
   end
 

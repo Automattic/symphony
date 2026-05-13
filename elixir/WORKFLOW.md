@@ -71,9 +71,29 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+## Prerequisite: scoped Linear tools are available
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+The agent should be able to talk to Linear through the injected scoped `linear.*`
+tools. If none are present, stop and ask the user to configure Linear.
+
+Available scoped Linear tools:
+
+- `linear.get_current_issue()`
+- `linear.get_subissues()`
+- `linear.get_parent_issue()`
+- `linear.get_comments(limit)`
+- `linear.get_related_issues()`
+- `linear.update_state(state_name_or_id)`
+- `linear.set_assignee(assignee)` where `assignee` is `self`, `unassign`, or a user id
+- `linear.add_comment(body)`
+- `linear.update_comment(comment_id, body)` for comments created earlier by this run
+- `linear.delete_comment(comment_id)` for comments created earlier by this run
+- `linear.attach_url(url, title)`
+- `linear.attach_file(local_path, title)` where `local_path` must be inside the workspace
+
+Do not craft raw Linear GraphQL from prompts. If a required workflow needs a
+Linear operation outside this list, pause and record the gap instead of widening
+the prompt-facing API.
 
 ## Default posture
 

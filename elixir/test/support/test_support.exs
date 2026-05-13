@@ -28,6 +28,7 @@ defmodule SymphonyElixir.TestSupport do
           write_workflow_file!: 2,
           restore_env: 2,
           ensure_symphony_started!: 0,
+          stop_default_orchestrator: 0,
           stop_default_http_server: 0,
           stop_verification_port_pool: 0
         ]
@@ -50,6 +51,7 @@ defmodule SymphonyElixir.TestSupport do
         ensure_symphony_started!()
         SymphonyElixir.TestSupport.ensure_pubsub_started!()
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+        stop_default_orchestrator()
         :ok = SymphonyElixir.RunStore.clear()
         stop_verification_port_pool()
         stop_default_http_server()
@@ -205,9 +207,32 @@ defmodule SymphonyElixir.TestSupport do
     end
   end
 
+  def stop_default_orchestrator do
+    with supervisor when is_pid(supervisor) <- Process.whereis(SymphonyElixir.Supervisor),
+         {SymphonyElixir.Orchestrator, pid, _type, _modules} when is_pid(pid) <-
+           find_default_orchestrator(supervisor) do
+      :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.Orchestrator)
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
   defp find_default_http_server(supervisor) do
     Enum.find(Supervisor.which_children(supervisor), fn
       {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
+      _child -> false
+    end)
+  end
+
+  defp find_default_orchestrator(supervisor) do
+    Enum.find(Supervisor.which_children(supervisor), fn
+      {SymphonyElixir.Orchestrator, _pid, _type, _modules} -> true
       _child -> false
     end)
   end

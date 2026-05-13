@@ -7,10 +7,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   test "tool_specs advertises scoped Linear tools and not raw GraphQL" do
     tool_names = Enum.map(DynamicTool.tool_specs(), & &1["name"])
 
-    assert "linear.get_current_issue" in tool_names
-    assert "linear.update_state" in tool_names
-    assert "linear.attach_file" in tool_names
+    assert "linear_get_current_issue" in tool_names
+    assert "linear_update_state" in tool_names
+    assert "linear_attach_file" in tool_names
     refute "linear_graphql" in tool_names
+    refute "linear.get_current_issue" in tool_names
+
+    assert Enum.all?(tool_names, &Regex.match?(~r/^[a-zA-Z0-9_-]+$/, &1))
 
     assert Enum.all?(DynamicTool.tool_specs(), fn spec ->
              get_in(spec, ["inputSchema", "additionalProperties"]) == false
@@ -38,7 +41,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     response =
       DynamicTool.execute(
-        "linear.update_state",
+        "linear_update_state",
         %{"state_name_or_id" => "In Progress"},
         issue: issue,
         linear_client: fn query, variables, opts ->
@@ -85,7 +88,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   test "update_state returns state_not_found with available states when name is unknown" do
     response =
       DynamicTool.execute(
-        "linear.update_state",
+        "linear_update_state",
         %{"state_name_or_id" => "Shipped"},
         issue: %Issue{id: "issue-current"},
         linear_client: fn query, _variables, _opts ->
@@ -126,7 +129,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     response =
       DynamicTool.execute(
-        "linear.update_state",
+        "linear_update_state",
         %{"state_name_or_id" => state_uuid},
         issue: %Issue{id: "issue-current"},
         linear_client: fn query, variables, _opts ->
@@ -158,7 +161,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     response =
       DynamicTool.execute(
-        "linear.add_comment",
+        "linear_add_comment",
         %{"body" => "blocked"},
         issue: %Issue{id: "issue-current"},
         comment_registry: registry,
@@ -179,7 +182,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute CommentRegistry.owned?(registry, "any-id")
   end
 
-  test "update_state rejects smuggled issue ids" do
+  test "legacy dotted tool aliases are accepted but not advertised" do
     response =
       DynamicTool.execute(
         "linear.update_state",
@@ -199,7 +202,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     add_response =
       DynamicTool.execute(
-        "linear.add_comment",
+        "linear_add_comment",
         %{"body" => "first"},
         issue: %Issue{id: "issue-current"},
         comment_registry: registry,
@@ -223,7 +226,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     update_response =
       DynamicTool.execute(
-        "linear.update_comment",
+        "linear_update_comment",
         %{"comment_id" => "comment-owned", "body" => "edited"},
         issue: %Issue{id: "issue-current"},
         comment_registry: registry,
@@ -252,7 +255,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     response =
       DynamicTool.execute(
-        "linear.update_comment",
+        "linear_update_comment",
         %{"comment_id" => "comment-other", "body" => "edited"},
         issue: %Issue{id: "issue-current"},
         comment_registry: registry,
@@ -278,7 +281,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       response =
         DynamicTool.execute(
-          "linear.attach_file",
+          "linear_attach_file",
           %{"local_path" => outside, "title" => "outside"},
           issue: %Issue{id: "issue-current"},
           workspace: workspace,

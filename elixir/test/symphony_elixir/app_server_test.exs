@@ -1139,8 +1139,8 @@ defmodule SymphonyElixir.AppServerTest do
                    get_in(payload, ["params", "dynamicTools"])
                    |> Enum.map(& &1["name"])
                    |> then(fn tool_names ->
-                     "linear.get_current_issue" in tool_names and
-                       "linear.update_state" in tool_names and
+                     "linear_get_current_issue" in tool_names and
+                       "linear_update_state" in tool_names and
                        "linear_graphql" not in tool_names
                    end)
                else
@@ -1953,7 +1953,7 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           4)
             printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90a\",\"status\":\"inProgress\",\"items\":[]}}}'
-            printf '%s\\n' '{\"id\":102,\"method\":\"item/tool/call\",\"params\":{\"name\":\"linear.get_current_issue\",\"callId\":\"call-90a\",\"threadId\":\"thread-90a\",\"turnId\":\"turn-90a\",\"arguments\":{}}}'
+            printf '%s\\n' '{\"id\":102,\"method\":\"item/tool/call\",\"params\":{\"name\":\"linear_get_current_issue\",\"callId\":\"call-90a\",\"threadId\":\"thread-90a\",\"turnId\":\"turn-90a\",\"arguments\":{}}}'
             ;;
           5)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -2002,7 +2002,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert {:ok, _result} =
                AppServer.run(workspace, "Handle supported tool calls", issue, tool_executor: tool_executor)
 
-      assert_received {:tool_called, "linear.get_current_issue", %{}}
+      assert_received {:tool_called, "linear_get_current_issue", %{}}
 
       trace = File.read!(trace_file)
       lines = String.split(trace, "\n", trim: true)
@@ -2060,7 +2060,7 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           4)
             printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90b\",\"status\":\"inProgress\",\"items\":[]}}}'
-            printf '%s\\n' '{\"id\":103,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"linear.update_state\",\"callId\":\"call-90b\",\"threadId\":\"thread-90b\",\"turnId\":\"turn-90b\",\"arguments\":{\"state_name_or_id\":\"Done\"}}}'
+            printf '%s\\n' '{\"id\":103,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"linear_update_state\",\"callId\":\"call-90b\",\"threadId\":\"thread-90b\",\"turnId\":\"turn-90b\",\"arguments\":{\"state_name_or_id\":\"Done\"}}}'
             ;;
           5)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -2114,9 +2114,9 @@ defmodule SymphonyElixir.AppServerTest do
                  tool_executor: tool_executor
                )
 
-      assert_received {:tool_called, "linear.update_state", %{"state_name_or_id" => "Done"}}
+      assert_received {:tool_called, "linear_update_state", %{"state_name_or_id" => "Done"}}
 
-      assert_received {:app_server_message, %{event: :tool_call_failed, payload: %{"params" => %{"tool" => "linear.update_state"}}}}
+      assert_received {:app_server_message, %{event: :tool_call_failed, payload: %{"params" => %{"tool" => "linear_update_state"}}}}
     after
       File.rm_rf(test_root)
     end

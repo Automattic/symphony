@@ -7,35 +7,35 @@ description: |
 
 # Linear Tools
 
-Use the scoped `linear.*` tools exposed by Symphony's app-server session. These
+Use the scoped `linear_*` tools exposed by Symphony's app-server session. These
 tools inject the current issue id server-side and do not accept issue id
 arguments from prompts.
 
 ## Read Tools
 
-- `linear.get_current_issue` with `{}`: full fields for the current issue.
-- `linear.get_subissues` with `{}`: direct children of the current issue.
-- `linear.get_parent_issue` with `{}`: parent issue, or `null`.
-- `linear.get_comments` with optional `{"limit": 50}`: current issue comments,
+- `linear_get_current_issue` with `{}`: full fields for the current issue.
+- `linear_get_subissues` with `{}`: direct children of the current issue.
+- `linear_get_parent_issue` with `{}`: parent issue, or `null`.
+- `linear_get_comments` with optional `{"limit": 50}`: current issue comments,
   newest first.
-- `linear.get_related_issues` with `{}`: blocks and blocked-by issue summaries
+- `linear_get_related_issues` with `{}`: blocks and blocked-by issue summaries
   only: id, identifier, and title.
 
 ## Write Tools
 
-- `linear.update_state` with `{"state_name_or_id": "In Review"}`: resolves the
+- `linear_update_state` with `{"state_name_or_id": "In Review"}`: resolves the
   state against the current issue team's workflow. Unknown states are a no-op.
-- `linear.set_assignee` with `{"assignee": "self"}`, `{"assignee": "unassign"}`,
+- `linear_set_assignee` with `{"assignee": "self"}`, `{"assignee": "unassign"}`,
   or `{"assignee": "<user_id>"}`.
-- `linear.add_comment` with `{"body": "..."}`: adds a comment to the current
+- `linear_add_comment` with `{"body": "..."}`: adds a comment to the current
   issue and records ownership for this run.
-- `linear.update_comment` with `{"comment_id": "...", "body": "..."}`: only for
+- `linear_update_comment` with `{"comment_id": "...", "body": "..."}`: only for
   comments created earlier by this run.
-- `linear.delete_comment` with `{"comment_id": "..."}`: only for comments
+- `linear_delete_comment` with `{"comment_id": "..."}`: only for comments
   created earlier by this run.
-- `linear.attach_url` with `{"url": "https://...", "title": "..."}`: attaches a
+- `linear_attach_url` with `{"url": "https://...", "title": "..."}`: attaches a
   valid HTTP(S) URL to the current issue. Titles are capped.
-- `linear.attach_file` with `{"local_path": "path/in/workspace", "title": "..."}`:
+- `linear_attach_file` with `{"local_path": "path/in/workspace", "title": "..."}`:
   uploads and attaches a file only when the path resolves inside the workspace.
 
 ## Rules

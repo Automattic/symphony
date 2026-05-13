@@ -7,22 +7,22 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @tool_schemas [
     %{
-      "name" => "linear.get_current_issue",
+      "name" => "linear_get_current_issue",
       "description" => "Read full fields for the current Linear issue.",
       "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
     },
     %{
-      "name" => "linear.get_subissues",
+      "name" => "linear_get_subissues",
       "description" => "Read direct child issues of the current Linear issue.",
       "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
     },
     %{
-      "name" => "linear.get_parent_issue",
+      "name" => "linear_get_parent_issue",
       "description" => "Read the parent issue of the current Linear issue, if any.",
       "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
     },
     %{
-      "name" => "linear.get_comments",
+      "name" => "linear_get_comments",
       "description" => "Read comments on the current Linear issue, newest first.",
       "inputSchema" => %{
         "type" => "object",
@@ -33,12 +33,12 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
-      "name" => "linear.get_related_issues",
+      "name" => "linear_get_related_issues",
       "description" => "Read blocks and blocked-by issue summaries for the current Linear issue.",
       "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
     },
     %{
-      "name" => "linear.update_state",
+      "name" => "linear_update_state",
       "description" => "Move the current Linear issue to a state in its team's workflow.",
       "inputSchema" => %{
         "type" => "object",
@@ -50,7 +50,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
-      "name" => "linear.set_assignee",
+      "name" => "linear_set_assignee",
       "description" => "Set the current Linear issue assignee to self, unassign, or a user id.",
       "inputSchema" => %{
         "type" => "object",
@@ -62,7 +62,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
-      "name" => "linear.add_comment",
+      "name" => "linear_add_comment",
       "description" => "Add a comment to the current Linear issue.",
       "inputSchema" => %{
         "type" => "object",
@@ -74,7 +74,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
-      "name" => "linear.update_comment",
+      "name" => "linear_update_comment",
       "description" => "Update a comment created earlier by this run.",
       "inputSchema" => %{
         "type" => "object",
@@ -87,7 +87,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
-      "name" => "linear.delete_comment",
+      "name" => "linear_delete_comment",
       "description" => "Delete a comment created earlier by this run.",
       "inputSchema" => %{
         "type" => "object",
@@ -99,7 +99,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
-      "name" => "linear.attach_url",
+      "name" => "linear_attach_url",
       "description" => "Attach a URL to the current Linear issue.",
       "inputSchema" => %{
         "type" => "object",
@@ -112,7 +112,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
-      "name" => "linear.attach_file",
+      "name" => "linear_attach_file",
       "description" => "Upload and attach a workspace-local file to the current Linear issue.",
       "inputSchema" => %{
         "type" => "object",
@@ -127,24 +127,45 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   ]
 
   @tool_names Enum.map(@tool_schemas, & &1["name"])
+  @invalid_tool_names Enum.reject(@tool_names, fn name -> Regex.match?(~r/^[a-zA-Z0-9_-]+$/, name) end)
+
+  if @invalid_tool_names != [] do
+    raise ArgumentError, "dynamic tool names must match ^[a-zA-Z0-9_-]+$: #{inspect(@invalid_tool_names)}"
+  end
+
   @allowed_arguments %{
-    "linear.get_current_issue" => [],
-    "linear.get_subissues" => [],
-    "linear.get_parent_issue" => [],
-    "linear.get_comments" => ["limit"],
-    "linear.get_related_issues" => [],
-    "linear.update_state" => ["state_name_or_id"],
-    "linear.set_assignee" => ["assignee"],
-    "linear.add_comment" => ["body"],
-    "linear.update_comment" => ["comment_id", "body"],
-    "linear.delete_comment" => ["comment_id"],
-    "linear.attach_url" => ["url", "title"],
-    "linear.attach_file" => ["local_path", "title"]
+    "linear_get_current_issue" => [],
+    "linear_get_subissues" => [],
+    "linear_get_parent_issue" => [],
+    "linear_get_comments" => ["limit"],
+    "linear_get_related_issues" => [],
+    "linear_update_state" => ["state_name_or_id"],
+    "linear_set_assignee" => ["assignee"],
+    "linear_add_comment" => ["body"],
+    "linear_update_comment" => ["comment_id", "body"],
+    "linear_delete_comment" => ["comment_id"],
+    "linear_attach_url" => ["url", "title"],
+    "linear_attach_file" => ["local_path", "title"]
+  }
+  @legacy_tool_aliases %{
+    "linear.get_current_issue" => "linear_get_current_issue",
+    "linear.get_subissues" => "linear_get_subissues",
+    "linear.get_parent_issue" => "linear_get_parent_issue",
+    "linear.get_comments" => "linear_get_comments",
+    "linear.get_related_issues" => "linear_get_related_issues",
+    "linear.update_state" => "linear_update_state",
+    "linear.set_assignee" => "linear_set_assignee",
+    "linear.add_comment" => "linear_add_comment",
+    "linear.update_comment" => "linear_update_comment",
+    "linear.delete_comment" => "linear_delete_comment",
+    "linear.attach_url" => "linear_attach_url",
+    "linear.attach_file" => "linear_attach_file"
   }
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
     context = tool_context(opts)
+    tool = normalize_tool_name(tool)
 
     case Map.fetch(@allowed_arguments, tool) do
       {:ok, allowed_arguments} ->
@@ -178,42 +199,45 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp execute_linear_tool("linear.get_current_issue", context, _args, opts), do: Linear.get_current_issue(context, opts)
-  defp execute_linear_tool("linear.get_subissues", context, _args, opts), do: Linear.get_subissues(context, opts)
-  defp execute_linear_tool("linear.get_parent_issue", context, _args, opts), do: Linear.get_parent_issue(context, opts)
-  defp execute_linear_tool("linear.get_related_issues", context, _args, opts), do: Linear.get_related_issues(context, opts)
+  defp execute_linear_tool("linear_get_current_issue", context, _args, opts), do: Linear.get_current_issue(context, opts)
+  defp execute_linear_tool("linear_get_subissues", context, _args, opts), do: Linear.get_subissues(context, opts)
+  defp execute_linear_tool("linear_get_parent_issue", context, _args, opts), do: Linear.get_parent_issue(context, opts)
+  defp execute_linear_tool("linear_get_related_issues", context, _args, opts), do: Linear.get_related_issues(context, opts)
 
-  defp execute_linear_tool("linear.get_comments", context, args, opts) do
+  defp execute_linear_tool("linear_get_comments", context, args, opts) do
     Linear.get_comments(context, Map.get(args, "limit"), opts)
   end
 
-  defp execute_linear_tool("linear.update_state", context, args, opts) do
+  defp execute_linear_tool("linear_update_state", context, args, opts) do
     Linear.update_state(context, Map.get(args, "state_name_or_id"), opts)
   end
 
-  defp execute_linear_tool("linear.set_assignee", context, args, opts) do
+  defp execute_linear_tool("linear_set_assignee", context, args, opts) do
     Linear.set_assignee(context, Map.get(args, "assignee"), opts)
   end
 
-  defp execute_linear_tool("linear.add_comment", context, args, opts) do
+  defp execute_linear_tool("linear_add_comment", context, args, opts) do
     Linear.add_comment(context, Map.get(args, "body"), opts)
   end
 
-  defp execute_linear_tool("linear.update_comment", context, args, opts) do
+  defp execute_linear_tool("linear_update_comment", context, args, opts) do
     Linear.update_comment(context, Map.get(args, "comment_id"), Map.get(args, "body"), opts)
   end
 
-  defp execute_linear_tool("linear.delete_comment", context, args, opts) do
+  defp execute_linear_tool("linear_delete_comment", context, args, opts) do
     Linear.delete_comment(context, Map.get(args, "comment_id"), opts)
   end
 
-  defp execute_linear_tool("linear.attach_url", context, args, opts) do
+  defp execute_linear_tool("linear_attach_url", context, args, opts) do
     Linear.attach_url(context, Map.get(args, "url"), Map.get(args, "title"), opts)
   end
 
-  defp execute_linear_tool("linear.attach_file", context, args, opts) do
+  defp execute_linear_tool("linear_attach_file", context, args, opts) do
     Linear.attach_file(context, Map.get(args, "local_path"), Map.get(args, "title"), opts)
   end
+
+  defp normalize_tool_name(tool) when is_binary(tool), do: Map.get(@legacy_tool_aliases, tool, tool)
+  defp normalize_tool_name(tool), do: tool
 
   defp normalize_arguments(nil), do: {:ok, %{}}
   defp normalize_arguments(arguments) when is_map(arguments), do: {:ok, stringify_keys(arguments)}

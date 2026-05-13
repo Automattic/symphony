@@ -72,6 +72,7 @@ defmodule SymphonyElixir.RunStoreTest do
       stop_mnesia_for_test()
       File.rm_rf(legacy_dir)
       Application.put_env(:symphony_elixir, :run_store_dir, original_run_store_dir)
+      {:ok, _} = Application.ensure_all_started(:symphony_elixir)
       Process.flag(:trap_exit, trap_exit?)
     end
   end

@@ -323,6 +323,30 @@ defmodule SymphonyElixir.DependencyAuditTest do
              )
   end
 
+  test "treats git manifest path checks from a non-repo workspace as empty" do
+    assert {:ok, []} =
+             DependencyAudit.audit("/tmp/repo",
+               settings: Config.settings!(),
+               base_ref: "origin/main",
+               command_runner: fn
+                 "git", ["rev-parse", "--verify", _ref], _opts -> {"abc123\n", 0}
+                 "git", _args, _opts -> {"fatal: not a git repository", 128}
+               end
+             )
+  end
+
+  test "surfaces non-binary git output while resolving manifest changes" do
+    assert {:error, {:git_failed, ["diff", "--name-only", "origin/main", "--"], 2, :bad_output}} =
+             DependencyAudit.audit("/tmp/repo",
+               settings: Config.settings!(),
+               base_ref: "origin/main",
+               command_runner: fn
+                 "git", ["rev-parse", "--verify", _ref], _opts -> {"abc123\n", 0}
+                 "git", ["diff", "--name-only", "origin/main", "--"], _opts -> {:bad_output, 2}
+               end
+             )
+  end
+
   test "fails closed when settings are malformed", %{repo: repo} do
     write_mix!(repo, ~s({:jason, "~> 1.4"}))
     commit_base!(repo)

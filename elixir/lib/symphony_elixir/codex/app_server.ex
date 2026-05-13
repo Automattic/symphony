@@ -6,7 +6,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AuditLog, Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, AuditLog, Codex.DynamicTool, Config, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
 
   @initialize_id 1
@@ -14,8 +14,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
-  @agent_runtime_env "SYMPHONY_AGENT_RUNTIME"
-  @agent_runtime_env_value "1"
+  @agent_runtime_env AgentEnv.runtime_marker_name()
+  @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
   @type session :: %{
@@ -234,7 +234,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :stderr_to_stdout,
             args: [~c"-lc", String.to_charlist(settings.agent.command)],
             cd: String.to_charlist(workspace),
-            env: agent_runtime_env(),
+            env: AgentEnv.build(),
             line: @port_line_bytes
           ]
         )
@@ -245,7 +245,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_port(workspace, worker_host, settings) when is_binary(worker_host) do
     remote_command = remote_launch_command(workspace, settings)
-    SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
+    SSH.start_port(worker_host, remote_command, line: @port_line_bytes, env: AgentEnv.build())
   end
 
   defp remote_launch_command(workspace, settings) when is_binary(workspace) do
@@ -254,10 +254,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{settings.agent.command}"
     ]
     |> Enum.join(" && ")
-  end
-
-  defp agent_runtime_env do
-    [{String.to_charlist(@agent_runtime_env), String.to_charlist(@agent_runtime_env_value)}]
   end
 
   defp port_metadata(port, worker_host) when is_port(port) do

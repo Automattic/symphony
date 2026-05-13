@@ -4,12 +4,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, Config, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
 
-  @agent_runtime_env "SYMPHONY_AGENT_RUNTIME"
-  @agent_runtime_env_value "1"
+  @agent_runtime_env AgentEnv.runtime_marker_name()
+  @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @port_line_bytes 1_048_576
 
   @type session :: %{
@@ -298,7 +298,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
             line: @port_line_bytes,
             args: Enum.map(args, &String.to_charlist/1),
             cd: String.to_charlist(workspace),
-            env: agent_runtime_env()
+            env: AgentEnv.build()
           ]
         )
 
@@ -311,7 +311,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       ssh_module().start_port(
         worker_host,
         remote_launch_command(workspace, command_words, prompt),
-        line: @port_line_bytes
+        line: @port_line_bytes,
+        env: AgentEnv.build()
       )
     end
   end
@@ -383,10 +384,6 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print #{shell_escape(prompt)}"
     ]
     |> Enum.join(" && ")
-  end
-
-  defp agent_runtime_env do
-    [{String.to_charlist(@agent_runtime_env), String.to_charlist(@agent_runtime_env_value)}]
   end
 
   defp remove_local_settings(settings_path) do

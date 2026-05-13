@@ -6,7 +6,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AgentEnv, AuditLog, Codex.DynamicTool, Config, PathSafety, SSH}
+
+  alias SymphonyElixir.{
+    AgentEnv,
+    AgentSandboxConfig,
+    AuditLog,
+    Codex.DynamicTool,
+    Config,
+    PathSafety,
+    SSH
+  }
+
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.Config.Schema
 
@@ -54,7 +64,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host, settings),
-           {:ok, thread_id} <- do_start_session(port, expanded_workspace, session_policies, settings) do
+           {:ok, thread_id} <-
+             do_start_session(port, expanded_workspace, session_policies, settings) do
         {:ok,
          %{
            port: port,
@@ -108,7 +119,16 @@ defmodule SymphonyElixir.Codex.AppServer do
       command_security: command_security
     }
 
-    case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy, settings) do
+    case start_turn(
+           port,
+           thread_id,
+           prompt,
+           issue,
+           workspace,
+           approval_policy,
+           turn_sandbox_policy,
+           settings
+         ) do
       {:ok, turn_id} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
@@ -197,6 +217,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       {:error, reason} ->
         Logger.error("Failed to start Linear CommentRegistry: #{inspect(reason)}. Comment edits will be unavailable.")
+
         nil
     end
   end
@@ -249,6 +270,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     if is_nil(executable) do
       {:error, :bash_not_found}
     else
+      command = command_with_sandbox_config(settings.agent.command, settings)
+
       port =
         Port.open(
           {:spawn_executable, String.to_charlist(executable)},
@@ -256,7 +279,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(settings.agent.command)],
+            args: [~c"-lc", String.to_charlist(command)],
             cd: String.to_charlist(workspace),
             env: AgentEnv.build(),
             line: @port_line_bytes
@@ -273,11 +296,44 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp remote_launch_command(workspace, settings) when is_binary(workspace) do
+    command = command_with_sandbox_config(settings.agent.command, settings)
+
     [
       "cd #{shell_escape(workspace)}",
-      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{settings.agent.command}"
+      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command}"
     ]
     |> Enum.join(" && ")
+  end
+
+  defp command_with_sandbox_config(command, settings) when is_binary(command) do
+    network_access = settings.agent.network_access || %Schema.Agent.NetworkAccess{}
+
+    overrides =
+      network_access.mode
+      |> AgentSandboxConfig.codex_config_overrides(Schema.codex_effective_network_allowed_domains(settings))
+
+    inject_config_overrides(command, overrides)
+  end
+
+  defp inject_config_overrides(command, overrides) do
+    with {:ok, words} <- shell_words(command),
+         app_server_index when is_integer(app_server_index) <-
+           Enum.find_index(words, &(&1 == "app-server")) do
+      {before_app_server, from_app_server} = Enum.split(words, app_server_index)
+      override_words = overrides |> Enum.flat_map(&["--config", &1])
+
+      (before_app_server ++ override_words ++ from_app_server)
+      |> Enum.map_join(" ", &shell_escape/1)
+    else
+      _ -> command
+    end
+  end
+
+  defp shell_words(command) when is_binary(command) do
+    {:ok, OptionParser.split(command)}
+  rescue
+    exception ->
+      {:error, {:invalid_agent_command, Exception.message(exception)}}
   end
 
   defp port_metadata(port, worker_host) when is_port(port) do
@@ -309,7 +365,8 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp discover_origin_url(workspace, nil) when is_binary(workspace) do
     with git when is_binary(git) <- System.find_executable("git"),
-         {output, 0} <- System.cmd(git, ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true) do
+         {output, 0} <-
+           System.cmd(git, ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true) do
       output |> String.trim() |> blank_to_nil()
     else
       _result -> nil
@@ -400,7 +457,16 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp maybe_put_thread_config(params, _config), do: params
 
-  defp start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy, settings) do
+  defp start_turn(
+         port,
+         thread_id,
+         prompt,
+         issue,
+         workspace,
+         approval_policy,
+         turn_sandbox_policy,
+         settings
+       ) do
     send_message(port, %{
       "method" => "turn/start",
       "id" => @turn_start_id,
@@ -425,7 +491,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests, settings, approval_context) do
+  defp await_turn_completion(
+         port,
+         on_message,
+         tool_executor,
+         auto_approve_requests,
+         settings,
+         approval_context
+       ) do
     config = settings.agent
 
     receive_loop(
@@ -719,7 +792,12 @@ defmodule SymphonyElixir.Codex.AppServer do
         _ -> :tool_call_failed
       end
 
-    emit_message(context.on_message, event, %{payload: payload, raw: payload_string, result: result}, context.metadata)
+    emit_message(
+      context.on_message,
+      event,
+      %{payload: payload, raw: payload_string, result: result},
+      context.metadata
+    )
 
     :approved
   end
@@ -894,7 +972,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     }
   end
 
-  defp dynamic_tool_output(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text), do: text
+  defp dynamic_tool_output(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text),
+    do: text
+
   defp dynamic_tool_output(result), do: Jason.encode!(result, pretty: true)
 
   defp dynamic_tool_content_items(output) when is_binary(output) do
@@ -1096,12 +1176,16 @@ defmodule SymphonyElixir.Codex.AppServer do
       }
 
     case AuditLog.record_refused_agent_action(issue, attrs, opts) do
-      :ok -> :ok
-      {:error, reason} -> Logger.warning("Audit log refused-action write failed: #{inspect(reason)}")
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Audit log refused-action write failed: #{inspect(reason)}")
     end
   end
 
-  defp payload_method(payload) when is_map(payload), do: Map.get(payload, "method") || Map.get(payload, :method)
+  defp payload_method(payload) when is_map(payload),
+    do: Map.get(payload, "method") || Map.get(payload, :method)
 
   defp command_tokens(command) when is_binary(command) do
     command
@@ -1212,7 +1296,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     end)
   end
 
-  defp match_git_remote_mutation(["remote" | remote_args]), do: parse_git_remote_mutation(remote_args)
+  defp match_git_remote_mutation(["remote" | remote_args]),
+    do: parse_git_remote_mutation(remote_args)
+
   defp match_git_remote_mutation(_tokens), do: nil
 
   defp parse_git_remote_mutation(["add" | args]) do
@@ -1270,7 +1356,8 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp skip_global_git_options(tokens), do: tokens
 
-  defp skip_options([option, _value | rest]) when option in ["--repo", "-R", "--push-option", "-o"], do: skip_options(rest)
+  defp skip_options([option, _value | rest])
+       when option in ["--repo", "-R", "--push-option", "-o"], do: skip_options(rest)
 
   defp skip_options([option | rest]) when is_binary(option) do
     if String.starts_with?(option, "-"), do: skip_options(rest), else: [option | rest]
@@ -1291,7 +1378,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp allowed_git_remote_mutation?(%{name: "origin", url: url}, command_security) when is_binary(url) do
+  defp allowed_git_remote_mutation?(%{name: "origin", url: url}, command_security)
+       when is_binary(url) do
     same_origin_url?(url, Map.get(command_security || %{}, :origin_url)) or
       same_repo?(normalize_repo_target(url), Map.get(command_security || %{}, :origin_repo))
   end
@@ -1304,7 +1392,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp same_origin_url?(_left, _right), do: false
 
-  defp same_repo?(left, right) when is_binary(left) and is_binary(right), do: String.downcase(left) == String.downcase(right)
+  defp same_repo?(left, right) when is_binary(left) and is_binary(right),
+    do: String.downcase(left) == String.downcase(right)
+
   defp same_repo?(_left, _right), do: false
 
   defp normalize_repo_target(target) when is_binary(target) do
@@ -1407,7 +1497,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     )
   end
 
-  defp tool_request_user_input_approval_answers(%{"questions" => questions}) when is_list(questions) do
+  defp tool_request_user_input_approval_answers(%{"questions" => questions})
+       when is_list(questions) do
     answers =
       Enum.reduce_while(questions, %{}, fn question, acc ->
         case tool_request_user_input_approval_answer(question) do
@@ -1455,7 +1546,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp tool_request_user_input_unavailable_answers(%{"questions" => questions}) when is_list(questions) do
+  defp tool_request_user_input_unavailable_answers(%{"questions" => questions})
+       when is_list(questions) do
     answers =
       Enum.reduce_while(questions, %{}, fn question, acc ->
         case tool_request_user_input_question_id(question) do
@@ -1563,13 +1655,25 @@ defmodule SymphonyElixir.Codex.AppServer do
        do: 0
 
   defp mcp_elicitation_field_fallback(_field, %{"type" => "array"}), do: []
-  defp mcp_elicitation_field_fallback(_field, _field_schema), do: @non_interactive_tool_input_answer
+
+  defp mcp_elicitation_field_fallback(_field, _field_schema),
+    do: @non_interactive_tool_input_answer
 
   defp approval_boolean_field?(field, field_schema) do
     [field, field_schema["title"], field_schema["description"]]
     |> Enum.filter(&is_binary/1)
     |> Enum.map(&String.downcase/1)
-    |> Enum.any?(&String.contains?(&1, ["accept", "access", "allow", "approve", "authorize", "confirm", "consent"]))
+    |> Enum.any?(
+      &String.contains?(&1, [
+        "accept",
+        "access",
+        "allow",
+        "approve",
+        "authorize",
+        "confirm",
+        "consent"
+      ])
+    )
   end
 
   defp tool_request_user_input_question_id(%{"id" => question_id}) when is_binary(question_id),
@@ -1608,7 +1712,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       |> String.trim()
       |> String.downcase()
 
-    String.starts_with?(normalized_label, "approve") or String.starts_with?(normalized_label, "allow")
+    String.starts_with?(normalized_label, "approve") or
+      String.starts_with?(normalized_label, "allow")
   end
 
   defp initial_turn_stream_state(command_timeout_ms) do
@@ -1645,8 +1750,12 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp receive_timeout_ms(turn_timeout_ms, %{active_command: nil}), do: turn_timeout_ms
 
-  defp receive_timeout_ms(turn_timeout_ms, %{active_command: %{started_at_ms: started_at_ms}, command_timeout_ms: command_timeout_ms})
-       when is_integer(started_at_ms) and is_integer(command_timeout_ms) and command_timeout_ms > 0 do
+  defp receive_timeout_ms(turn_timeout_ms, %{
+         active_command: %{started_at_ms: started_at_ms},
+         command_timeout_ms: command_timeout_ms
+       })
+       when is_integer(started_at_ms) and is_integer(command_timeout_ms) and
+              command_timeout_ms > 0 do
     elapsed_ms = System.monotonic_time(:millisecond) - started_at_ms
     min(turn_timeout_ms, max(0, command_timeout_ms - elapsed_ms))
   end
@@ -1678,7 +1787,11 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp command_timeout_error(_turn_stream_state), do: :ok
 
-  defp update_command_tracking(turn_stream_state, "item/commandExecution/requestApproval", payload) do
+  defp update_command_tracking(
+         turn_stream_state,
+         "item/commandExecution/requestApproval",
+         payload
+       ) do
     start_command_tracking(turn_stream_state, command_from_payload(payload))
   end
 
@@ -1715,7 +1828,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     })
   end
 
-  defp complete_command_tracking(turn_stream_state), do: Map.put(turn_stream_state, :active_command, nil)
+  defp complete_command_tracking(turn_stream_state),
+    do: Map.put(turn_stream_state, :active_command, nil)
 
   defp command_execution_item?(payload) do
     payload
@@ -1871,7 +1985,12 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp emit_message(on_message, event, details, metadata) when is_function(on_message, 1) do
-    message = metadata |> Map.merge(details) |> Map.put(:event, event) |> Map.put(:timestamp, DateTime.utc_now())
+    message =
+      metadata
+      |> Map.merge(details)
+      |> Map.put(:event, event)
+      |> Map.put(:timestamp, DateTime.utc_now())
+
     on_message.(message)
   end
 
@@ -1898,7 +2017,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp default_on_message(_message), do: :ok
 
   defp tool_call_name(params) when is_map(params) do
-    case Map.get(params, "tool") || Map.get(params, :tool) || Map.get(params, "name") || Map.get(params, :name) do
+    case Map.get(params, "tool") || Map.get(params, :tool) || Map.get(params, "name") ||
+           Map.get(params, :name) do
       name when is_binary(name) ->
         case String.trim(name) do
           "" -> nil

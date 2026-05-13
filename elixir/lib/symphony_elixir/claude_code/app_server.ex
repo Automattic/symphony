@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AgentEnv, Config, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, AgentSandboxConfig, Config, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
 
@@ -66,7 +66,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @doc false
   @spec build_sandbox_settings(Agent.NetworkAccess.t()) :: map()
   def build_sandbox_settings(%Agent.NetworkAccess{mode: mode} = network_access) do
-    base = %{"sandbox" => %{"enabled" => true, "failIfUnavailable" => true}}
+    base =
+      %{
+        "sandbox" => %{
+          "enabled" => true,
+          "failIfUnavailable" => true,
+          "allowUnsandboxedCommands" => false,
+          "filesystem" => AgentSandboxConfig.claude_filesystem_settings()
+        }
+      }
 
     case mode do
       "block" ->

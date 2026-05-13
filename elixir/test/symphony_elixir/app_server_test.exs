@@ -204,6 +204,7 @@ defmodule SymphonyElixir.AppServerTest do
       File.write!(codex_binary, """
       #!/bin/sh
       trace_file="#{trace_file}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
       printf 'ENV:%s\\n' "$SYMPHONY_AGENT_RUNTIME" >> "$trace_file"
       count=0
 
@@ -249,7 +250,17 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Validate runtime marker", issue)
-      assert File.read!(trace_file) =~ "ENV:1"
+      trace = File.read!(trace_file)
+      assert trace =~ "ENV:1"
+      assert trace =~ "--config default_permissions=\"workspace_write\""
+      assert trace =~ "--config permissions.workspace_write.filesystem="
+      assert trace =~ "\"~/.ssh\"=\"none\""
+      assert trace =~ "\"WORKFLOW.md\"=\"read\""
+      assert trace =~ "--config permissions.workspace_write.network={\"enabled\"=true,\"mode\"=\"limited\"}"
+      assert trace =~ "--config permissions.workspace_write.network.domains="
+      assert trace =~ "\"github.com\"=\"allow\""
+      assert trace =~ "\"api.openai.com\"=\"allow\""
+      refute trace =~ "evil.example.com"
     after
       File.rm_rf(test_root)
     end
@@ -1903,7 +1914,13 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv_line =~ "cd "
       assert argv_line =~ remote_workspace
       assert argv_line =~ "exec "
-      assert argv_line =~ "fake-remote-codex app-server"
+      assert argv_line =~ "fake-remote-codex"
+      assert argv_line =~ "--config"
+      assert argv_line =~ "default_permissions=\"workspace_write\""
+      assert argv_line =~ "permissions.workspace_write.filesystem="
+      assert argv_line =~ "permissions.workspace_write.network="
+      assert argv_line =~ "permissions.workspace_write.network.domains="
+      assert argv_line =~ "app-server"
 
       expected_turn_policy = %{
         "type" => "workspaceWrite",

@@ -1324,7 +1324,7 @@ defmodule SymphonyElixir.Config.Schema do
     value = Map.get(channel, field)
     allow_private = Map.get(channel, :allow_private) == true
 
-    case Notifications.Channel.validate_webhook_url(value, allow_private, allow_env_references: false) do
+    case Notifications.Channel.validate_webhook_url(Secret.unwrap(value), allow_private, allow_env_references: false) do
       :ok -> :ok
       {:error, message} -> {:error, "notifications.channels[#{index}].#{field} #{message}"}
     end

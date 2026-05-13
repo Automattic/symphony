@@ -237,9 +237,9 @@ defmodule SymphonyElixir.NotificationsTest do
             %{
               notifications: %{
                 channels: [
-                  %{kind: "webhook", url: "https://hooks.slack.com/services/T000/B000/XXX"},
-                  %{kind: "webhook", url: "https://discord.com/api/webhooks/123/secret"},
-                  %{kind: "webhook", url: "https://10.0.0.1/events", allow_private: true}
+                  %{kind: "webhook", url: slack_url},
+                  %{kind: "webhook", url: discord_url},
+                  %{kind: "webhook", url: private_url, allow_private: true}
                 ]
               }
             }} =
@@ -253,6 +253,10 @@ defmodule SymphonyElixir.NotificationsTest do
                  ]
                }
              })
+
+    assert Secret.unwrap(slack_url) == "https://hooks.slack.com/services/T000/B000/XXX"
+    assert Secret.unwrap(discord_url) == "https://discord.com/api/webhooks/123/secret"
+    assert Secret.unwrap(private_url) == "https://10.0.0.1/events"
   end
 
   test "notification schema validates webhook URLs resolved from environment" do

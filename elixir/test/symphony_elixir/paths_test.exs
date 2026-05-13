@@ -6,15 +6,17 @@ defmodule SymphonyElixir.PathsTest do
   @app :symphony_elixir
   @state_keys [:state_root_override, :state_root]
   @logs_keys [:logs_root_override, :logs_root, :log_file]
+  @release_keys [:running_as_release]
 
   setup do
     previous_state_env = System.get_env("SYMPHONY_STATE_ROOT")
     previous_logs_env = System.get_env("SYMPHONY_LOGS_ROOT")
-    previous_env = Map.new(@state_keys ++ @logs_keys, &{&1, Application.get_env(@app, &1)})
+    previous_env = Map.new(@state_keys ++ @logs_keys ++ @release_keys, &{&1, Application.get_env(@app, &1)})
 
     System.delete_env("SYMPHONY_STATE_ROOT")
     System.delete_env("SYMPHONY_LOGS_ROOT")
-    Enum.each(@state_keys ++ @logs_keys, &Application.delete_env(@app, &1))
+    Enum.each(@state_keys ++ @logs_keys ++ @release_keys, &Application.delete_env(@app, &1))
+    Application.put_env(@app, :running_as_release, false)
 
     on_exit(fn ->
       restore_env("SYMPHONY_STATE_ROOT", previous_state_env)
@@ -46,6 +48,16 @@ defmodule SymphonyElixir.PathsTest do
     assert Paths.state_root() == Path.join([System.user_home!(), "Library", "Application Support", "symphony"])
   end
 
+  test "release builds default state root to a release subdirectory" do
+    Application.put_env(@app, :running_as_release, true)
+
+    assert Paths.state_root() ==
+             Path.join([System.user_home!(), "Library", "Application Support", "symphony", "release"])
+
+    assert Paths.logs_root() ==
+             Path.join([System.user_home!(), "Library", "Logs", "symphony", "release"])
+  end
+
   test "logs root precedence is flag override, env, app env, default" do
     Application.put_env(@app, :logs_root, "tmp/app-logs")
     System.put_env("SYMPHONY_LOGS_ROOT", "tmp/env-logs")
@@ -63,6 +75,15 @@ defmodule SymphonyElixir.PathsTest do
 
     Application.delete_env(@app, :logs_root)
     assert Paths.logs_root() == Path.join([System.user_home!(), "Library", "Logs", "symphony"])
+  end
+
+  test "release flag is overridden by SYMPHONY_STATE_ROOT and SYMPHONY_LOGS_ROOT" do
+    Application.put_env(@app, :running_as_release, true)
+    System.put_env("SYMPHONY_STATE_ROOT", "tmp/shared-state")
+    System.put_env("SYMPHONY_LOGS_ROOT", "tmp/shared-logs")
+
+    assert Paths.state_root() == Path.expand("tmp/shared-state")
+    assert Paths.logs_root() == Path.expand("tmp/shared-logs")
   end
 
   test "state paths are derived from the resolved state root" do

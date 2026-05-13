@@ -94,6 +94,17 @@ install shape is:
 Code signing and notarization are out of scope for this first package, so macOS Gatekeeper may ask
 operators to approve the binary on first launch.
 
+The packaged release stores its state and logs under a `release/` subdirectory so it doesn't
+collide with state written by `mix run` / `./bin/symphony` (which run as `nonode@nohost` while
+the release runs as `symphony@127.0.0.1`, and Mnesia tags every replica with `node()`):
+
+- Dev default: `~/Library/Application Support/symphony/` and `~/Library/Logs/symphony/`
+- Release default: `~/Library/Application Support/symphony/release/` and `~/Library/Logs/symphony/release/`
+
+Set `SYMPHONY_STATE_ROOT` and `SYMPHONY_LOGS_ROOT` to point both modes at the same paths if you
+explicitly want shared state — but be aware the on-disk Mnesia schema is owned by whichever node
+created it, so the other mode will fail to load tables until the schema is reset or renamed.
+
 ## Configuration
 
 Symphony reads two files:

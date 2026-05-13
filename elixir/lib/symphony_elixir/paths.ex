@@ -8,6 +8,8 @@ defmodule SymphonyElixir.Paths do
   @logs_root_env "SYMPHONY_LOGS_ROOT"
   @state_root_override_key :state_root_override
   @logs_root_override_key :logs_root_override
+  @burrito_env "__BURRITO"
+  @release_subdir "release"
 
   @spec state_root() :: Path.t()
   def state_root do
@@ -102,10 +104,35 @@ defmodule SymphonyElixir.Paths do
   defp normalize_root(_value), do: nil
 
   defp default_state_root do
-    Path.join([System.user_home!(), "Library", "Application Support", "symphony"])
+    [System.user_home!(), "Library", "Application Support", "symphony"]
+    |> Path.join()
+    |> maybe_append_release_subdir()
   end
 
   defp default_logs_root do
-    Path.join([System.user_home!(), "Library", "Logs", "symphony"])
+    [System.user_home!(), "Library", "Logs", "symphony"]
+    |> Path.join()
+    |> maybe_append_release_subdir()
+  end
+
+  defp maybe_append_release_subdir(base) do
+    if running_as_release?(), do: Path.join(base, @release_subdir), else: base
+  end
+
+  # Burrito releases run under a node name (`-name symphony@127.0.0.1`) while
+  # `mix run` / escript runs default to `nonode@nohost`. Mnesia tags every
+  # disc_copies replica with `node()`, so a single state dir can't be shared
+  # across the two. Route the release to its own subdirectory so the two modes
+  # never see each other's schema unless the operator explicitly opts in by
+  # setting SYMPHONY_STATE_ROOT.
+  defp running_as_release? do
+    case Application.fetch_env(@app, :running_as_release) do
+      {:ok, value} when is_boolean(value) -> value
+      _ -> detect_burrito_release()
+    end
+  end
+
+  defp detect_burrito_release do
+    System.get_env(@burrito_env) not in [nil, ""]
   end
 end

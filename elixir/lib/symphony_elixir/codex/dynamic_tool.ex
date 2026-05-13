@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.AgentTools.Linear
+  alias SymphonyElixir.AgentTools.{GitHub, Linear}
 
   @tool_schemas [
     %{
@@ -123,6 +123,59 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           "title" => %{"type" => ["string", "null"], "maxLength" => 120}
         }
       }
+    },
+    %{
+      "name" => "github_get_pull_request",
+      "description" => "Read the pull request for the current workspace branch in the configured origin repo.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
+    },
+    %{
+      "name" => "github_create_pull_request",
+      "description" => "Create a pull request from the current workspace branch to the configured origin repo default branch.",
+      "inputSchema" => %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "required" => ["title", "body"],
+        "properties" => %{
+          "title" => %{"type" => "string"},
+          "body" => %{"type" => "string"},
+          "draft" => %{"type" => "boolean"}
+        }
+      }
+    },
+    %{
+      "name" => "github_update_pull_request_body",
+      "description" => "Update the body of the pull request for the current workspace branch.",
+      "inputSchema" => %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "required" => ["body"],
+        "properties" => %{
+          "body" => %{"type" => "string"}
+        }
+      }
+    },
+    %{
+      "name" => "github_add_pr_comment",
+      "description" => "Add a comment to the pull request for the current workspace branch.",
+      "inputSchema" => %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "required" => ["body"],
+        "properties" => %{
+          "body" => %{"type" => "string"}
+        }
+      }
+    },
+    %{
+      "name" => "github_push_branch",
+      "description" => "Push the current workspace branch to origin.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
+    },
+    %{
+      "name" => "github_get_pr_checks",
+      "description" => "Read status checks for the pull request for the current workspace branch.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
     }
   ]
 
@@ -145,7 +198,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "linear_update_comment" => ["comment_id", "body"],
     "linear_delete_comment" => ["comment_id"],
     "linear_attach_url" => ["url", "title"],
-    "linear_attach_file" => ["local_path", "title"]
+    "linear_attach_file" => ["local_path", "title"],
+    "github_get_pull_request" => [],
+    "github_create_pull_request" => ["title", "body", "draft"],
+    "github_update_pull_request_body" => ["body"],
+    "github_add_pr_comment" => ["body"],
+    "github_push_branch" => [],
+    "github_get_pr_checks" => []
   }
   @legacy_tool_aliases %{
     "linear.get_current_issue" => "linear_get_current_issue",
@@ -159,7 +218,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "linear.update_comment" => "linear_update_comment",
     "linear.delete_comment" => "linear_delete_comment",
     "linear.attach_url" => "linear_attach_url",
-    "linear.attach_file" => "linear_attach_file"
+    "linear.attach_file" => "linear_attach_file",
+    "github.get_pull_request" => "github_get_pull_request",
+    "github.create_pull_request" => "github_create_pull_request",
+    "github.update_pull_request_body" => "github_update_pull_request_body",
+    "github.add_pr_comment" => "github_add_pr_comment",
+    "github.push_branch" => "github_push_branch",
+    "github.get_pr_checks" => "github_get_pr_checks"
   }
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
@@ -169,7 +234,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     case Map.fetch(@allowed_arguments, tool) do
       {:ok, allowed_arguments} ->
-        with_arguments(arguments, allowed_arguments, fn args -> execute_linear_tool(tool, context, args, opts) end)
+        with_arguments(tool, arguments, allowed_arguments, fn args -> execute_tool(tool, context, args, opts) end)
 
       :error ->
         tool_not_found_response(tool)
@@ -184,13 +249,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       issue: Keyword.get(opts, :issue),
       issue_id: Keyword.get(opts, :issue_id),
       workspace: Keyword.get(opts, :workspace),
-      comment_registry: Keyword.get(opts, :comment_registry)
+      comment_registry: Keyword.get(opts, :comment_registry),
+      command_security: Keyword.get(opts, :command_security) || %{}
     }
   end
 
-  defp with_arguments(arguments, allowed_keys, fun) when is_function(fun, 1) do
+  defp with_arguments(tool, arguments, allowed_keys, fun) when is_function(fun, 1) do
     with {:ok, args} <- normalize_arguments(arguments),
-         :ok <- reject_scope_arguments(args),
+         :ok <- reject_scope_arguments(tool, args),
          :ok <- validate_argument_keys(args, allowed_keys),
          {:ok, result} <- fun.(args) do
       success_response(result)
@@ -198,6 +264,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       {:error, reason} -> failure_response(tool_error_payload(reason))
     end
   end
+
+  defp execute_tool("linear_" <> _rest = tool, context, args, opts), do: execute_linear_tool(tool, context, args, opts)
+  defp execute_tool("github_" <> _rest = tool, context, args, opts), do: execute_github_tool(tool, context, args, opts)
 
   defp execute_linear_tool("linear_get_current_issue", context, _args, opts), do: Linear.get_current_issue(context, opts)
   defp execute_linear_tool("linear_get_subissues", context, _args, opts), do: Linear.get_subissues(context, opts)
@@ -236,6 +305,23 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     Linear.attach_file(context, Map.get(args, "local_path"), Map.get(args, "title"), opts)
   end
 
+  defp execute_github_tool("github_get_pull_request", context, _args, opts), do: GitHub.get_pull_request(context, opts)
+
+  defp execute_github_tool("github_create_pull_request", context, args, opts) do
+    GitHub.create_pull_request(context, Map.get(args, "title"), Map.get(args, "body"), Map.get(args, "draft"), opts)
+  end
+
+  defp execute_github_tool("github_update_pull_request_body", context, args, opts) do
+    GitHub.update_pull_request_body(context, Map.get(args, "body"), opts)
+  end
+
+  defp execute_github_tool("github_add_pr_comment", context, args, opts) do
+    GitHub.add_pr_comment(context, Map.get(args, "body"), opts)
+  end
+
+  defp execute_github_tool("github_push_branch", context, _args, opts), do: GitHub.push_branch(context, opts)
+  defp execute_github_tool("github_get_pr_checks", context, _args, opts), do: GitHub.get_pr_checks(context, opts)
+
   defp normalize_tool_name(tool) when is_binary(tool), do: Map.get(@legacy_tool_aliases, tool, tool)
   defp normalize_tool_name(tool), do: tool
 
@@ -247,13 +333,36 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     Map.new(arguments, fn {key, value} -> {to_string(key), value} end)
   end
 
-  defp reject_scope_arguments(args) do
+  defp reject_scope_arguments("linear_" <> _rest, args) do
     if Enum.any?(Map.keys(args), &(&1 in ["issue_id", "issueId", "id"])) do
       {:error, :scope_argument_rejected}
     else
       :ok
     end
   end
+
+  defp reject_scope_arguments("github_" <> _rest, args) do
+    scope_keys = [
+      "repo",
+      "repository",
+      "remote",
+      "head",
+      "base",
+      "branch",
+      "current_branch",
+      "currentBranch",
+      "ref",
+      "refspec"
+    ]
+
+    if Enum.any?(Map.keys(args), &(&1 in scope_keys)) do
+      {:error, {:scope_argument_rejected, :github}}
+    else
+      :ok
+    end
+  end
+
+  defp reject_scope_arguments(_tool, _args), do: :ok
 
   defp validate_argument_keys(args, allowed_keys) do
     allowed = MapSet.new(allowed_keys)
@@ -308,7 +417,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "code" => "invalid_arguments",
-        "message" => "Dynamic Linear tools expect an object argument payload."
+        "message" => "Dynamic tools expect an object argument payload."
       }
     }
   end
@@ -318,6 +427,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "error" => %{
         "code" => "scope_argument_rejected",
         "message" => "Dynamic Linear tools are scoped to the current issue; issue id arguments are not accepted."
+      }
+    }
+  end
+
+  defp tool_error_payload({:scope_argument_rejected, :github}) do
+    %{
+      "error" => %{
+        "code" => "scope_argument_rejected",
+        "message" => "Dynamic GitHub tools are scoped to the current workspace branch and configured origin; repo, remote, head, branch, and refspec arguments are not accepted."
       }
     }
   end
@@ -383,11 +501,47 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload(:missing_github_origin_repo) do
+    %{
+      "error" => %{
+        "code" => "missing_github_origin_repo",
+        "message" => "Symphony could not resolve the configured origin GitHub repo for this workspace."
+      }
+    }
+  end
+
+  defp tool_error_payload(:missing_workspace) do
+    %{
+      "error" => %{
+        "code" => "missing_workspace",
+        "message" => "Symphony could not resolve the current workspace for this dynamic tool call."
+      }
+    }
+  end
+
+  defp tool_error_payload(:workspace_not_found) do
+    %{
+      "error" => %{
+        "code" => "workspace_not_found",
+        "message" => "The current workspace path does not exist."
+      }
+    }
+  end
+
+  defp tool_error_payload(:missing_current_branch) do
+    %{
+      "error" => %{
+        "code" => "missing_current_branch",
+        "message" => "Symphony could not resolve the current git branch for this workspace."
+      }
+    }
+  end
+
   defp tool_error_payload(reason) do
     %{
       "error" => %{
         "code" => inspect(reason),
-        "message" => "Linear tool execution failed.",
+        "message" => "Dynamic tool execution failed.",
         "reason" => inspect(reason)
       }
     }

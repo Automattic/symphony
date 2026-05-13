@@ -9,6 +9,14 @@ defmodule SymphonyElixir.AppServerTest do
     def audit(_workspace, _opts), do: {:error, {:git_failed, ["rev-parse"], "boom"}}
   end
 
+  defmodule AlwaysHoldAudit do
+    @moduledoc false
+
+    def audit(_workspace, _opts) do
+      {:hold, [%{path: "mix.exs", package: "helper", from: nil, to: "git", reason: "untrusted_git_source"}]}
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -423,6 +431,224 @@ defmodule SymphonyElixir.AppServerTest do
                      500
 
       assert audit_error =~ "git_failed"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server denies dynamic github_create_pull_request when dependency audit holds" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-dynamic-pr-gate-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-DYN-PR-GATE")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-dynamic-pr-gate.trace")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-dynamic-pr-gate"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dynamic-pr-gate","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":88,"method":"item/tool/call","params":{"name":"github_create_pull_request","callId":"call-dynamic-pr-gate","threadId":"thread-dynamic-pr-gate","turnId":"turn-dynamic-pr-gate","arguments":{"title":"Open PR","body":"Body"}}}'
+            ;;
+          5)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn ->
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      assert :ok = SymphonyElixir.Notifications.subscribe()
+
+      issue = %Issue{
+        id: "issue-dynamic-pr-gate",
+        identifier: "MT-DYN-PR-GATE",
+        title: "Dynamic PR gate",
+        description: "Block risky dependency PR from dynamic tool",
+        state: "In Progress"
+      }
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Open PR", issue, dependency_audit_module: AlwaysHoldAudit)
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 88 and
+                   get_in(payload, ["result", "success"]) == false and
+                   get_in(payload, ["result", "output"])
+                   |> Jason.decode!()
+                   |> get_in(["error", "code"])
+                   |> Kernel.==("dependency_source_requires_approval")
+               else
+                 false
+               end
+             end)
+
+      assert_receive {:memory_tracker_state_update, "issue-dynamic-pr-gate", "In Review"}, 500
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "dependency_pending_approval",
+                        metadata: %{dependency_changes: [%{package: "helper", reason: "untrusted_git_source"}]}
+                      }},
+                     500
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server passes host-qualified origin repo to dynamic GitHub tools" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-dynamic-gh-host-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-DYN-GH-HOST")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-dynamic-gh-host.trace")
+      File.mkdir_p!(workspace)
+
+      assert {_output, 0} = System.cmd("git", ["init"], cd: workspace, stderr_to_stdout: true)
+
+      assert {_output, 0} =
+               System.cmd("git", ["remote", "add", "origin", "git@github.example.com:acme/symphony.git"],
+                 cd: workspace,
+                 stderr_to_stdout: true
+               )
+
+      {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-dynamic-gh-host"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dynamic-gh-host","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":89,"method":"item/tool/call","params":{"name":"github_get_pull_request","callId":"call-dynamic-gh-host","threadId":"thread-dynamic-gh-host","turnId":"turn-dynamic-gh-host","arguments":{}}}'
+            ;;
+          5)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == canonical_workspace
+          {"feature/topic\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "feature/topic", "--repo", "github.example.com/acme/symphony", "--json", fields], opts ->
+          assert opts[:cd] == canonical_workspace
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 12,
+             "state" => "OPEN",
+             "title" => "Host-aware PR",
+             "body" => "Body",
+             "url" => "https://github.example.com/acme/symphony/pull/12",
+             "headRefName" => "feature/topic",
+             "baseRefName" => "main"
+           }), 0}
+      end
+
+      issue = %Issue{
+        id: "issue-dynamic-gh-host",
+        identifier: "MT-DYN-GH-HOST",
+        title: "Dynamic GitHub host",
+        description: "Use host-qualified repo selectors",
+        state: "In Progress"
+      }
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Read PR", issue, git_runner: git_runner, gh_runner: gh_runner)
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 89 and
+                   get_in(payload, ["result", "success"]) == true and
+                   get_in(payload, ["result", "output"])
+                   |> Jason.decode!()
+                   |> get_in(["url"])
+                   |> Kernel.==("https://github.example.com/acme/symphony/pull/12")
+               else
+                 false
+               end
+             end)
     after
       File.rm_rf(test_root)
     end
@@ -1143,6 +1369,8 @@ defmodule SymphonyElixir.AppServerTest do
                    |> then(fn tool_names ->
                      "linear_get_current_issue" in tool_names and
                        "linear_update_state" in tool_names and
+                       "github_create_pull_request" in tool_names and
+                       "github_push_branch" in tool_names and
                        "linear_graphql" not in tool_names
                    end)
                else

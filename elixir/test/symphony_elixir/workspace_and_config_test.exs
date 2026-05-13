@@ -846,6 +846,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "linear client normalizes team and project from graphql responses" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
     raw_issue =
       raw_linear_issue("issue-1", "MT-1", "user-1")
       |> Map.merge(%{
@@ -1276,6 +1278,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
     body = %{
       "errors" => [
         %{

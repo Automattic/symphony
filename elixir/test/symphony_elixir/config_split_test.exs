@@ -19,6 +19,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
       )
 
     File.mkdir_p!(root)
+    ensure_repo_registry_started!()
 
     on_exit(fn ->
       SymphonyElixir.Workflow.set_symphony_file_path(original_symphony_path)
@@ -687,7 +688,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     write_symphony!(root, [repo])
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
 
-    blocker = Process.whereis(SymphonyElixir.Supervisor)
+    blocker = ensure_supervisor_name_blocked!()
     assert is_pid(blocker)
 
     assert {:error, {:already_started, ^blocker}} = SymphonyElixir.Application.start(:normal, [])
@@ -774,6 +775,37 @@ defmodule SymphonyElixir.ConfigSplitTest do
     end)
 
     pid
+  end
+
+  defp ensure_repo_registry_started! do
+    case Process.whereis(SymphonyElixir.Repo.Registry) do
+      pid when is_pid(pid) ->
+        :ok
+
+      _ ->
+        start_supervised!({Registry, keys: :unique, name: SymphonyElixir.Repo.Registry})
+        :ok
+    end
+  end
+
+  defp ensure_supervisor_name_blocked! do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) ->
+        pid
+
+      _ ->
+        {:ok, pid} = Agent.start_link(fn -> :blocked end, name: SymphonyElixir.Supervisor)
+
+        on_exit(fn -> stop_supervisor_name_blocker(pid) end)
+
+        pid
+    end
+  end
+
+  defp stop_supervisor_name_blocker(pid) do
+    if Process.alive?(pid) do
+      Agent.stop(pid)
+    end
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)

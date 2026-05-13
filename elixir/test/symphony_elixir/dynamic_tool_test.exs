@@ -10,8 +10,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert "linear_get_current_issue" in tool_names
     assert "linear_update_state" in tool_names
     assert "linear_attach_file" in tool_names
+    assert "github_get_pull_request" in tool_names
+    assert "github_create_pull_request" in tool_names
+    assert "github_push_branch" in tool_names
+    assert "github_get_pr_checks" in tool_names
     refute "linear_graphql" in tool_names
     refute "linear.get_current_issue" in tool_names
+    refute "github.get_pull_request" in tool_names
 
     assert Enum.all?(tool_names, &Regex.match?(~r/^[a-zA-Z0-9_-]+$/, &1))
 
@@ -182,7 +187,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute CommentRegistry.owned?(registry, "any-id")
   end
 
-  test "legacy dotted tool aliases are accepted but not advertised" do
+  test "legacy dotted tool aliases are accepted but still reject smuggled issue ids" do
     response =
       DynamicTool.execute(
         "linear.update_state",
@@ -297,5 +302,374 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "github.create_pull_request uses current branch and configured origin repo" do
+    workspace = tmp_workspace!("github-create-pr")
+
+    try do
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        [
+          "pr",
+          "create",
+          "--repo",
+          "acme/symphony",
+          "--head",
+          "auto/RSM-3051",
+          "--title",
+          "Add tools",
+          "--body",
+          "Body"
+        ],
+        opts ->
+          assert opts[:cd] == workspace
+          {"https://github.com/acme/symphony/pull/3051\n", 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_create_pull_request",
+          %{"title" => "Add tools", "body" => "Body"},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+
+      assert %{
+               "url" => "https://github.com/acme/symphony/pull/3051",
+               "repo" => "acme/symphony",
+               "head" => "auto/RSM-3051"
+             } = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.create_pull_request rejects smuggled repo arguments" do
+    response =
+      DynamicTool.execute(
+        "github_create_pull_request",
+        %{"title" => "Add tools", "body" => "Body", "repo" => "attacker/repo"},
+        workspace: System.tmp_dir!(),
+        command_security: %{origin_repo: "acme/symphony"}
+      )
+
+    assert response["success"] == false
+
+    assert %{"error" => %{"code" => "scope_argument_rejected", "message" => message}} =
+             Jason.decode!(response["output"])
+
+    assert message =~ "configured origin"
+  end
+
+  test "github tools reject smuggled branch and remote arguments" do
+    for {tool, args} <- [
+          {"github_create_pull_request", %{"title" => "Add tools", "body" => "Body", "head" => "owned"}},
+          {"github_get_pull_request", %{"branch" => "owned"}},
+          {"github_add_pr_comment", %{"body" => "Looks good", "remote" => "evil"}},
+          {"github_get_pr_checks", %{"base" => "owned"}}
+        ] do
+      response =
+        DynamicTool.execute(
+          tool,
+          args,
+          workspace: System.tmp_dir!(),
+          command_security: %{origin_repo: "acme/symphony"}
+        )
+
+      assert response["success"] == false
+      assert %{"error" => %{"code" => "scope_argument_rejected"}} = Jason.decode!(response["output"])
+    end
+  end
+
+  test "github.push_branch rejects smuggled refspec arguments" do
+    response =
+      DynamicTool.execute(
+        "github_push_branch",
+        %{"refspec" => "main:refs/heads/owned"},
+        workspace: System.tmp_dir!(),
+        command_security: %{origin_repo: "acme/symphony"}
+      )
+
+    assert response["success"] == false
+    assert %{"error" => %{"code" => "scope_argument_rejected"}} = Jason.decode!(response["output"])
+  end
+
+  test "github.push_branch pushes origin current branch only" do
+    workspace = tmp_workspace!("github-push-branch")
+
+    try do
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+
+        ["push", "origin", "auto/RSM-3051"], opts ->
+          assert opts[:cd] == workspace
+          {"pushed\n", 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_push_branch",
+          %{},
+          github_tool_opts(workspace, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+      assert %{"remote" => "origin", "branch" => "auto/RSM-3051"} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "legacy dotted github aliases are accepted but not advertised" do
+    workspace = tmp_workspace!("github-legacy-alias")
+
+    try do
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+
+        ["push", "origin", "auto/RSM-3051"], opts ->
+          assert opts[:cd] == workspace
+          {"pushed\n", 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github.push_branch",
+          %{},
+          github_tool_opts(workspace, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+      assert %{"remote" => "origin", "branch" => "auto/RSM-3051"} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.get_pull_request resolves the current branch PR server-side" do
+    workspace = tmp_workspace!("github-get-pr")
+
+    try do
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
+          assert opts[:cd] == workspace
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => "https://github.com/acme/symphony/pull/3051",
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_get_pull_request",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+
+      assert %{
+               "url" => "https://github.com/acme/symphony/pull/3051",
+               "headRefName" => "auto/RSM-3051",
+               "baseRefName" => "main"
+             } = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.update_pull_request_body resolves the current branch PR server-side" do
+    workspace = tmp_workspace!("github-update-pr-body")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
+          assert opts[:cd] == workspace
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Old body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["pr", "edit", ^pr_url, "--body", "New body"], opts ->
+          assert opts[:cd] == workspace
+          {"", 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_update_pull_request_body",
+          %{"body" => "New body"},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+      assert %{"url" => ^pr_url} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.add_pr_comment resolves the current branch PR server-side" do
+    workspace = tmp_workspace!("github-add-pr-comment")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
+          assert opts[:cd] == workspace
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["pr", "comment", ^pr_url, "--body", "Validation passed"], opts ->
+          assert opts[:cd] == workspace
+          {"", 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_add_pr_comment",
+          %{"body" => "Validation passed"},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+      assert %{"url" => ^pr_url} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.get_pr_checks resolves the current branch PR server-side" do
+    workspace = tmp_workspace!("github-get-pr-checks")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
+          assert opts[:cd] == workspace
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], opts ->
+          assert opts[:cd] == workspace
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "url" => pr_url,
+             "headRefOid" => "abc123",
+             "statusCheckRollup" => [
+               %{
+                 "__typename" => "CheckRun",
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "SUCCESS",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/1"
+               }
+             ]
+           }), 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_get_pr_checks",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+
+      assert %{
+               "pr_url" => ^pr_url,
+               "commit_sha" => "abc123",
+               "checks" => [%{"name" => "mix test", "conclusion" => "SUCCESS"}]
+             } = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  defp tmp_workspace!(name) do
+    workspace = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+    workspace
+  end
+
+  defp github_tool_opts(workspace, opts) do
+    opts
+    |> Keyword.put(:workspace, workspace)
+    |> Keyword.put(:command_security, %{origin_repo: "acme/symphony", workspace: workspace})
   end
 end

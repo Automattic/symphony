@@ -106,9 +106,11 @@ defmodule SymphonyElixir.Codex.AppServer do
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
 
+    dependency_gate = dependency_gate_context(workspace, issue, settings, opts)
+
     tool_executor =
       Keyword.get_lazy(opts, :tool_executor, fn ->
-        dynamic_tool_executor(issue, workspace, opts)
+        dynamic_tool_executor(issue, workspace, command_security, dependency_gate, on_message, metadata, opts)
       end)
 
     approval_context = %{
@@ -119,7 +121,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       settings: settings,
       turn_sandbox_policy: turn_sandbox_policy,
       workspace: workspace,
-      dependency_gate: dependency_gate_context(workspace, issue, settings, opts)
+      dependency_gate: dependency_gate
     }
 
     case start_turn(
@@ -202,15 +204,29 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp dynamic_tool_executor(issue, workspace, opts) do
+  @dynamic_tool_forwarded_opts [:gh_runner, :git_runner]
+
+  defp dynamic_tool_executor(issue, workspace, command_security, dependency_gate, on_message, metadata, opts) do
     registry = Keyword.get(opts, :linear_comment_registry) || temporary_comment_registry()
+    forwarded_opts = Keyword.take(opts, @dynamic_tool_forwarded_opts)
 
     fn tool, arguments ->
-      DynamicTool.execute(tool, arguments,
-        issue: issue,
-        workspace: workspace,
-        comment_registry: registry
-      )
+      case maybe_block_dynamic_pr_create(tool, dependency_gate, on_message, metadata) do
+        :allow ->
+          DynamicTool.execute(
+            tool,
+            arguments,
+            [
+              issue: issue,
+              workspace: workspace,
+              command_security: command_security,
+              comment_registry: registry
+            ] ++ forwarded_opts
+          )
+
+        {:block, result} ->
+          result
+      end
     end
   end
 
@@ -381,6 +397,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     %{
       origin_url: origin_url,
       origin_repo: github_repo_from_url(origin_url),
+      origin_gh_repo: github_gh_repo_from_url(origin_url),
       workspace: workspace,
       worker_host: worker_host
     }
@@ -1916,22 +1933,40 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp normalize_repo_target(_target), do: nil
 
   defp github_repo_from_url(url) when is_binary(url) do
+    case github_repo_parts_from_url(url) do
+      {_host, owner, repo} -> "#{owner}/#{repo}"
+      nil -> nil
+    end
+  end
+
+  defp github_repo_from_url(_url), do: nil
+
+  defp github_gh_repo_from_url(url) when is_binary(url) do
+    case github_repo_parts_from_url(url) do
+      {"github.com", owner, repo} -> "#{owner}/#{repo}"
+      {host, owner, repo} when is_binary(host) -> "#{host}/#{owner}/#{repo}"
+      nil -> nil
+    end
+  end
+
+  defp github_gh_repo_from_url(_url), do: nil
+
+  defp github_repo_parts_from_url(url) when is_binary(url) do
     Enum.find_value(
       [
-        ~r{github[^/:]*[/:]([^/\s:]+)/([^/\s]+?)(?:\.git)?/?$},
-        ~r{^https?://[^/]+/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$},
-        ~r{^ssh://[^@]+@[^/]+/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$}
+        ~r{^https?://([^/]+)/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$},
+        ~r{^ssh://[^@]+@([^/]+)/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$},
+        ~r{^(?:[^@]+@)?([^/:]+):([^/\s]+)/([^/\s]+?)(?:\.git)?/?$},
+        ~r{^([^/\s:]*github[^/\s:]*)/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$}
       ],
       fn regex ->
         case Regex.run(regex, url) do
-          [_full, owner, repo] -> "#{owner}/#{repo}"
+          [_full, host, owner, repo] -> {String.downcase(host), owner, repo}
           _ -> nil
         end
       end
     )
   end
-
-  defp github_repo_from_url(_url), do: nil
 
   defp normalize_git_url(url) when is_binary(url) do
     url
@@ -2236,6 +2271,75 @@ defmodule SymphonyElixir.Codex.AppServer do
       audit_module: Keyword.get(opts, :dependency_audit_module, DependencyAudit),
       base_ref: Keyword.get(opts, :dependency_audit_base_ref),
       command_runner: Keyword.get(opts, :dependency_audit_command_runner)
+    }
+  end
+
+  defp maybe_block_dynamic_pr_create(tool, dependency_gate, on_message, metadata) do
+    if github_create_pull_request_tool?(tool) do
+      case audit_pr_create_dependencies(dependency_gate) do
+        {:ok, []} ->
+          :allow
+
+        {:hold, items} ->
+          maybe_move_dependency_hold_issue(dependency_gate)
+          emit_dependency_hold_event(dependency_gate, items)
+
+          emit_message(
+            on_message,
+            :dependency_pending_approval,
+            %{tool: tool, items: items},
+            metadata
+          )
+
+          {:block,
+           dynamic_tool_failure_response(
+             "dependency_source_requires_approval",
+             "Pull request creation is blocked because dependency changes require approval.",
+             %{"dependency_changes" => items}
+           )}
+
+        {:error, reason} ->
+          Logger.error("Dependency audit failed during dynamic github_create_pull_request: #{inspect(reason)}")
+
+          maybe_move_dependency_hold_issue(dependency_gate)
+          emit_dependency_audit_failure_event(dependency_gate, reason)
+
+          emit_message(
+            on_message,
+            :dependency_pending_approval,
+            %{tool: tool, error: reason},
+            metadata
+          )
+
+          {:block,
+           dynamic_tool_failure_response(
+             "dependency_audit_failed",
+             "Pull request creation is blocked because dependency audit failed.",
+             %{"reason" => inspect(reason)}
+           )}
+      end
+    else
+      :allow
+    end
+  end
+
+  defp github_create_pull_request_tool?(tool) when tool in ["github_create_pull_request", "github.create_pull_request"], do: true
+  defp github_create_pull_request_tool?(_tool), do: false
+
+  defp dynamic_tool_failure_response(code, message, details) do
+    output =
+      %{"error" => Map.merge(%{"code" => code, "message" => message}, details)}
+      |> Jason.encode!(pretty: true)
+
+    %{
+      "success" => false,
+      "output" => output,
+      "contentItems" => [
+        %{
+          "type" => "inputText",
+          "text" => output
+        }
+      ]
     }
   end
 

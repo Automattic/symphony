@@ -20,6 +20,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            ] = DynamicTool.tool_specs()
 
     assert description =~ "Linear"
+    refute Map.has_key?(hd(DynamicTool.tool_specs())["inputSchema"]["properties"], "url")
+    refute Map.has_key?(hd(DynamicTool.tool_specs())["inputSchema"]["properties"], "endpoint")
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do

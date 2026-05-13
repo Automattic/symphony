@@ -1,5 +1,27 @@
 defmodule SymphonyElixir.AgentSandboxConfig do
-  @moduledoc false
+  @moduledoc """
+  Shared sandbox defaults for agent runtimes.
+
+  Produces Claude Code `sandbox.filesystem` settings and Codex
+  `permissions.workspace_write.*` `--config` overrides from a single deny
+  list so both adapters stay in sync.
+
+  Currently covered credential / config stores (read-deny):
+
+    * `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.docker`
+    * `~/.config/gh`
+    * `~/Library/Application Support` (macOS app data)
+
+  Workflow guardrail files protected from writes (relative to workspace):
+
+    * `WORKFLOW.md`, `symphony.yml`, `symphony.local.yml`
+    * `.git/hooks`, `mise.toml`, `.tool-versions`
+
+  Known gaps not covered by the default deny list — add explicitly if your
+  environment uses them: `~/.netrc`, `~/.kube`, `~/.config/op`,
+  `~/.config/gcloud`, `~/.azure`, `~/.npmrc`, `~/.cargo/credentials`,
+  shell history files.
+  """
 
   @codex_profile "workspace_write"
 
@@ -63,6 +85,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   end
 
   defp codex_network_policy("open"), do: toml_inline_table(enabled: true, mode: "full")
+  defp codex_network_policy("block"), do: toml_inline_table(enabled: false)
   defp codex_network_policy(_mode), do: toml_inline_table(enabled: true, mode: "limited")
 
   defp codex_network_domains("open", _allowed_domains), do: toml_inline_table([])

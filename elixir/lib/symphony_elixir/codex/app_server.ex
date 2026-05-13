@@ -267,42 +267,48 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_port(workspace, nil, settings) do
     executable = System.find_executable("bash")
 
-    if is_nil(executable) do
-      {:error, :bash_not_found}
-    else
-      command = command_with_sandbox_config(settings.agent.command, settings)
+    cond do
+      is_nil(executable) ->
+        {:error, :bash_not_found}
 
-      port =
-        Port.open(
-          {:spawn_executable, String.to_charlist(executable)},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(command)],
-            cd: String.to_charlist(workspace),
-            env: AgentEnv.build(),
-            line: @port_line_bytes
-          ]
-        )
+      true ->
+        with {:ok, command} <- command_with_sandbox_config(settings.agent.command, settings) do
+          port =
+            Port.open(
+              {:spawn_executable, String.to_charlist(executable)},
+              [
+                :binary,
+                :exit_status,
+                :stderr_to_stdout,
+                args: [~c"-lc", String.to_charlist(command)],
+                cd: String.to_charlist(workspace),
+                env: AgentEnv.build(),
+                line: @port_line_bytes
+              ]
+            )
 
-      {:ok, port}
+          {:ok, port}
+        end
     end
   end
 
   defp start_port(workspace, worker_host, settings) when is_binary(worker_host) do
-    remote_command = remote_launch_command(workspace, settings)
-    SSH.start_port(worker_host, remote_command, line: @port_line_bytes, env: AgentEnv.build())
+    with {:ok, remote_command} <- remote_launch_command(workspace, settings) do
+      SSH.start_port(worker_host, remote_command, line: @port_line_bytes, env: AgentEnv.build())
+    end
   end
 
   defp remote_launch_command(workspace, settings) when is_binary(workspace) do
-    command = command_with_sandbox_config(settings.agent.command, settings)
+    with {:ok, command} <- command_with_sandbox_config(settings.agent.command, settings) do
+      script =
+        [
+          "cd #{shell_escape(workspace)}",
+          "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command}"
+        ]
+        |> Enum.join(" && ")
 
-    [
-      "cd #{shell_escape(workspace)}",
-      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command}"
-    ]
-    |> Enum.join(" && ")
+      {:ok, script}
+    end
   end
 
   defp command_with_sandbox_config(command, settings) when is_binary(command) do
@@ -316,16 +322,27 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp inject_config_overrides(command, overrides) do
-    with {:ok, words} <- shell_words(command),
-         app_server_index when is_integer(app_server_index) <-
-           Enum.find_index(words, &(&1 == "app-server")) do
-      {before_app_server, from_app_server} = Enum.split(words, app_server_index)
-      override_words = overrides |> Enum.flat_map(&["--config", &1])
+    case shell_words(command) do
+      {:ok, words} ->
+        case Enum.find_index(words, &(&1 == "app-server")) do
+          nil ->
+            log_sandbox_override_failure(command, :missing_app_server_token)
+            {:error, {:codex_sandbox_overrides_not_applied, :missing_app_server_token}}
 
-      (before_app_server ++ override_words ++ from_app_server)
-      |> Enum.map_join(" ", &shell_escape/1)
-    else
-      _ -> command
+          app_server_index ->
+            {before_app_server, from_app_server} = Enum.split(words, app_server_index)
+            override_words = overrides |> Enum.flat_map(&["--config", &1])
+
+            rebuilt =
+              (before_app_server ++ override_words ++ from_app_server)
+              |> Enum.map_join(" ", &shell_escape/1)
+
+            {:ok, rebuilt}
+        end
+
+      {:error, reason} ->
+        log_sandbox_override_failure(command, reason)
+        {:error, {:codex_sandbox_overrides_not_applied, reason}}
     end
   end
 
@@ -334,6 +351,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   rescue
     exception ->
       {:error, {:invalid_agent_command, Exception.message(exception)}}
+  end
+
+  defp log_sandbox_override_failure(command, reason) do
+    Logger.error("Codex sandbox overrides could not be injected (reason=#{inspect(reason)}); refusing to launch agent. command=#{inspect(command)}")
   end
 
   defp port_metadata(port, worker_host) when is_port(port) do

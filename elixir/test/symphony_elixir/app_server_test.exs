@@ -76,6 +76,40 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server refuses to launch when agent.command is missing the app-server token" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-sandbox-required-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SANDBOX")
+      File.mkdir_p!(workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "fake-codex"
+      )
+
+      issue = %Issue{
+        id: "issue-sandbox-required",
+        identifier: "MT-SANDBOX",
+        title: "Validate sandbox enforcement",
+        description: "Ensure missing app-server token aborts the launch",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SANDBOX",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:codex_sandbox_overrides_not_applied, :missing_app_server_token}} =
+               AppServer.run(workspace, "should never launch", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(

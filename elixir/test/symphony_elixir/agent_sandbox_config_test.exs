@@ -54,10 +54,10 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "permissions.workspace_write.network.domains={}" in overrides
   end
 
-  test "Codex block mode emits limited network with an empty domain allowlist" do
+  test "Codex block mode disables network outright instead of relying on empty domains" do
     overrides = AgentSandboxConfig.codex_config_overrides("block", ["github.com"])
 
-    assert ~s(permissions.workspace_write.network={"enabled"=true,"mode"="limited"}) in overrides
+    assert ~s(permissions.workspace_write.network={"enabled"=false}) in overrides
     assert "permissions.workspace_write.network.domains={}" in overrides
   end
 end

@@ -11,8 +11,9 @@ defmodule SymphonyElixir.PromptBuilder do
   def build_prompt(issue, opts \\ []) do
     raw_reviewer_comments = normalize_reviewer_comments(Keyword.get(opts, :reviewer_comments, []))
     reviewer_comments = sanitize_reviewer_comments(raw_reviewer_comments)
-    ci_failure = normalize_ci_failure(Keyword.get(opts, :ci_failure))
-    linear_input_warnings = linear_input_warnings(issue, raw_reviewer_comments)
+    raw_ci_failure = Keyword.get(opts, :ci_failure)
+    ci_failure = normalize_ci_failure(raw_ci_failure)
+    linear_input_warnings = linear_input_warnings(issue, raw_reviewer_comments, raw_ci_failure)
     {repo_key, workflow_source} = repo_context_for_prompt(issue, opts)
 
     template =
@@ -100,10 +101,11 @@ defmodule SymphonyElixir.PromptBuilder do
     end)
   end
 
-  defp linear_input_warnings(issue, reviewer_comments) do
+  defp linear_input_warnings(issue, reviewer_comments, ci_failure) do
     issue
     |> issue_warning_sources()
     |> Kernel.++(reviewer_comment_warning_sources(reviewer_comments))
+    |> Kernel.++(ci_failure_warning_sources(ci_failure))
     |> PromptSafety.warning_fields()
   end
 
@@ -129,6 +131,12 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Enum.with_index(1)
     |> Enum.map(fn {comment, index} -> {"reviewer_comments[#{index}].body", get_field(comment, :body)} end)
   end
+
+  defp ci_failure_warning_sources(ci_failure) when is_map(ci_failure) do
+    [{"ci_failure.log_excerpt", get_field(ci_failure, :log_excerpt)}]
+  end
+
+  defp ci_failure_warning_sources(_ci_failure), do: []
 
   defp default_prompt(prompt, workflow_source) when is_binary(prompt) do
     if String.trim(prompt) == "" do
@@ -214,7 +222,9 @@ defmodule SymphonyElixir.PromptBuilder do
       "Commit SHA: #{blank_fallback(Map.get(ci_failure, :commit_sha), "unknown")}",
       "",
       "Failed log excerpt:",
-      blank_fallback(Map.get(ci_failure, :log_excerpt), "No failed log output was available.")
+      "BEGIN UNTRUSTED CI LOG",
+      blank_fallback(Map.get(ci_failure, :log_excerpt), "No failed log output was available."),
+      "END UNTRUSTED CI LOG"
     ]
     |> Enum.join("\n")
   end
@@ -298,7 +308,7 @@ defmodule SymphonyElixir.PromptBuilder do
       %{
         failed_checks: failed_checks,
         commit_sha: commit_sha,
-        log_excerpt: log_excerpt
+        log_excerpt: PromptSafety.ci_failure_log_excerpt(log_excerpt)
       }
     end
   end

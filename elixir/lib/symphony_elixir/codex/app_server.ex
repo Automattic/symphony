@@ -6,7 +6,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.{AuditLog, Codex.DynamicTool, Config, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
 
   @initialize_id 1
@@ -28,6 +28,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           thread_id: String.t(),
           workspace: Path.t(),
           worker_host: String.t() | nil,
+          command_security: map(),
           settings: Schema.t()
         }
 
@@ -64,6 +65,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            thread_id: thread_id,
            workspace: expanded_workspace,
            worker_host: worker_host,
+           command_security: command_security_context(expanded_workspace, worker_host),
            settings: settings
          }}
       else
@@ -84,6 +86,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           turn_sandbox_policy: turn_sandbox_policy,
           thread_id: thread_id,
           workspace: workspace,
+          command_security: command_security,
           settings: settings
         },
         prompt,
@@ -96,6 +99,13 @@ defmodule SymphonyElixir.Codex.AppServer do
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
         DynamicTool.execute(tool, arguments)
       end)
+
+    approval_context = %{
+      issue: issue,
+      repo_key: Keyword.get(opts, :repo_key),
+      audit_log_opts: Keyword.get(opts, :audit_log_opts, []),
+      command_security: command_security
+    }
 
     case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy, settings) do
       {:ok, turn_id} ->
@@ -113,7 +123,14 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata
         )
 
-        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests, settings) do
+        case await_turn_completion(
+               port,
+               on_message,
+               tool_executor,
+               auto_approve_requests,
+               settings,
+               approval_context
+             ) do
           {:ok, result} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -259,6 +276,28 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp command_security_context(workspace, worker_host) do
+    origin_url = discover_origin_url(workspace, worker_host)
+
+    %{
+      origin_url: origin_url,
+      origin_repo: github_repo_from_url(origin_url),
+      workspace: workspace,
+      worker_host: worker_host
+    }
+  end
+
+  defp discover_origin_url(workspace, nil) when is_binary(workspace) do
+    with git when is_binary(git) <- System.find_executable("git"),
+         {output, 0} <- System.cmd(git, ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true) do
+      output |> String.trim() |> blank_to_nil()
+    else
+      _result -> nil
+    end
+  end
+
+  defp discover_origin_url(_workspace, worker_host) when is_binary(worker_host), do: nil
+
   defp send_initialize(port, settings) do
     payload = %{
       "method" => "initialize",
@@ -366,7 +405,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests, settings) do
+  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests, settings, approval_context) do
     config = settings.agent
 
     receive_loop(
@@ -376,11 +415,21 @@ defmodule SymphonyElixir.Codex.AppServer do
       "",
       tool_executor,
       auto_approve_requests,
+      approval_context,
       initial_turn_stream_state(config.command_timeout_ms)
     )
   end
 
-  defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests, turn_stream_state) do
+  defp receive_loop(
+         port,
+         on_message,
+         timeout_ms,
+         pending_line,
+         tool_executor,
+         auto_approve_requests,
+         approval_context,
+         turn_stream_state
+       ) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
@@ -392,6 +441,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           timeout_ms,
           tool_executor,
           auto_approve_requests,
+          approval_context,
           turn_stream_state
         )
 
@@ -403,6 +453,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           pending_line <> to_string(chunk),
           tool_executor,
           auto_approve_requests,
+          approval_context,
           turn_stream_state
         )
 
@@ -417,7 +468,16 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_incoming(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests, turn_stream_state) do
+  defp handle_incoming(
+         port,
+         on_message,
+         data,
+         timeout_ms,
+         tool_executor,
+         auto_approve_requests,
+         approval_context,
+         turn_stream_state
+       ) do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
@@ -461,6 +521,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             timeout_ms: timeout_ms,
             tool_executor: tool_executor,
             auto_approve_requests: auto_approve_requests,
+            approval_context: approval_context,
             turn_stream_state: turn_stream_state
           }
         )
@@ -476,7 +537,16 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata_from_message(port, payload)
         )
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests, turn_stream_state)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          approval_context,
+          turn_stream_state
+        )
 
       {:error, _reason} ->
         log_non_json_stream_line(payload_string, "turn stream")
@@ -493,7 +563,16 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
         end
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests, turn_stream_state)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          approval_context,
+          turn_stream_state
+        )
     end
   end
 
@@ -520,16 +599,12 @@ defmodule SymphonyElixir.Codex.AppServer do
        ) do
     metadata = metadata_from_message(port, payload)
 
-    case maybe_handle_approval_request(
-           port,
-           method,
-           payload,
-           payload_string,
-           on_message,
-           metadata,
-           stream_context.tool_executor,
-           stream_context.auto_approve_requests
-         ) do
+    request_context =
+      stream_context
+      |> Map.put(:on_message, on_message)
+      |> Map.put(:metadata, metadata)
+
+    case maybe_handle_approval_request(port, method, payload, payload_string, request_context) do
       :input_required ->
         emit_message(
           on_message,
@@ -585,20 +660,15 @@ defmodule SymphonyElixir.Codex.AppServer do
          "item/commandExecution/requestApproval",
          %{"id" => id} = payload,
          payload_string,
-         on_message,
-         metadata,
-         _tool_executor,
-         auto_approve_requests
+         context
        ) do
-    approve_or_require(
+    approve_command_or_refuse(
       port,
       id,
       "acceptForSession",
       payload,
       payload_string,
-      on_message,
-      metadata,
-      auto_approve_requests
+      context
     )
   end
 
@@ -607,17 +677,14 @@ defmodule SymphonyElixir.Codex.AppServer do
          "item/tool/call",
          %{"id" => id, "params" => params} = payload,
          payload_string,
-         on_message,
-         metadata,
-         tool_executor,
-         _auto_approve_requests
+         context
        ) do
     tool_name = tool_call_name(params)
     arguments = tool_call_arguments(params)
 
     result =
       tool_name
-      |> tool_executor.(arguments)
+      |> context.tool_executor.(arguments)
       |> normalize_dynamic_tool_result()
 
     send_message(port, %{
@@ -632,7 +699,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         _ -> :tool_call_failed
       end
 
-    emit_message(on_message, event, %{payload: payload, raw: payload_string, result: result}, metadata)
+    emit_message(context.on_message, event, %{payload: payload, raw: payload_string, result: result}, context.metadata)
 
     :approved
   end
@@ -642,20 +709,15 @@ defmodule SymphonyElixir.Codex.AppServer do
          "execCommandApproval",
          %{"id" => id} = payload,
          payload_string,
-         on_message,
-         metadata,
-         _tool_executor,
-         auto_approve_requests
+         context
        ) do
-    approve_or_require(
+    approve_command_or_refuse(
       port,
       id,
       "approved_for_session",
       payload,
       payload_string,
-      on_message,
-      metadata,
-      auto_approve_requests
+      context
     )
   end
 
@@ -664,10 +726,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          "applyPatchApproval",
          %{"id" => id} = payload,
          payload_string,
-         on_message,
-         metadata,
-         _tool_executor,
-         auto_approve_requests
+         context
        ) do
     approve_or_require(
       port,
@@ -675,9 +734,9 @@ defmodule SymphonyElixir.Codex.AppServer do
       "approved_for_session",
       payload,
       payload_string,
-      on_message,
-      metadata,
-      auto_approve_requests
+      context.on_message,
+      context.metadata,
+      context.auto_approve_requests
     )
   end
 
@@ -686,10 +745,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          "item/fileChange/requestApproval",
          %{"id" => id} = payload,
          payload_string,
-         on_message,
-         metadata,
-         _tool_executor,
-         auto_approve_requests
+         context
        ) do
     approve_or_require(
       port,
@@ -697,9 +753,9 @@ defmodule SymphonyElixir.Codex.AppServer do
       "acceptForSession",
       payload,
       payload_string,
-      on_message,
-      metadata,
-      auto_approve_requests
+      context.on_message,
+      context.metadata,
+      context.auto_approve_requests
     )
   end
 
@@ -708,10 +764,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          "item/tool/requestUserInput",
          %{"id" => id, "params" => params} = payload,
          payload_string,
-         on_message,
-         metadata,
-         _tool_executor,
-         auto_approve_requests
+         context
        ) do
     maybe_auto_answer_tool_request_user_input(
       port,
@@ -719,9 +772,9 @@ defmodule SymphonyElixir.Codex.AppServer do
       params,
       payload,
       payload_string,
-      on_message,
-      metadata,
-      auto_approve_requests
+      context.on_message,
+      context.metadata,
+      context.auto_approve_requests
     )
   end
 
@@ -730,19 +783,16 @@ defmodule SymphonyElixir.Codex.AppServer do
          "item/permissions/requestApproval",
          %{"id" => id, "params" => params} = payload,
          payload_string,
-         on_message,
-         metadata,
-         _tool_executor,
-         true
+         %{auto_approve_requests: true} = context
        ) do
     response = permissions_request_approval_response(params)
     send_message(port, %{"id" => id, "result" => response})
 
     emit_message(
-      on_message,
+      context.on_message,
       :approval_auto_approved,
       %{payload: payload, raw: payload_string, decision: "permissions:session"},
-      metadata
+      context.metadata
     )
 
     :approved
@@ -753,10 +803,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          "item/permissions/requestApproval",
          _payload,
          _payload_string,
-         _on_message,
-         _metadata,
-         _tool_executor,
-         false
+         %{auto_approve_requests: false}
        ) do
     :approval_required
   end
@@ -766,19 +813,16 @@ defmodule SymphonyElixir.Codex.AppServer do
          "mcpServer/elicitation/request",
          %{"id" => id, "params" => params} = payload,
          payload_string,
-         on_message,
-         metadata,
-         _tool_executor,
-         true
+         %{auto_approve_requests: true} = context
        ) do
     response = mcp_server_elicitation_response(params)
     send_message(port, %{"id" => id, "result" => response})
 
     emit_message(
-      on_message,
+      context.on_message,
       :mcp_elicitation_auto_answered,
       %{payload: payload, raw: payload_string, decision: response["action"]},
-      metadata
+      context.metadata
     )
 
     :approved
@@ -789,10 +833,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          "mcpServer/elicitation/request",
          _payload,
          _payload_string,
-         _on_message,
-         _metadata,
-         _tool_executor,
-         false
+         %{auto_approve_requests: false}
        ) do
     :approval_required
   end
@@ -802,10 +843,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          _method,
          _payload,
          _payload_string,
-         _on_message,
-         _metadata,
-         _tool_executor,
-         _auto_approve_requests
+         _context
        ) do
     :unhandled
   end
@@ -848,6 +886,49 @@ defmodule SymphonyElixir.Codex.AppServer do
     ]
   end
 
+  defp approve_command_or_refuse(
+         port,
+         id,
+         decision,
+         payload,
+         payload_string,
+         context
+       ) do
+    case command_refusal(payload, context.approval_context.command_security) do
+      {:refuse, refusal} ->
+        send_message(port, %{
+          "id" => id,
+          "result" => %{
+            "decision" => "reject",
+            "message" => refusal.message
+          }
+        })
+
+        record_refused_agent_action(context.approval_context, payload, refusal)
+
+        emit_message(
+          context.on_message,
+          :approval_refused,
+          %{payload: payload, raw: payload_string, decision: "reject", refusal: refusal},
+          context.metadata
+        )
+
+        :approved
+
+      :allow ->
+        approve_or_require(
+          port,
+          id,
+          decision,
+          payload,
+          payload_string,
+          context.on_message,
+          context.metadata,
+          context.auto_approve_requests
+        )
+    end
+  end
+
   defp approve_or_require(
          port,
          id,
@@ -881,6 +962,372 @@ defmodule SymphonyElixir.Codex.AppServer do
          false
        ) do
     :approval_required
+  end
+
+  defp command_refusal(payload, command_security) do
+    command = command_from_payload(payload)
+    tokens = command_tokens(command)
+
+    secret_path_refusal(tokens, command) ||
+      gh_pr_create_refusal(tokens, command, command_security) ||
+      git_push_refusal(tokens, command, command_security) ||
+      git_remote_refusal(tokens, command, command_security) ||
+      :allow
+  end
+
+  defp secret_path_refusal(tokens, command) do
+    if secret_path = denied_secret_path(tokens) do
+      {:refuse,
+       refusal(
+         "secret_file_read",
+         "deny_listed_secret_path",
+         "Refused command because it references deny-listed secret path #{inspect(secret_path)}.",
+         command,
+         %{path: secret_path}
+       )}
+    end
+  end
+
+  defp gh_pr_create_refusal(tokens, command, command_security) do
+    with pr_repo when is_binary(pr_repo) <- gh_pr_create_repo(tokens),
+         allowed_repo <- Map.get(command_security || %{}, :origin_repo),
+         false <- same_repo?(pr_repo, allowed_repo) do
+      {:refuse,
+       refusal(
+         "gh_pr_create",
+         "pr_target_repo_not_allowed",
+         "Refused gh pr create because target repo #{inspect(pr_repo)} does not match configured origin #{inspect(allowed_repo)}.",
+         command,
+         %{target_repo: pr_repo, allowed_repo: allowed_repo}
+       )}
+    else
+      _ -> nil
+    end
+  end
+
+  defp git_push_refusal(tokens, command, command_security) do
+    with push_target when is_binary(push_target) <- git_push_target(tokens),
+         false <- allowed_git_push_target?(push_target, command_security) do
+      {:refuse,
+       refusal(
+         "git_push",
+         "git_remote_not_allowed",
+         "Refused git push because target #{inspect(push_target)} is not the configured origin.",
+         command,
+         %{
+           target: push_target,
+           allowed_remote: "origin",
+           allowed_origin_url: Map.get(command_security || %{}, :origin_url)
+         }
+       )}
+    else
+      _ -> nil
+    end
+  end
+
+  defp git_remote_refusal(tokens, command, command_security) do
+    with remote_set when is_map(remote_set) <- git_remote_mutation(tokens),
+         false <- allowed_git_remote_mutation?(remote_set, command_security) do
+      {:refuse,
+       refusal(
+         "git_remote_#{remote_set.action}",
+         "git_remote_not_allowed",
+         "Refused git remote #{remote_set.action} because it does not match the configured origin.",
+         command,
+         %{
+           remote_name: remote_set.name,
+           remote_url: remote_set.url,
+           allowed_remote: "origin",
+           allowed_origin_url: Map.get(command_security || %{}, :origin_url)
+         }
+       )}
+    else
+      _ -> nil
+    end
+  end
+
+  defp refusal(action, reason, message, command, details) do
+    %{
+      action: action,
+      reason: reason,
+      message: message,
+      command: command,
+      details: details
+    }
+  end
+
+  defp record_refused_agent_action(approval_context, payload, refusal) do
+    issue = Map.get(approval_context, :issue) || %{}
+
+    opts =
+      approval_context
+      |> Map.get(:audit_log_opts, [])
+      |> Keyword.put_new(:repo_key, Map.get(approval_context, :repo_key))
+
+    attrs =
+      %{
+        action: refusal.action,
+        reason: refusal.reason,
+        message: refusal.message,
+        command: refusal.command,
+        method: payload_method(payload),
+        cwd: get_in(payload, ["params", "cwd"]),
+        details: refusal.details
+      }
+
+    case AuditLog.record_refused_agent_action(issue, attrs, opts) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Audit log refused-action write failed: #{inspect(reason)}")
+    end
+  end
+
+  defp payload_method(payload) when is_map(payload), do: Map.get(payload, "method") || Map.get(payload, :method)
+
+  defp command_tokens(command) when is_binary(command) do
+    command
+    |> OptionParser.split()
+    |> Enum.flat_map(&split_shell_control_tokens/1)
+  rescue
+    _exception ->
+      command
+      |> String.split(~r/\s+/, trim: true)
+      |> Enum.flat_map(&split_shell_control_tokens/1)
+  end
+
+  defp command_tokens(_command), do: []
+
+  defp split_shell_control_tokens(token) when is_binary(token) do
+    token
+    |> String.split(~r/(;|&&|\|\|)/, include_captures: true, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp denied_secret_path(tokens) do
+    Enum.find_value(tokens, fn token ->
+      token
+      |> option_value()
+      |> secret_path()
+    end)
+  end
+
+  defp secret_path(token) when is_binary(token) do
+    normalized = token |> String.trim() |> String.trim_trailing(":")
+    basename = Path.basename(normalized)
+
+    cond do
+      String.starts_with?(normalized, ["~/.ssh/", "~/.aws/", "~/.config/gh/"]) ->
+        normalized
+
+      String.contains?(normalized, ["/.ssh/", "/.aws/", "/.config/gh/"]) ->
+        normalized
+
+      String.starts_with?(basename, ".env") ->
+        normalized
+
+      String.ends_with?(String.downcase(basename), [".pem", ".key"]) ->
+        normalized
+
+      true ->
+        nil
+    end
+  end
+
+  defp option_value(token) when is_binary(token) do
+    case String.split(token, "=", parts: 2) do
+      [_option, value] -> value
+      [value] -> value
+    end
+  end
+
+  defp gh_pr_create_repo(tokens) do
+    tokens
+    |> command_windows("gh")
+    |> Enum.find_value(fn gh_tokens ->
+      if gh_pr_create?(gh_tokens), do: option_argument(gh_tokens, ["--repo", "-R"]), else: nil
+    end)
+    |> normalize_repo_target()
+  end
+
+  defp gh_pr_create?(tokens) do
+    case ordered_index(tokens, "pr") do
+      nil ->
+        false
+
+      pr_index ->
+        Enum.at(tokens, pr_index + 1) == "create"
+    end
+  end
+
+  defp git_push_target(tokens) do
+    tokens
+    |> command_windows("git")
+    |> Enum.find_value(fn
+      ["git", "push" | push_args] -> first_git_push_target(push_args)
+      ["git" | rest] -> rest |> skip_global_git_options() |> match_git_push_target()
+      _tokens -> nil
+    end)
+  end
+
+  defp match_git_push_target(["push" | push_args]), do: first_git_push_target(push_args)
+  defp match_git_push_target(_tokens), do: nil
+
+  defp first_git_push_target(push_args) do
+    push_args
+    |> skip_options()
+    |> List.first()
+    |> case do
+      nil -> "origin"
+      target -> target
+    end
+  end
+
+  defp git_remote_mutation(tokens) do
+    tokens
+    |> command_windows("git")
+    |> Enum.find_value(fn
+      ["git", "remote" | remote_args] -> parse_git_remote_mutation(remote_args)
+      ["git" | rest] -> rest |> skip_global_git_options() |> match_git_remote_mutation()
+      _tokens -> nil
+    end)
+  end
+
+  defp match_git_remote_mutation(["remote" | remote_args]), do: parse_git_remote_mutation(remote_args)
+  defp match_git_remote_mutation(_tokens), do: nil
+
+  defp parse_git_remote_mutation(["add" | args]) do
+    args = skip_options(args)
+    %{action: "add", name: Enum.at(args, 0), url: Enum.at(args, 1)}
+  end
+
+  defp parse_git_remote_mutation(["set-url" | args]) do
+    args = skip_options(args)
+    %{action: "set_url", name: Enum.at(args, 0), url: Enum.at(args, 1)}
+  end
+
+  defp parse_git_remote_mutation(_args), do: nil
+
+  defp command_windows(tokens, command) do
+    tokens
+    |> Enum.with_index()
+    |> Enum.filter(fn {token, _index} -> token == command end)
+    |> Enum.map(fn {_token, index} ->
+      tokens
+      |> Enum.drop(index)
+      |> Enum.take_while(&(&1 not in [";", "&&", "||"]))
+    end)
+  end
+
+  defp ordered_index(tokens, wanted) do
+    Enum.find_index(tokens, &(&1 == wanted))
+  end
+
+  defp option_argument(tokens, names) do
+    Enum.find_value(Enum.with_index(tokens), fn {token, index} ->
+      cond do
+        token in names ->
+          Enum.at(tokens, index + 1)
+
+        String.starts_with?(token, "--repo=") and "--repo" in names ->
+          token |> String.split("=", parts: 2) |> List.last()
+
+        true ->
+          nil
+      end
+    end)
+  end
+
+  defp skip_global_git_options(["-C", _path | rest]), do: skip_global_git_options(rest)
+  defp skip_global_git_options(["-c", _config | rest]), do: skip_global_git_options(rest)
+
+  defp skip_global_git_options([option | rest]) when is_binary(option) do
+    if String.starts_with?(option, ["--git-dir=", "--work-tree=", "-"]) do
+      skip_global_git_options(rest)
+    else
+      [option | rest]
+    end
+  end
+
+  defp skip_global_git_options(tokens), do: tokens
+
+  defp skip_options([option, _value | rest]) when option in ["--repo", "-R", "--push-option", "-o"], do: skip_options(rest)
+
+  defp skip_options([option | rest]) when is_binary(option) do
+    if String.starts_with?(option, "-"), do: skip_options(rest), else: [option | rest]
+  end
+
+  defp skip_options(tokens), do: tokens
+
+  defp allowed_git_push_target?("origin", _command_security), do: true
+
+  defp allowed_git_push_target?(target, command_security) when is_binary(target) do
+    allowed_origin_url = Map.get(command_security || %{}, :origin_url)
+    allowed_repo = Map.get(command_security || %{}, :origin_repo)
+
+    cond do
+      same_origin_url?(target, allowed_origin_url) -> true
+      same_repo?(normalize_repo_target(target), allowed_repo) -> true
+      true -> false
+    end
+  end
+
+  defp allowed_git_remote_mutation?(%{name: "origin", url: url}, command_security) when is_binary(url) do
+    same_origin_url?(url, Map.get(command_security || %{}, :origin_url)) or
+      same_repo?(normalize_repo_target(url), Map.get(command_security || %{}, :origin_repo))
+  end
+
+  defp allowed_git_remote_mutation?(_remote_set, _command_security), do: false
+
+  defp same_origin_url?(left, right) when is_binary(left) and is_binary(right) do
+    normalize_git_url(left) == normalize_git_url(right)
+  end
+
+  defp same_origin_url?(_left, _right), do: false
+
+  defp same_repo?(left, right) when is_binary(left) and is_binary(right), do: String.downcase(left) == String.downcase(right)
+  defp same_repo?(_left, _right), do: false
+
+  defp normalize_repo_target(target) when is_binary(target) do
+    github_repo_from_url(target) ||
+      case Regex.run(~r{^([^/\s:]+)/([^/\s:]+?)(?:\.git)?$}, target) do
+        [_full, owner, repo] -> "#{owner}/#{repo}"
+        _ -> target
+      end
+  end
+
+  defp normalize_repo_target(_target), do: nil
+
+  defp github_repo_from_url(url) when is_binary(url) do
+    Enum.find_value(
+      [
+        ~r{github[^/:]*[/:]([^/\s:]+)/([^/\s]+?)(?:\.git)?/?$},
+        ~r{^https?://[^/]+/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$},
+        ~r{^ssh://[^@]+@[^/]+/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$}
+      ],
+      fn regex ->
+        case Regex.run(regex, url) do
+          [_full, owner, repo] -> "#{owner}/#{repo}"
+          _ -> nil
+        end
+      end
+    )
+  end
+
+  defp github_repo_from_url(_url), do: nil
+
+  defp normalize_git_url(url) when is_binary(url) do
+    url
+    |> String.trim()
+    |> String.trim_trailing("/")
+    |> String.replace_suffix(".git", "")
+    |> String.downcase()
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      present -> present
+    end
   end
 
   defp maybe_auto_answer_tool_request_user_input(
@@ -1167,6 +1614,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           "",
           stream_context.tool_executor,
           stream_context.auto_approve_requests,
+          stream_context.approval_context,
           turn_stream_state
         )
 

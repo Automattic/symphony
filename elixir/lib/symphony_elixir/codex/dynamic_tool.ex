@@ -1,6 +1,12 @@
 defmodule SymphonyElixir.Codex.DynamicTool do
   @moduledoc """
   Executes client-side tool calls requested by Codex app-server turns.
+
+  The exposed dynamic tool surface is intentionally narrow. `linear_graphql`
+  accepts only a GraphQL document and variables; callers cannot provide a URL,
+  host, headers, or auth material. Requests are dispatched through
+  `SymphonyElixir.Linear.Client.graphql/3`, so the outbound host boundary is the
+  operator-configured Linear endpoint, not untrusted issue or review content.
   """
 
   alias SymphonyElixir.Linear.Client

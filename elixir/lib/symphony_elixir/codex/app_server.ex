@@ -1755,8 +1755,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     String.contains?(normalized, "sandbox") and String.contains?(normalized, "ready")
   end
 
-  defp sandbox_ready_method?(_method, _payload), do: false
-
   defp sandbox_unavailable_method?("sandbox/unavailable", _payload), do: true
   defp sandbox_unavailable_method?("sandbox/downgraded", _payload), do: true
   defp sandbox_unavailable_method?("sandbox/failed", _payload), do: true
@@ -1768,8 +1766,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     String.contains?(normalized, "sandbox") and
       Enum.any?(["unavailable", "downgraded", "downgrade", "failed", "failure", "error", "disabled"], &String.contains?(normalized, &1))
   end
-
-  defp sandbox_unavailable_method?(_method, _payload), do: false
 
   defp sandbox_error?(%{"params" => params}) when is_map(params), do: sandbox_error?(params)
   defp sandbox_error?(%{"error" => error}) when is_map(error), do: sandbox_error?(error)

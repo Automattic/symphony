@@ -75,8 +75,12 @@ Packaged macOS binaries are built with Burrito and include the Erlang runtime:
 make package
 ```
 
-Release artifacts are written to `burrito_out/`. Distribution is not wired yet, but the intended
-install shape is:
+Release artifacts are written to `burrito_out/` (e.g. `burrito_out/symphony-macos-arm64`). Run that
+single binary — it embeds the Erlang runtime and the release. The `mix release` banner at the end
+of `make package` points at `_build/prod/rel/symphony/bin/symphony` for `start`/`stop`/`remote`;
+that script is an intermediate build product and is not how end users launch Symphony.
+
+Distribution is not wired yet, but the intended install shape is:
 
 ```bash
 # TBD — release distribution not yet wired up:

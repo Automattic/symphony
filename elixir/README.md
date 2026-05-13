@@ -67,6 +67,12 @@ mise exec -- mix build
 mise exec -- ./bin/symphony
 ```
 
+**Exposing the dashboard remotely.** The HTTP dashboard and `/api/v1/*` endpoints have no built-in
+authentication. Do not set `SYMPHONY_SERVER_HOST=0.0.0.0` directly. If you need remote access, keep
+the bind on `127.0.0.1` and front the port with a reverse proxy that handles auth, such as
+Tailscale, Cloudflare Access, nginx basic auth, or similar. If you know what you're doing and want
+to bind directly, set `SYMPHONY_ALLOW_REMOTE_BIND=1`.
+
 ## Install the binary
 
 Packaged macOS binaries are built with Burrito and include the Erlang runtime:

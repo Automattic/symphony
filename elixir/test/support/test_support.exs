@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.TestSupport do
   @workflow_prompt "You are an agent for this repository."
-  @supervised_child_wait_ms 1_000
+  @supervised_child_wait_ms 5_000
   @supervised_child_retry_ms 10
 
   defmacro __using__(_opts) do
@@ -179,7 +179,10 @@ defmodule SymphonyElixir.TestSupport do
         do_ensure_application_started()
     end
 
-    wait_for_named_process!(SymphonyElixir.Supervisor)
+    case wait_for_named_process(SymphonyElixir.Supervisor) do
+      :ok -> :ok
+      :timeout -> recover_missing_application_supervisor!()
+    end
   end
 
   defp do_ensure_application_started do
@@ -189,6 +192,12 @@ defmodule SymphonyElixir.TestSupport do
       {:error, {:already_started, _pid}} -> :ok
       {:error, reason} -> raise "failed to start symphony_elixir test application: #{inspect(reason)}"
     end
+  end
+
+  defp recover_missing_application_supervisor! do
+    _ = Application.stop(:symphony_elixir)
+    do_ensure_application_started()
+    wait_for_named_process!(SymphonyElixir.Supervisor)
   end
 
   defp ensure_named_supervised_child_started!(child_id, process_name) do

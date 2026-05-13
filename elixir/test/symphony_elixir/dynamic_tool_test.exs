@@ -7,14 +7,18 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   test "tool_specs advertises scoped Linear tools and not raw GraphQL" do
     tool_names = Enum.map(DynamicTool.tool_specs(), & &1["name"])
 
-    assert "linear.get_current_issue" in tool_names
-    assert "linear.update_state" in tool_names
-    assert "linear.attach_file" in tool_names
-    assert "github.get_pull_request" in tool_names
-    assert "github.create_pull_request" in tool_names
-    assert "github.push_branch" in tool_names
-    assert "github.get_pr_checks" in tool_names
+    assert "linear_get_current_issue" in tool_names
+    assert "linear_update_state" in tool_names
+    assert "linear_attach_file" in tool_names
+    assert "github_get_pull_request" in tool_names
+    assert "github_create_pull_request" in tool_names
+    assert "github_push_branch" in tool_names
+    assert "github_get_pr_checks" in tool_names
     refute "linear_graphql" in tool_names
+    refute "linear.get_current_issue" in tool_names
+    refute "github.get_pull_request" in tool_names
+
+    assert Enum.all?(tool_names, &Regex.match?(~r/^[a-zA-Z0-9_-]+$/, &1))
 
     assert Enum.all?(DynamicTool.tool_specs(), fn spec ->
              get_in(spec, ["inputSchema", "additionalProperties"]) == false
@@ -42,7 +46,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     response =
       DynamicTool.execute(
-        "linear.update_state",
+        "linear_update_state",
         %{"state_name_or_id" => "In Progress"},
         issue: issue,
         linear_client: fn query, variables, opts ->
@@ -89,7 +93,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   test "update_state returns state_not_found with available states when name is unknown" do
     response =
       DynamicTool.execute(
-        "linear.update_state",
+        "linear_update_state",
         %{"state_name_or_id" => "Shipped"},
         issue: %Issue{id: "issue-current"},
         linear_client: fn query, _variables, _opts ->
@@ -130,7 +134,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     response =
       DynamicTool.execute(
-        "linear.update_state",
+        "linear_update_state",
         %{"state_name_or_id" => state_uuid},
         issue: %Issue{id: "issue-current"},
         linear_client: fn query, variables, _opts ->
@@ -162,7 +166,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     response =
       DynamicTool.execute(
-        "linear.add_comment",
+        "linear_add_comment",
         %{"body" => "blocked"},
         issue: %Issue{id: "issue-current"},
         comment_registry: registry,
@@ -183,7 +187,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     refute CommentRegistry.owned?(registry, "any-id")
   end
 
-  test "update_state rejects smuggled issue ids" do
+  test "legacy dotted tool aliases are accepted but still reject smuggled issue ids" do
     response =
       DynamicTool.execute(
         "linear.update_state",
@@ -203,7 +207,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     add_response =
       DynamicTool.execute(
-        "linear.add_comment",
+        "linear_add_comment",
         %{"body" => "first"},
         issue: %Issue{id: "issue-current"},
         comment_registry: registry,
@@ -227,7 +231,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     update_response =
       DynamicTool.execute(
-        "linear.update_comment",
+        "linear_update_comment",
         %{"comment_id" => "comment-owned", "body" => "edited"},
         issue: %Issue{id: "issue-current"},
         comment_registry: registry,
@@ -256,7 +260,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     response =
       DynamicTool.execute(
-        "linear.update_comment",
+        "linear_update_comment",
         %{"comment_id" => "comment-other", "body" => "edited"},
         issue: %Issue{id: "issue-current"},
         comment_registry: registry,
@@ -282,7 +286,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       response =
         DynamicTool.execute(
-          "linear.attach_file",
+          "linear_attach_file",
           %{"local_path" => outside, "title" => "outside"},
           issue: %Issue{id: "issue-current"},
           workspace: workspace,
@@ -330,7 +334,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       response =
         DynamicTool.execute(
-          "github.create_pull_request",
+          "github_create_pull_request",
           %{"title" => "Add tools", "body" => "Body"},
           github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
         )
@@ -350,7 +354,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   test "github.create_pull_request rejects smuggled repo arguments" do
     response =
       DynamicTool.execute(
-        "github.create_pull_request",
+        "github_create_pull_request",
         %{"title" => "Add tools", "body" => "Body", "repo" => "attacker/repo"},
         workspace: System.tmp_dir!(),
         command_security: %{origin_repo: "Automattic/symphony"}
@@ -364,10 +368,30 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert message =~ "configured origin"
   end
 
+  test "github tools reject smuggled branch and remote arguments" do
+    for {tool, args} <- [
+          {"github_create_pull_request", %{"title" => "Add tools", "body" => "Body", "head" => "owned"}},
+          {"github_get_pull_request", %{"branch" => "owned"}},
+          {"github_add_pr_comment", %{"body" => "Looks good", "remote" => "evil"}},
+          {"github_get_pr_checks", %{"base" => "owned"}}
+        ] do
+      response =
+        DynamicTool.execute(
+          tool,
+          args,
+          workspace: System.tmp_dir!(),
+          command_security: %{origin_repo: "Automattic/symphony"}
+        )
+
+      assert response["success"] == false
+      assert %{"error" => %{"code" => "scope_argument_rejected"}} = Jason.decode!(response["output"])
+    end
+  end
+
   test "github.push_branch rejects smuggled refspec arguments" do
     response =
       DynamicTool.execute(
-        "github.push_branch",
+        "github_push_branch",
         %{"refspec" => "main:refs/heads/owned"},
         workspace: System.tmp_dir!(),
         command_security: %{origin_repo: "Automattic/symphony"}
@@ -393,6 +417,34 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       response =
         DynamicTool.execute(
+          "github_push_branch",
+          %{},
+          github_tool_opts(workspace, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+      assert %{"remote" => "origin", "branch" => "auto/RSM-3051"} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "legacy dotted github aliases are accepted but not advertised" do
+    workspace = tmp_workspace!("github-legacy-alias")
+
+    try do
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+
+        ["push", "origin", "auto/RSM-3051"], opts ->
+          assert opts[:cd] == workspace
+          {"pushed\n", 0}
+      end
+
+      response =
+        DynamicTool.execute(
           "github.push_branch",
           %{},
           github_tool_opts(workspace, git_runner: git_runner)
@@ -400,6 +452,51 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       assert response["success"] == true
       assert %{"remote" => "origin", "branch" => "auto/RSM-3051"} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.get_pull_request resolves the current branch PR server-side" do
+    workspace = tmp_workspace!("github-get-pr")
+
+    try do
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", fields], opts ->
+          assert opts[:cd] == workspace
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => "https://github.com/Automattic/symphony/pull/3051",
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_get_pull_request",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+
+      assert %{
+               "url" => "https://github.com/Automattic/symphony/pull/3051",
+               "headRefName" => "auto/RSM-3051",
+               "baseRefName" => "main"
+             } = Jason.decode!(response["output"])
     after
       File.rm_rf(workspace)
     end
@@ -439,13 +536,126 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       response =
         DynamicTool.execute(
-          "github.update_pull_request_body",
+          "github_update_pull_request_body",
           %{"body" => "New body"},
           github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
         )
 
       assert response["success"] == true
       assert %{"url" => ^pr_url} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.add_pr_comment resolves the current branch PR server-side" do
+    workspace = tmp_workspace!("github-add-pr-comment")
+
+    try do
+      pr_url = "https://github.com/Automattic/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", fields], opts ->
+          assert opts[:cd] == workspace
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["pr", "comment", ^pr_url, "--body", "Validation passed"], opts ->
+          assert opts[:cd] == workspace
+          {"", 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_add_pr_comment",
+          %{"body" => "Validation passed"},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+      assert %{"url" => ^pr_url} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.get_pr_checks resolves the current branch PR server-side" do
+    workspace = tmp_workspace!("github-get-pr-checks")
+
+    try do
+      pr_url = "https://github.com/Automattic/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", fields], opts ->
+          assert opts[:cd] == workspace
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], opts ->
+          assert opts[:cd] == workspace
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "url" => pr_url,
+             "headRefOid" => "abc123",
+             "statusCheckRollup" => [
+               %{
+                 "__typename" => "CheckRun",
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "SUCCESS",
+                 "detailsUrl" => "https://github.com/Automattic/symphony/actions/runs/1"
+               }
+             ]
+           }), 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_get_pr_checks",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+
+      assert %{
+               "pr_url" => ^pr_url,
+               "commit_sha" => "abc123",
+               "checks" => [%{"name" => "mix test", "conclusion" => "SUCCESS"}]
+             } = Jason.decode!(response["output"])
     after
       File.rm_rf(workspace)
     end

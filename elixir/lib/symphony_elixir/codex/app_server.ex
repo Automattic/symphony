@@ -271,28 +271,26 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_port(workspace, nil, settings) do
     executable = System.find_executable("bash")
 
-    cond do
-      is_nil(executable) ->
-        {:error, :bash_not_found}
+    if is_nil(executable) do
+      {:error, :bash_not_found}
+    else
+      with {:ok, command} <- command_with_sandbox_config(settings.agent.command, settings) do
+        port =
+          Port.open(
+            {:spawn_executable, String.to_charlist(executable)},
+            [
+              :binary,
+              :exit_status,
+              :stderr_to_stdout,
+              args: [~c"-lc", String.to_charlist(command)],
+              cd: String.to_charlist(workspace),
+              env: AgentEnv.build(),
+              line: @port_line_bytes
+            ]
+          )
 
-      true ->
-        with {:ok, command} <- command_with_sandbox_config(settings.agent.command, settings) do
-          port =
-            Port.open(
-              {:spawn_executable, String.to_charlist(executable)},
-              [
-                :binary,
-                :exit_status,
-                :stderr_to_stdout,
-                args: [~c"-lc", String.to_charlist(command)],
-                cd: String.to_charlist(workspace),
-                env: AgentEnv.build(),
-                line: @port_line_bytes
-              ]
-            )
-
-          {:ok, port}
-        end
+        {:ok, port}
+      end
     end
   end
 

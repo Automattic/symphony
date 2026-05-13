@@ -67,6 +67,33 @@ mise exec -- mix build
 mise exec -- ./bin/symphony
 ```
 
+## Install the binary
+
+Packaged macOS binaries are built with Burrito and include the Erlang runtime:
+
+```bash
+make package
+```
+
+Release artifacts are written to `burrito_out/`. Distribution is not wired yet, but the intended
+install shape is:
+
+```bash
+# TBD — release distribution not yet wired up:
+# curl -L <release-url>/symphony-macos-arm64 -o symphony
+# chmod +x symphony
+# ./symphony --config ./symphony.yml
+```
+
+```bash
+# TBD — Homebrew tap not yet published:
+# brew tap <tap-placeholder>
+# brew install symphony
+```
+
+Code signing and notarization are out of scope for this first package, so macOS Gatekeeper may ask
+operators to approve the binary on first launch.
+
 ## Configuration
 
 Symphony reads two files:
@@ -214,19 +241,30 @@ stays empty until every repo's cache has warmed at least once.
 
 CLI flags:
 
-- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`).
-  Application logs go under `<logs-root>/log/`; append-only audit events go under
-  `<logs-root>/audit/`.
+- `--state-root` tells Symphony to write durable state under a different directory.
+- `--logs-root` tells Symphony to write the rotating application log under a different directory.
 - `--host` pins the Phoenix observability service to a specific host
 - `--port` pins the Phoenix observability service to a specific port
 
-Symphony also keeps an OTP-native durable run store next to the configured log file
-(`run_store/`). It persists run history, retry queue entries, session metadata, captured learnings,
-and aggregate token totals so retry backoff and observability data survive process restarts. The
-same store persists the operator dispatch pause flag, including its reason and timestamp.
+Runtime paths default to per-user macOS locations:
+
+| Concern | Default | Override |
+| --- | --- | --- |
+| Rotating application log | `~/Library/Logs/symphony/symphony.log` | `--logs-root`, `SYMPHONY_LOGS_ROOT` |
+| Mnesia run store | `~/Library/Application Support/symphony/run_store` | `--state-root`, `SYMPHONY_STATE_ROOT` |
+| Audit NDJSON | `~/Library/Application Support/symphony/audit` | `--state-root`, `SYMPHONY_STATE_ROOT` |
+| Phoenix `secret_key_base` | `~/Library/Application Support/symphony/secret_key_base` | `--state-root`, `SYMPHONY_STATE_ROOT` |
+
+`symphony.yml` stays cwd-relative and operator-supplied. Moving the binary does not change where
+the default config file is resolved from.
+
+The OTP-native durable run store persists run history, retry queue entries, session metadata,
+captured learnings, and aggregate token totals so retry backoff and observability data survive
+process restarts. The same store persists the operator dispatch pause flag, including its reason
+and timestamp.
 
 To inspect side effects for an issue, run `mix symphony.audit ISSUE_ID --from YYYY-MM-DD --to
-YYYY-MM-DD --logs-root /path/to/logs-root`.
+YYYY-MM-DD --state-root /path/to/state-root`.
 
 For every supported setting, default, and value list, see
 [docs/configuration.md](docs/configuration.md).

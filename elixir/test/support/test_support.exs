@@ -48,6 +48,7 @@ defmodule SymphonyElixir.TestSupport do
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
         ensure_symphony_started!()
+        SymphonyElixir.TestSupport.ensure_pubsub_started!()
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         :ok = SymphonyElixir.RunStore.clear()
         stop_verification_port_pool()
@@ -139,6 +140,35 @@ defmodule SymphonyElixir.TestSupport do
 
   def ensure_symphony_started! do
     ensure_application_started()
+  end
+
+  def ensure_pubsub_started! do
+    ensure_application_started()
+
+    case Process.whereis(SymphonyElixir.PubSub) do
+      pid when is_pid(pid) ->
+        :ok
+
+      _ ->
+        restart_supervised_child!(Phoenix.PubSub.Supervisor)
+    end
+  end
+
+  defp restart_supervised_child!(child_id) do
+    ensure_application_started()
+
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      supervisor when is_pid(supervisor) ->
+        case Supervisor.restart_child(supervisor, child_id) do
+          {:ok, _pid} -> :ok
+          {:ok, _pid, _info} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, reason} -> raise "failed to restart #{inspect(child_id)}: #{inspect(reason)}"
+        end
+
+      _ ->
+        ensure_application_started()
+    end
   end
 
   def ensure_application_started do

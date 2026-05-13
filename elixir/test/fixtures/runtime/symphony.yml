@@ -1,0 +1,26 @@
+tracker:
+  kind: memory
+repos:
+  - name: runtime-test
+    default: true
+    workflow: WORKFLOW.md
+workspace:
+  root: /tmp/symphony-elixir-runtime-test-workspaces
+agent:
+  kind: codex
+  command: codex app-server
+  max_concurrent_agents: 1
+pr_review:
+  mode: tracker
+ci:
+  enabled: false
+quality_gate:
+  enabled: false
+self_review:
+  enabled: false
+learnings:
+  enabled: false
+watchdog:
+  enabled: false
+notifications:
+  enabled: false

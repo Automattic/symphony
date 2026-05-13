@@ -17,5 +17,8 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
 
 if config_env() == :test do
   config :symphony_elixir,
+    symphony_file_path: Path.expand("../test/fixtures/runtime/symphony.yml", __DIR__),
+    state_root: Path.join(System.tmp_dir!(), "symphony-elixir-test-state-#{System.unique_integer([:positive])}"),
+    logs_root: Path.join(System.tmp_dir!(), "symphony-elixir-test-logs-#{System.unique_integer([:positive])}"),
     run_store_dir: Path.join(System.tmp_dir!(), "symphony-elixir-test-run-store-#{System.unique_integer([:positive])}")
 end

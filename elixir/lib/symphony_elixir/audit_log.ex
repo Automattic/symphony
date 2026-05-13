@@ -9,7 +9,7 @@ defmodule SymphonyElixir.AuditLog do
 
   require Logger
 
-  alias SymphonyElixir.{Config, LogFile}
+  alias SymphonyElixir.{Config, Paths}
 
   @redacted "[REDACTED]"
   @preview_chars 500
@@ -35,7 +35,7 @@ defmodule SymphonyElixir.AuditLog do
   def audit_dir(opts \\ []) do
     Keyword.get(opts, :dir) ||
       Application.get_env(:symphony_elixir, :audit_log_dir) ||
-      default_dir(logs_root_from_log_file())
+      Paths.audit_dir()
   end
 
   @spec set_dir(Path.t()) :: :ok
@@ -886,13 +886,6 @@ defmodule SymphonyElixir.AuditLog do
   end
 
   defp event_path(dir, date_string), do: Path.join(dir, "#{date_string}.ndjson")
-
-  defp logs_root_from_log_file do
-    Application.get_env(:symphony_elixir, :log_file, LogFile.default_log_file())
-    |> Path.expand()
-    |> Path.dirname()
-    |> Path.dirname()
-  end
 
   defp configured_secret_values(opts) do
     []

@@ -6,7 +6,7 @@ defmodule SymphonyElixir.RunStore do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.{Config, LogFile}
+  alias SymphonyElixir.{Config, Paths}
 
   @runs_table :symphony_run_store_runs
   @retry_table :symphony_run_store_retries
@@ -616,10 +616,7 @@ defmodule SymphonyElixir.RunStore do
   @spec store_dir() :: Path.t()
   def store_dir do
     Application.get_env(:symphony_elixir, :run_store_dir) ||
-      Path.join(
-        Path.dirname(Application.get_env(:symphony_elixir, :log_file, LogFile.default_log_file())),
-        "run_store"
-      )
+      Paths.run_store_dir()
   end
 
   defp setup_mnesia(dir) when is_binary(dir) do

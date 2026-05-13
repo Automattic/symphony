@@ -10,31 +10,37 @@ services:
     command:
       - --logs-root
       - /workspace/logs
+      - --state-root
+      - /workspace/state
       - --host
       - 0.0.0.0
       - --port
       - "4000"
-      - /workspace/WORKFLOW.md
+      - --config
+      - /workspace/symphony.yml
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GH_TOKEN: ${GH_TOKEN:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       LINEAR_API_KEY: ${LINEAR_API_KEY:-}
-      LINEAR_ASSIGNEE: ${LINEAR_ASSIGNEE:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SYMPHONY_ALLOW_REMOTE_BIND: "1"
     volumes:
       - type: bind
-        source: ${SYMPHONY_WORKFLOW:?Set SYMPHONY_WORKFLOW to the host path for WORKFLOW.md}
-        target: /workspace/WORKFLOW.md
+        source: ${SYMPHONY_CONFIG:?Set SYMPHONY_CONFIG to the host path for symphony.yml}
+        target: /workspace/symphony.yml
         read_only: true
       - type: bind
-        source: ${SYMPHONY_REPO:?Set SYMPHONY_REPO to the host repository path}
-        target: /workspace/repo
+        source: ${SYMPHONY_REPOS_ROOT:?Set SYMPHONY_REPOS_ROOT to the host directory containing supervised repos}
+        target: /workspace/repos
       - type: volume
         source: symphony-logs
         target: /workspace/logs
+      - type: volume
+        source: symphony-state
+        target: /workspace/state
       - type: volume
         source: symphony-workspaces
         target: /workspace/workspaces
@@ -49,4 +55,5 @@ volumes:
   symphony-claude-home:
   symphony-codex-home:
   symphony-logs:
+  symphony-state:
   symphony-workspaces:

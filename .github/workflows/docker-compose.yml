@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - run: SYMPHONY_WORKFLOW="$PWD/elixir/WORKFLOW.md" SYMPHONY_REPO="$PWD" docker compose -f docker/docker-compose.yml config
+      - run: SYMPHONY_CONFIG="$PWD/elixir/test/fixtures/runtime/symphony.yml" SYMPHONY_REPOS_ROOT="$PWD" docker compose -f docker/docker-compose.yml config
 
   build-image:
     runs-on: ubuntu-latest

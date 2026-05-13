@@ -1,6 +1,6 @@
-FROM debian:bookworm
+FROM debian:trixie
 
-ARG MISE_VERSION=2026.4.27
+ARG MISE_VERSION=2026.5.6
 ARG SYMPHONY_UID=1000
 ARG SYMPHONY_GID=1000
 
@@ -33,8 +33,8 @@ RUN curl https://mise.run | MISE_VERSION="v${MISE_VERSION}" MISE_INSTALL_PATH=/u
 
 RUN groupadd --gid ${SYMPHONY_GID} symphony \
     && useradd --uid ${SYMPHONY_UID} --gid ${SYMPHONY_GID} --create-home --shell /bin/bash symphony \
-    && mkdir -p /opt/mise /app/elixir /app/docker /workspace \
-    && chown -R symphony:symphony /opt/mise /app /workspace
+    && mkdir -p /opt/mise /app/elixir /app/docker /workspace /home/symphony/.codex /home/symphony/.claude \
+    && chown -R symphony:symphony /opt/mise /app /workspace /home/symphony/.codex /home/symphony/.claude
 
 USER symphony
 
@@ -57,4 +57,4 @@ RUN mise exec -- mix escript.build \
 WORKDIR /workspace
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["/workspace/WORKFLOW.md"]
+CMD ["--config", "/workspace/symphony.yml"]

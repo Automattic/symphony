@@ -132,26 +132,17 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
-  defp maybe_set_state_root(opts, deps) do
-    with_last_opt(opts, :state_root, fn raw ->
-      state_root = String.trim(raw)
+  defp maybe_set_state_root(opts, deps),
+    do: maybe_set_root(opts, :state_root, deps.set_state_root)
 
-      if state_root == "" do
-        {:error, usage_message()}
-      else
-        :ok = deps.set_state_root.(Path.expand(state_root))
-      end
-    end)
-  end
+  defp maybe_set_logs_root(opts, deps),
+    do: maybe_set_root(opts, :logs_root, deps.set_logs_root)
 
-  defp maybe_set_logs_root(opts, deps) do
-    with_last_opt(opts, :logs_root, fn raw ->
-      logs_root = String.trim(raw)
-
-      if logs_root == "" do
-        {:error, usage_message()}
-      else
-        :ok = deps.set_logs_root.(Path.expand(logs_root))
+  defp maybe_set_root(opts, key, setter) do
+    with_last_opt(opts, key, fn raw ->
+      case String.trim(raw) do
+        "" -> {:error, usage_message()}
+        root -> :ok = setter.(Path.expand(root))
       end
     end)
   end

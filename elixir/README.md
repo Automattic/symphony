@@ -79,14 +79,16 @@ Release artifacts are written to `burrito_out/`. Distribution is not wired yet, 
 install shape is:
 
 ```bash
-curl -L <release-url>/symphony-macos-arm64 -o symphony
-chmod +x symphony
-./symphony --config ./symphony.yml
+# TBD — release distribution not yet wired up:
+# curl -L <release-url>/symphony-macos-arm64 -o symphony
+# chmod +x symphony
+# ./symphony --config ./symphony.yml
 ```
 
 ```bash
-brew tap <tap-placeholder>
-brew install symphony
+# TBD — Homebrew tap not yet published:
+# brew tap <tap-placeholder>
+# brew install symphony
 ```
 
 Code signing and notarization are out of scope for this first package, so macOS Gatekeeper may ask

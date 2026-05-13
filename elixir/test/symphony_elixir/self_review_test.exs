@@ -54,6 +54,7 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert result.findings == []
     assert result.source.changed_paths == ["feature.txt"]
     assert result.source.acceptance_criteria =~ "Add the self-review gate"
+    assert result.source.git_range == "origin/main..HEAD"
     refute result.source.diff_truncated?
 
     assert_receive {:self_review_request, %{system: system, user: user}}
@@ -63,6 +64,84 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert user =~ "Commit subjects and bodies:"
     assert user =~ "feat: add self review"
     assert user =~ "Git diff origin/main..HEAD:"
+  end
+
+  test "uses configured base branch for all self-review source material" do
+    repo = changed_repo!("feature.txt", "develop based implementation\n")
+    set_remote_branch!(repo, "develop")
+    Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
+
+    result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider, base_branch: "develop")
+
+    assert result.verdict == :approve
+    assert result.source.git_range == "origin/develop..HEAD"
+    assert result.source.changed_paths == ["feature.txt"]
+    assert result.source.commit_messages =~ "feat: add self review"
+    assert result.source.diff =~ "develop based implementation"
+
+    assert_receive {:self_review_request, %{user: user}}
+    assert user =~ "Git diff origin/develop..HEAD:"
+    refute user =~ "Git diff origin/main..HEAD:"
+  end
+
+  test "normalizes configured base branch refs" do
+    repo = changed_repo!("feature.txt", "normalized implementation\n")
+    set_remote_branch!(repo, "develop")
+    Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
+
+    for base_branch <- ["origin/develop", "refs/heads/develop"] do
+      result =
+        SelfReview.evaluate(issue(), repo, enabled_config(),
+          provider_module: StubProvider,
+          base_branch: base_branch
+        )
+
+      assert result.verdict == :approve
+      assert result.source.git_range == "origin/develop..HEAD"
+      assert_receive {:self_review_request, %{user: user}}
+      assert user =~ "Git diff origin/develop..HEAD:"
+    end
+  end
+
+  test "blank configured base branch uses the safe fallback" do
+    repo = changed_repo!("feature.txt", "blank fallback implementation\n")
+    Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
+
+    result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider, base_branch: " ")
+
+    assert result.verdict == :approve
+    assert result.source.git_range == "origin/main..HEAD"
+  end
+
+  test "prefix-only base branch falls back instead of producing an invalid ref" do
+    repo = changed_repo!("feature.txt", "prefix only implementation\n")
+    Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
+
+    for base_branch <- ["origin/", "refs/heads/", "origin/   "] do
+      result =
+        SelfReview.evaluate(issue(), repo, enabled_config(),
+          provider_module: StubProvider,
+          base_branch: base_branch
+        )
+
+      assert result.verdict == :approve
+      assert result.source.git_range == "origin/main..HEAD"
+    end
+  end
+
+  test "falls back to origin HEAD before the legacy main range" do
+    repo = changed_repo!("feature.txt", "origin head implementation\n")
+    set_remote_branch!(repo, "develop")
+    git!(repo, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"])
+    Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
+
+    result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider)
+
+    assert result.verdict == :approve
+    assert result.source.git_range == "origin/develop..HEAD"
+
+    assert_receive {:self_review_request, %{user: user}}
+    assert user =~ "Git diff origin/develop..HEAD:"
   end
 
   test "requests changes for an allowed blocking finding" do
@@ -273,8 +352,9 @@ defmodule SymphonyElixir.SelfReviewTest do
       count=$((count + 1))
       printf '%s' "$count" > "$count_file"
       case "$count" in
-        1) printf '%s\\n' 'diff --git a/remote.txt b/remote.txt' '+remote change' ;;
-        2) printf '%s\\n' 'remote.txt' ;;
+        1) printf '%s\\n' 'origin/main' ;;
+        2) printf '%s\\n' 'diff --git a/remote.txt b/remote.txt' '+remote change' ;;
+        3) printf '%s\\n' 'remote.txt' ;;
         *) printf '%s\\n' 'feat: remote self review' ;;
       esac
       """)
@@ -287,6 +367,7 @@ defmodule SymphonyElixir.SelfReviewTest do
       end)
 
     assert result.verdict == :approve
+    assert result.source.git_range == "origin/main..HEAD"
     assert result.source.changed_paths == ["remote.txt"]
     assert_receive {:self_review_request, %{user: user}}
     assert user =~ "feat: remote self review"
@@ -349,6 +430,7 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert result.verdict == :approve
     assert result.source.issue_title == ""
     assert result.source.acceptance_criteria == ""
+    assert result.source.git_range == "origin/main..HEAD"
     assert result.source.diff == ""
     assert result.source.diff_line_count == 0
     assert result.source.changed_paths == []
@@ -487,6 +569,10 @@ defmodule SymphonyElixir.SelfReviewTest do
     git!(repo, ["add", "README.md"])
     git!(repo, ["commit", "-m", "initial"])
     git!(repo, ["update-ref", "refs/remotes/origin/main", "HEAD"])
+  end
+
+  defp set_remote_branch!(repo, branch) do
+    git!(repo, ["update-ref", "refs/remotes/origin/#{branch}", "refs/remotes/origin/main"])
   end
 
   defp fake_ssh!(name, body) do

@@ -107,6 +107,14 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec repo_base_branch(String.t() | nil) :: {:ok, String.t() | nil} | {:error, term()}
+  def repo_base_branch(repo_key) do
+    with {:ok, system_config} <- system(),
+         {:ok, repo} <- find_repo(system_config, repo_key) do
+      {:ok, repo.base_branch}
+    end
+  end
+
   @spec system() :: {:ok, SystemSchema.t()} | {:error, term()}
   def system do
     with {:ok, config} <- Workflow.load_symphony(),

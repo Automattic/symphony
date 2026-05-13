@@ -360,6 +360,23 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.settings!().tracker.assignee == "me"
   end
 
+  test "repo base branch resolves from repo configuration" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      repos: [
+        %{
+          "name" => "default",
+          "path" => Path.dirname(Workflow.workflow_file_path()),
+          "workflow" => Path.basename(Workflow.workflow_file_path()),
+          "team" => "Test",
+          "base_branch" => "develop"
+        }
+      ]
+    )
+
+    assert {:ok, "develop"} = Config.repo_base_branch("default")
+    assert {:ok, "develop"} = Config.repo_base_branch(nil)
+  end
+
   test "linear assignee resolves from LINEAR_ASSIGNEE env var" do
     previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
     env_assignee = "dev@example.com"
@@ -2827,6 +2844,7 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       repo = self_review_repo!(test_root)
+      System.cmd("git", ["-C", repo, "update-ref", "refs/remotes/origin/develop", "refs/remotes/origin/main"])
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex.trace")
 
@@ -2846,7 +2864,7 @@ defmodule SymphonyElixir.CoreTest do
         Application.delete_env(:symphony_elixir, :agent_runner_self_review_responses)
       end)
 
-      write_self_review_workflow!(codex_binary, max_turns: 2)
+      write_self_review_workflow!(codex_binary, max_turns: 2, base_branch: "develop")
 
       assert :ok =
                AgentRunner.run(self_review_issue(), nil,
@@ -2856,7 +2874,8 @@ defmodule SymphonyElixir.CoreTest do
                  self_review_provider_module: SelfReviewSequenceProvider
                )
 
-      assert_receive {:self_review_call, 1, _request}
+      assert_receive {:self_review_call, 1, %{user: self_review_prompt}}
+      assert self_review_prompt =~ "Git diff origin/develop..HEAD:"
       refute_receive {:self_review_call, 2, _request}, 50
 
       assert_receive {:issue_state_fetch, 1}
@@ -3461,10 +3480,13 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   defp write_self_review_workflow!(codex_binary, opts) do
+    base_branch = Keyword.get(opts, :base_branch)
+
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: Path.dirname(codex_binary),
       agent_command: "#{codex_binary} app-server",
       max_turns: Keyword.fetch!(opts, :max_turns),
+      repos: self_review_repos(base_branch),
       self_review: %{
         enabled: true,
         provider: "anthropic",
@@ -3474,6 +3496,20 @@ defmodule SymphonyElixir.CoreTest do
       },
       prompt: Keyword.get(opts, :prompt, "Initial prompt {{ issue.identifier }}")
     )
+  end
+
+  defp self_review_repos(nil), do: nil
+
+  defp self_review_repos(base_branch) do
+    [
+      %{
+        "name" => "default",
+        "path" => Path.dirname(Workflow.workflow_file_path()),
+        "workflow" => Path.basename(Workflow.workflow_file_path()),
+        "team" => "Test",
+        "base_branch" => base_branch
+      }
+    ]
   end
 
   defp self_review_state_fetcher(parent, terminal_attempt) do

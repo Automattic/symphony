@@ -115,6 +115,10 @@ Per-repo fields:
 - `name` (string, REQUIRED) — unique identifier. Surfaced as `<repo_key>` in dashboard URLs.
 - `workflow` (string, default `WORKFLOW.md`) — path to that repo's `WORKFLOW.md`. Relative paths
   resolve from the directory containing `symphony.yml` unless legacy `path` is set.
+- `base_branch` (string, OPTIONAL) — integration branch used as the comparison base for pre-push
+  self-review source material, for example `develop`. Bare branch names, `origin/<branch>`, and
+  `refs/heads/<branch>` are all accepted and resolved against the `origin` remote. When omitted or
+  blank, self-review uses `origin/HEAD` when available and falls back to `origin/main`.
 - `path` (string, OPTIONAL) — legacy checkout path used only as the base for relative `workflow`
   paths. `~` is expanded.
 - `workspace` (object, OPTIONAL) — per-repo workspace population settings:
@@ -505,7 +509,8 @@ quality_gate:
 ## Self-review
 
 The optional `self_review` block adds a conservative pre-push LLM gate after the agent completes
-validation and reviews `git diff origin/main..HEAD`. It is disabled by default. When enabled, the
+validation and reviews the committed diff against the repo's configured `base_branch`, or
+`origin/HEAD`/`origin/main` when no repo base is configured. It is disabled by default. When enabled, the
 workflow prompt tells the agent to pause before `git push`; Symphony then reviews the committed
 diff, changed paths, commit subjects/bodies, and issue acceptance criteria using the same
 Anthropic/OpenAI provider modules as `quality_gate`.

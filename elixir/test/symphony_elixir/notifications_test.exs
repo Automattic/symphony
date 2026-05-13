@@ -37,6 +37,8 @@ defmodule SymphonyElixir.NotificationsTest do
   test "notifier delivers non-primary repo PubSub events" do
     test_pid = self()
 
+    SymphonyElixir.TestSupport.ensure_pubsub_started!()
+
     write_workflow_file!(Workflow.workflow_file_path(),
       notifications: %{
         enabled: true,

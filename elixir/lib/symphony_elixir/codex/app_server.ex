@@ -6,7 +6,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-
   alias SymphonyElixir.AgentEnv
   alias SymphonyElixir.AgentSandboxConfig
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
@@ -117,6 +116,9 @@ defmodule SymphonyElixir.Codex.AppServer do
       repo_key: Keyword.get(opts, :repo_key),
       audit_log_opts: Keyword.get(opts, :audit_log_opts, []),
       command_security: command_security,
+      settings: settings,
+      turn_sandbox_policy: turn_sandbox_policy,
+      workspace: workspace,
       dependency_gate: dependency_gate_context(workspace, issue, settings, opts)
     }
 
@@ -130,7 +132,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            turn_sandbox_policy,
            settings
          ) do
-      {:ok, turn_id} ->
+      {:ok, %{turn_id: turn_id, sandbox_startup: sandbox_startup}} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -151,7 +153,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                tool_executor,
                auto_approve_requests,
                settings,
-               approval_context
+               approval_context,
+               sandbox_startup
              ) do
           {:ok, result} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
@@ -509,8 +512,18 @@ defmodule SymphonyElixir.Codex.AppServer do
     })
 
     case await_response(port, @turn_start_id, settings) do
-      {:ok, %{"turn" => %{"id" => turn_id}}} -> {:ok, turn_id}
-      other -> other
+      {:ok, %{"turn" => %{"id" => turn_id} = turn_payload}} ->
+        {:ok,
+         %{
+           turn_id: turn_id,
+           sandbox_startup: sandbox_startup_from_turn_start(turn_payload)
+         }}
+
+      {:error, reason} ->
+        if sandbox_error?(reason), do: {:error, :sandbox_required}, else: {:error, reason}
+
+      other ->
+        other
     end
   end
 
@@ -520,7 +533,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          tool_executor,
          auto_approve_requests,
          settings,
-         approval_context
+         approval_context,
+         sandbox_startup
        ) do
     config = settings.agent
 
@@ -532,7 +546,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       tool_executor,
       auto_approve_requests,
       approval_context,
-      initial_turn_stream_state(config.command_timeout_ms)
+      initial_turn_stream_state(config.command_timeout_ms, sandbox_startup)
     )
   end
 
@@ -597,42 +611,12 @@ defmodule SymphonyElixir.Codex.AppServer do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
-      {:ok, %{"method" => "turn/completed"} = payload} ->
-        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-        {:ok, :turn_completed}
-
-      {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
-        emit_turn_event(
-          on_message,
-          :turn_failed,
-          payload,
-          payload_string,
-          port,
-          Map.get(payload, "params")
-        )
-
-        {:error, {:turn_failed, Map.get(payload, "params")}}
-
-      {:ok, %{"method" => "turn/cancelled", "params" => _} = payload} ->
-        emit_turn_event(
-          on_message,
-          :turn_cancelled,
-          payload,
-          payload_string,
-          port,
-          Map.get(payload, "params")
-        )
-
-        {:error, {:turn_cancelled, Map.get(payload, "params")}}
-
-      {:ok, %{"method" => method} = payload}
-      when is_binary(method) ->
-        handle_turn_method(
+      {:ok, payload} ->
+        handle_decoded_payload(
           port,
           on_message,
           payload,
           payload_string,
-          method,
           %{
             timeout_ms: timeout_ms,
             tool_executor: tool_executor,
@@ -640,28 +624,6 @@ defmodule SymphonyElixir.Codex.AppServer do
             approval_context: approval_context,
             turn_stream_state: turn_stream_state
           }
-        )
-
-      {:ok, payload} ->
-        emit_message(
-          on_message,
-          :other_message,
-          %{
-            payload: payload,
-            raw: payload_string
-          },
-          metadata_from_message(port, payload)
-        )
-
-        receive_loop(
-          port,
-          on_message,
-          timeout_ms,
-          "",
-          tool_executor,
-          auto_approve_requests,
-          approval_context,
-          turn_stream_state
         )
 
       {:error, _reason} ->
@@ -689,6 +651,119 @@ defmodule SymphonyElixir.Codex.AppServer do
           approval_context,
           turn_stream_state
         )
+    end
+  end
+
+  defp handle_decoded_payload(port, on_message, %{"method" => "turn/completed"} = payload, payload_string, stream_context) do
+    handle_turn_completed(port, on_message, payload, payload_string, stream_context.turn_stream_state)
+  end
+
+  defp handle_decoded_payload(
+         port,
+         on_message,
+         %{"method" => "turn/failed", "params" => _} = payload,
+         payload_string,
+         _stream_context
+       ) do
+    handle_turn_failed(port, on_message, payload, payload_string)
+  end
+
+  defp handle_decoded_payload(
+         port,
+         on_message,
+         %{"method" => "turn/cancelled", "params" => _} = payload,
+         payload_string,
+         _stream_context
+       ) do
+    emit_turn_event(
+      on_message,
+      :turn_cancelled,
+      payload,
+      payload_string,
+      port,
+      Map.get(payload, "params")
+    )
+
+    {:error, {:turn_cancelled, Map.get(payload, "params")}}
+  end
+
+  defp handle_decoded_payload(port, on_message, %{"method" => method} = payload, payload_string, stream_context)
+       when is_binary(method) do
+    updated_turn_stream_state = update_sandbox_startup_tracking(stream_context.turn_stream_state, method, payload)
+
+    case updated_turn_stream_state.sandbox_startup do
+      :unavailable ->
+        emit_turn_event(on_message, :sandbox_required, payload, payload_string, port, payload)
+        {:error, :sandbox_required}
+
+      _ ->
+        handle_turn_method(
+          port,
+          on_message,
+          payload,
+          payload_string,
+          method,
+          %{
+            timeout_ms: stream_context.timeout_ms,
+            tool_executor: stream_context.tool_executor,
+            auto_approve_requests: stream_context.auto_approve_requests,
+            approval_context: stream_context.approval_context,
+            turn_stream_state: updated_turn_stream_state
+          }
+        )
+    end
+  end
+
+  defp handle_decoded_payload(port, on_message, payload, payload_string, stream_context) do
+    emit_message(
+      on_message,
+      :other_message,
+      %{
+        payload: payload,
+        raw: payload_string
+      },
+      metadata_from_message(port, payload)
+    )
+
+    receive_loop(
+      port,
+      on_message,
+      stream_context.timeout_ms,
+      "",
+      stream_context.tool_executor,
+      stream_context.auto_approve_requests,
+      stream_context.approval_context,
+      stream_context.turn_stream_state
+    )
+  end
+
+  defp handle_turn_completed(port, on_message, payload, payload_string, turn_stream_state) do
+    case sandbox_startup_status_at_completion(turn_stream_state, payload) do
+      :ready ->
+        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
+        {:ok, :turn_completed}
+
+      :unavailable ->
+        emit_turn_event(on_message, :sandbox_required, payload, payload_string, port, payload)
+        {:error, :sandbox_required}
+    end
+  end
+
+  defp handle_turn_failed(port, on_message, payload, payload_string) do
+    if sandbox_error?(payload) do
+      emit_turn_event(on_message, :sandbox_required, payload, payload_string, port, Map.get(payload, "params"))
+      {:error, :sandbox_required}
+    else
+      emit_turn_event(
+        on_message,
+        :turn_failed,
+        payload,
+        payload_string,
+        port,
+        Map.get(payload, "params")
+      )
+
+      {:error, {:turn_failed, Map.get(payload, "params")}}
     end
   end
 
@@ -855,9 +930,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       "approved_for_session",
       payload,
       payload_string,
-      context.on_message,
-      context.metadata,
-      context.auto_approve_requests
+      context
     )
   end
 
@@ -874,9 +947,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       "acceptForSession",
       payload,
       payload_string,
-      context.on_message,
-      context.metadata,
-      context.auto_approve_requests
+      context
     )
   end
 
@@ -893,9 +964,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       params,
       payload,
       payload_string,
-      context.on_message,
-      context.metadata,
-      context.auto_approve_requests
+      context
     )
   end
 
@@ -906,17 +975,24 @@ defmodule SymphonyElixir.Codex.AppServer do
          payload_string,
          %{auto_approve_requests: true} = context
        ) do
-    response = permissions_request_approval_response(params)
-    send_message(port, %{"id" => id, "result" => response})
+    case sandbox_denied_approval_review(payload, context.approval_context) do
+      {:review, review} ->
+        emit_sandbox_denied_awaiting_review(payload, review, context)
+        :approval_required
 
-    emit_message(
-      context.on_message,
-      :approval_auto_approved,
-      %{payload: payload, raw: payload_string, decision: "permissions:session"},
-      context.metadata
-    )
+      :allow ->
+        response = permissions_request_approval_response(params)
+        send_message(port, %{"id" => id, "result" => response})
 
-    :approved
+        emit_message(
+          context.on_message,
+          :approval_auto_approved,
+          %{payload: payload, raw: payload_string, decision: "permissions:session"},
+          context.metadata
+        )
+
+        :approved
+    end
   end
 
   defp maybe_handle_approval_request(
@@ -936,17 +1012,24 @@ defmodule SymphonyElixir.Codex.AppServer do
          payload_string,
          %{auto_approve_requests: true} = context
        ) do
-    response = mcp_server_elicitation_response(params)
-    send_message(port, %{"id" => id, "result" => response})
+    case sandbox_denied_approval_review(payload, context.approval_context) do
+      {:review, review} ->
+        emit_sandbox_denied_awaiting_review(payload, review, context)
+        :approval_required
 
-    emit_message(
-      context.on_message,
-      :mcp_elicitation_auto_answered,
-      %{payload: payload, raw: payload_string, decision: response["action"]},
-      context.metadata
-    )
+      :allow ->
+        response = mcp_server_elicitation_response(params)
+        send_message(port, %{"id" => id, "result" => response})
 
-    :approved
+        emit_message(
+          context.on_message,
+          :mcp_elicitation_auto_answered,
+          %{payload: payload, raw: payload_string, decision: response["action"]},
+          context.metadata
+        )
+
+        :approved
+    end
   end
 
   defp maybe_handle_approval_request(
@@ -1017,54 +1100,64 @@ defmodule SymphonyElixir.Codex.AppServer do
          payload_string,
          context
        ) do
-    case command_refusal(payload, context.approval_context.command_security) do
-      {:refuse, refusal} ->
-        send_message(port, %{
-          "id" => id,
-          "result" => %{
-            "decision" => "reject",
-            "message" => refusal.message
-          }
-        })
-
-        record_refused_agent_action(context.approval_context, payload, refusal)
-
-        emit_message(
-          context.on_message,
-          :approval_refused,
-          %{payload: payload, raw: payload_string, decision: "reject", refusal: refusal},
-          context.metadata
-        )
-
-        :approved
+    case sandbox_denied_approval_review(payload, context.approval_context) do
+      {:review, review} ->
+        emit_sandbox_denied_awaiting_review(payload, review, context)
+        :approval_required
 
       :allow ->
-        command = command_from_payload(payload)
+        approve_allowed_command_or_refuse(port, id, decision, payload, payload_string, context)
+    end
+  end
 
-        case maybe_deny_pr_create_for_dependency_hold(
-               port,
-               id,
-               dependency_hold_denial_decision(decision),
-               command,
-               payload,
-               payload_string,
-               context
-             ) do
-          :not_held ->
-            approve_or_require(
-              port,
-              id,
-              decision,
-              payload,
-              payload_string,
-              context.on_message,
-              context.metadata,
-              context.auto_approve_requests
-            )
+  defp approve_allowed_command_or_refuse(port, id, decision, payload, payload_string, context) do
+    case command_refusal(payload, context.approval_context.command_security) do
+      {:refuse, refusal} ->
+        refuse_command(port, id, payload, payload_string, context, refusal)
 
-          held ->
-            held
-        end
+      :allow ->
+        approve_command_after_dependency_gate(port, id, decision, payload, payload_string, context)
+    end
+  end
+
+  defp refuse_command(port, id, payload, payload_string, context, refusal) do
+    send_message(port, %{
+      "id" => id,
+      "result" => %{
+        "decision" => "reject",
+        "message" => refusal.message
+      }
+    })
+
+    record_refused_agent_action(context.approval_context, payload, refusal)
+
+    emit_message(
+      context.on_message,
+      :approval_refused,
+      %{payload: payload, raw: payload_string, decision: "reject", refusal: refusal},
+      context.metadata
+    )
+
+    :approved
+  end
+
+  defp approve_command_after_dependency_gate(port, id, decision, payload, payload_string, context) do
+    command = command_from_payload(payload)
+
+    case maybe_deny_pr_create_for_dependency_hold(
+           port,
+           id,
+           dependency_hold_denial_decision(decision),
+           command,
+           payload,
+           payload_string,
+           context
+         ) do
+      :not_held ->
+        approve_or_require(port, id, decision, payload, payload_string, context)
+
+      held ->
+        held
     end
   end
 
@@ -1078,20 +1171,25 @@ defmodule SymphonyElixir.Codex.AppServer do
          decision,
          payload,
          payload_string,
-         on_message,
-         metadata,
-         true
+         %{auto_approve_requests: true} = context
        ) do
-    send_message(port, %{"id" => id, "result" => %{"decision" => decision}})
+    case sandbox_denied_approval_review(payload, context.approval_context) do
+      {:review, review} ->
+        emit_sandbox_denied_awaiting_review(payload, review, context)
+        :approval_required
 
-    emit_message(
-      on_message,
-      :approval_auto_approved,
-      %{payload: payload, raw: payload_string, decision: decision},
-      metadata
-    )
+      :allow ->
+        send_message(port, %{"id" => id, "result" => %{"decision" => decision}})
 
-    :approved
+        emit_message(
+          context.on_message,
+          :approval_auto_approved,
+          %{payload: payload, raw: payload_string, decision: decision},
+          context.metadata
+        )
+
+        :approved
+    end
   end
 
   defp approve_or_require(
@@ -1100,12 +1198,382 @@ defmodule SymphonyElixir.Codex.AppServer do
          _decision,
          _payload,
          _payload_string,
-         _on_message,
-         _metadata,
-         false
+         %{auto_approve_requests: false}
        ) do
     :approval_required
   end
+
+  defp sandbox_denied_approval_review(payload, approval_context) do
+    denied_command_target(payload, approval_context) ||
+      denied_file_change_target(payload, approval_context) ||
+      denied_permissions_target(payload, approval_context) ||
+      denied_mcp_elicitation_target(payload, approval_context) ||
+      :allow
+  end
+
+  defp denied_command_target(%{"method" => method} = payload, approval_context)
+       when method in ["item/commandExecution/requestApproval", "execCommandApproval"] do
+    command = command_from_payload(payload)
+    tokens = command_tokens(command)
+
+    cond do
+      secret_path = denied_secret_path(tokens) ->
+        {:review, approval_review("sandbox_denied_path", "read", secret_path)}
+
+      domain = denied_domain_in_values([command], approval_context) ->
+        {:review, approval_review("sandbox_denied_domain", "network", domain)}
+
+      true ->
+        nil
+    end
+  end
+
+  defp denied_command_target(_payload, _approval_context), do: nil
+
+  defp denied_file_change_target(%{"method" => method} = payload, approval_context)
+       when method in ["item/fileChange/requestApproval", "applyPatchApproval"] do
+    payload
+    |> write_path_candidates()
+    |> denied_write_path(payload, approval_context)
+    |> case do
+      nil -> nil
+      path -> {:review, approval_review("sandbox_denied_path", "write", path)}
+    end
+  end
+
+  defp denied_file_change_target(_payload, _approval_context), do: nil
+
+  defp denied_permissions_target(
+         %{"method" => "item/permissions/requestApproval", "params" => %{"permissions" => permissions}} = payload,
+         approval_context
+       )
+       when is_map(permissions) do
+    file_system = Map.get(permissions, "fileSystem")
+    network = Map.get(permissions, "network")
+
+    cond do
+      path = denied_file_system_permission_path(file_system, payload, approval_context) ->
+        {:review, approval_review("sandbox_denied_path", "fileSystem", path)}
+
+      domain = denied_domain_in_values([network], approval_context) ->
+        {:review, approval_review("sandbox_denied_domain", "network", domain)}
+
+      network_blocked_permission?(network, approval_context) ->
+        {:review, approval_review("sandbox_denied_domain", "network", "networkAccess=false")}
+
+      true ->
+        nil
+    end
+  end
+
+  defp denied_permissions_target(_payload, _approval_context), do: nil
+
+  defp denied_mcp_elicitation_target(%{"method" => "mcpServer/elicitation/request", "params" => params}, approval_context)
+       when is_map(params) do
+    case denied_domain_in_values([params], approval_context) do
+      nil -> nil
+      domain -> {:review, approval_review("sandbox_denied_domain", "network", domain)}
+    end
+  end
+
+  defp denied_mcp_elicitation_target(_payload, _approval_context), do: nil
+
+  defp approval_review(reason, access, target) do
+    %{
+      reason: reason,
+      access: access,
+      target: target
+    }
+  end
+
+  defp emit_sandbox_denied_awaiting_review(payload, review, context) do
+    approval_context = context.approval_context
+
+    Notifications.emit_issue_event(:awaiting_review, Map.get(approval_context, :issue), %{
+      repo_key: Map.get(approval_context, :repo_key),
+      reason: review.reason,
+      metadata: %{
+        source: "codex_app_server",
+        method: payload_method(payload),
+        request_id: Map.get(payload, "id"),
+        access: review.access,
+        target: review.target
+      }
+    })
+  end
+
+  defp write_path_candidates(payload) when is_map(payload) do
+    payload
+    |> collect_path_values()
+    |> Enum.reject(&remote_url?/1)
+  end
+
+  defp denied_file_system_permission_path(file_system, payload, approval_context) when is_map(file_system) do
+    read_paths = permission_paths(file_system, ["read"])
+    write_paths = permission_paths(file_system, ["write", "writable", "writes"])
+    entry_paths = permission_entry_paths(Map.get(file_system, "entries"))
+
+    (read_paths ++ read_permission_entry_paths(entry_paths))
+    |> Enum.find(&denied_read_path?(&1, payload, approval_context)) ||
+      (write_paths ++ write_permission_entry_paths(entry_paths))
+      |> Enum.find(&denied_write_path?(&1, payload, approval_context))
+  end
+
+  defp denied_file_system_permission_path(_file_system, _payload, _approval_context), do: nil
+
+  defp permission_paths(file_system, keys) when is_map(file_system) do
+    keys
+    |> Enum.flat_map(fn key -> file_system |> Map.get(key) |> collect_path_values() end)
+    |> Enum.reject(&remote_url?/1)
+  end
+
+  defp permission_entry_paths(entries) when is_list(entries) do
+    Enum.flat_map(entries, fn entry ->
+      paths = entry |> collect_path_values() |> Enum.reject(&remote_url?/1)
+      access = entry_access(entry)
+      Enum.map(paths, &{access, &1})
+    end)
+  end
+
+  defp permission_entry_paths(_entries), do: []
+
+  defp read_permission_entry_paths(entries) do
+    entries
+    |> Enum.filter(fn {access, _path} -> access in ["read", "read-write", "readWrite", "readwrite", "all"] end)
+    |> Enum.map(fn {_access, path} -> path end)
+  end
+
+  defp write_permission_entry_paths(entries) do
+    entries
+    |> Enum.filter(fn {access, _path} -> access in ["write", "read-write", "readWrite", "readwrite", "all"] end)
+    |> Enum.map(fn {_access, path} -> path end)
+  end
+
+  defp entry_access(%{"access" => access}) when is_binary(access), do: access
+  defp entry_access(%{access: access}) when is_binary(access), do: access
+  defp entry_access(_entry), do: "read"
+
+  defp denied_write_path(paths, payload, approval_context) when is_list(paths) do
+    Enum.find(paths, &denied_write_path?(&1, payload, approval_context))
+  end
+
+  defp denied_write_path?(path, payload, approval_context) when is_binary(path) do
+    expanded_path = expand_approval_path(path, payload, approval_context)
+    writable_roots = sandbox_writable_roots(approval_context)
+
+    is_binary(expanded_path) and
+      (protected_workflow_path?(expanded_path) or not under_any_root?(expanded_path, writable_roots))
+  end
+
+  defp denied_write_path?(_path, _payload, _approval_context), do: false
+
+  defp denied_read_path?(path, payload, approval_context) when is_binary(path) do
+    secret_path(path) != nil or
+      (not sandbox_read_allows_full_access?(approval_context) and
+         denied_write_path?(path, payload, approval_context))
+  end
+
+  defp denied_read_path?(_path, _payload, _approval_context), do: false
+
+  defp sandbox_read_allows_full_access?(approval_context) do
+    approval_context
+    |> Map.get(:turn_sandbox_policy, %{})
+    |> get_in(["readOnlyAccess", "type"])
+    |> case do
+      "fullAccess" -> true
+      _ -> false
+    end
+  end
+
+  defp sandbox_writable_roots(approval_context) do
+    approval_context
+    |> Map.get(:turn_sandbox_policy, %{})
+    |> Map.get("writableRoots", [])
+    |> case do
+      roots when is_list(roots) -> roots
+      _ -> []
+    end
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&expand_sandbox_root(&1, approval_context))
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp expand_sandbox_root(root, approval_context) when is_binary(root) do
+    cond do
+      root == "" -> nil
+      String.starts_with?(root, "~") -> Path.expand(root)
+      Path.type(root) == :absolute -> Path.expand(root)
+      true -> Path.expand(root, Map.get(approval_context, :workspace) || File.cwd!())
+    end
+  end
+
+  defp expand_approval_path(path, payload, approval_context) when is_binary(path) do
+    cond do
+      path == "" -> nil
+      String.starts_with?(path, "~") -> Path.expand(path)
+      Path.type(path) == :absolute -> Path.expand(path)
+      true -> Path.expand(path, approval_cwd(payload, approval_context))
+    end
+  end
+
+  defp approval_cwd(payload, approval_context) do
+    get_in(payload, ["params", "cwd"]) || Map.get(approval_context, :workspace) || File.cwd!()
+  end
+
+  defp under_any_root?(path, roots) when is_binary(path) and is_list(roots) do
+    Enum.any?(roots, fn root ->
+      is_binary(root) and (path == root or String.starts_with?(path, root <> "/"))
+    end)
+  end
+
+  defp protected_workflow_path?(path) when is_binary(path) do
+    Path.basename(path) == "WORKFLOW.md"
+  end
+
+  defp collect_path_values(%{"path" => %{"path" => path}} = value) when is_binary(path) do
+    [path | collect_nested_path_values(Map.delete(value, "path"))]
+  end
+
+  defp collect_path_values(%{"path" => path} = value) when is_binary(path) do
+    [path | collect_nested_path_values(Map.delete(value, "path"))]
+  end
+
+  defp collect_path_values(%{path: path} = value) when is_binary(path) do
+    [path | collect_nested_path_values(Map.delete(value, :path))]
+  end
+
+  defp collect_path_values(value), do: collect_nested_path_values(value)
+
+  defp collect_nested_path_values(value) when is_map(value) do
+    Enum.flat_map(value, fn {key, nested} ->
+      cond do
+        path_key?(key) and is_binary(nested) -> [nested]
+        path_key?(key) -> collect_path_values(nested)
+        true -> collect_nested_path_values(nested)
+      end
+    end)
+  end
+
+  defp collect_nested_path_values(values) when is_list(values) do
+    Enum.flat_map(values, fn
+      value when is_binary(value) -> [value]
+      value -> collect_path_values(value)
+    end)
+  end
+
+  defp collect_nested_path_values(value) when is_binary(value), do: []
+  defp collect_nested_path_values(_value), do: []
+
+  defp path_key?(key) when key in ["path", "file", "filePath", "filename", "target", "targetPath", "read", "write", "writes"],
+    do: true
+
+  defp path_key?(key) when key in [:path, :file, :file_path, :filename, :target, :target_path, :read, :write, :writes],
+    do: true
+
+  defp path_key?(_key), do: false
+
+  defp denied_domain_in_values(values, approval_context) when is_list(values) do
+    values
+    |> Enum.flat_map(&collect_domain_values/1)
+    |> Enum.find(&sandbox_denied_domain?(&1, approval_context))
+    |> case do
+      nil -> nil
+      {_kind, host} -> host
+    end
+  end
+
+  defp collect_domain_values(value) when is_map(value) do
+    value
+    |> Enum.flat_map(fn {_key, nested} -> collect_domain_values(nested) end)
+  end
+
+  defp collect_domain_values(values) when is_list(values), do: Enum.flat_map(values, &collect_domain_values/1)
+
+  defp collect_domain_values(value) when is_binary(value) do
+    value
+    |> domain_candidates_from_string()
+    |> Enum.map(fn {kind, host} -> {kind, normalize_domain(host)} end)
+    |> Enum.reject(fn {_kind, host} -> is_nil(host) end)
+  end
+
+  defp collect_domain_values(_value), do: []
+
+  defp domain_candidates_from_string(value) when is_binary(value) do
+    uri_hosts =
+      ~r{https?://[^\s"'<>]+}
+      |> Regex.scan(value)
+      |> Enum.map(fn [url] -> url_host(url) end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&{:uri, &1})
+
+    bare_hosts =
+      Regex.scan(~r/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/i, value)
+      |> Enum.map(fn [host] -> {:bare, host} end)
+
+    uri_hosts ++ bare_hosts
+  end
+
+  defp url_host(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) -> host
+      _ -> nil
+    end
+  end
+
+  # Only :uri hosts trigger network_access_blocked? — bare-host regex matches filenames like "package.json".
+  defp sandbox_denied_domain?({:uri, domain}, approval_context) when is_binary(domain) do
+    network_access_blocked?(approval_context) or
+      Enum.any?(denied_domains(approval_context), &domain_matches?(domain, &1))
+  end
+
+  defp sandbox_denied_domain?({:bare, domain}, approval_context) when is_binary(domain) do
+    Enum.any?(denied_domains(approval_context), &domain_matches?(domain, &1))
+  end
+
+  defp sandbox_denied_domain?(_domain, _approval_context), do: false
+
+  defp network_blocked_permission?(%{"enabled" => true}, approval_context), do: network_access_blocked?(approval_context)
+  defp network_blocked_permission?(_network, _approval_context), do: false
+
+  defp network_access_blocked?(approval_context) do
+    approval_context
+    |> Map.get(:turn_sandbox_policy, %{})
+    |> Map.get("networkAccess")
+    |> Kernel.==(false)
+  end
+
+  defp denied_domains(approval_context) do
+    approval_context
+    |> Map.get(:settings)
+    |> case do
+      %Schema{} = settings -> settings.agent.network_access.denied_domains
+      _ -> []
+    end
+    |> Enum.map(&normalize_domain/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_domain(domain) when is_binary(domain) do
+    domain
+    |> String.trim()
+    |> String.trim_trailing(".")
+    |> String.downcase()
+    |> case do
+      "" -> nil
+      value -> value
+    end
+  end
+
+  defp normalize_domain(_domain), do: nil
+
+  defp domain_matches?(domain, denied_domain) when is_binary(domain) and is_binary(denied_domain) do
+    domain == denied_domain or String.ends_with?(domain, "." <> denied_domain)
+  end
+
+  defp domain_matches?(_domain, _denied_domain), do: false
+
+  defp remote_url?(value) when is_binary(value), do: String.match?(value, ~r{^[a-z][a-z0-9+.-]*://}i)
+  defp remote_url?(_value), do: false
 
   defp command_refusal(payload, command_security) do
     command = command_from_payload(payload)
@@ -1489,33 +1957,38 @@ defmodule SymphonyElixir.Codex.AppServer do
          params,
          payload,
          payload_string,
-         on_message,
-         metadata,
-         true
+         %{auto_approve_requests: true} = context
        ) do
-    case tool_request_user_input_approval_answers(params) do
-      {:ok, answers, decision} ->
-        send_message(port, %{"id" => id, "result" => %{"answers" => answers}})
+    case sandbox_denied_approval_review(payload, context.approval_context) do
+      {:review, review} ->
+        emit_sandbox_denied_awaiting_review(payload, review, context)
+        :approval_required
 
-        emit_message(
-          on_message,
-          :approval_auto_approved,
-          %{payload: payload, raw: payload_string, decision: decision},
-          metadata
-        )
+      :allow ->
+        case tool_request_user_input_approval_answers(params) do
+          {:ok, answers, decision} ->
+            send_message(port, %{"id" => id, "result" => %{"answers" => answers}})
 
-        :approved
+            emit_message(
+              context.on_message,
+              :approval_auto_approved,
+              %{payload: payload, raw: payload_string, decision: decision},
+              context.metadata
+            )
 
-      :error ->
-        reply_with_non_interactive_tool_input_answer(
-          port,
-          id,
-          params,
-          payload,
-          payload_string,
-          on_message,
-          metadata
-        )
+            :approved
+
+          :error ->
+            reply_with_non_interactive_tool_input_answer(
+              port,
+              id,
+              params,
+              payload,
+              payload_string,
+              context.on_message,
+              context.metadata
+            )
+        end
     end
   end
 
@@ -1525,9 +1998,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          params,
          payload,
          payload_string,
-         on_message,
-         metadata,
-         false
+         %{auto_approve_requests: false} = context
        ) do
     reply_with_non_interactive_tool_input_answer(
       port,
@@ -1535,8 +2006,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       params,
       payload,
       payload_string,
-      on_message,
-      metadata
+      context.on_message,
+      context.metadata
     )
   end
 
@@ -1875,15 +2346,90 @@ defmodule SymphonyElixir.Codex.AppServer do
     )
   end
 
-  defp initial_turn_stream_state(command_timeout_ms) do
+  defp initial_turn_stream_state(command_timeout_ms, sandbox_startup) do
     %{
       command_timeout_ms: normalize_command_timeout_ms(command_timeout_ms),
-      active_command: nil
+      active_command: nil,
+      sandbox_startup: sandbox_startup
     }
   end
 
   defp normalize_command_timeout_ms(timeout_ms) when is_integer(timeout_ms), do: timeout_ms
   defp normalize_command_timeout_ms(_timeout_ms), do: 0
+
+  # Codex 0.130 acknowledges a live turn with either an in-progress turn/start
+  # response or a turn/started notification. Keep explicit sandbox events for
+  # forward compatibility with runtimes that expose them directly.
+  defp sandbox_startup_from_turn_start(%{"status" => "inProgress"}), do: :ready
+  defp sandbox_startup_from_turn_start(_turn_payload), do: :pending
+
+  defp update_sandbox_startup_tracking(%{sandbox_startup: :unavailable} = turn_stream_state, _method, _payload) do
+    turn_stream_state
+  end
+
+  defp update_sandbox_startup_tracking(turn_stream_state, method, payload) do
+    Map.put(
+      turn_stream_state,
+      :sandbox_startup,
+      sandbox_startup_status(turn_stream_state.sandbox_startup, method, payload)
+    )
+  end
+
+  defp sandbox_startup_status(:unavailable, _method, _payload), do: :unavailable
+
+  defp sandbox_startup_status(:ready, method, payload) do
+    if sandbox_unavailable_method?(method, payload) or sandbox_error?(payload), do: :unavailable, else: :ready
+  end
+
+  defp sandbox_startup_status(_current_status, method, payload) do
+    cond do
+      sandbox_unavailable_method?(method, payload) or sandbox_error?(payload) -> :unavailable
+      sandbox_ready_method?(method, payload) -> :ready
+      true -> :pending
+    end
+  end
+
+  defp sandbox_startup_status_at_completion(turn_stream_state, payload) do
+    case sandbox_startup_status(turn_stream_state.sandbox_startup, "turn/completed", payload) do
+      :ready -> :ready
+      :unavailable -> :unavailable
+      :pending -> :unavailable
+    end
+  end
+
+  defp sandbox_ready_method?("turn/started", _payload), do: true
+  defp sandbox_ready_method?("sandbox/ready", _payload), do: true
+  defp sandbox_ready_method?(_method, _payload), do: false
+
+  defp sandbox_unavailable_method?("sandbox/unavailable", _payload), do: true
+  defp sandbox_unavailable_method?("sandbox/downgraded", _payload), do: true
+  defp sandbox_unavailable_method?("sandbox/failed", _payload), do: true
+  defp sandbox_unavailable_method?("sandbox/error", _payload), do: true
+  defp sandbox_unavailable_method?(_method, _payload), do: false
+
+  defp sandbox_error?(%{"params" => params}) when is_map(params), do: sandbox_error?(params)
+  defp sandbox_error?(%{"error" => error}) when is_map(error), do: sandbox_error?(error)
+  defp sandbox_error?(%{"turn" => turn}) when is_map(turn), do: sandbox_error?(turn)
+  defp sandbox_error?(%{"codexErrorInfo" => error_info}), do: sandbox_error_info?(error_info)
+
+  defp sandbox_error?({:response_error, error}), do: sandbox_error?(error)
+  defp sandbox_error?(_payload), do: false
+
+  defp sandbox_error_info?(error_info) when is_binary(error_info) do
+    error_info
+    |> normalize_protocol_atom()
+    |> Kernel.in(["sandboxerror", "sandbox_error", "sandbox-error"])
+  end
+
+  defp sandbox_error_info?(%{"sandboxError" => _details}), do: true
+  defp sandbox_error_info?(%{sandboxError: _details}), do: true
+  defp sandbox_error_info?(_error_info), do: false
+
+  defp normalize_protocol_atom(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+  end
 
   defp continue_or_timeout(port, on_message, stream_context, method, payload) do
     turn_stream_state =

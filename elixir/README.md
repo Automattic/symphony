@@ -16,8 +16,8 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 4. Sends that repo's workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+During app-server sessions, Symphony also serves scoped client-side `linear_*` tools so repo skills
+can read and update only the current Linear issue through Symphony-controlled operations.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -36,8 +36,8 @@ section with its current Linear state, last-run age, and Linear URL.
    in your `symphony.yml` (see [Multi-repo](#multi-repo) below). One Symphony process can
    supervise as many repos as you list.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
+   - The `linear` skill expects Symphony's scoped `linear_*` app-server tools for current-issue
+     reads, state changes, comments, and attachments.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.

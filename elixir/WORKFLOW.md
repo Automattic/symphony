@@ -73,23 +73,23 @@ Work only in the provided repository copy. Do not touch any other path.
 
 ## Prerequisite: scoped Linear tools are available
 
-The agent should be able to talk to Linear through the injected scoped `linear.*`
+The agent should be able to talk to Linear through the injected scoped `linear_*`
 tools. If none are present, stop and ask the user to configure Linear.
 
 Available scoped Linear tools:
 
-- `linear.get_current_issue()`
-- `linear.get_subissues()`
-- `linear.get_parent_issue()`
-- `linear.get_comments(limit)`
-- `linear.get_related_issues()`
-- `linear.update_state(state_name_or_id)`
-- `linear.set_assignee(assignee)` where `assignee` is `self`, `unassign`, or a user id
-- `linear.add_comment(body)`
-- `linear.update_comment(comment_id, body)` for comments created earlier by this run
-- `linear.delete_comment(comment_id)` for comments created earlier by this run
-- `linear.attach_url(url, title)`
-- `linear.attach_file(local_path, title)` where `local_path` must be inside the workspace
+- `linear_get_current_issue()`
+- `linear_get_subissues()`
+- `linear_get_parent_issue()`
+- `linear_get_comments(limit)`
+- `linear_get_related_issues()`
+- `linear_update_state(state_name_or_id)`
+- `linear_set_assignee(assignee)` where `assignee` is `self`, `unassign`, or a user id
+- `linear_add_comment(body)`
+- `linear_update_comment(comment_id, body)` for comments created earlier by this run
+- `linear_delete_comment(comment_id)` for comments created earlier by this run
+- `linear_attach_url(url, title)`
+- `linear_attach_file(local_path, title)` where `local_path` must be inside the workspace
 
 Do not craft raw Linear GraphQL from prompts. If a required workflow needs a
 Linear operation outside this list, pause and record the gap instead of widening

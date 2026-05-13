@@ -332,11 +332,11 @@ defmodule SymphonyElixir.LiveE2ETest do
     If the exact comment body below is not already present, post exactly one comment on the current issue with this exact body:
     #{expected_comment("{{ issue.identifier }}", project_slug)}
 
-    Use `linear.get_comments` to check for the comment, and `linear.add_comment`
+    Use `linear_get_comments` to check for the comment, and `linear_add_comment`
     to create it only if needed.
 
     Step 3:
-    Move the current issue to `Done` with `linear.update_state`.
+    Move the current issue to `Done` with `linear_update_state`.
 
     Step 4:
     Verify all outcomes with one final scoped Linear read:

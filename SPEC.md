@@ -1675,43 +1675,32 @@ Unsupported dynamic tool calls:
 Optional client-side tool extension:
 
 - An implementation MAY expose a limited set of client-side tools to the agent session.
-- Current standardized optional tool: `linear_graphql`.
+- Current standardized optional tools: scoped Linear tools whose protocol-facing names match
+  `^[a-zA-Z0-9_-]+$`, such as `linear_get_current_issue`, `linear_get_comments`, and
+  `linear_update_state`.
 - If implemented, supported tools SHOULD be advertised to the agent session during startup using the
   protocol mechanism supported by the configured adapter.
 - Unsupported tool names SHOULD still return a failure result using the targeted protocol and
   continue the session.
 
-`linear_graphql` extension contract:
+Scoped Linear tool extension contract:
 
-- Purpose: execute a raw GraphQL query or mutation against Linear using Symphony's configured
-  tracker auth for the current session.
+- Purpose: expose narrow, current-issue Linear reads and writes using Symphony's configured tracker
+  auth for the current session.
 - Availability: only meaningful when `tracker.kind == "linear"` and valid Linear auth is configured.
-- Preferred input shape:
-
-  ```json
-  {
-    "query": "single GraphQL query or mutation document",
-    "variables": {
-      "optional": "graphql variables object"
-    }
-  }
-  ```
-
-- `query` MUST be a non-empty string.
-- `query` MUST contain exactly one GraphQL operation.
-- `variables` is OPTIONAL and, when present, MUST be a JSON object.
-- Implementations MAY additionally accept a raw GraphQL query string as shorthand input.
-- Execute one GraphQL operation per tool call.
-- If the provided document contains multiple operations, reject the tool call as invalid input.
-- `operationName` selection is intentionally out of scope for this extension.
-- Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config; do
-  not require the coding agent to read raw tokens from disk.
+- Tool names MUST be safe for the targeted protocol's tool-name schema; dotted names such as
+  `linear.get_current_issue` MUST NOT be advertised to Codex Responses API sessions.
+- Tools MUST be scoped server-side to the current issue; prompt-supplied issue id arguments MUST be
+  rejected.
+- Suggested baseline tools: `linear_get_current_issue`, `linear_get_subissues`,
+  `linear_get_parent_issue`, `linear_get_comments`, `linear_get_related_issues`,
+  `linear_update_state`, `linear_set_assignee`, `linear_add_comment`, `linear_update_comment`,
+  `linear_delete_comment`, `linear_attach_url`, and `linear_attach_file`.
+- Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config.
 - Tool result semantics:
-  - transport success + no top-level GraphQL `errors` -> `success=true`
-  - top-level GraphQL `errors` present -> `success=false`, but preserve the GraphQL response body
-    for debugging
+  - successful operation -> `success=true`
   - invalid input, missing auth, or transport failure -> `success=false` with an error payload
-- Return the GraphQL response or error payload as structured tool output that the model can inspect
+- Return the operation response or error payload as structured tool output that the model can inspect
   in-session.
 
 User-input-required policy:
@@ -1852,7 +1841,7 @@ Symphony does not require first-class tracker write APIs in the orchestrator.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
-- If the `linear_graphql` client-side tool extension is implemented, it is still part of the agent
+- If scoped Linear client-side tool extensions are implemented, they are still part of the agent
   toolchain rather than orchestrator business logic.
 
 ## 12. Prompt Construction and Context Assembly
@@ -2424,8 +2413,8 @@ Possible hardening measures include:
   separate credentials beyond the built-in agent policy controls.
 - Filtering which Linear issues, projects, teams, labels, or other tracker sources are eligible for
   dispatch so untrusted or out-of-scope tasks do not automatically reach the agent.
-- Narrowing the `linear_graphql` tool so it can only read or mutate data inside the
-  intended project scope, rather than exposing general workspace-wide tracker access.
+- Narrowing scoped Linear tools so they can only read or mutate data for the current issue, rather
+  than exposing general workspace-wide tracker access.
 - Reducing the set of client-side tools, credentials, filesystem paths, and network destinations
   available to the agent to the minimum needed for the workflow.
 
@@ -2922,10 +2911,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   targeted protocol
 - If client-side tools are implemented, session startup advertises the supported tool specs using
   the configured adapter protocol
-- If the `linear_graphql` client-side tool extension is implemented:
-  - the tool is advertised to the session
-  - valid `query` / `variables` inputs execute against configured Linear auth
-  - top-level GraphQL `errors` produce `success=false` while preserving the GraphQL body
+- If scoped Linear client-side tool extensions are implemented:
+  - tool specs are advertised with protocol-safe names
+  - prompt-supplied issue ids are rejected because tools are scoped to the current issue
+  - current-issue reads, state changes, comments, and attachments execute against configured Linear
+    auth
   - invalid arguments, missing auth, and transport failures return structured failure payloads
   - unsupported tool names still fail without stalling the session
 
@@ -3000,8 +2990,8 @@ Use the same validation profiles as Section 17:
 
 - HTTP server extension honors CLI `--port` over `server.port`, uses a safe default bind host, and
   exposes the baseline endpoints/error semantics in Section 13.8 if shipped.
-- `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the agent
-  session using configured Symphony auth.
+- Scoped Linear client-side tool extensions expose current-issue Linear reads and writes through the
+  agent session using configured Symphony auth.
 - Durable run store extension persists retry queue rows, run history, session metadata, and aggregate
   totals across process restarts.
 - TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead

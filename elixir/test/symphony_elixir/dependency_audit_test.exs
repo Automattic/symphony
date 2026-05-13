@@ -323,20 +323,31 @@ defmodule SymphonyElixir.DependencyAuditTest do
              )
   end
 
-  test "treats git diff not-a-repo output as no manifest changes" do
+  test "treats git manifest path checks from a non-repo workspace as empty" do
     assert {:ok, []} =
              DependencyAudit.audit("/tmp/repo",
                settings: Config.settings!(),
                base_ref: "origin/main",
                command_runner: fn
                  "git", ["rev-parse", "--verify", _ref], _opts -> {"abc123\n", 0}
-                 "git", ["diff", "--name-only", "origin/main", "--"], _opts -> {"fatal: not a git repository", 128}
-                 "git", ["ls-files", "--others", "--exclude-standard"], _opts -> {"", 0}
+                 "git", _args, _opts -> {"fatal: not a git repository", 128}
                end
              )
   end
 
-  test "surfaces non-binary git diff failures while resolving manifest changes" do
+  test "surfaces non-binary git output while resolving manifest changes" do
+    assert {:error, {:git_failed, ["diff", "--name-only", "origin/main", "--"], 2, :bad_output}} =
+             DependencyAudit.audit("/tmp/repo",
+               settings: Config.settings!(),
+               base_ref: "origin/main",
+               command_runner: fn
+                 "git", ["rev-parse", "--verify", _ref], _opts -> {"abc123\n", 0}
+                 "git", ["diff", "--name-only", "origin/main", "--"], _opts -> {:bad_output, 2}
+               end
+             )
+  end
+
+  test "surfaces structured non-binary git diff failures while resolving manifest changes" do
     assert {:error, {:git_failed, ["diff", "--name-only", "origin/main", "--"], 2, {:bad_output, 2}}} =
              DependencyAudit.audit("/tmp/repo",
                settings: Config.settings!(),
@@ -344,7 +355,6 @@ defmodule SymphonyElixir.DependencyAuditTest do
                command_runner: fn
                  "git", ["rev-parse", "--verify", _ref], _opts -> {"abc123\n", 0}
                  "git", ["diff", "--name-only", "origin/main", "--"], _opts -> {{:bad_output, 2}, 2}
-                 "git", ["ls-files", "--others", "--exclude-standard"], _opts -> {"", 0}
                end
              )
   end

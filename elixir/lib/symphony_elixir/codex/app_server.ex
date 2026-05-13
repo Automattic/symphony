@@ -1706,12 +1706,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   # response or a turn/started notification. Keep explicit sandbox events for
   # forward compatibility with runtimes that expose them directly.
   defp sandbox_startup_from_turn_start(%{"status" => "inProgress"}), do: :ready
-  defp sandbox_startup_from_turn_start(%{"error" => error}) when not is_nil(error), do: sandbox_startup_from_error(error)
   defp sandbox_startup_from_turn_start(_turn_payload), do: :pending
-
-  defp sandbox_startup_from_error(error) do
-    if sandbox_error?(error), do: :unavailable, else: :pending
-  end
 
   defp update_sandbox_startup_tracking(%{sandbox_startup: :unavailable} = turn_stream_state, _method, _payload) do
     turn_stream_state
@@ -1749,23 +1744,13 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp sandbox_ready_method?("turn/started", _payload), do: true
   defp sandbox_ready_method?("sandbox/ready", _payload), do: true
-
-  defp sandbox_ready_method?(method, _payload) when is_binary(method) do
-    normalized = normalize_protocol_atom(method)
-    String.contains?(normalized, "sandbox") and String.contains?(normalized, "ready")
-  end
+  defp sandbox_ready_method?(_method, _payload), do: false
 
   defp sandbox_unavailable_method?("sandbox/unavailable", _payload), do: true
   defp sandbox_unavailable_method?("sandbox/downgraded", _payload), do: true
   defp sandbox_unavailable_method?("sandbox/failed", _payload), do: true
   defp sandbox_unavailable_method?("sandbox/error", _payload), do: true
-
-  defp sandbox_unavailable_method?(method, _payload) when is_binary(method) do
-    normalized = normalize_protocol_atom(method)
-
-    String.contains?(normalized, "sandbox") and
-      Enum.any?(["unavailable", "downgraded", "downgrade", "failed", "failure", "error", "disabled"], &String.contains?(normalized, &1))
-  end
+  defp sandbox_unavailable_method?(_method, _payload), do: false
 
   defp sandbox_error?(%{"params" => params}) when is_map(params), do: sandbox_error?(params)
   defp sandbox_error?(%{"error" => error}) when is_map(error), do: sandbox_error?(error)

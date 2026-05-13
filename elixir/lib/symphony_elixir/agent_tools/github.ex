@@ -12,6 +12,9 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   @pr_view_fields "number,state,title,body,url,headRefName,baseRefName"
 
   @type context :: %{
+          optional(:issue) => map() | nil,
+          optional(:issue_id) => String.t() | nil,
+          optional(:comment_registry) => pid() | nil,
           optional(:command_security) => map(),
           optional(:workspace) => Path.t()
         }

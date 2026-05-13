@@ -240,7 +240,8 @@ defmodule SymphonyElixir.AgentTools.Linear do
           optional(:issue) => Issue.t() | map(),
           optional(:issue_id) => String.t(),
           optional(:workspace) => Path.t(),
-          optional(:comment_registry) => pid() | nil
+          optional(:comment_registry) => pid() | nil,
+          optional(:command_security) => map()
         }
 
   @spec get_current_issue(context(), keyword()) :: {:ok, map()} | {:error, term()}

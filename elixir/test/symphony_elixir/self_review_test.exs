@@ -113,6 +113,22 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert result.source.git_range == "origin/main..HEAD"
   end
 
+  test "prefix-only base branch falls back instead of producing an invalid ref" do
+    repo = changed_repo!("feature.txt", "prefix only implementation\n")
+    Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
+
+    for base_branch <- ["origin/", "refs/heads/", "origin/   "] do
+      result =
+        SelfReview.evaluate(issue(), repo, enabled_config(),
+          provider_module: StubProvider,
+          base_branch: base_branch
+        )
+
+      assert result.verdict == :approve
+      assert result.source.git_range == "origin/main..HEAD"
+    end
+  end
+
   test "falls back to origin HEAD before the legacy main range" do
     repo = changed_repo!("feature.txt", "origin head implementation\n")
     set_remote_branch!(repo, "develop")

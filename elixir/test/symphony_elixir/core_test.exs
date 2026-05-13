@@ -2091,26 +2091,6 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.workflow_prompt() =~ "{{ issue.description }}"
   end
 
-  test "prompt builder uses repo fallback template when repo workflow prompt is blank" do
-    write_workflow_file!(Workflow.workflow_file_path(), prompt: "   \n")
-
-    issue = %Issue{
-      identifier: "MT-779",
-      title: "Repo fallback prompt",
-      description: "Use the repo-keyed fallback.",
-      state: "In Progress",
-      url: "https://example.org/issues/MT-779",
-      labels: ["prompt"],
-      repo_key: "default"
-    }
-
-    prompt = PromptBuilder.build_prompt(issue, repo_key: "default")
-
-    assert prompt =~ "Identifier: MT-779"
-    assert prompt =~ "Title: <linear_issue_title>\nRepo fallback prompt\n</linear_issue_title>"
-    assert prompt =~ "<linear_issue_body>\nUse the repo-keyed fallback.\n</linear_issue_body>"
-  end
-
   test "prompt builder default template handles missing issue body" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "")
 

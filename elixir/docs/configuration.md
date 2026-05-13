@@ -116,8 +116,9 @@ Per-repo fields:
 - `workflow` (string, default `WORKFLOW.md`) — path to that repo's `WORKFLOW.md`. Relative paths
   resolve from the directory containing `symphony.yml` unless legacy `path` is set.
 - `base_branch` (string, OPTIONAL) — integration branch used as the comparison base for pre-push
-  self-review source material, for example `develop`. When omitted, self-review uses `origin/HEAD`
-  when available and falls back to `origin/main`.
+  self-review source material, for example `develop`. Bare branch names, `origin/<branch>`, and
+  `refs/heads/<branch>` are all accepted and resolved against the `origin` remote. When omitted or
+  blank, self-review uses `origin/HEAD` when available and falls back to `origin/main`.
 - `path` (string, OPTIONAL) — legacy checkout path used only as the base for relative `workflow`
   paths. `~` is expanded.
 - `workspace` (object, OPTIONAL) — per-repo workspace population settings:

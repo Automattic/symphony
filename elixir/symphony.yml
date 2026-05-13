@@ -20,14 +20,6 @@ repos:
       strategy: worktree
       repo: ~/Projects/symphony
       fetch_before_dispatch: true
-  - name: pinterest-for-woocommerce
-    team: PIN4WOO
-    base_branch: develop
-    workflow: WORKFLOW.md
-    workspace:
-      strategy: worktree
-      repo: ~/Projects/pinterest-for-woocommerce
-      fetch_before_dispatch: true
 workspace:
   root: ~/Projects/symphony-workspaces
   lifecycle:

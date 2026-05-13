@@ -320,13 +320,20 @@ defmodule SymphonyElixir.SelfReview do
   defp configured_comparison_base(base_branch) when is_binary(base_branch) do
     case String.trim(base_branch) do
       "" -> nil
-      "origin/" <> branch -> "origin/#{branch}"
-      "refs/heads/" <> branch -> "origin/#{branch}"
-      branch -> "origin/#{branch}"
+      "origin/" <> branch -> normalize_branch_ref(branch)
+      "refs/heads/" <> branch -> normalize_branch_ref(branch)
+      branch -> normalize_branch_ref(branch)
     end
   end
 
   defp configured_comparison_base(_base_branch), do: nil
+
+  defp normalize_branch_ref(branch) do
+    case String.trim(branch) do
+      "" -> nil
+      trimmed -> "origin/#{trimmed}"
+    end
+  end
 
   defp origin_head_comparison_base(workspace, worker_host) do
     case git(workspace, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], worker_host) do
@@ -335,7 +342,8 @@ defmodule SymphonyElixir.SelfReview do
         |> String.trim()
         |> blank_fallback("origin/main")
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.info("SelfReview origin/HEAD unresolved, falling back to origin/main reason=#{inspect(reason)}")
         "origin/main"
     end
   end

@@ -369,9 +369,15 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp self_review_base_branch(opts) do
-    case Config.repo_base_branch(Keyword.get(opts, :repo_key)) do
-      {:ok, base_branch} -> base_branch
-      {:error, _reason} -> nil
+    repo_key = Keyword.get(opts, :repo_key)
+
+    case Config.repo_base_branch(repo_key) do
+      {:ok, base_branch} ->
+        base_branch
+
+      {:error, reason} ->
+        Logger.warning("SelfReview base_branch lookup failed repo_key=#{inspect(repo_key)} reason=#{inspect(reason)}")
+        nil
     end
   end
 

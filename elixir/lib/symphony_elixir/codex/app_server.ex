@@ -6,7 +6,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-
   alias SymphonyElixir.AgentEnv
   alias SymphonyElixir.AgentSandboxConfig
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
@@ -130,7 +129,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            turn_sandbox_policy,
            settings
          ) do
-      {:ok, turn_id} ->
+      {:ok, %{turn_id: turn_id, sandbox_startup: sandbox_startup}} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -151,7 +150,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                tool_executor,
                auto_approve_requests,
                settings,
-               approval_context
+               approval_context,
+               sandbox_startup
              ) do
           {:ok, result} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
@@ -508,8 +508,18 @@ defmodule SymphonyElixir.Codex.AppServer do
     })
 
     case await_response(port, @turn_start_id, settings) do
-      {:ok, %{"turn" => %{"id" => turn_id}}} -> {:ok, turn_id}
-      other -> other
+      {:ok, %{"turn" => %{"id" => turn_id} = turn_payload}} ->
+        {:ok,
+         %{
+           turn_id: turn_id,
+           sandbox_startup: sandbox_startup_from_turn_start(turn_payload)
+         }}
+
+      {:error, reason} ->
+        if sandbox_error?(reason), do: {:error, :sandbox_required}, else: {:error, reason}
+
+      other ->
+        other
     end
   end
 
@@ -519,7 +529,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          tool_executor,
          auto_approve_requests,
          settings,
-         approval_context
+         approval_context,
+         sandbox_startup
        ) do
     config = settings.agent
 
@@ -531,7 +542,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       tool_executor,
       auto_approve_requests,
       approval_context,
-      initial_turn_stream_state(config.command_timeout_ms)
+      initial_turn_stream_state(config.command_timeout_ms, sandbox_startup)
     )
   end
 
@@ -596,42 +607,12 @@ defmodule SymphonyElixir.Codex.AppServer do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
-      {:ok, %{"method" => "turn/completed"} = payload} ->
-        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-        {:ok, :turn_completed}
-
-      {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
-        emit_turn_event(
-          on_message,
-          :turn_failed,
-          payload,
-          payload_string,
-          port,
-          Map.get(payload, "params")
-        )
-
-        {:error, {:turn_failed, Map.get(payload, "params")}}
-
-      {:ok, %{"method" => "turn/cancelled", "params" => _} = payload} ->
-        emit_turn_event(
-          on_message,
-          :turn_cancelled,
-          payload,
-          payload_string,
-          port,
-          Map.get(payload, "params")
-        )
-
-        {:error, {:turn_cancelled, Map.get(payload, "params")}}
-
-      {:ok, %{"method" => method} = payload}
-      when is_binary(method) ->
-        handle_turn_method(
+      {:ok, payload} ->
+        handle_decoded_payload(
           port,
           on_message,
           payload,
           payload_string,
-          method,
           %{
             timeout_ms: timeout_ms,
             tool_executor: tool_executor,
@@ -639,28 +620,6 @@ defmodule SymphonyElixir.Codex.AppServer do
             approval_context: approval_context,
             turn_stream_state: turn_stream_state
           }
-        )
-
-      {:ok, payload} ->
-        emit_message(
-          on_message,
-          :other_message,
-          %{
-            payload: payload,
-            raw: payload_string
-          },
-          metadata_from_message(port, payload)
-        )
-
-        receive_loop(
-          port,
-          on_message,
-          timeout_ms,
-          "",
-          tool_executor,
-          auto_approve_requests,
-          approval_context,
-          turn_stream_state
         )
 
       {:error, _reason} ->
@@ -688,6 +647,119 @@ defmodule SymphonyElixir.Codex.AppServer do
           approval_context,
           turn_stream_state
         )
+    end
+  end
+
+  defp handle_decoded_payload(port, on_message, %{"method" => "turn/completed"} = payload, payload_string, stream_context) do
+    handle_turn_completed(port, on_message, payload, payload_string, stream_context.turn_stream_state)
+  end
+
+  defp handle_decoded_payload(
+         port,
+         on_message,
+         %{"method" => "turn/failed", "params" => _} = payload,
+         payload_string,
+         _stream_context
+       ) do
+    handle_turn_failed(port, on_message, payload, payload_string)
+  end
+
+  defp handle_decoded_payload(
+         port,
+         on_message,
+         %{"method" => "turn/cancelled", "params" => _} = payload,
+         payload_string,
+         _stream_context
+       ) do
+    emit_turn_event(
+      on_message,
+      :turn_cancelled,
+      payload,
+      payload_string,
+      port,
+      Map.get(payload, "params")
+    )
+
+    {:error, {:turn_cancelled, Map.get(payload, "params")}}
+  end
+
+  defp handle_decoded_payload(port, on_message, %{"method" => method} = payload, payload_string, stream_context)
+       when is_binary(method) do
+    updated_turn_stream_state = update_sandbox_startup_tracking(stream_context.turn_stream_state, method, payload)
+
+    case updated_turn_stream_state.sandbox_startup do
+      :unavailable ->
+        emit_turn_event(on_message, :sandbox_required, payload, payload_string, port, payload)
+        {:error, :sandbox_required}
+
+      _ ->
+        handle_turn_method(
+          port,
+          on_message,
+          payload,
+          payload_string,
+          method,
+          %{
+            timeout_ms: stream_context.timeout_ms,
+            tool_executor: stream_context.tool_executor,
+            auto_approve_requests: stream_context.auto_approve_requests,
+            approval_context: stream_context.approval_context,
+            turn_stream_state: updated_turn_stream_state
+          }
+        )
+    end
+  end
+
+  defp handle_decoded_payload(port, on_message, payload, payload_string, stream_context) do
+    emit_message(
+      on_message,
+      :other_message,
+      %{
+        payload: payload,
+        raw: payload_string
+      },
+      metadata_from_message(port, payload)
+    )
+
+    receive_loop(
+      port,
+      on_message,
+      stream_context.timeout_ms,
+      "",
+      stream_context.tool_executor,
+      stream_context.auto_approve_requests,
+      stream_context.approval_context,
+      stream_context.turn_stream_state
+    )
+  end
+
+  defp handle_turn_completed(port, on_message, payload, payload_string, turn_stream_state) do
+    case sandbox_startup_status_at_completion(turn_stream_state, payload) do
+      :ready ->
+        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
+        {:ok, :turn_completed}
+
+      :unavailable ->
+        emit_turn_event(on_message, :sandbox_required, payload, payload_string, port, payload)
+        {:error, :sandbox_required}
+    end
+  end
+
+  defp handle_turn_failed(port, on_message, payload, payload_string) do
+    if sandbox_error?(payload) do
+      emit_turn_event(on_message, :sandbox_required, payload, payload_string, port, Map.get(payload, "params"))
+      {:error, :sandbox_required}
+    else
+      emit_turn_event(
+        on_message,
+        :turn_failed,
+        payload,
+        payload_string,
+        port,
+        Map.get(payload, "params")
+      )
+
+      {:error, {:turn_failed, Map.get(payload, "params")}}
     end
   end
 
@@ -1038,38 +1110,18 @@ defmodule SymphonyElixir.Codex.AppServer do
         :approved
 
       :allow ->
-        command = command_from_payload(payload)
-
-        case maybe_deny_pr_create_for_dependency_hold(
-               port,
-               id,
-               dependency_hold_denial_decision(decision),
-               command,
-               payload,
-               payload_string,
-               context
-             ) do
-          :not_held ->
-            approve_or_require(
-              port,
-              id,
-              decision,
-              payload,
-              payload_string,
-              context.on_message,
-              context.metadata,
-              context.auto_approve_requests
-            )
-
-          held ->
-            held
-        end
+        approve_or_require(
+          port,
+          id,
+          decision,
+          payload,
+          payload_string,
+          context.on_message,
+          context.metadata,
+          context.auto_approve_requests
+        )
     end
   end
-
-  defp dependency_hold_denial_decision("acceptForSession"), do: "deny"
-  defp dependency_hold_denial_decision("approved_for_session"), do: "denied"
-  defp dependency_hold_denial_decision(_decision), do: "reject"
 
   defp approve_or_require(
          port,
@@ -1874,15 +1926,90 @@ defmodule SymphonyElixir.Codex.AppServer do
     )
   end
 
-  defp initial_turn_stream_state(command_timeout_ms) do
+  defp initial_turn_stream_state(command_timeout_ms, sandbox_startup) do
     %{
       command_timeout_ms: normalize_command_timeout_ms(command_timeout_ms),
-      active_command: nil
+      active_command: nil,
+      sandbox_startup: sandbox_startup
     }
   end
 
   defp normalize_command_timeout_ms(timeout_ms) when is_integer(timeout_ms), do: timeout_ms
   defp normalize_command_timeout_ms(_timeout_ms), do: 0
+
+  # Codex 0.130 acknowledges a live turn with either an in-progress turn/start
+  # response or a turn/started notification. Keep explicit sandbox events for
+  # forward compatibility with runtimes that expose them directly.
+  defp sandbox_startup_from_turn_start(%{"status" => "inProgress"}), do: :ready
+  defp sandbox_startup_from_turn_start(_turn_payload), do: :pending
+
+  defp update_sandbox_startup_tracking(%{sandbox_startup: :unavailable} = turn_stream_state, _method, _payload) do
+    turn_stream_state
+  end
+
+  defp update_sandbox_startup_tracking(turn_stream_state, method, payload) do
+    Map.put(
+      turn_stream_state,
+      :sandbox_startup,
+      sandbox_startup_status(turn_stream_state.sandbox_startup, method, payload)
+    )
+  end
+
+  defp sandbox_startup_status(:unavailable, _method, _payload), do: :unavailable
+
+  defp sandbox_startup_status(:ready, method, payload) do
+    if sandbox_unavailable_method?(method, payload) or sandbox_error?(payload), do: :unavailable, else: :ready
+  end
+
+  defp sandbox_startup_status(_current_status, method, payload) do
+    cond do
+      sandbox_unavailable_method?(method, payload) or sandbox_error?(payload) -> :unavailable
+      sandbox_ready_method?(method, payload) -> :ready
+      true -> :pending
+    end
+  end
+
+  defp sandbox_startup_status_at_completion(turn_stream_state, payload) do
+    case sandbox_startup_status(turn_stream_state.sandbox_startup, "turn/completed", payload) do
+      :ready -> :ready
+      :unavailable -> :unavailable
+      :pending -> :unavailable
+    end
+  end
+
+  defp sandbox_ready_method?("turn/started", _payload), do: true
+  defp sandbox_ready_method?("sandbox/ready", _payload), do: true
+  defp sandbox_ready_method?(_method, _payload), do: false
+
+  defp sandbox_unavailable_method?("sandbox/unavailable", _payload), do: true
+  defp sandbox_unavailable_method?("sandbox/downgraded", _payload), do: true
+  defp sandbox_unavailable_method?("sandbox/failed", _payload), do: true
+  defp sandbox_unavailable_method?("sandbox/error", _payload), do: true
+  defp sandbox_unavailable_method?(_method, _payload), do: false
+
+  defp sandbox_error?(%{"params" => params}) when is_map(params), do: sandbox_error?(params)
+  defp sandbox_error?(%{"error" => error}) when is_map(error), do: sandbox_error?(error)
+  defp sandbox_error?(%{"turn" => turn}) when is_map(turn), do: sandbox_error?(turn)
+  defp sandbox_error?(%{"codexErrorInfo" => error_info}), do: sandbox_error_info?(error_info)
+
+  defp sandbox_error?({:response_error, error}), do: sandbox_error?(error)
+  defp sandbox_error?(_payload), do: false
+
+  defp sandbox_error_info?(error_info) when is_binary(error_info) do
+    error_info
+    |> normalize_protocol_atom()
+    |> Kernel.in(["sandboxerror", "sandbox_error", "sandbox-error"])
+  end
+
+  defp sandbox_error_info?(%{"sandboxError" => _details}), do: true
+  defp sandbox_error_info?(%{sandboxError: _details}), do: true
+  defp sandbox_error_info?(_error_info), do: false
+
+  defp normalize_protocol_atom(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+  end
 
   defp continue_or_timeout(port, on_message, stream_context, method, payload) do
     turn_stream_state =

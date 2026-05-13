@@ -2263,7 +2263,7 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-1\"}}}'
             ;;
           4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\",\"status\":\"inProgress\",\"items\":[]}}}'
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
             exit 0
             ;;
@@ -2347,7 +2347,7 @@ defmodule SymphonyElixir.CoreTest do
               printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-live\"}}}'
               ;;
             3)
-              printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-live\"}}}'
+              printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-live\",\"status\":\"inProgress\",\"items\":[]}}}'
               ;;
             4)
               printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -2523,11 +2523,11 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cont"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-1"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-1","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
           5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-2"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-2","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
         esac
@@ -2697,19 +2697,19 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-self-review"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-1"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-1","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
           5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-2"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-2","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
           6)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-3"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-3","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
           7)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-4"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-4","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
         esac
@@ -2970,11 +2970,11 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-max"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-1"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-1","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
           5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-2"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-2","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
         esac
@@ -3059,7 +3059,7 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-77\"}}}'
             ;;
           3)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-77\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-77\",\"status\":\"inProgress\",\"items\":[]}}}'
             ;;
           4)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -3201,7 +3201,7 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-88\"}}}'
             ;;
           3)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-88\"}}}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-88\",\"status\":\"inProgress\",\"items\":[]}}}'
             ;;
           4)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -3276,7 +3276,7 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-99"}}}'
             ;;
           3)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-99"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-99","status":"inProgress","items":[]}}}'
             ;;
           4)
             printf '%s\\n' '{"method":"turn/completed"}'
@@ -3402,19 +3402,19 @@ defmodule SymphonyElixir.CoreTest do
           printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-self-review"}}}'
           ;;
         4)
-          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-1"}}}'
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-1","status":"inProgress","items":[]}}}'
           printf '%s\\n' '{"method":"turn/completed"}'
           ;;
         5)
-          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-2"}}}'
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-2","status":"inProgress","items":[]}}}'
           printf '%s\\n' '{"method":"turn/completed"}'
           ;;
         6)
-          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-3"}}}'
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-3","status":"inProgress","items":[]}}}'
           printf '%s\\n' '{"method":"turn/completed"}'
           ;;
         7)
-          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-4"}}}'
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-self-review-4","status":"inProgress","items":[]}}}'
           printf '%s\\n' '{"method":"turn/completed"}'
           ;;
       esac

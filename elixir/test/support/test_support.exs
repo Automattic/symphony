@@ -279,7 +279,7 @@ defmodule SymphonyElixir.TestSupport do
           verification: nil,
           server_port: nil,
           server_host: nil,
-          quality_gate: nil,
+          quality_gate: %{enabled: false},
           learnings: nil,
           self_review: nil,
           notifications: nil,

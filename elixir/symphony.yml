@@ -53,7 +53,7 @@ ci:
   max_retries: 3
   escalation_state: In Review
 quality_gate:
-  enabled: true
+  enabled: false
   provider: anthropic
   model: claude-haiku-4-5-20251001
   pass_threshold: 6

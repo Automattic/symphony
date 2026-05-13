@@ -147,9 +147,8 @@ Most local runs need these five pieces:
    workspaces, the repo's primary clone.
 5. A Codex app-server command (or Claude command — see `symphony.claude.yml`).
 
-The quality gate is enabled by default when the `quality_gate` block is omitted. Set
-`ANTHROPIC_API_KEY` for the default Anthropic scorer, configure another provider/model under
-`quality_gate`, or explicitly set `quality_gate.enabled: false` for raw dispatch.
+The quality gate is disabled by default. To opt in, set `quality_gate.enabled: true` and provide
+`ANTHROPIC_API_KEY` (or configure another provider/model under `quality_gate`).
 
 `symphony.yml`:
 
@@ -167,7 +166,7 @@ pr_review:
 repos:
   - name: my-repo
     workflow: ./WORKFLOW.md
-# quality_gate is omitted here, so it uses the default enabled Anthropic scorer.
+# quality_gate is omitted here, so issues are dispatched without LLM scoring.
 ```
 
 `./WORKFLOW.md`:
@@ -245,8 +244,8 @@ stays empty until every repo's cache has warmed at least once.
 - `pr_review.mode: tracker` is the default and expects Linear states such as `Rework` and `Merging`
   to drive review loops. Set `pr_review.mode: polling` to let Symphony poll GitHub PR state while
   Linear stays on the standard Todo -> In Progress -> In Review -> Done path.
-- `quality_gate` runs by default with the Anthropic scorer and holds unclear issues before they
-  reach Codex. Set `quality_gate.enabled: false` to opt out.
+- `quality_gate` is disabled by default. Set `quality_gate.enabled: true` to score candidate
+  issues with an LLM and hold unclear ones before they reach Codex.
 - `notifications.channels[].webhook_url`, `url`, and `headers.*` values expand `$VAR` from the
   process environment at startup, so secrets like Slack webhooks can stay outside committed
   config.

@@ -754,7 +754,7 @@ defmodule SymphonyElixir.Config.Schema do
     ]
 
     embedded_schema do
-      field(:enabled, :boolean, default: true)
+      field(:enabled, :boolean, default: false)
       field(:provider, :string, default: "anthropic")
       field(:model, :string, default: "claude-haiku-4-5-20251001")
       field(:min_score, :integer, default: 6)

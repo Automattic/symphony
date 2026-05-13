@@ -277,15 +277,15 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     assert snapshot.skipped == []
   end
 
-  test "orchestrator defaults quality gate on when section is absent" do
+  test "orchestrator defaults quality gate off when section is absent" do
     issue = %Issue{
-      id: "issue-default-on-1",
-      identifier: "MT-DEFAULT-ON",
-      title: "Gate defaults on",
+      id: "issue-default-off-1",
+      identifier: "MT-DEFAULT-OFF",
+      title: "Gate defaults off",
       description: "...",
       state: "Todo",
       team: %{key: "Test"},
-      url: "https://example.org/issues/MT-DEFAULT-ON",
+      url: "https://example.org/issues/MT-DEFAULT-OFF",
       updated_at: ~U[2026-05-05 03:00:00Z]
     }
 
@@ -297,17 +297,15 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       tracker_kind: "memory"
     )
 
-    name = Module.concat(__MODULE__, :DefaultOnOrchestrator)
+    name = Module.concat(__MODULE__, :DefaultOffOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: name)
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
 
     send(pid, :run_poll_cycle)
 
-    assert_receive {:memory_tracker_comment, "issue-default-on-1", body}, 500
-    assert body =~ "score 3"
-
-    snapshot = wait_for_skipped(pid, "issue-default-on-1")
-    assert [%{kind: :scored, issue_id: "issue-default-on-1", score: 3, identifier: "MT-DEFAULT-ON"}] = snapshot.skipped
+    refute_receive {:memory_tracker_comment, "issue-default-off-1", _}, 200
+    snapshot = GenServer.call(pid, :snapshot)
+    assert snapshot.skipped == []
   end
 
   test "orchestrator logs active quality gate configuration on startup" do
@@ -325,7 +323,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
         if Process.alive?(pid), do: GenServer.stop(pid)
       end)
 
-    assert log =~ "QualityGate config enabled=true"
+    assert log =~ "QualityGate config enabled=false"
     assert log =~ "provider=anthropic"
     assert log =~ "model=claude-haiku-4-5-20251001"
     assert log =~ "threshold=6"

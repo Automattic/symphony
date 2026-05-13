@@ -6,9 +6,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AgentEnv, AuditLog, Codex.DynamicTool, Config, DependencyAudit, Notifications, PathSafety, SSH, Tracker}
+  alias SymphonyElixir.AgentEnv
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
+  alias SymphonyElixir.AuditLog
+  alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.DependencyAudit
+  alias SymphonyElixir.Notifications
+  alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.SSH
+  alias SymphonyElixir.Tracker
 
   @initialize_id 1
   @thread_start_id 2
@@ -1657,6 +1665,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     if dependency_gate && DependencyAudit.git_pr_create_command?(command) do
       case audit_pr_create_dependencies(dependency_gate) do
+        {:ok, []} ->
+          :not_held
+
         {:hold, items} ->
           send_message(port, %{"id" => id, "result" => %{"decision" => denial_decision}})
           maybe_move_dependency_hold_issue(dependency_gate)
@@ -1671,8 +1682,21 @@ defmodule SymphonyElixir.Codex.AppServer do
 
           :approved
 
-        _ ->
-          :not_held
+        {:error, reason} ->
+          Logger.error("Dependency audit failed during gh pr create approval: #{inspect(reason)}")
+
+          send_message(port, %{"id" => id, "result" => %{"decision" => denial_decision}})
+          maybe_move_dependency_hold_issue(dependency_gate)
+          emit_dependency_audit_failure_event(dependency_gate, reason)
+
+          emit_message(
+            context.on_message,
+            :dependency_pending_approval,
+            %{payload: payload, raw: payload_string, command: command, error: reason},
+            context.metadata
+          )
+
+          :approved
       end
     else
       :not_held
@@ -1715,6 +1739,19 @@ defmodule SymphonyElixir.Codex.AppServer do
         state: "In Review",
         reason: "dependency_source_requires_approval",
         metadata: DependencyAudit.approval_metadata(items)
+      }
+    )
+  end
+
+  defp emit_dependency_audit_failure_event(%{issue: issue} = gate, error) do
+    Notifications.emit_issue_event(
+      :dependency_pending_approval,
+      issue,
+      %{
+        repo_key: gate.repo_key,
+        state: "In Review",
+        reason: "dependency_audit_failed",
+        metadata: %{audit_error: inspect(error)}
       }
     )
   end

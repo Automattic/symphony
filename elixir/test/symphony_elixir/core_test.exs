@@ -2676,7 +2676,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_DEP_HOLD_TRACE:-/tmp/codex-dep-hold.trace}"
+      trace_file="#{trace_file}"
       count=0
 
       while IFS= read -r line; do
@@ -2711,11 +2711,9 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_DEP_HOLD_TRACE", trace_file)
       Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
       on_exit(fn ->
-        System.delete_env("SYMP_TEST_DEP_HOLD_TRACE")
         Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
       end)
 
@@ -2756,7 +2754,6 @@ defmodule SymphonyElixir.CoreTest do
 
       refute File.read!(trace_file) =~ "UNEXPECTED_SECOND_TURN"
     after
-      System.delete_env("SYMP_TEST_DEP_HOLD_TRACE")
       File.rm_rf(test_root)
     end
   end

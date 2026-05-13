@@ -236,6 +236,21 @@ defmodule SymphonyElixir.DependencyAuditTest do
     assert {:ok, []} = DependencyAudit.audit(repo, audit_opts())
   end
 
+  test "holds path deps that resolve outside the workspace via symlinks", %{repo: repo} do
+    write_mix!(repo, ~s({:jason, "~> 1.4"}))
+    commit_base!(repo)
+
+    outside = Path.join(Path.dirname(repo), "outside-lib")
+    File.mkdir_p!(outside)
+    File.mkdir_p!(Path.join(repo, "apps"))
+    File.ln_s!(outside, Path.join(repo, "apps/shared"))
+
+    write_mix!(repo, ~s({:jason, "~> 1.4"},\n      {:shared, path: "apps/shared"}))
+
+    assert {:hold, [%{path: "mix.exs", package: "shared", reason: "outside_workspace_path"}]} =
+             DependencyAudit.audit(repo, audit_opts())
+  end
+
   test "holds when the base manifest cannot be parsed", %{repo: repo} do
     File.write!(Path.join(repo, "mix.exs"), "defmodule Broken do")
     commit_base!(repo)
@@ -257,7 +272,7 @@ defmodule SymphonyElixir.DependencyAuditTest do
     assert {:ok, []} = DependencyAudit.audit(repo, audit_opts())
   end
 
-  test "surfaces git failures except non-git workspaces" do
+  test "treats non-git workspaces as a no-op" do
     assert {:ok, []} =
              DependencyAudit.audit("/tmp/not-a-repo",
                settings: Config.settings!(),
@@ -265,22 +280,45 @@ defmodule SymphonyElixir.DependencyAuditTest do
                  "git", _args, _opts -> {"fatal: not a git repository", 128}
                end
              )
+  end
 
-    assert {:error, {:git_failed, ["diff", "--name-only", "HEAD", "--"], "fatal: other"}} =
+  test "holds when the workspace is a git repo but the base ref is unresolvable" do
+    assert {:hold, [hold]} =
              DependencyAudit.audit("/tmp/repo",
                settings: Config.settings!(),
+               base_ref: "origin/main",
                command_runner: fn
-                 "git", ["rev-parse", "--verify", _ref], _opts -> {"missing", 1}
-                 "git", ["diff", "--name-only", "HEAD", "--"], _opts -> {"fatal: other", 2}
+                 "git", ["rev-parse", "--verify", "origin/main^{commit}"], _opts ->
+                   {"fatal: ambiguous argument 'origin/main^{commit}': unknown revision", 128}
                end
              )
 
-    assert {:error, {:git_failed, ["diff", "--name-only", "HEAD", "--"], 2, :bad_output}} =
+    assert %{package: "base_ref", to: "origin/main", from: nil} = hold
+    assert hold.reason =~ "base_ref_unavailable"
+    assert hold.reason =~ "unknown revision"
+  end
+
+  test "holds when the rev-parse output is non-binary" do
+    assert {:hold, [%{package: "base_ref", reason: reason}]} =
              DependencyAudit.audit("/tmp/repo",
                settings: Config.settings!(),
+               base_ref: "origin/main",
                command_runner: fn
-                 "git", ["rev-parse", "--verify", _ref], _opts -> {"missing", 1}
-                 "git", ["diff", "--name-only", "HEAD", "--"], _opts -> {:bad_output, 2}
+                 "git", ["rev-parse", "--verify", _ref], _opts -> {:bad_output, 1}
+               end
+             )
+
+    assert reason =~ "base_ref_unavailable"
+  end
+
+  test "surfaces git diff failures while resolving manifest changes" do
+    assert {:error, {:git_failed, ["diff", "--name-only", "origin/main", "--"], "fatal: other"}} =
+             DependencyAudit.audit("/tmp/repo",
+               settings: Config.settings!(),
+               base_ref: "origin/main",
+               command_runner: fn
+                 "git", ["rev-parse", "--verify", _ref], _opts -> {"abc123\n", 0}
+                 "git", ["diff", "--name-only", "origin/main", "--"], _opts -> {"fatal: other", 2}
                end
              )
   end

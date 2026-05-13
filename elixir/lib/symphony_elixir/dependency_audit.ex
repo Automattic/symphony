@@ -10,6 +10,7 @@ defmodule SymphonyElixir.DependencyAudit do
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.DependencyAudit.{MixParser, NpmParser}
+  alias SymphonyElixir.PathSafety
 
   @default_base_ref "origin/main"
 
@@ -44,8 +45,19 @@ defmodule SymphonyElixir.DependencyAudit do
     command_runner = Keyword.get(opts, :command_runner, &run_git/3)
     workspace = Path.expand(workspace)
 
-    base_ref = available_base_ref(workspace, base_ref, command_runner)
+    case resolve_base_ref(workspace, base_ref, command_runner) do
+      {:ok, base_ref} ->
+        audit_with_base_ref(workspace, base_ref, settings, command_runner, opts)
 
+      :no_repo ->
+        {:ok, []}
+
+      {:hold, items} ->
+        {:hold, items}
+    end
+  end
+
+  defp audit_with_base_ref(workspace, base_ref, settings, command_runner, opts) do
     with {:ok, manifest_paths} <- changed_manifest_paths(workspace, base_ref, command_runner) do
       opts = opts |> Keyword.put(:workspace, workspace) |> Keyword.put(:command_runner, command_runner)
 
@@ -214,11 +226,37 @@ defmodule SymphonyElixir.DependencyAudit do
     end
   end
 
-  defp available_base_ref(workspace, base_ref, command_runner) do
+  defp resolve_base_ref(workspace, base_ref, command_runner) do
     case command_runner.("git", ["rev-parse", "--verify", "#{base_ref}^{commit}"], cd: workspace) do
-      {_output, 0} -> base_ref
-      _ -> "HEAD"
+      {_output, 0} ->
+        {:ok, base_ref}
+
+      {output, _status} when is_binary(output) ->
+        if String.contains?(String.downcase(output), "not a git repository") do
+          :no_repo
+        else
+          {:hold, [base_ref_unavailable_hold(base_ref, output)]}
+        end
+
+      {output, _status} ->
+        {:hold, [base_ref_unavailable_hold(base_ref, inspect(output))]}
     end
+  end
+
+  defp base_ref_unavailable_hold(base_ref, output) do
+    detail =
+      output
+      |> to_string()
+      |> String.trim()
+      |> String.slice(0, 200)
+
+    %{
+      path: "<workspace>",
+      package: "base_ref",
+      from: nil,
+      to: base_ref,
+      reason: "base_ref_unavailable: #{detail}"
+    }
   end
 
   defp git_lines(command_runner, workspace, args) do
@@ -342,10 +380,13 @@ defmodule SymphonyElixir.DependencyAudit do
   end
 
   defp inside_workspace?(path, workspace) do
-    expanded_path = Path.expand(path)
-    expanded_workspace = Path.expand(workspace)
-
-    expanded_path == expanded_workspace or String.starts_with?(expanded_path, expanded_workspace <> "/")
+    with {:ok, canonical_path} <- PathSafety.canonicalize(path),
+         {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace) do
+      canonical_path == canonical_workspace or
+        String.starts_with?(canonical_path, canonical_workspace <> "/")
+    else
+      _ -> false
+    end
   end
 
   @spec source_identity(map()) :: term()

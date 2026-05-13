@@ -1171,14 +1171,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         workspace = Path.join(workspace_root, "RSM-REMOTE")
         fake_ssh = Path.join(test_root, "ssh")
         trace_file = Path.join(test_root, "ssh-command.trace")
-        previous_trace = System.get_env("SYMPHONY_TEST_SSH_TRACE")
         File.mkdir_p!(workspace)
         System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
-        System.put_env("SYMPHONY_TEST_SSH_TRACE", trace_file)
-
-        on_exit(fn ->
-          restore_env("SYMPHONY_TEST_SSH_TRACE", previous_trace)
-        end)
 
         File.write!(fake_ssh, """
         #!/bin/sh
@@ -1186,7 +1180,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         for arg in "$@"; do
           last_arg="$arg"
         done
-        printf '%s' "$last_arg" > "$SYMPHONY_TEST_SSH_TRACE"
+        printf '%s' "$last_arg" > "#{trace_file}"
         printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-remote","cwd":"/remote","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
         printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":200,"duration_api_ms":150,"is_error":false,"num_turns":1,"result":"remote done","session_id":"sess-remote","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
         exit 0

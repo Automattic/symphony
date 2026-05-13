@@ -5,7 +5,14 @@ defmodule SymphonyElixir.AgentTools.Linear.CommentRegistry do
 
   @spec start_link(keyword()) :: Agent.on_start()
   def start_link(opts \\ []) do
-    Agent.start_link(fn -> MapSet.new() end, opts)
+    {seed_ids, agent_opts} = Keyword.pop(opts, :seed_ids, [])
+
+    initial =
+      seed_ids
+      |> Enum.filter(&is_binary/1)
+      |> MapSet.new()
+
+    Agent.start_link(fn -> initial end, agent_opts)
   end
 
   @spec record(pid() | nil, String.t()) :: :ok

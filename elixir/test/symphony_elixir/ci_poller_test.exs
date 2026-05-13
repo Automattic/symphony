@@ -464,6 +464,71 @@ defmodule SymphonyElixir.CiPollerTest do
     assert CiPoller.log_excerpt_for_test(log, 5) == "ERROR: broken\nstack\nlast"
   end
 
+  test "log truncation replaces invalid utf-8 bytes instead of raising" do
+    log = <<"ERROR: broken\n", 0xFF, 0xFE, "\nlast">>
+
+    assert CiPoller.log_excerpt_for_test(log, 5) == "ERROR: broken\n??\nlast"
+  end
+
+  test "Linear transition failure leaves dispatch state recorded so the SHA is not redispatched" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [])
+    Application.put_env(:symphony_elixir, :ci_test_status, failed_status("abc123"))
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/RSM-2401",
+               status: "rerun_requested",
+               ci_retry_count: 0,
+               rerun_attempted_shas: ["abc123"],
+               dispatched_shas: [],
+               updated_at: now
+             })
+
+    poll_time = DateTime.add(now, 1, :minute)
+
+    assert {:ok, %{actions: [{:state_transition_error, "issue-2401", :dispatch, :linear_unavailable}]}} =
+             CiPoller.poll_once(
+               tracker: FailingTransitionTracker,
+               github: FakeGitHub,
+               poll_interval_ms: 1_000,
+               now: poll_time
+             )
+
+    assert_receive {:issue_state_update, "issue-2401", "In Progress"}
+
+    assert [
+             %{
+               status: "state_transition_error",
+               ci_retry_count: 1,
+               dispatched_shas: ["abc123"],
+               ci_failure: %{commit_sha: "abc123"},
+               log_excerpt: log_excerpt
+             }
+           ] = RunStore.list_ci_checks()
+
+    assert is_binary(log_excerpt) and log_excerpt != ""
+
+    # A subsequent poll past the backoff window must not re-dispatch the same SHA.
+    later = DateTime.add(poll_time, 2, :minute)
+
+    assert {:ok, %{actions: [{:already_handled, "issue-2401", "abc123"}]}} =
+             CiPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               poll_interval_ms: 1_000,
+               now: later
+             )
+
+    refute_receive {:issue_state_update, _, _}
+  end
+
   test "transient GitHub errors are recorded without dispatching" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()

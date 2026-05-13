@@ -6,6 +6,7 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
 
   alias SymphonyElixir.{
+    AgentTools,
     AgentTools.Linear.CommentRegistry,
     AuditLog,
     CiPoller,
@@ -180,8 +181,10 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
+    seed_ids = AgentTools.Linear.recover_comment_registry_seeds(issue, settings.tracker.kind)
+
     with {:ok, agent_module} <- agent_module(),
-         {:ok, linear_comment_registry} <- CommentRegistry.start_link(),
+         {:ok, linear_comment_registry} <- CommentRegistry.start_link(seed_ids: seed_ids),
          {:ok, session} <- agent_module.start_session(workspace, worker_host: worker_host, settings: settings) do
       send_agent_session_info(codex_update_recipient, issue, agent_module, session)
 

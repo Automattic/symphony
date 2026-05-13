@@ -71,7 +71,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -160,7 +160,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -238,7 +238,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :memory_tracker_issues)
-      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      if Process.alive?(pid), do: stop_process(pid)
       if Process.alive?(worker_pid), do: Process.exit(worker_pid, :shutdown)
     end)
 
@@ -334,7 +334,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -394,7 +394,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -451,7 +451,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -551,7 +551,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -626,7 +626,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -739,7 +739,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -820,7 +820,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -910,7 +910,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -984,7 +984,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1079,7 +1079,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       if Process.alive?(worker_pid), do: Process.exit(worker_pid, :kill)
 
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1217,7 +1217,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1393,7 +1393,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1416,7 +1416,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1455,7 +1455,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1537,7 +1537,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
 
       File.rm_rf(workspace_root)
@@ -1646,7 +1646,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       terminate_task_supervisor_children()
 
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1694,7 +1694,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1729,6 +1729,62 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert error =~ ":remote_cleanup_failed"
   end
 
+  test "stop_running records stop_session cleanup start failures in run history" do
+    issue = %Issue{
+      id: "issue-stop-running-cleanup-start-failure",
+      identifier: "MT-STOP-START-FAIL",
+      title: "Stop running cleanup start failure",
+      description: "Record cleanup task start failures",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-STOP-START-FAIL"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :StopRunningCleanupStartFailureOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      ensure_symphony_started!()
+
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-stop-running-cleanup-start-failure"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        session_id: "thread-stop-turn-start-failure",
+        agent_module: StopSessionAgent,
+        agent_session: %{recipient: self()},
+        turn_count: 1
+      })
+
+    put_running_run!(issue, run_id, started_at, %{session_id: "thread-stop-turn-start-failure"})
+    put_running_entry(pid, issue, running_entry)
+
+    assert is_pid(Process.whereis(SymphonyElixir.TaskSupervisor))
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.TaskSupervisor)
+    refute Process.whereis(SymphonyElixir.TaskSupervisor)
+
+    assert {:ok, %{stopped: true}} = Orchestrator.stop_running(orchestrator_name, issue.identifier)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :shutdown}
+    refute_receive :agent_stop_session_called, 50
+
+    assert %{status: "stopped", error: error} =
+             wait_for_run_record(fn
+               %{run_id: ^run_id, error: error} when is_binary(error) ->
+                 String.contains?(error, "cleanup_task_start_failed")
+
+               _record ->
+                 false
+             end)
+
+    assert error =~ ":task_supervisor_unavailable"
+  end
+
   test "stop_running succeeds before agent session metadata arrives" do
     issue = %Issue{
       id: "issue-stop-running-no-session-yet",
@@ -1744,7 +1800,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1783,7 +1839,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -1834,7 +1890,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      if Process.alive?(pid), do: stop_process(pid)
     end)
 
     state = get_orchestrator_state(pid)
@@ -1891,7 +1947,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      if Process.alive?(pid), do: stop_process(pid)
     end)
 
     state = get_orchestrator_state(pid)
@@ -1942,7 +1998,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -2012,7 +2068,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -2274,7 +2330,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      if Process.alive?(pid), do: stop_process(pid)
     end)
 
     send(pid, :run_poll_cycle)
@@ -2325,7 +2381,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     {:ok, restarted_pid} = Orchestrator.start_link(name: restart_name)
 
     on_exit(fn ->
-      if Process.alive?(restarted_pid), do: Process.exit(restarted_pid, :normal)
+      if Process.alive?(restarted_pid), do: stop_process(restarted_pid)
     end)
 
     send(restarted_pid, :run_poll_cycle)
@@ -2393,7 +2449,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      if Process.alive?(pid), do: stop_process(pid)
     end)
 
     send(pid, :run_poll_cycle)
@@ -2416,7 +2472,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     {:ok, restarted_pid} = Orchestrator.start_link(name: restart_name)
 
     on_exit(fn ->
-      if Process.alive?(restarted_pid), do: Process.exit(restarted_pid, :normal)
+      if Process.alive?(restarted_pid), do: stop_process(restarted_pid)
     end)
 
     send(restarted_pid, :run_poll_cycle)
@@ -2504,7 +2560,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -2554,7 +2610,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -2606,7 +2662,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -2680,7 +2736,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       terminate_task_supervisor_children()
 
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
 
       File.rm_rf(workspace_root)
@@ -2777,7 +2833,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -2835,7 +2891,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -2879,7 +2935,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 
@@ -3020,7 +3076,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(dashboard_pid) do
-        Process.exit(dashboard_pid, :normal)
+        stop_process(dashboard_pid)
       end
     end)
 
@@ -3129,7 +3185,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(dashboard_pid) do
-        Process.exit(dashboard_pid, :normal)
+        stop_process(dashboard_pid)
       end
     end)
 
@@ -3427,7 +3483,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if Process.alive?(pid) do
-        Process.exit(pid, :normal)
+        stop_process(pid)
       end
     end)
 

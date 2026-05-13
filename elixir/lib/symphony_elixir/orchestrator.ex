@@ -2560,7 +2560,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp start_stop_agent_session_cleanup_task(running_entry, run_id, repo_key) do
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    case start_task_supervisor_child(fn ->
            running_entry
            |> stop_agent_session_with_timeout(@stop_session_cleanup_timeout_ms)
            |> record_stop_agent_session_cleanup_result(repo_key, run_id)
@@ -2600,7 +2600,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp run_after_run_cleanup(%{workspace_path: workspace} = running_entry)
        when is_binary(workspace) and workspace != "" do
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    case start_task_supervisor_child(fn ->
            Workspace.run_after_run_hook(
              workspace,
              Map.get(running_entry, :issue) || Map.get(running_entry, :identifier),
@@ -2623,23 +2623,39 @@ defmodule SymphonyElixir.Orchestrator do
   defp run_after_run_cleanup(_running_entry), do: :ok
 
   defp stop_agent_session_with_timeout(running_entry, timeout_ms) do
-    task =
-      Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
-        stop_agent_session(running_entry)
-      end)
+    case start_stop_agent_session_task(running_entry) do
+      {:ok, task} ->
+        case Task.yield(task, timeout_ms) do
+          {:ok, result} ->
+            normalize_stop_session_result(result)
 
-    case Task.yield(task, timeout_ms) do
-      {:ok, result} ->
-        normalize_stop_session_result(result)
+          {:exit, reason} ->
+            {:error, {:exit, reason}}
 
-      {:exit, reason} ->
-        {:error, {:exit, reason}}
+          nil ->
+            task
+            |> Task.shutdown(:brutal_kill)
+            |> normalize_stop_session_shutdown(timeout_ms)
+        end
 
-      nil ->
-        task
-        |> Task.shutdown(:brutal_kill)
-        |> normalize_stop_session_shutdown(timeout_ms)
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp start_stop_agent_session_task(running_entry) do
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      pid when is_pid(pid) ->
+        {:ok,
+         Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
+           stop_agent_session(running_entry)
+         end)}
+
+      _ ->
+        {:error, :task_supervisor_unavailable}
+    end
+  catch
+    :exit, reason -> {:error, {:task_supervisor_exit, reason}}
   end
 
   defp normalize_stop_session_shutdown({:ok, result}, _timeout_ms), do: normalize_stop_session_result(result)
@@ -3048,7 +3064,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp persist_quality_eval_async(_running_entry, _status, _error), do: :ok
 
   defp start_quality_eval_task(running_entry, status, error) do
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    case start_task_supervisor_child(fn ->
            Quality.persist_run_eval(running_entry, status, error)
          end) do
       {:ok, _pid} ->
@@ -3066,6 +3082,18 @@ defmodule SymphonyElixir.Orchestrator do
     kind, reason ->
       Logger.warning("Unable to start async quality eval logger: #{inspect({kind, reason})}")
       :ok
+  end
+
+  defp start_task_supervisor_child(fun) when is_function(fun, 0) do
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      pid when is_pid(pid) ->
+        Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fun)
+
+      _ ->
+        {:error, :task_supervisor_unavailable}
+    end
+  catch
+    :exit, reason -> {:error, {:task_supervisor_exit, reason}}
   end
 
   defp persist_retry(retry) when is_map(retry) do

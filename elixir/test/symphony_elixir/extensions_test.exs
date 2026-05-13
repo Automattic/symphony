@@ -16,6 +16,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, [:candidate]}
     end
 
+    def fetch_candidate_issues_for_repo(repo) do
+      send(self(), {:fetch_candidate_issues_for_repo_called, repo})
+      {:ok, [repo]}
+    end
+
     def fetch_issues_by_states(states) do
       send(self(), {:fetch_issues_by_states_called, states})
       {:ok, states}
@@ -239,6 +244,10 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
+
+    repo = %{name: "web", team: "RSM"}
+    assert {:ok, [^repo]} = Adapter.fetch_candidate_issues_for_repo(repo)
+    assert_receive {:fetch_candidate_issues_for_repo_called, ^repo}
 
     assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
     assert_receive {:fetch_issues_by_states_called, ["Todo"]}

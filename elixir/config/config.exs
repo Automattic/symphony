@@ -12,7 +12,7 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   pubsub_server: SymphonyElixir.PubSub,
   live_view: [signing_salt: "symphony-live-view"],
   secret_key_base: String.duplicate("s", 64),
-  check_origin: false,
+  check_origin: {SymphonyElixir.HttpServer, :allowed_origin?, []},
   server: false
 
 if config_env() == :test do

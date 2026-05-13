@@ -72,7 +72,11 @@ defmodule SymphonyElixir.RunStoreTest do
       stop_mnesia_for_test()
       File.rm_rf(legacy_dir)
       Application.put_env(:symphony_elixir, :run_store_dir, original_run_store_dir)
-      {:ok, _} = Application.ensure_all_started(:symphony_elixir)
+
+      # This test swaps Mnesia to a legacy directory. Restore the application
+      # before the next module setup calls RunStore.clear/0, otherwise setup can
+      # hit the stopped or wrong Mnesia log and fail with :no_such_log.
+      ensure_symphony_started!()
       Process.flag(:trap_exit, trap_exit?)
     end
   end

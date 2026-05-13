@@ -44,26 +44,18 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   @spec update_pull_request_body(context(), term(), keyword()) :: {:ok, map()} | {:error, term()}
   def update_pull_request_body(context, body, opts \\ []) do
     with {:ok, body} <- require_string(body, :invalid_body),
-         {:ok, pr} <- view_current_pull_request(context, opts),
-         pr_url when is_binary(pr_url) <- Map.get(pr, "url"),
+         {:ok, pr_url} <- current_pull_request_url(context, opts),
          {:ok, _output} <- PullRequest.run_gh(["pr", "edit", pr_url, "--body", body], github_opts(context, opts)) do
       {:ok, %{"url" => pr_url}}
-    else
-      nil -> {:error, :missing_pull_request_url}
-      {:error, reason} -> {:error, reason}
     end
   end
 
   @spec add_pr_comment(context(), term(), keyword()) :: {:ok, map()} | {:error, term()}
   def add_pr_comment(context, body, opts \\ []) do
     with {:ok, body} <- require_string(body, :invalid_body),
-         {:ok, pr} <- view_current_pull_request(context, opts),
-         pr_url when is_binary(pr_url) <- Map.get(pr, "url"),
+         {:ok, pr_url} <- current_pull_request_url(context, opts),
          {:ok, _output} <- PullRequest.run_gh(["pr", "comment", pr_url, "--body", body], github_opts(context, opts)) do
       {:ok, %{"url" => pr_url}}
-    else
-      nil -> {:error, :missing_pull_request_url}
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -78,12 +70,17 @@ defmodule SymphonyElixir.AgentTools.GitHub do
 
   @spec get_pr_checks(context(), keyword()) :: {:ok, map()} | {:error, term()}
   def get_pr_checks(context, opts \\ []) do
-    with {:ok, pr} <- view_current_pull_request(context, opts),
-         pr_url when is_binary(pr_url) <- Map.get(pr, "url") do
+    with {:ok, pr_url} <- current_pull_request_url(context, opts) do
       PullRequest.fetch_ci_status(pr_url, github_opts(context, opts))
-    else
-      nil -> {:error, :missing_pull_request_url}
-      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp current_pull_request_url(context, opts) do
+    with {:ok, pr} <- view_current_pull_request(context, opts) do
+      case Map.get(pr, "url") do
+        url when is_binary(url) and url != "" -> {:ok, url}
+        _missing -> {:error, :missing_pull_request_url}
+      end
     end
   end
 
@@ -92,7 +89,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
          {:ok, branch} <- current_branch(context, opts),
          {:ok, output} <-
            PullRequest.run_gh(
-             ["pr", "view", "--repo", origin_repo, "--head", branch, "--json", @pr_view_fields],
+             ["pr", "view", branch, "--repo", origin_repo, "--json", @pr_view_fields],
              github_opts(context, opts)
            ),
          {:ok, pr} when is_map(pr) <- Jason.decode(output) do
@@ -105,10 +102,10 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   end
 
   defp origin_repo(context) do
-    context
-    |> command_security()
-    |> Map.get(:origin_repo)
-    |> case do
+    command_security = command_security(context)
+    repo = Map.get(command_security, :origin_gh_repo) || Map.get(command_security, :origin_repo)
+
+    case repo do
       repo when is_binary(repo) and repo != "" -> {:ok, repo}
       _missing -> {:error, :missing_github_origin_repo}
     end

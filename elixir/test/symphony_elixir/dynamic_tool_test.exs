@@ -319,7 +319,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "pr",
           "create",
           "--repo",
-          "Automattic/symphony",
+          "acme/symphony",
           "--head",
           "auto/RSM-3051",
           "--title",
@@ -329,7 +329,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         ],
         opts ->
           assert opts[:cd] == workspace
-          {"https://github.com/Automattic/symphony/pull/3051\n", 0}
+          {"https://github.com/acme/symphony/pull/3051\n", 0}
       end
 
       response =
@@ -342,8 +342,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       assert response["success"] == true
 
       assert %{
-               "url" => "https://github.com/Automattic/symphony/pull/3051",
-               "repo" => "Automattic/symphony",
+               "url" => "https://github.com/acme/symphony/pull/3051",
+               "repo" => "acme/symphony",
                "head" => "auto/RSM-3051"
              } = Jason.decode!(response["output"])
     after
@@ -357,7 +357,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "github_create_pull_request",
         %{"title" => "Add tools", "body" => "Body", "repo" => "attacker/repo"},
         workspace: System.tmp_dir!(),
-        command_security: %{origin_repo: "Automattic/symphony"}
+        command_security: %{origin_repo: "acme/symphony"}
       )
 
     assert response["success"] == false
@@ -380,7 +380,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           tool,
           args,
           workspace: System.tmp_dir!(),
-          command_security: %{origin_repo: "Automattic/symphony"}
+          command_security: %{origin_repo: "acme/symphony"}
         )
 
       assert response["success"] == false
@@ -394,7 +394,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "github_push_branch",
         %{"refspec" => "main:refs/heads/owned"},
         workspace: System.tmp_dir!(),
-        command_security: %{origin_repo: "Automattic/symphony"}
+        command_security: %{origin_repo: "acme/symphony"}
       )
 
     assert response["success"] == false
@@ -468,7 +468,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       end
 
       gh_runner = fn
-        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", fields], opts ->
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
           assert opts[:cd] == workspace
           assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -477,7 +477,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "state" => "OPEN",
              "title" => "Add tools",
              "body" => "Body",
-             "url" => "https://github.com/Automattic/symphony/pull/3051",
+             "url" => "https://github.com/acme/symphony/pull/3051",
              "headRefName" => "auto/RSM-3051",
              "baseRefName" => "main"
            }), 0}
@@ -493,7 +493,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       assert response["success"] == true
 
       assert %{
-               "url" => "https://github.com/Automattic/symphony/pull/3051",
+               "url" => "https://github.com/acme/symphony/pull/3051",
                "headRefName" => "auto/RSM-3051",
                "baseRefName" => "main"
              } = Jason.decode!(response["output"])
@@ -506,7 +506,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     workspace = tmp_workspace!("github-update-pr-body")
 
     try do
-      pr_url = "https://github.com/Automattic/symphony/pull/3051"
+      pr_url = "https://github.com/acme/symphony/pull/3051"
 
       git_runner = fn
         ["branch", "--show-current"], opts ->
@@ -515,7 +515,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       end
 
       gh_runner = fn
-        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", fields], opts ->
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
           assert opts[:cd] == workspace
           assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -552,7 +552,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     workspace = tmp_workspace!("github-add-pr-comment")
 
     try do
-      pr_url = "https://github.com/Automattic/symphony/pull/3051"
+      pr_url = "https://github.com/acme/symphony/pull/3051"
 
       git_runner = fn
         ["branch", "--show-current"], opts ->
@@ -561,7 +561,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       end
 
       gh_runner = fn
-        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", fields], opts ->
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
           assert opts[:cd] == workspace
           assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -598,7 +598,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     workspace = tmp_workspace!("github-get-pr-checks")
 
     try do
-      pr_url = "https://github.com/Automattic/symphony/pull/3051"
+      pr_url = "https://github.com/acme/symphony/pull/3051"
 
       git_runner = fn
         ["branch", "--show-current"], opts ->
@@ -607,7 +607,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       end
 
       gh_runner = fn
-        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", fields], opts ->
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
           assert opts[:cd] == workspace
           assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -636,7 +636,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "name" => "mix test",
                  "status" => "COMPLETED",
                  "conclusion" => "SUCCESS",
-                 "detailsUrl" => "https://github.com/Automattic/symphony/actions/runs/1"
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/1"
                }
              ]
            }), 0}
@@ -670,6 +670,6 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   defp github_tool_opts(workspace, opts) do
     opts
     |> Keyword.put(:workspace, workspace)
-    |> Keyword.put(:command_security, %{origin_repo: "Automattic/symphony", workspace: workspace})
+    |> Keyword.put(:command_security, %{origin_repo: "acme/symphony", workspace: workspace})
   end
 end

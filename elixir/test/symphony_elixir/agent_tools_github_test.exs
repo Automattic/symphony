@@ -26,7 +26,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
              GitHub.create_pull_request(scoped_context(System.tmp_dir!()), "Title", "Body", "yes", [])
 
     assert {:error, :workspace_not_found} =
-             GitHub.push_branch(%{command_security: %{origin_repo: "Automattic/symphony", workspace: missing_workspace}}, [])
+             GitHub.push_branch(%{command_security: %{origin_repo: "acme/symphony", workspace: missing_workspace}}, [])
   end
 
   test "create_pull_request passes draft flag when requested" do
@@ -44,7 +44,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
           "pr",
           "create",
           "--repo",
-          "Automattic/symphony",
+          "acme/symphony",
           "--head",
           "auto/RSM-3051",
           "--title",
@@ -55,7 +55,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         ],
         opts ->
           assert opts[:cd] == workspace
-          {"https://github.com/Automattic/symphony/pull/3051\n", 0}
+          {"https://github.com/acme/symphony/pull/3051\n", 0}
       end
 
       assert {:ok, %{"draft" => true, "head" => "auto/RSM-3051"}} =
@@ -146,17 +146,17 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       git_runner = branch_runner(workspace)
 
       list_payload_runner = fn
-        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", _fields], _opts ->
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {"[]", 0}
       end
 
       invalid_json_runner = fn
-        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", _fields], _opts ->
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {"not json", 0}
       end
 
       gh_error_runner = fn
-        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", _fields], _opts ->
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {:error, :gh_failed}
       end
 
@@ -179,12 +179,38 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     end
   end
 
+  test "pull request lookup preserves enterprise host in repo selector" do
+    workspace = tmp_workspace!("github-agent-enterprise-host")
+
+    try do
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "github.example.com/acme/symphony", "--json", _fields], opts ->
+          assert opts[:cd] == workspace
+          {Jason.encode!(%{"number" => 3051, "url" => "https://github.example.com/acme/symphony/pull/3051"}), 0}
+      end
+
+      context = %{
+        workspace: workspace,
+        command_security: %{
+          origin_repo: "acme/symphony",
+          origin_gh_repo: "github.example.com/acme/symphony",
+          workspace: workspace
+        }
+      }
+
+      assert {:ok, %{"url" => "https://github.example.com/acme/symphony/pull/3051"}} =
+               GitHub.get_pull_request(context, git_runner: branch_runner(workspace), gh_runner: gh_runner)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
   test "pull request write and check tools require a resolved PR URL" do
     workspace = tmp_workspace!("github-agent-missing-pr-url")
 
     try do
       gh_runner = fn
-        ["pr", "view", "--repo", "Automattic/symphony", "--head", "auto/RSM-3051", "--json", _fields], _opts ->
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "headRefName" => "auto/RSM-3051"}), 0}
       end
 
@@ -204,7 +230,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
   end
 
   defp scoped_context(workspace) do
-    %{workspace: workspace, command_security: %{origin_repo: "Automattic/symphony", workspace: workspace}}
+    %{workspace: workspace, command_security: %{origin_repo: "acme/symphony", workspace: workspace}}
   end
 
   defp branch_runner(workspace) do

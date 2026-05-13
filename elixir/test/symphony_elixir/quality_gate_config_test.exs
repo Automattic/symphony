@@ -4,9 +4,9 @@ defmodule SymphonyElixir.QualityGateConfigTest do
   alias SymphonyElixir.Config.Schema
 
   describe "quality_gate config" do
-    test "defaults to enabled when section is absent" do
+    test "defaults to disabled when section is absent" do
       assert {:ok, %Schema{quality_gate: gate}} = Config.settings()
-      assert gate.enabled
+      refute gate.enabled
       assert gate.provider == "anthropic"
       assert gate.model == "claude-haiku-4-5-20251001"
       assert gate.min_score == 6

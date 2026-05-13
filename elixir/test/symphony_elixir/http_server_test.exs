@@ -7,6 +7,7 @@ defmodule SymphonyElixir.HttpServerTest do
   alias SymphonyElixir.TestSupport
 
   @allow_remote_bind_env "SYMPHONY_ALLOW_REMOTE_BIND"
+  @allowed_origins_env "SYMPHONY_DASHBOARD_ALLOWED_ORIGINS"
 
   setup do
     TestSupport.stop_default_http_server()
@@ -16,9 +17,11 @@ defmodule SymphonyElixir.HttpServerTest do
 
     File.mkdir_p!(tmp)
     allow_remote_bind = System.get_env(@allow_remote_bind_env)
+    allowed_origins = System.get_env(@allowed_origins_env)
 
     on_exit(fn ->
       restore_env(@allow_remote_bind_env, allow_remote_bind)
+      restore_env(@allowed_origins_env, allowed_origins)
       File.rm_rf(tmp)
     end)
 
@@ -120,6 +123,103 @@ defmodule SymphonyElixir.HttpServerTest do
     end
   end
 
+  describe "live websocket check_origin enforcement" do
+    test "rejects WebSocket upgrades from disallowed origins" do
+      start_supervised!({HttpServer, [host: "127.0.0.1", port: 0]})
+      port = HttpServer.bound_port()
+      assert is_integer(port)
+
+      assert ws_upgrade_status(port, "http://evil.example") in 400..499
+      assert ws_upgrade_status(port, "http://127.0.0.1:#{port}") == 101
+    end
+  end
+
+  describe "allowed_origin?/1" do
+    setup do
+      System.delete_env(@allowed_origins_env)
+      :ok
+    end
+
+    test "accepts loopback hostnames regardless of scheme or port" do
+      for origin <- ~w(
+        http://127.0.0.1
+        http://127.0.0.1:4000
+        https://localhost:8080
+        ws://localhost
+        http://[::1]:4001
+      ) do
+        assert HttpServer.allowed_origin?(URI.parse(origin)),
+               "expected #{origin} to be allowed"
+      end
+    end
+
+    test "rejects arbitrary external origins" do
+      for origin <- ~w(
+        http://evil.example
+        https://attacker.test:8443
+        http://127.0.0.1.evil.example
+        http://localhost.attacker.test
+      ) do
+        refute HttpServer.allowed_origin?(URI.parse(origin)),
+               "expected #{origin} to be rejected"
+      end
+    end
+
+    test "rejects URIs with no host" do
+      refute HttpServer.allowed_origin?(URI.parse("about:blank"))
+      refute HttpServer.allowed_origin?(URI.parse(""))
+    end
+
+    test "allows hosts listed in SYMPHONY_DASHBOARD_ALLOWED_ORIGINS" do
+      System.put_env(@allowed_origins_env, "https://dashboard.internal, http://ops.test:9000")
+
+      assert HttpServer.allowed_origin?(URI.parse("https://dashboard.internal"))
+      assert HttpServer.allowed_origin?(URI.parse("http://ops.test:9000"))
+      refute HttpServer.allowed_origin?(URI.parse("https://evil.example"))
+    end
+
+    test "accepts bare hostnames in the allowlist env" do
+      System.put_env(@allowed_origins_env, "dashboard.internal")
+
+      assert HttpServer.allowed_origin?(URI.parse("https://dashboard.internal:8443"))
+    end
+
+    test "still allows loopback when the env allowlist is set" do
+      System.put_env(@allowed_origins_env, "https://dashboard.internal")
+
+      assert HttpServer.allowed_origin?(URI.parse("http://127.0.0.1:4000"))
+    end
+  end
+
   defp restore_env(name, nil), do: System.delete_env(name)
   defp restore_env(name, value), do: System.put_env(name, value)
+
+  defp ws_upgrade_status(port, origin) do
+    key = :crypto.strong_rand_bytes(16) |> Base.encode64()
+
+    request =
+      [
+        "GET /live/websocket?vsn=2.0.0 HTTP/1.1",
+        "Host: 127.0.0.1:#{port}",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Key: #{key}",
+        "Sec-WebSocket-Version: 13",
+        "Origin: #{origin}",
+        "",
+        ""
+      ]
+      |> Enum.join("\r\n")
+
+    {:ok, socket} =
+      :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false, packet: :raw], 2_000)
+
+    :ok = :gen_tcp.send(socket, request)
+    {:ok, response} = :gen_tcp.recv(socket, 0, 2_000)
+    :gen_tcp.close(socket)
+
+    [status_line | _] = String.split(response, "\r\n", parts: 2)
+    [_http, code | _] = String.split(status_line, " ", parts: 3)
+    String.to_integer(code)
+  end
 end

@@ -7,18 +7,18 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   require Logger
 
-  alias SymphonyElixir.{
-    AgentEnv,
-    AgentSandboxConfig,
-    AuditLog,
-    Codex.DynamicTool,
-    Config,
-    PathSafety,
-    SSH
-  }
-
+  alias SymphonyElixir.AgentEnv
+  alias SymphonyElixir.AgentSandboxConfig
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
+  alias SymphonyElixir.AuditLog
+  alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.DependencyAudit
+  alias SymphonyElixir.Notifications
+  alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.SSH
+  alias SymphonyElixir.Tracker
 
   @initialize_id 1
   @thread_start_id 2
@@ -116,7 +116,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       issue: issue,
       repo_key: Keyword.get(opts, :repo_key),
       audit_log_opts: Keyword.get(opts, :audit_log_opts, []),
-      command_security: command_security
+      command_security: command_security,
+      dependency_gate: dependency_gate_context(workspace, issue, settings, opts)
     }
 
     case start_turn(
@@ -1037,18 +1038,38 @@ defmodule SymphonyElixir.Codex.AppServer do
         :approved
 
       :allow ->
-        approve_or_require(
-          port,
-          id,
-          decision,
-          payload,
-          payload_string,
-          context.on_message,
-          context.metadata,
-          context.auto_approve_requests
-        )
+        command = command_from_payload(payload)
+
+        case maybe_deny_pr_create_for_dependency_hold(
+               port,
+               id,
+               dependency_hold_denial_decision(decision),
+               command,
+               payload,
+               payload_string,
+               context
+             ) do
+          :not_held ->
+            approve_or_require(
+              port,
+              id,
+              decision,
+              payload,
+              payload_string,
+              context.on_message,
+              context.metadata,
+              context.auto_approve_requests
+            )
+
+          held ->
+            held
+        end
     end
   end
+
+  defp dependency_hold_denial_decision("acceptForSession"), do: "deny"
+  defp dependency_hold_denial_decision("approved_for_session"), do: "denied"
+  defp dependency_hold_denial_decision(_decision), do: "reject"
 
   defp approve_or_require(
          port,
@@ -1735,6 +1756,122 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     String.starts_with?(normalized_label, "approve") or
       String.starts_with?(normalized_label, "allow")
+  end
+
+  defp dependency_gate_context(workspace, issue, settings, opts) do
+    %{
+      workspace: workspace,
+      issue: issue,
+      settings: settings,
+      repo_key: Keyword.get(opts, :repo_key),
+      audit_module: Keyword.get(opts, :dependency_audit_module, DependencyAudit),
+      base_ref: Keyword.get(opts, :dependency_audit_base_ref),
+      command_runner: Keyword.get(opts, :dependency_audit_command_runner)
+    }
+  end
+
+  defp maybe_deny_pr_create_for_dependency_hold(
+         port,
+         id,
+         denial_decision,
+         command,
+         payload,
+         payload_string,
+         context
+       ) do
+    dependency_gate = get_in(context, [:approval_context, :dependency_gate])
+
+    if dependency_gate && DependencyAudit.git_pr_create_command?(command) do
+      case audit_pr_create_dependencies(dependency_gate) do
+        {:ok, []} ->
+          :not_held
+
+        {:hold, items} ->
+          send_message(port, %{"id" => id, "result" => %{"decision" => denial_decision}})
+          maybe_move_dependency_hold_issue(dependency_gate)
+          emit_dependency_hold_event(dependency_gate, items)
+
+          emit_message(
+            context.on_message,
+            :dependency_pending_approval,
+            %{payload: payload, raw: payload_string, command: command, items: items},
+            context.metadata
+          )
+
+          :approved
+
+        {:error, reason} ->
+          Logger.error("Dependency audit failed during gh pr create approval: #{inspect(reason)}")
+
+          send_message(port, %{"id" => id, "result" => %{"decision" => denial_decision}})
+          maybe_move_dependency_hold_issue(dependency_gate)
+          emit_dependency_audit_failure_event(dependency_gate, reason)
+
+          emit_message(
+            context.on_message,
+            :dependency_pending_approval,
+            %{payload: payload, raw: payload_string, command: command, error: reason},
+            context.metadata
+          )
+
+          :approved
+      end
+    else
+      :not_held
+    end
+  end
+
+  defp audit_pr_create_dependencies(%{workspace: workspace, audit_module: audit_module} = gate)
+       when is_binary(workspace) and is_atom(audit_module) do
+    audit_opts =
+      [
+        repo_key: gate.repo_key,
+        settings: gate.settings
+      ]
+      |> maybe_put_dependency_gate_option(:base_ref, gate.base_ref)
+      |> maybe_put_dependency_gate_option(:command_runner, gate.command_runner)
+
+    audit_module.audit(workspace, audit_opts)
+  end
+
+  defp audit_pr_create_dependencies(_gate), do: {:ok, []}
+
+  defp maybe_put_dependency_gate_option(opts, _key, nil), do: opts
+  defp maybe_put_dependency_gate_option(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp maybe_move_dependency_hold_issue(%{issue: %{id: issue_id}}) when is_binary(issue_id) do
+    case Tracker.update_issue_state(issue_id, "In Review") do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Failed to move dependency hold issue to In Review: #{inspect(reason)}")
+    end
+  end
+
+  defp maybe_move_dependency_hold_issue(_gate), do: :ok
+
+  defp emit_dependency_hold_event(%{issue: issue} = gate, items) do
+    Notifications.emit_issue_event(
+      :dependency_pending_approval,
+      issue,
+      %{
+        repo_key: gate.repo_key,
+        state: "In Review",
+        reason: "dependency_source_requires_approval",
+        metadata: DependencyAudit.approval_metadata(items)
+      }
+    )
+  end
+
+  defp emit_dependency_audit_failure_event(%{issue: issue} = gate, error) do
+    Notifications.emit_issue_event(
+      :dependency_pending_approval,
+      issue,
+      %{
+        repo_key: gate.repo_key,
+        state: "In Review",
+        reason: "dependency_audit_failed",
+        metadata: %{audit_error: inspect(error)}
+      }
+    )
   end
 
   defp initial_turn_stream_state(command_timeout_ms) do

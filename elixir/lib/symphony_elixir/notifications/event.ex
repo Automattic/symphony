@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Notifications.Event do
     "run_stuck",
     "issue_completed",
     "budget_exceeded",
+    "dependency_pending_approval",
     "reviewer_commented",
     "rework_pushed",
     "ci_failed",

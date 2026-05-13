@@ -10,7 +10,9 @@ defmodule SymphonyElixir.AgentRunner do
     AuditLog,
     CiPoller,
     Config,
+    DependencyAudit,
     Linear.Issue,
+    Notifications,
     PromptBuilder,
     PrReviewPoller,
     SelfReview,
@@ -21,6 +23,7 @@ defmodule SymphonyElixir.AgentRunner do
   }
 
   @dev_server_pid_key {__MODULE__, :verification_dev_server_pid}
+  @dependency_review_state "In Review"
 
   @type worker_host :: String.t() | nil
 
@@ -223,21 +226,27 @@ defmodule SymphonyElixir.AgentRunner do
              settings: Keyword.fetch!(opts, :settings),
              repo_key: Keyword.get(opts, :repo_key),
              run_id: Keyword.get(opts, :run_id),
-             linear_comment_registry: Keyword.get(opts, :linear_comment_registry)
+             linear_comment_registry: Keyword.get(opts, :linear_comment_registry),
+             dependency_audit_module: Keyword.get(opts, :dependency_audit_module),
+             dependency_audit_base_ref: Keyword.get(opts, :dependency_audit_base_ref),
+             dependency_audit_command_runner: Keyword.get(opts, :dependency_audit_command_runner)
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher, opts) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          run_context = %{run_context | issue: refreshed_issue}
-          continue_active_issue(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns)
+      case maybe_hold_for_dependency_approval(workspace, issue, turn_session, opts) do
+        :ok ->
+          continue_after_completed_turn(
+            issue,
+            issue_state_fetcher,
+            opts,
+            run_context,
+            agent_module,
+            app_session,
+            turn_number,
+            max_turns
+          )
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-
-          :ok
-
-        {:done, _refreshed_issue} ->
+        {:hold, _items} ->
           :ok
 
         {:error, reason} ->
@@ -245,6 +254,88 @@ defmodule SymphonyElixir.AgentRunner do
       end
     end
   end
+
+  defp continue_after_completed_turn(issue, issue_state_fetcher, opts, run_context, agent_module, app_session, turn_number, max_turns) do
+    case continue_with_issue?(issue, issue_state_fetcher, opts) do
+      {:continue, refreshed_issue} when turn_number < max_turns ->
+        run_context = %{run_context | issue: refreshed_issue}
+        continue_active_issue(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns)
+
+      {:continue, refreshed_issue} ->
+        Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+
+        :ok
+
+      {:done, _refreshed_issue} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_hold_for_dependency_approval(workspace, issue, turn_session, opts) do
+    audit_module = Keyword.get(opts, :dependency_audit_module, DependencyAudit)
+
+    audit_opts =
+      opts
+      |> Keyword.take([:repo_key, :settings])
+      |> maybe_put_option(:base_ref, Keyword.get(opts, :dependency_audit_base_ref))
+      |> maybe_put_option(:command_runner, Keyword.get(opts, :dependency_audit_command_runner))
+
+    case audit_module.audit(workspace, audit_opts) do
+      {:ok, []} ->
+        :ok
+
+      {:hold, items} ->
+        hold_dependency_approval(issue, items, turn_session, opts)
+
+      {:error, reason} ->
+        {:error, {:dependency_audit_failed, reason}}
+    end
+  end
+
+  defp hold_dependency_approval(%Issue{id: issue_id} = issue, items, turn_session, opts)
+       when is_binary(issue_id) do
+    case Tracker.update_issue_state(issue_id, @dependency_review_state) do
+      :ok ->
+        Notifications.emit_issue_event(
+          :dependency_pending_approval,
+          issue,
+          dependency_approval_attrs(items, turn_session, opts)
+        )
+
+        Logger.warning("Dependency approval required for #{issue_context(issue)} items=#{length(items)}")
+        {:hold, items}
+
+      {:error, reason} ->
+        {:error, {:dependency_approval_state_update_failed, reason}}
+    end
+  end
+
+  defp hold_dependency_approval(issue, items, turn_session, opts) do
+    Notifications.emit_issue_event(
+      :dependency_pending_approval,
+      issue,
+      dependency_approval_attrs(items, turn_session, opts)
+    )
+
+    {:hold, items}
+  end
+
+  defp dependency_approval_attrs(items, turn_session, opts) do
+    %{
+      repo_key: Keyword.get(opts, :repo_key),
+      run_id: Keyword.get(opts, :run_id),
+      session_id: turn_session[:session_id],
+      state: @dependency_review_state,
+      reason: "dependency_source_requires_approval",
+      metadata: DependencyAudit.approval_metadata(items)
+    }
+  end
+
+  defp maybe_put_option(opts, _key, nil), do: opts
+  defp maybe_put_option(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp continue_active_issue(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns) do
     case maybe_self_review_next_turn(run_context, turn_number, max_turns) do

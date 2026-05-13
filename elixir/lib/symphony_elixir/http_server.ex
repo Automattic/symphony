@@ -11,6 +11,8 @@ defmodule SymphonyElixir.HttpServer do
   @secret_key_min_bytes 64
   @secret_key_env "SYMPHONY_SECRET_KEY_BASE"
   @allow_remote_bind_env "SYMPHONY_ALLOW_REMOTE_BIND"
+  @allowed_origins_env "SYMPHONY_DASHBOARD_ALLOWED_ORIGINS"
+  @loopback_hosts ~w(localhost 127.0.0.1 ::1)
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -63,6 +65,57 @@ defmodule SymphonyElixir.HttpServer do
     _error -> nil
   catch
     :exit, _reason -> nil
+  end
+
+  @doc """
+  Phoenix `check_origin` callback for the dashboard WebSocket.
+
+  Accepts loopback origins unconditionally, the configured `server.host`,
+  and any host listed in `SYMPHONY_DASHBOARD_ALLOWED_ORIGINS` (comma-separated,
+  hostnames only — scheme is ignored, port is irrelevant).
+  """
+  @spec allowed_origin?(URI.t()) :: boolean()
+  def allowed_origin?(%URI{host: host}) when is_binary(host) and host != "" do
+    host_down = String.downcase(host)
+    host_down in @loopback_hosts or host_down in extra_allowed_hosts()
+  end
+
+  def allowed_origin?(_uri), do: false
+
+  defp extra_allowed_hosts do
+    configured_server_host() ++ env_allowed_hosts()
+  end
+
+  defp configured_server_host do
+    case Config.server_host() do
+      h when is_binary(h) and h != "" -> [String.downcase(h)]
+      _ -> []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp env_allowed_hosts do
+    @allowed_origins_env
+    |> System.get_env()
+    |> parse_origin_env()
+  end
+
+  defp parse_origin_env(nil), do: []
+
+  defp parse_origin_env(value) when is_binary(value) do
+    value
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&host_of/1)
+  end
+
+  defp host_of(value) do
+    case URI.parse(value) do
+      %URI{host: host} when is_binary(host) and host != "" -> String.downcase(host)
+      _ -> value |> String.downcase() |> String.trim_leading("//")
+    end
   end
 
   defp parse_host({_, _, _, _} = ip), do: {:ok, ip}

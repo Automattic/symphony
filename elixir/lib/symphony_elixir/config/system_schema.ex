@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   @primary_key false
   @allowed_keys ~w(
-    agent ci dispatch learnings notifications observability polling pr_review quality_gate repos self_review
+    agent ci dependencies dispatch learnings notifications observability polling pr_review quality_gate repos self_review
     server token_budget tracker verification watchdog worker workspace
   )
 
@@ -133,6 +133,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     embeds_one(:quality_gate, Schema.QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:learnings, Schema.Learnings, on_replace: :update, defaults_to_struct: true)
     embeds_one(:self_review, Schema.SelfReview, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:dependencies, Schema.Dependencies, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Schema.Notifications, on_replace: :update, defaults_to_struct: true)
     embeds_many(:repos, Repo, on_replace: :delete)
   end
@@ -175,6 +176,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
       "quality_gate" => struct_to_map(system_config.quality_gate),
       "learnings" => struct_to_map(system_config.learnings),
       "self_review" => struct_to_map(system_config.self_review),
+      "dependencies" => struct_to_map(system_config.dependencies),
       "notifications" => notifications_to_map(system_config.notifications)
     }
     |> drop_nil_values()
@@ -233,6 +235,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast_embed(:quality_gate, with: &Schema.QualityGate.changeset/2)
     |> cast_embed(:learnings, with: &Schema.Learnings.changeset/2)
     |> cast_embed(:self_review, with: &Schema.SelfReview.changeset/2)
+    |> cast_embed(:dependencies, with: &Schema.Dependencies.changeset/2)
     |> cast_embed(:notifications, with: &Schema.Notifications.changeset/2)
     |> cast_embed(:repos, with: &Repo.changeset/2, required: true)
     |> validate_length(:repos, min: 1)

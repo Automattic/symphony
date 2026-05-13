@@ -234,6 +234,33 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert nil_trash_dir.trash_dir == ".trash"
   end
 
+  test "dependency allow-list config defaults and normalizes entries" do
+    assert Config.settings!().dependencies.allow_registries == []
+    assert Config.settings!().dependencies.allow_git_sources == []
+    assert Config.settings!().dependencies.allow_path_sources == []
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      dependencies: %{
+        allow_registries: [" private-hex.internal ", "", "private-hex.internal"],
+        allow_git_sources: [" github.com/acme/* ", "github.com/acme/*"],
+        allow_path_sources: nil
+      }
+    )
+
+    dependencies = Config.settings!().dependencies
+
+    assert dependencies.allow_registries == ["private-hex.internal"]
+    assert dependencies.allow_git_sources == ["github.com/acme/*"]
+    assert dependencies.allow_path_sources == []
+
+    nil_allow_list =
+      %Schema.Dependencies{allow_path_sources: ["../old"]}
+      |> Schema.Dependencies.changeset(%{allow_path_sources: nil})
+      |> Changeset.apply_changes()
+
+    assert nil_allow_list.allow_path_sources == []
+  end
+
   test "workspace lifecycle rejects unsafe trash directories" do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_lifecycle: %{orphan_action: "trash", trash_dir: "../outside"}

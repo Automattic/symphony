@@ -11,16 +11,19 @@ defmodule SymphonyElixir.PathsTest do
   setup do
     previous_state_env = System.get_env("SYMPHONY_STATE_ROOT")
     previous_logs_env = System.get_env("SYMPHONY_LOGS_ROOT")
+    previous_burrito_env = System.get_env("__BURRITO")
     previous_env = Map.new(@state_keys ++ @logs_keys ++ @release_keys, &{&1, Application.get_env(@app, &1)})
 
     System.delete_env("SYMPHONY_STATE_ROOT")
     System.delete_env("SYMPHONY_LOGS_ROOT")
+    System.delete_env("__BURRITO")
     Enum.each(@state_keys ++ @logs_keys ++ @release_keys, &Application.delete_env(@app, &1))
     Application.put_env(@app, :running_as_release, false)
 
     on_exit(fn ->
       restore_env("SYMPHONY_STATE_ROOT", previous_state_env)
       restore_env("SYMPHONY_LOGS_ROOT", previous_logs_env)
+      restore_env("__BURRITO", previous_burrito_env)
 
       Enum.each(previous_env, fn
         {key, nil} -> Application.delete_env(@app, key)
@@ -50,6 +53,17 @@ defmodule SymphonyElixir.PathsTest do
 
   test "release builds default state root to a release subdirectory" do
     Application.put_env(@app, :running_as_release, true)
+
+    assert Paths.state_root() ==
+             Path.join([System.user_home!(), "Library", "Application Support", "symphony", "release"])
+
+    assert Paths.logs_root() ==
+             Path.join([System.user_home!(), "Library", "Logs", "symphony", "release"])
+  end
+
+  test "burrito runtime env defaults roots to a release subdirectory" do
+    Application.delete_env(@app, :running_as_release)
+    System.put_env("__BURRITO", "1")
 
     assert Paths.state_root() ==
              Path.join([System.user_home!(), "Library", "Application Support", "symphony", "release"])

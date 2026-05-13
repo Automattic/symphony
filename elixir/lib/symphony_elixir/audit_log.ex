@@ -99,6 +99,23 @@ defmodule SymphonyElixir.AuditLog do
     )
   end
 
+  @spec record_refused_agent_action(map(), event_attrs(), keyword()) :: :ok | {:error, term()}
+  def record_refused_agent_action(issue, attrs, opts \\ [])
+      when is_map(issue) and is_map(attrs) do
+    record(
+      attrs
+      |> normalize_value()
+      |> Map.merge(%{
+        repo_key: repo_key(issue, opts),
+        issue_id: issue_id(issue),
+        issue_identifier: issue_identifier(issue),
+        run_id: Keyword.get(opts, :run_id),
+        event_type: "refused_agent_action"
+      }),
+      opts
+    )
+  end
+
   @spec record_linear_state_transition(map(), map(), String.t() | nil, keyword()) ::
           :ok | {:error, term()}
   def record_linear_state_transition(previous_issue, refreshed_issue, run_id, opts \\ [])

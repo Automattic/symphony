@@ -187,6 +187,119 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server denies gh pr create when dependency audit holds" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-dependency-pr-gate-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-PR-GATE")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-pr-gate.trace")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(Path.join(workspace, "mix.exs"), """
+      defmodule Demo.MixProject do
+        use Mix.Project
+        def project, do: []
+        def application, do: []
+        defp deps, do: [{:jason, "~> 1.4"}]
+      end
+      """)
+
+      System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+      System.cmd("git", ["-C", workspace, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", workspace, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", workspace, "add", "mix.exs"])
+      System.cmd("git", ["-C", workspace, "commit", "-m", "base"])
+      System.cmd("git", ["-C", workspace, "update-ref", "refs/remotes/origin/main", "HEAD"])
+
+      File.write!(Path.join(workspace, "mix.exs"), """
+      defmodule Demo.MixProject do
+        use Mix.Project
+        def project, do: []
+        def application, do: []
+        defp deps, do: [{:jason, "~> 1.4"}, {:helper, git: "https://github.com/attacker/helper.git"}]
+      end
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_PR_GATE_TRACE:-/tmp/codex-pr-gate.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-pr-gate"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-pr-gate"}}}'
+            printf '%s\\n' '{"id":44,"method":"item/commandExecution/requestApproval","params":{"parsedCmd":"gh pr create --title test"}}'
+            ;;
+          5)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_PR_GATE_TRACE", trace_file)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn ->
+        System.delete_env("SYMP_TEST_PR_GATE_TRACE")
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_approval_policy: "auto_approve_all"
+      )
+
+      assert :ok = SymphonyElixir.Notifications.subscribe()
+
+      issue = %Issue{
+        id: "issue-pr-gate",
+        identifier: "MT-PR-GATE",
+        title: "PR gate",
+        description: "Block risky dependency PR",
+        state: "In Progress"
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Open PR", issue)
+
+      trace = File.read!(trace_file)
+      assert trace =~ ~s("id":44)
+      assert trace =~ ~s("decision":"deny")
+
+      assert_receive {:memory_tracker_state_update, "issue-pr-gate", "In Review"}, 500
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "dependency_pending_approval",
+                        metadata: %{dependency_changes: [%{package: "helper", reason: "untrusted_git_source"}]}
+                      }},
+                     500
+    after
+      System.delete_env("SYMP_TEST_PR_GATE_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks child processes as Symphony agent runtime" do
     test_root =
       Path.join(

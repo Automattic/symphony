@@ -904,6 +904,46 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Dependencies do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @type t :: %__MODULE__{}
+
+    @primary_key false
+    @fields [:allow_registries, :allow_git_sources, :allow_path_sources]
+
+    embedded_schema do
+      field(:allow_registries, {:array, :string}, default: [])
+      field(:allow_git_sources, {:array, :string}, default: [])
+      field(:allow_path_sources, {:array, :string}, default: [])
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, @fields, empty_values: [])
+      |> normalize_string_list(:allow_registries)
+      |> normalize_string_list(:allow_git_sources)
+      |> normalize_string_list(:allow_path_sources)
+    end
+
+    defp normalize_string_list(changeset, field) do
+      update_change(changeset, field, fn
+        values when is_list(values) ->
+          values
+          |> Enum.map(&to_string/1)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+
+        nil ->
+          []
+      end)
+    end
+  end
+
   defmodule Notifications do
     @moduledoc false
     use Ecto.Schema
@@ -926,6 +966,7 @@ defmodule SymphonyElixir.Config.Schema do
         "run_failed",
         "issue_completed",
         "budget_exceeded",
+        "dependency_pending_approval",
         "reviewer_commented",
         "rework_pushed",
         "ci_failed",
@@ -1102,6 +1143,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:learnings, Learnings, on_replace: :update, defaults_to_struct: true)
     embeds_one(:self_review, SelfReview, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:dependencies, Dependencies, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Notifications, on_replace: :update, defaults_to_struct: true)
   end
 
@@ -1263,6 +1305,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
     |> cast_embed(:learnings, with: &Learnings.changeset/2)
     |> cast_embed(:self_review, with: &SelfReview.changeset/2)
+    |> cast_embed(:dependencies, with: &Dependencies.changeset/2)
     |> cast_embed(:notifications, with: &Notifications.changeset/2)
   end
 

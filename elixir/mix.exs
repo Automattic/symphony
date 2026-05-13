@@ -70,7 +70,9 @@ defmodule SymphonyElixir.MixProject do
           Mix.Tasks.Symphony.Pause,
           Mix.Tasks.Symphony.Audit,
           Mix.Tasks.Symphony.Resume,
-          Mix.Tasks.Symphony.Stop
+          Mix.Tasks.Symphony.Stop,
+          SymphonyElixir.AgentTools.Linear,
+          SymphonyElixir.AgentTools.Linear.CommentRegistry
         ]
       ],
       test_ignore_filters: [

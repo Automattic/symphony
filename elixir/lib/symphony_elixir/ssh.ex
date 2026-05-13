@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SSH do
   def start_port(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
     with {:ok, executable} <- ssh_executable() do
       line_bytes = Keyword.get(opts, :line)
+      env = Keyword.get(opts, :env)
 
       port_opts =
         [
@@ -21,6 +22,7 @@ defmodule SymphonyElixir.SSH do
           args: Enum.map(ssh_args(host, command), &String.to_charlist/1)
         ]
         |> maybe_put_line_option(line_bytes)
+        |> maybe_put_env_option(env)
 
       {:ok, Port.open({:spawn_executable, String.to_charlist(executable)}, port_opts)}
     end
@@ -50,6 +52,9 @@ defmodule SymphonyElixir.SSH do
 
   defp maybe_put_line_option(port_opts, nil), do: port_opts
   defp maybe_put_line_option(port_opts, line_bytes), do: Keyword.put(port_opts, :line, line_bytes)
+
+  defp maybe_put_env_option(port_opts, nil), do: port_opts
+  defp maybe_put_env_option(port_opts, env) when is_list(env), do: Keyword.put(port_opts, :env, env)
 
   defp maybe_put_config(args) do
     case System.get_env("SYMPHONY_SSH_CONFIG") do

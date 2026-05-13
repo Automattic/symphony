@@ -311,7 +311,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       ssh_module().start_port(
         worker_host,
         remote_launch_command(workspace, command_words, prompt),
-        line: @port_line_bytes
+        line: @port_line_bytes,
+        env: AgentEnv.build()
       )
     end
   end

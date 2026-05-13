@@ -2426,6 +2426,7 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     previous_path = System.get_env("PATH")
+    on_exit(fn -> restore_env("PATH", previous_path) end)
 
     try do
       trace_file = Path.join(test_root, "ssh.trace")

@@ -93,6 +93,16 @@ defmodule SymphonyElixir.AgentEnvTest do
     end
   end
 
+  describe "runtime marker accessors" do
+    test "runtime_marker_name/0 returns SYMPHONY_AGENT_RUNTIME" do
+      assert AgentEnv.runtime_marker_name() == "SYMPHONY_AGENT_RUNTIME"
+    end
+
+    test "runtime_marker_value/0 returns \"1\"" do
+      assert AgentEnv.runtime_marker_value() == "1"
+    end
+  end
+
   describe "build/0" do
     test "reads from the real process env and strips an injected secret" do
       key = "SYMPHONY_AGENT_ENV_TEST_SECRET_#{System.unique_integer([:positive])}"

@@ -245,7 +245,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_port(workspace, worker_host, settings) when is_binary(worker_host) do
     remote_command = remote_launch_command(workspace, settings)
-    SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
+    SSH.start_port(worker_host, remote_command, line: @port_line_bytes, env: AgentEnv.build())
   end
 
   defp remote_launch_command(workspace, settings) when is_binary(workspace) do

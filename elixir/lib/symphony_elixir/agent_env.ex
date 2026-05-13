@@ -48,12 +48,6 @@ defmodule SymphonyElixir.AgentEnv do
   def runtime_marker_value, do: @agent_runtime_env_value
 
   @doc """
-  Returns the list of env var names that are passed through to the agent.
-  """
-  @spec passthrough() :: [String.t()]
-  def passthrough, do: @passthrough
-
-  @doc """
   Builds the env list from the current process environment.
   """
   @spec build() :: [{charlist(), charlist() | false}]

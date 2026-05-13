@@ -89,6 +89,10 @@ defmodule SymphonyElixir.CoreTest do
 
     assert ci_config.escalation_state == "In Review"
 
+    write_workflow_file!(Workflow.workflow_file_path(), ci: %{enabled: true, max_retries: 0})
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "ci.max_retries"
+
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "agent.max_turns"

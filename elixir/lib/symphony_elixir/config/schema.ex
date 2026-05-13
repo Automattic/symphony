@@ -567,7 +567,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> normalize_escalation_state()
       |> validate_number(:poll_interval_ms, greater_than: 0)
       |> validate_number(:log_excerpt_lines, greater_than: 0)
-      |> validate_number(:max_retries, greater_than_or_equal_to: 0)
+      |> validate_number(:max_retries, greater_than_or_equal_to: 1)
     end
 
     defp normalize_escalation_state(changeset) do

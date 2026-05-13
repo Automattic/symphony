@@ -552,10 +552,6 @@ defmodule SymphonyElixir.CiPoller do
         %{
           status: "state_transition_error",
           failed_checks: failed_checks,
-          ci_retry_count: ci_retry_count(record),
-          dispatched_shas: string_list(Map.get(record, :dispatched_shas, [])),
-          ci_failure: Map.get(record, :ci_failure),
-          log_excerpt: Map.get(record, :log_excerpt),
           last_action: action,
           last_action_at: nil
         },
@@ -708,6 +704,7 @@ defmodule SymphonyElixir.CiPoller do
 
   defp log_excerpt(log, line_limit) when is_binary(log) and is_integer(line_limit) and line_limit > 0 do
     log
+    |> sanitize_utf8()
     |> String.split("\n")
     |> Enum.take(-line_limit)
     |> prefer_error_start()
@@ -715,6 +712,20 @@ defmodule SymphonyElixir.CiPoller do
   end
 
   defp log_excerpt(_log, _line_limit), do: ""
+
+  defp sanitize_utf8(binary) when is_binary(binary) do
+    if String.valid?(binary), do: binary, else: replace_invalid_bytes(binary, <<>>)
+  end
+
+  defp replace_invalid_bytes(<<>>, acc), do: acc
+
+  defp replace_invalid_bytes(<<char::utf8, rest::binary>>, acc) do
+    replace_invalid_bytes(rest, <<acc::binary, char::utf8>>)
+  end
+
+  defp replace_invalid_bytes(<<_byte, rest::binary>>, acc) do
+    replace_invalid_bytes(rest, <<acc::binary, ??::utf8>>)
+  end
 
   defp prefer_error_start(lines) do
     case Enum.find_index(lines, &error_line?/1) do

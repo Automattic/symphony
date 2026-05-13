@@ -19,8 +19,9 @@ defmodule SymphonyElixir.Notifications.Channels.Webhook do
 
   defp post_json(url, payload, headers, opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+    request_opts = [json: payload, headers: headers, receive_timeout: timeout_ms, redirect: false]
 
-    case request_fun(opts).(url, payload, headers, timeout_ms) do
+    case request_fun(opts).(url, payload, headers, timeout_ms, request_opts) do
       {:ok, %{status: status}} when status in 200..299 ->
         :ok
 
@@ -36,9 +37,15 @@ defmodule SymphonyElixir.Notifications.Channels.Webhook do
   end
 
   defp request_fun(opts) do
-    Keyword.get(opts, :request_fun, fn url, payload, headers, timeout_ms ->
-      Req.post(url, json: payload, headers: headers, receive_timeout: timeout_ms)
-    end)
+    configured_request_fun = Keyword.get(opts, :request_fun)
+
+    fn url, payload, headers, timeout_ms, request_opts ->
+      case configured_request_fun do
+        nil -> Req.post(url, request_opts)
+        request_fun when is_function(request_fun, 5) -> request_fun.(url, payload, headers, timeout_ms, request_opts)
+        request_fun when is_function(request_fun, 4) -> request_fun.(url, payload, headers, timeout_ms)
+      end
+    end
   end
 
   defp channel_headers(%{headers: headers}) when is_map(headers), do: Map.to_list(headers)

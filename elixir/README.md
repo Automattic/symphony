@@ -67,6 +67,12 @@ mise exec -- mix build
 mise exec -- ./bin/symphony
 ```
 
+**Exposing the dashboard remotely.** The HTTP dashboard and `/api/v1/*` endpoints have no built-in
+authentication. Do not set `SYMPHONY_SERVER_HOST=0.0.0.0` directly. If you need remote access, keep
+the bind on `127.0.0.1` and front the port with a reverse proxy that handles auth, such as
+Tailscale, Cloudflare Access, nginx basic auth, or similar. If you know what you're doing and want
+to bind directly, set `SYMPHONY_ALLOW_REMOTE_BIND=1`.
+
 ## Install the binary
 
 Packaged macOS binaries are built with Burrito and include the Erlang runtime:
@@ -393,6 +399,13 @@ Linear issue, then marks the project completed so the run remains visible in Lin
 Export it in the same shell that starts Symphony, then restart the process. If your workflow sets
 `tracker.api_key: $LINEAR_API_KEY`, Symphony reads the environment value at startup; it does not
 prompt for the token or reload a missing token into a running process.
+
+### Where are BEAM crash dumps in releases?
+
+Production releases set `ERL_CRASH_DUMP_BYTES=0` during runtime startup. This prevents full
+`erl_crash.dump` heap snapshots from capturing prompts, HTTP bodies, or API tokens. Post-mortem
+debugging should use Logger output, run-store state, metrics, or an attached observer session
+instead of sharing crash dump files.
 
 ### `mise` is missing
 

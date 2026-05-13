@@ -2,6 +2,7 @@ defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
   alias SymphonyElixir.Config.Schema.Ci, as: CiConfig
   alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
+  alias SymphonyElixir.Secret
 
   defmodule SelfReviewSequenceProvider do
     def review(request, _settings) do
@@ -345,7 +346,7 @@ defmodule SymphonyElixir.CoreTest do
       agent_command: "/bin/sh app-server"
     )
 
-    assert Config.settings!().tracker.api_key == env_api_key
+    assert Config.settings!().tracker.api_key |> Secret.unwrap() == env_api_key
     assert Config.settings!().tracker.project_slug == "project"
     assert :ok = Config.validate!()
   end

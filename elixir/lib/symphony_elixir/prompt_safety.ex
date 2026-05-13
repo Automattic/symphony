@@ -7,9 +7,11 @@ defmodule SymphonyElixir.PromptSafety do
   @description_limit 10_000
   @comment_limit 5_000
   @acceptance_criteria_limit 10_000
+  @ci_log_excerpt_limit 20_000
   @prompt_injection_warning_patterns [
     ~r/^\s*you are\b/i,
     ~r/\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?\b/i,
+    ~r/<\/?\s*(?:system|developer|assistant|user)\s*>/i,
     ~r/<\|[^|\r\n]{0,200}\|>/,
     ~r/^\s*(?:system|developer|assistant|user)\s*:/im,
     ~r/^\s*[#]{1,6}\s*(?:instruction|instructions|system prompt|developer message|jailbreak)\b/im,
@@ -31,6 +33,9 @@ defmodule SymphonyElixir.PromptSafety do
   @spec linear_issue_acceptance_criteria(String.t()) :: String.t()
   def linear_issue_acceptance_criteria(value),
     do: linear_block(value, "linear_issue_acceptance_criteria", @acceptance_criteria_limit)
+
+  @spec ci_failure_log_excerpt(String.t()) :: String.t()
+  def ci_failure_log_excerpt(value), do: linear_block(value, "ci_failure_log_excerpt", @ci_log_excerpt_limit)
 
   @spec linear_block(String.t(), String.t(), pos_integer()) :: String.t()
   def linear_block(value, tag, limit) when is_binary(value) and is_binary(tag) and is_integer(limit) and limit > 0 do

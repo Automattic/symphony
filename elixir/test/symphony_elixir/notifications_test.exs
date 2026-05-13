@@ -8,6 +8,7 @@ defmodule SymphonyElixir.NotificationsTest do
   alias SymphonyElixir.Notifications.Event
   alias SymphonyElixir.Notifications.Formatter
   alias SymphonyElixir.Notifications.Notifier
+  alias SymphonyElixir.Secret
   alias SymphonyElixir.Workflow
 
   test "notifications default to disabled while notifier remains supervised" do
@@ -36,6 +37,8 @@ defmodule SymphonyElixir.NotificationsTest do
 
   test "notifier delivers non-primary repo PubSub events" do
     test_pid = self()
+
+    SymphonyElixir.TestSupport.ensure_pubsub_started!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
       notifications: %{
@@ -116,11 +119,15 @@ defmodule SymphonyElixir.NotificationsTest do
     assert [
              %{
                kind: "slack",
-               webhook_url: "https://hooks.slack.test/services/T000/B000/XXX",
+               webhook_url: slack_webhook_url,
                events: ["pr_opened", "reviewer_commented", "rework_pushed", "run_failed"]
              },
-             %{kind: "webhook", url: "https://notify.test/events", headers: %{"Authorization" => "Bearer token"}, events: nil}
+             %{kind: "webhook", url: webhook_url, headers: %{"Authorization" => auth_header}, events: nil}
            ] = config.notifications.channels
+
+    assert Secret.unwrap(slack_webhook_url) == "https://hooks.slack.test/services/T000/B000/XXX"
+    assert Secret.unwrap(webhook_url) == "https://notify.test/events"
+    assert Secret.unwrap(auth_header) == "Bearer token"
 
     assert Enum.member?(SymphonyElixir.Application.child_specs_for_runtime(%{}), Notifier)
   end
@@ -154,12 +161,16 @@ defmodule SymphonyElixir.NotificationsTest do
                url: nil,
                events: ["rework_pushed", "run_failed"],
                headers: %{
-                 "Authorization" => "Bearer token",
-                 "Count" => "2",
-                 "Enabled" => "true"
+                 "Authorization" => auth_header,
+                 "Count" => count_header,
+                 "Enabled" => enabled_header
                }
              }
            ] = Config.settings!().notifications.channels
+
+    assert Secret.unwrap(auth_header) == "Bearer token"
+    assert Secret.unwrap(count_header) == "2"
+    assert Secret.unwrap(enabled_header) == "true"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       notifications: %{

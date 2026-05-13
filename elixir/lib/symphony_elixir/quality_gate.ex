@@ -27,8 +27,7 @@ defmodule SymphonyElixir.QualityGate do
 
   require Logger
 
-  alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.{AuditLog, Config.Schema, Linear.Issue, Secret}
 
   @anthropic_provider "anthropic"
   @openai_provider "openai"
@@ -282,7 +281,7 @@ defmodule SymphonyElixir.QualityGate do
   def provider_settings(%Schema.QualityGate{provider: provider, model: model})
       when is_binary(provider) and is_binary(model) do
     case api_key_for(provider) do
-      {:ok, api_key} -> {:ok, %{provider: provider, model: model, api_key: api_key}}
+      {:ok, api_key} -> {:ok, %{provider: provider, model: model, api_key: Secret.wrap(api_key)}}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -438,7 +437,7 @@ defmodule SymphonyElixir.QualityGate do
         maybe_request_clarification(issue, config, cache, now, score, reason, questions)
 
       true ->
-        Logger.info("QualityGate skipped issue=#{issue.identifier || issue.id} score=#{score} threshold=#{threshold} reason=#{inspect(reason)}")
+        Logger.info("QualityGate skipped issue=#{issue.identifier || issue.id} score=#{score} threshold=#{threshold} reason=#{AuditLog.redact_for_log(reason)}")
 
         cache_next = put_cache(cache, issue, score, reason, false, now)
         entry = build_skip_entry(issue, Map.get(cache_next, issue.id))
@@ -456,7 +455,7 @@ defmodule SymphonyElixir.QualityGate do
     max_rounds = max_clarification_rounds(config)
 
     if rounds_asked >= max_rounds do
-      Logger.info("QualityGate skipped issue=#{issue.identifier || issue.id} score=#{score} threshold=#{threshold} rounds_asked=#{rounds_asked} reason=#{inspect(reason)}")
+      Logger.info("QualityGate skipped issue=#{issue.identifier || issue.id} score=#{score} threshold=#{threshold} rounds_asked=#{rounds_asked} reason=#{AuditLog.redact_for_log(reason)}")
 
       cache_next =
         put_cache(cache, issue, score, reason, false, now,
@@ -489,13 +488,13 @@ defmodule SymphonyElixir.QualityGate do
   end
 
   defp handle_provider_error(%Issue{} = issue, %Schema.QualityGate{on_error: "skip"}, cache, reason) do
-    Logger.warning("QualityGate LLM call failed; on_error=skip issue=#{issue.identifier || issue.id} reason=#{inspect(reason)}")
+    Logger.warning("QualityGate LLM call failed; on_error=skip issue=#{issue.identifier || issue.id} reason=#{AuditLog.redact_for_log(reason)}")
 
     {:skip, build_error_skip_entry(issue, reason), cache}
   end
 
   defp handle_provider_error(%Issue{} = issue, _config, cache, reason) do
-    Logger.warning("QualityGate LLM call failed; on_error=pass issue=#{issue.identifier || issue.id} reason=#{inspect(reason)}")
+    Logger.warning("QualityGate LLM call failed; on_error=pass issue=#{issue.identifier || issue.id} reason=#{AuditLog.redact_for_log(reason)}")
 
     {:pass, Map.delete(cache, issue.id)}
   end
@@ -576,7 +575,7 @@ defmodule SymphonyElixir.QualityGate do
       url: issue.url,
       updated_at: issue.updated_at,
       comment_signature: comment_activity_signature(issue),
-      reason: "LLM call failed: #{inspect(error)}",
+      reason: "LLM call failed: #{AuditLog.redact_for_log(error)}",
       error: error,
       comment_posted?: false
     }

@@ -2,6 +2,7 @@ defmodule SymphonyElixir.Notifications.Channels.Slack do
   @moduledoc false
 
   alias SymphonyElixir.Notifications.{Event, Formatter}
+  alias SymphonyElixir.Secret
 
   @default_timeout_ms 5_000
   @default_retry_after_ms 1_000
@@ -10,9 +11,15 @@ defmodule SymphonyElixir.Notifications.Channels.Slack do
   def deliver(channel, event), do: deliver(channel, event, [])
 
   @spec deliver(map(), Event.t(), keyword()) :: :ok | {:retry, non_neg_integer()} | {:error, term()}
-  def deliver(%{webhook_url: url}, %Event{} = event, opts) when is_binary(url) do
-    payload = Formatter.slack_payload(event, redact_titles: Keyword.get(opts, :redact_titles, false))
-    post_json(url, payload, [], opts)
+  def deliver(%{webhook_url: url}, %Event{} = event, opts) do
+    case Secret.unwrap(url) do
+      url when is_binary(url) ->
+        payload = Formatter.slack_payload(event, redact_titles: Keyword.get(opts, :redact_titles, false))
+        post_json(url, payload, [], opts)
+
+      _ ->
+        {:error, :missing_slack_webhook_url}
+    end
   end
 
   def deliver(_channel, _event, _opts), do: {:error, :missing_slack_webhook_url}

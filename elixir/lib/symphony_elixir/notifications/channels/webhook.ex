@@ -2,6 +2,7 @@ defmodule SymphonyElixir.Notifications.Channels.Webhook do
   @moduledoc false
 
   alias SymphonyElixir.Notifications.{Event, Formatter}
+  alias SymphonyElixir.Secret
 
   @default_timeout_ms 5_000
 
@@ -9,10 +10,16 @@ defmodule SymphonyElixir.Notifications.Channels.Webhook do
   def deliver(channel, event), do: deliver(channel, event, [])
 
   @spec deliver(map(), Event.t(), keyword()) :: :ok | {:retry, non_neg_integer()} | {:error, term()}
-  def deliver(%{url: url} = channel, %Event{} = event, opts) when is_binary(url) do
-    payload = Formatter.webhook_payload(event, redact_titles: Keyword.get(opts, :redact_titles, false))
-    headers = channel_headers(channel)
-    post_json(url, payload, headers, opts)
+  def deliver(%{url: url} = channel, %Event{} = event, opts) do
+    case Secret.unwrap(url) do
+      url when is_binary(url) ->
+        payload = Formatter.webhook_payload(event, redact_titles: Keyword.get(opts, :redact_titles, false))
+        headers = channel_headers(channel)
+        post_json(url, payload, headers, opts)
+
+      _ ->
+        {:error, :missing_webhook_url}
+    end
   end
 
   def deliver(_channel, _event, _opts), do: {:error, :missing_webhook_url}
@@ -48,6 +55,9 @@ defmodule SymphonyElixir.Notifications.Channels.Webhook do
     end
   end
 
-  defp channel_headers(%{headers: headers}) when is_map(headers), do: Map.to_list(headers)
+  defp channel_headers(%{headers: headers}) when is_map(headers) do
+    Enum.map(headers, fn {key, value} -> {key, Secret.unwrap(value) || ""} end)
+  end
+
   defp channel_headers(_channel), do: []
 end

@@ -88,22 +88,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-1001")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-supported-turn-policies.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-supported-turn-policies.trace}"
+      trace_file="#{trace_file}"
       count=0
 
       while IFS= read -r line; do
@@ -210,22 +199,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-1002")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-agent-runtime-env.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-agent-runtime-env.trace}"
+      trace_file="#{trace_file}"
       printf 'ENV:%s\\n' "$SYMPHONY_AGENT_RUNTIME" >> "$trace_file"
       count=0
 
@@ -272,6 +250,85 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert {:ok, _result} = AppServer.run(workspace, "Validate runtime marker", issue)
       assert File.read!(trace_file) =~ "ENV:1"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server strips provider and tracker secrets from the agent subprocess env" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-env-strip-#{System.unique_integer([:positive])}"
+      )
+
+    secret_vars = %{
+      "LINEAR_API_KEY" => "lin_api_REDACTED_#{System.unique_integer([:positive])}",
+      "ANTHROPIC_API_KEY" => "sk-ant-REDACTED_#{System.unique_integer([:positive])}",
+      "OPENAI_API_KEY" => "sk-REDACTED_#{System.unique_integer([:positive])}"
+    }
+
+    previous = Enum.map(secret_vars, fn {name, _} -> {name, System.get_env(name)} end)
+    on_exit(fn -> Enum.each(previous, fn {name, value} -> restore_env(name, value) end) end)
+    Enum.each(secret_vars, fn {name, value} -> System.put_env(name, value) end)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-ENVSTRIP")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-env-strip.trace")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      printf 'LINEAR=%s\\n' "${LINEAR_API_KEY-<unset>}" >> "$trace_file"
+      printf 'ANTHROPIC=%s\\n' "${ANTHROPIC_API_KEY-<unset>}" >> "$trace_file"
+      printf 'OPENAI=%s\\n' "${OPENAI_API_KEY-<unset>}" >> "$trace_file"
+      printf 'RUNTIME=%s\\n' "${SYMPHONY_AGENT_RUNTIME-<unset>}" >> "$trace_file"
+
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+          2) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-env-strip"}}}' ;;
+          3) printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-env-strip"}}}' ;;
+          4) printf '%s\\n' '{"method":"turn/completed"}'; exit 0 ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-env-strip",
+        identifier: "MT-ENVSTRIP",
+        title: "Confirm secrets are stripped",
+        description: "Agent subprocess must not inherit provider/tracker keys",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-ENVSTRIP",
+        labels: []
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Confirm env strip", issue)
+
+      trace = File.read!(trace_file)
+      assert trace =~ "LINEAR=<unset>"
+      assert trace =~ "ANTHROPIC=<unset>"
+      assert trace =~ "OPENAI=<unset>"
+      assert trace =~ "RUNTIME=1"
+
+      Enum.each(secret_vars, fn {_name, value} ->
+        refute trace =~ value, "secret value leaked into agent subprocess: #{value}"
+      end)
     after
       File.rm_rf(test_root)
     end
@@ -357,22 +414,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-88")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-input.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-input.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -499,22 +545,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-89")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-auto-approve.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODex_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-auto-approve.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -650,22 +685,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-719")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-permission-auto-approve.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-permission-auto-approve.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -758,22 +782,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-717")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-tool-user-input-auto-approve.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-user-input-auto-approve.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -857,22 +870,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-720")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-mcp-url-elicitation-auto-accept.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-mcp-url-elicitation-auto-accept.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -957,22 +959,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-721")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-mcp-form-elicitation-auto-accept.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-mcp-form-elicitation-auto-accept.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -1135,22 +1126,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-719")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-tool-user-input-options.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-user-input-options.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -1235,22 +1215,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-90")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-tool-call.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-call.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -1337,24 +1306,13 @@ defmodule SymphonyElixir.AppServerTest do
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-action-guard.trace")
       audit_dir = Path.join(test_root, "audit")
-      previous_trace = System.get_env("SYMP_TEST_CODEX_ACTION_GUARD_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEX_ACTION_GUARD_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEX_ACTION_GUARD_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEX_ACTION_GUARD_TRACE", trace_file)
       File.mkdir_p!(workspace)
       assert {_output, 0} = System.cmd("git", ["init"], cd: workspace, stderr_to_stdout: true)
       assert {_output, 0} = System.cmd("git", ["remote", "add", "origin", "git@github.com:acme/repo.git"], cd: workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEX_ACTION_GUARD_TRACE:-/tmp/codex-action-guard.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -1469,22 +1427,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-90A")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-supported-tool-call.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-supported-tool-call.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -1591,22 +1538,11 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-90B")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-tool-call-failed.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODEx_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-tool-call-failed.trace}"
+      trace_file="#{trace_file}"
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
@@ -1903,12 +1839,6 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
     previous_path = System.get_env("PATH")
-    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
-
-    on_exit(fn ->
-      restore_env("PATH", previous_path)
-      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
-    end)
 
     try do
       trace_file = Path.join(test_root, "ssh.trace")
@@ -1916,12 +1846,11 @@ defmodule SymphonyElixir.AppServerTest do
       remote_workspace = "/remote/workspaces/MT-REMOTE"
 
       File.mkdir_p!(test_root)
-      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
       System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
 
       File.write!(fake_ssh, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      trace_file="#{trace_file}"
       count=0
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 

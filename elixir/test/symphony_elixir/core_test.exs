@@ -2426,24 +2426,17 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     previous_path = System.get_env("PATH")
-    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
-
-    on_exit(fn ->
-      restore_env("PATH", previous_path)
-      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
-    end)
 
     try do
       trace_file = Path.join(test_root, "ssh.trace")
       fake_ssh = Path.join(test_root, "ssh")
 
       File.mkdir_p!(test_root)
-      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
       System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
 
       File.write!(fake_ssh, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      trace_file="#{trace_file}"
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       case "$*" in
@@ -2511,7 +2504,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      trace_file="#{trace_file}"
       run_id="$(date +%s%N)-$$"
       printf 'RUN:%s\\n' "$run_id" >> "$trace_file"
       count=0
@@ -2541,9 +2534,6 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-
-      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -2662,7 +2652,6 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
     after
-      System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -2691,7 +2680,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEX_SELF_REVIEW_TRACE:-/tmp/codex-self-review.trace}"
+      trace_file="#{trace_file}"
       count=0
 
       while IFS= read -r line; do
@@ -2727,7 +2716,6 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE", trace_file)
       System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
 
       Application.put_env(:symphony_elixir, :agent_runner_self_review_recipient, self())
@@ -2739,7 +2727,6 @@ defmodule SymphonyElixir.CoreTest do
       ])
 
       on_exit(fn ->
-        System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
         System.delete_env("ANTHROPIC_API_KEY")
         Application.delete_env(:symphony_elixir, :agent_runner_self_review_recipient)
         Application.delete_env(:symphony_elixir, :agent_runner_self_review_count)
@@ -2831,7 +2818,6 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 3) =~ "Continuation guidance:"
       refute Enum.at(turn_texts, 3) =~ "Pre-push self-review"
     after
-      System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -2849,8 +2835,7 @@ defmodule SymphonyElixir.CoreTest do
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex.trace")
 
-      write_self_review_fake_codex!(codex_binary)
-      System.put_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE", trace_file)
+      write_self_review_fake_codex!(codex_binary, trace_file)
       System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
 
       Application.put_env(:symphony_elixir, :agent_runner_self_review_recipient, self())
@@ -2858,7 +2843,6 @@ defmodule SymphonyElixir.CoreTest do
       Application.put_env(:symphony_elixir, :agent_runner_self_review_responses, [~s({"verdict":"approve","findings":[]})])
 
       on_exit(fn ->
-        System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
         System.delete_env("ANTHROPIC_API_KEY")
         Application.delete_env(:symphony_elixir, :agent_runner_self_review_recipient)
         Application.delete_env(:symphony_elixir, :agent_runner_self_review_count)
@@ -2890,7 +2874,6 @@ defmodule SymphonyElixir.CoreTest do
       refute Enum.at(turn_texts, 1) =~ "Pre-push self-review approved"
       refute Enum.at(turn_texts, 1) =~ "Known limitations from self-review"
     after
-      System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -2907,8 +2890,7 @@ defmodule SymphonyElixir.CoreTest do
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex.trace")
 
-      write_self_review_fake_codex!(codex_binary)
-      System.put_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE", trace_file)
+      write_self_review_fake_codex!(codex_binary, trace_file)
       System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
 
       Application.put_env(:symphony_elixir, :agent_runner_self_review_recipient, self())
@@ -2916,7 +2898,6 @@ defmodule SymphonyElixir.CoreTest do
       Application.put_env(:symphony_elixir, :agent_runner_self_review_responses, ["not json"])
 
       on_exit(fn ->
-        System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
         System.delete_env("ANTHROPIC_API_KEY")
         Application.delete_env(:symphony_elixir, :agent_runner_self_review_recipient)
         Application.delete_env(:symphony_elixir, :agent_runner_self_review_count)
@@ -2944,7 +2925,6 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) =~ "Self-review did not run: parse_error."
       refute Enum.at(turn_texts, 1) =~ "not json"
     after
-      System.delete_env("SYMP_TEST_CODEX_SELF_REVIEW_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -2972,7 +2952,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      trace_file="#{trace_file}"
       printf 'RUN\\n' >> "$trace_file"
       count=0
 
@@ -3001,9 +2981,6 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-
-      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -3045,7 +3022,6 @@ defmodule SymphonyElixir.CoreTest do
       assert length(String.split(trace, "RUN", trim: true)) == 1
       assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 2
     after
-      System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -3062,22 +3038,11 @@ defmodule SymphonyElixir.CoreTest do
       workspace = Path.join(workspace_root, "MT-77")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-args.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODex_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-args.trace}"
+      trace_file="#{trace_file}"
       count=0
       printf 'ARGV:%s\\n' \"$*\" >> \"$trace_file\"
       printf 'CWD:%s\\n' \"$PWD\" >> \"$trace_file\"
@@ -3217,22 +3182,11 @@ defmodule SymphonyElixir.CoreTest do
       workspace = Path.join(workspace_root, "MT-88")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-custom-args.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODex_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-custom-args.trace}"
+      trace_file="#{trace_file}"
       count=0
       printf 'ARGV:%s\\n' \"$*\" >> \"$trace_file\"
 
@@ -3302,22 +3256,11 @@ defmodule SymphonyElixir.CoreTest do
       workspace = Path.join(workspace_root, "MT-99")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-policy-overrides.trace")
-      previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
-
-      on_exit(fn ->
-        if is_binary(previous_trace) do
-          System.put_env("SYMP_TEST_CODex_TRACE", previous_trace)
-        else
-          System.delete_env("SYMP_TEST_CODex_TRACE")
-        end
-      end)
-
-      System.put_env("SYMP_TEST_CODex_TRACE", trace_file)
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODex_TRACE:-/tmp/codex-policy-overrides.trace}"
+      trace_file="#{trace_file}"
       count=0
 
       while IFS= read -r line; do
@@ -3439,10 +3382,10 @@ defmodule SymphonyElixir.CoreTest do
     repo
   end
 
-  defp write_self_review_fake_codex!(codex_binary) do
+  defp write_self_review_fake_codex!(codex_binary, trace_file) do
     File.write!(codex_binary, """
     #!/bin/sh
-    trace_file="${SYMP_TEST_CODEX_SELF_REVIEW_TRACE:-/tmp/codex-self-review.trace}"
+    trace_file="#{trace_file}"
     count=0
 
     while IFS= read -r line; do

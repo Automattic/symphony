@@ -1,0 +1,90 @@
+defmodule SymphonyElixir.AgentEnv do
+  @moduledoc """
+  Builds the environment passed to an agent subprocess (`Port.open/2` `:env`).
+
+  Erlang's `:env` option appends to the inherited environment — a child process
+  spawned without an explicit list sees the full parent env. To prevent secrets
+  like `LINEAR_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` from reaching
+  the agent (and being exfiltrated via a legitimate `git push`), this module
+  emits an explicit whitelist for safe vars plus `{name, false}` entries that
+  remove every other inherited var.
+
+  Provider credentials must reach the agent runtime through its own config
+  files (`~/.codex/auth.json`, `~/.claude/.credentials.json`), not the process
+  environment.
+  """
+
+  @agent_runtime_env "SYMPHONY_AGENT_RUNTIME"
+  @agent_runtime_env_value "1"
+
+  @passthrough ~w(
+    PATH
+    HOME
+    USER
+    LOGNAME
+    LANG
+    LC_ALL
+    LC_CTYPE
+    LC_MESSAGES
+    TERM
+    TMPDIR
+    SHELL
+    TZ
+    SSH_AUTH_SOCK
+    GH_TOKEN
+    GITHUB_TOKEN
+  )
+
+  @doc """
+  Returns the constant marker env var name used to identify an agent subprocess.
+  """
+  @spec runtime_marker_name() :: String.t()
+  def runtime_marker_name, do: @agent_runtime_env
+
+  @doc """
+  Returns the constant marker env var value (`"1"`).
+  """
+  @spec runtime_marker_value() :: String.t()
+  def runtime_marker_value, do: @agent_runtime_env_value
+
+  @doc """
+  Returns the list of env var names that are passed through to the agent.
+  """
+  @spec passthrough() :: [String.t()]
+  def passthrough, do: @passthrough
+
+  @doc """
+  Builds the env list from the current process environment.
+  """
+  @spec build() :: [{charlist(), charlist() | false}]
+  def build, do: build(System.get_env())
+
+  @doc """
+  Builds the env list from an explicit env map.
+
+  Each whitelisted variable present in `env_source` becomes a
+  `{charlist_name, charlist_value}` tuple. Every other variable is emitted as
+  `{charlist_name, false}`, which tells Erlang's `Port.open/2` to strip it from
+  the inherited environment. The runtime marker is always set last so it can
+  override any value present in the source.
+  """
+  @spec build(%{optional(String.t()) => String.t()}) :: [{charlist(), charlist() | false}]
+  def build(env_source) when is_map(env_source) do
+    {pass, strip} = Map.split(env_source, @passthrough)
+
+    strip_entries =
+      strip
+      |> Map.delete(@agent_runtime_env)
+      |> Map.keys()
+      |> Enum.map(fn name -> {String.to_charlist(name), false} end)
+
+    passthrough_entries =
+      pass
+      |> Map.delete(@agent_runtime_env)
+      |> Enum.map(fn {name, value} -> {String.to_charlist(name), String.to_charlist(value)} end)
+
+    marker = {String.to_charlist(@agent_runtime_env), String.to_charlist(@agent_runtime_env_value)}
+
+    strip_entries ++ passthrough_entries ++ [marker]
+  end
+end

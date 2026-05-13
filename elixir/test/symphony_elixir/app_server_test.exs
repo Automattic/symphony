@@ -1,6 +1,13 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  defmodule AlwaysErrorAudit do
+    @moduledoc false
+    def audit(_workspace, _opts), do: {:error, {:git_failed, ["rev-parse"], "boom"}}
+    defdelegate git_pr_create_command?(command), to: SymphonyElixir.DependencyAudit
+    defdelegate approval_metadata(items), to: SymphonyElixir.DependencyAudit
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -71,6 +78,40 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^symlink_workspace, _root}} =
                AppServer.run(symlink_workspace, "guard", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server refuses to launch when agent.command is missing the app-server token" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-sandbox-required-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SANDBOX")
+      File.mkdir_p!(workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "fake-codex"
+      )
+
+      issue = %Issue{
+        id: "issue-sandbox-required",
+        identifier: "MT-SANDBOX",
+        title: "Validate sandbox enforcement",
+        description: "Ensure missing app-server token aborts the launch",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SANDBOX",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:codex_sandbox_overrides_not_applied, :missing_app_server_token}} =
+               AppServer.run(workspace, "should never launch", issue)
     after
       File.rm_rf(test_root)
     end
@@ -187,6 +228,205 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server denies gh pr create when dependency audit holds" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-dependency-pr-gate-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-PR-GATE")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-pr-gate.trace")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(Path.join(workspace, "mix.exs"), """
+      defmodule Demo.MixProject do
+        use Mix.Project
+        def project, do: []
+        def application, do: []
+        defp deps, do: [{:jason, "~> 1.4"}]
+      end
+      """)
+
+      System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+      System.cmd("git", ["-C", workspace, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", workspace, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", workspace, "add", "mix.exs"])
+      System.cmd("git", ["-C", workspace, "commit", "-m", "base"])
+      System.cmd("git", ["-C", workspace, "update-ref", "refs/remotes/origin/main", "HEAD"])
+
+      File.write!(Path.join(workspace, "mix.exs"), """
+      defmodule Demo.MixProject do
+        use Mix.Project
+        def project, do: []
+        def application, do: []
+        defp deps, do: [{:jason, "~> 1.4"}, {:helper, git: "https://github.com/attacker/helper.git"}]
+      end
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-pr-gate"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-pr-gate"}}}'
+            printf '%s\\n' '{"id":44,"method":"item/commandExecution/requestApproval","params":{"parsedCmd":"gh pr create --title test"}}'
+            ;;
+          5)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn ->
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_approval_policy: "auto_approve_all"
+      )
+
+      assert :ok = SymphonyElixir.Notifications.subscribe()
+
+      issue = %Issue{
+        id: "issue-pr-gate",
+        identifier: "MT-PR-GATE",
+        title: "PR gate",
+        description: "Block risky dependency PR",
+        state: "In Progress"
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Open PR", issue)
+
+      trace = File.read!(trace_file)
+      assert trace =~ ~s("id":44)
+      assert trace =~ ~s("decision":"deny")
+
+      assert_receive {:memory_tracker_state_update, "issue-pr-gate", "In Review"}, 500
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "dependency_pending_approval",
+                        metadata: %{dependency_changes: [%{package: "helper", reason: "untrusted_git_source"}]}
+                      }},
+                     500
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server denies gh pr create when dependency audit errors" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-dep-audit-err-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-AUDIT-ERR")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-audit-err.trace")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-audit-err"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-audit-err"}}}'
+            printf '%s\\n' '{"id":44,"method":"item/commandExecution/requestApproval","params":{"parsedCmd":"gh pr create --title test"}}'
+            ;;
+          5)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn ->
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_approval_policy: "auto_approve_all"
+      )
+
+      assert :ok = SymphonyElixir.Notifications.subscribe()
+
+      issue = %Issue{
+        id: "issue-audit-err",
+        identifier: "MT-AUDIT-ERR",
+        title: "Audit error",
+        description: "Fail closed when audit errors",
+        state: "In Progress"
+      }
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Open PR", issue, dependency_audit_module: AlwaysErrorAudit)
+
+      trace = File.read!(trace_file)
+      assert trace =~ ~s("id":44)
+      assert trace =~ ~s("decision":"deny")
+
+      assert_receive {:memory_tracker_state_update, "issue-audit-err", "In Review"}, 500
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "dependency_pending_approval",
+                        reason: "dependency_audit_failed",
+                        metadata: %{audit_error: audit_error}
+                      }},
+                     500
+
+      assert audit_error =~ "git_failed"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server marks child processes as Symphony agent runtime" do
     test_root =
       Path.join(
@@ -204,6 +444,7 @@ defmodule SymphonyElixir.AppServerTest do
       File.write!(codex_binary, """
       #!/bin/sh
       trace_file="#{trace_file}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
       printf 'ENV:%s\\n' "$SYMPHONY_AGENT_RUNTIME" >> "$trace_file"
       count=0
 
@@ -249,7 +490,17 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Validate runtime marker", issue)
-      assert File.read!(trace_file) =~ "ENV:1"
+      trace = File.read!(trace_file)
+      assert trace =~ "ENV:1"
+      assert trace =~ "--config default_permissions=\"workspace_write\""
+      assert trace =~ "--config permissions.workspace_write.filesystem="
+      assert trace =~ "\"~/.ssh\"=\"none\""
+      assert trace =~ "\"WORKFLOW.md\"=\"read\""
+      assert trace =~ "--config permissions.workspace_write.network={\"enabled\"=true,\"mode\"=\"limited\"}"
+      assert trace =~ "--config permissions.workspace_write.network.domains="
+      assert trace =~ "\"github.com\"=\"allow\""
+      assert trace =~ "\"api.openai.com\"=\"allow\""
+      refute trace =~ "evil.example.com"
     after
       File.rm_rf(test_root)
     end
@@ -1905,7 +2156,13 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv_line =~ "cd "
       assert argv_line =~ remote_workspace
       assert argv_line =~ "exec "
-      assert argv_line =~ "fake-remote-codex app-server"
+      assert argv_line =~ "fake-remote-codex"
+      assert argv_line =~ "--config"
+      assert argv_line =~ "default_permissions=\"workspace_write\""
+      assert argv_line =~ "permissions.workspace_write.filesystem="
+      assert argv_line =~ "permissions.workspace_write.network="
+      assert argv_line =~ "permissions.workspace_write.network.domains="
+      assert argv_line =~ "app-server"
 
       expected_turn_policy = %{
         "type" => "workspaceWrite",

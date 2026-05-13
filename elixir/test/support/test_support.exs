@@ -307,6 +307,7 @@ defmodule SymphonyElixir.TestSupport do
           quality_gate: %{enabled: false},
           learnings: nil,
           self_review: nil,
+          dependencies: nil,
           notifications: nil,
           repos: nil,
           prompt: @workflow_prompt
@@ -371,6 +372,7 @@ defmodule SymphonyElixir.TestSupport do
     quality_gate = Keyword.get(config, :quality_gate)
     learnings = Keyword.get(config, :learnings)
     self_review = Keyword.get(config, :self_review)
+    dependencies = Keyword.get(config, :dependencies)
     notifications = Keyword.get(config, :notifications)
     repos = Keyword.get(config, :repos)
     prompt = Keyword.get(config, :prompt)
@@ -437,6 +439,7 @@ defmodule SymphonyElixir.TestSupport do
         quality_gate_yaml(quality_gate),
         learnings_yaml(learnings),
         self_review_yaml(self_review),
+        dependencies && "dependencies: #{yaml_value(dependencies)}",
         notifications_yaml(notifications),
         repos && "repos: #{yaml_value(repos)}",
         "---",

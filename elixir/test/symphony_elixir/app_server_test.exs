@@ -1,6 +1,12 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  defmodule AlwaysErrorAudit do
+    @moduledoc false
+
+    def audit(_workspace, _opts), do: {:error, {:git_failed, ["rev-parse"], "boom"}}
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -277,7 +283,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-pr-gate"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-pr-gate"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-pr-gate","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"id":44,"method":"item/commandExecution/requestApproval","params":{"parsedCmd":"gh pr create --title test"}}'
             ;;
           5)
@@ -362,7 +368,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-audit-err"}}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-audit-err"}}}'
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-audit-err","status":"inProgress","items":[]}}}'
             printf '%s\\n' '{"id":44,"method":"item/commandExecution/requestApproval","params":{"parsedCmd":"gh pr create --title test"}}'
             ;;
           5)

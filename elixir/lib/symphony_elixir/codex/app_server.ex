@@ -1110,18 +1110,38 @@ defmodule SymphonyElixir.Codex.AppServer do
         :approved
 
       :allow ->
-        approve_or_require(
-          port,
-          id,
-          decision,
-          payload,
-          payload_string,
-          context.on_message,
-          context.metadata,
-          context.auto_approve_requests
-        )
+        command = command_from_payload(payload)
+
+        case maybe_deny_pr_create_for_dependency_hold(
+               port,
+               id,
+               dependency_hold_denial_decision(decision),
+               command,
+               payload,
+               payload_string,
+               context
+             ) do
+          :not_held ->
+            approve_or_require(
+              port,
+              id,
+              decision,
+              payload,
+              payload_string,
+              context.on_message,
+              context.metadata,
+              context.auto_approve_requests
+            )
+
+          held ->
+            held
+        end
     end
   end
+
+  defp dependency_hold_denial_decision("acceptForSession"), do: "deny"
+  defp dependency_hold_denial_decision("approved_for_session"), do: "denied"
+  defp dependency_hold_denial_decision(_decision), do: "reject"
 
   defp approve_or_require(
          port,

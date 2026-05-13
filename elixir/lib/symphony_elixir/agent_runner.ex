@@ -6,6 +6,7 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
 
   alias SymphonyElixir.{
+    AgentTools.Linear.CommentRegistry,
     AuditLog,
     CiPoller,
     Config,
@@ -177,6 +178,7 @@ defmodule SymphonyElixir.AgentRunner do
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
     with {:ok, agent_module} <- agent_module(),
+         {:ok, linear_comment_registry} <- CommentRegistry.start_link(),
          {:ok, session} <- agent_module.start_session(workspace, worker_host: worker_host, settings: settings) do
       send_agent_session_info(codex_update_recipient, issue, agent_module, session)
 
@@ -184,7 +186,7 @@ defmodule SymphonyElixir.AgentRunner do
         workspace: workspace,
         issue: issue,
         codex_update_recipient: codex_update_recipient,
-        opts: opts,
+        opts: Keyword.put(opts, :linear_comment_registry, linear_comment_registry),
         issue_state_fetcher: issue_state_fetcher,
         worker_host: worker_host,
         self_review: initial_self_review_state(),
@@ -219,7 +221,9 @@ defmodule SymphonyElixir.AgentRunner do
              issue,
              on_message: codex_message_handler(codex_update_recipient, issue),
              settings: Keyword.fetch!(opts, :settings),
-             repo_key: Keyword.get(opts, :repo_key)
+             repo_key: Keyword.get(opts, :repo_key),
+             run_id: Keyword.get(opts, :run_id),
+             linear_comment_registry: Keyword.get(opts, :linear_comment_registry)
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 

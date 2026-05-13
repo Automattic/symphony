@@ -323,7 +323,7 @@ defmodule SymphonyElixir.LiveE2ETest do
     project_slug=#{project_slug}
 
     Step 2:
-    You must use the `linear_graphql` tool to query the current issue by `{{ issue.id }}` and read:
+    You must use the scoped Linear tools to inspect the current issue and read:
     - existing comments
     - team workflow states
 
@@ -332,53 +332,16 @@ defmodule SymphonyElixir.LiveE2ETest do
     If the exact comment body below is not already present, post exactly one comment on the current issue with this exact body:
     #{expected_comment("{{ issue.identifier }}", project_slug)}
 
-    Use these exact GraphQL operations:
-
-    ```graphql
-    query IssueContext($id: String!) {
-      issue(id: $id) {
-        comments(first: 20) {
-          nodes {
-            body
-          }
-        }
-        team {
-          states(first: 50) {
-            nodes {
-              id
-              name
-              type
-            }
-          }
-        }
-      }
-    }
-    ```
-
-    ```graphql
-    mutation AddComment($issueId: String!, $body: String!) {
-      commentCreate(input: {issueId: $issueId, body: $body}) {
-        success
-      }
-    }
-    ```
+    Use `linear.get_comments` to check for the comment, and `linear.add_comment`
+    to create it only if needed.
 
     Step 3:
-    Use the same issue-context query result to choose a workflow state whose `type` is `completed`.
-    Then move the current issue to that state with this exact mutation:
-
-    ```graphql
-    mutation CompleteIssue($id: String!, $stateId: String!) {
-      issueUpdate(id: $id, input: {stateId: $stateId}) {
-        success
-      }
-    }
-    ```
+    Move the current issue to `Done` with `linear.update_state`.
 
     Step 4:
-    Verify all outcomes with one final `linear_graphql` query against `{{ issue.id }}`:
+    Verify all outcomes with one final scoped Linear read:
     - the exact comment body is present
-    - the issue state type is `completed`
+    - the issue state is completed
 
     Do not ask for approval.
     Stop only after all three conditions are true:

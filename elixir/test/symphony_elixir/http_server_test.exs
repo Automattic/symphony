@@ -4,10 +4,13 @@ defmodule SymphonyElixir.HttpServerTest do
   import ExUnit.CaptureLog
 
   alias SymphonyElixir.HttpServer
+  alias SymphonyElixir.TestSupport
 
   @allow_remote_bind_env "SYMPHONY_ALLOW_REMOTE_BIND"
 
   setup do
+    TestSupport.stop_default_http_server()
+
     tmp =
       Path.join(System.tmp_dir!(), "symphony-http-server-test-#{System.unique_integer([:positive])}")
 

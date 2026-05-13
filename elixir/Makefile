@@ -14,9 +14,20 @@ deps:
 build:
 	$(MIX) build
 
+# Zig 0.15.2 (pinned by Burrito 1.5.0) can't link against the macOS 26 SDK's
+# libSystem.tbd. The shim dir holds an xcrun wrapper that redirects Zig to the
+# macOS 15 SDK when present; on older macOS it's a no-op pass-through.
+PACKAGE_PATH := $(CURDIR)/scripts/zig-sdk-shim:$(PATH)
+
 package:
-	MIX_ENV=prod $(MIX) deps.get --only prod
-	MIX_ENV=prod $(MIX) release symphony --overwrite
+	@if [ "$$(uname -s)" = "Darwin" ] && [ ! -d /Library/Developer/CommandLineTools/SDKs/MacOSX15.sdk ] && [ -L /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ] && readlink /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk | grep -q '^MacOSX26'; then \
+		echo "ERROR: macOS 26 SDK is active but MacOSX15.sdk is missing."; \
+		echo "Zig 0.15.2 cannot link against the macOS 26 SDK (arm64-macos target was dropped)."; \
+		echo "Install the macOS 15 Command Line Tools SDK or downgrade the active SDK."; \
+		exit 1; \
+	fi
+	PATH="$(PACKAGE_PATH)" MIX_ENV=prod $(MIX) deps.get --only prod
+	PATH="$(PACKAGE_PATH)" MIX_ENV=prod $(MIX) release symphony --overwrite
 	@if [ -f burrito_out/symphony_macos_arm64 ]; then mv burrito_out/symphony_macos_arm64 burrito_out/symphony-macos-arm64; fi
 	@if [ -f burrito_out/symphony_macos_x86_64 ]; then mv burrito_out/symphony_macos_x86_64 burrito_out/symphony-macos-x86_64; fi
 

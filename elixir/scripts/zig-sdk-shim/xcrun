@@ -1,0 +1,12 @@
+#!/bin/sh
+# Zig 0.15.2 (pinned by Burrito 1.5.0) cannot link against the macOS 26 SDK's
+# libSystem.tbd, which declares only arm64e-macos targets. ld64 substitutes
+# silently; Zig's linker reports undefined symbols (_abort, _bzero, ...).
+# When the macOS 15 SDK is present, redirect Zig's SDK lookup there.
+if [ "$1" = "--sdk" ] && [ "$2" = "macosx" ] && [ "$3" = "--show-sdk-path" ]; then
+    if [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX15.sdk ]; then
+        echo /Library/Developer/CommandLineTools/SDKs/MacOSX15.sdk
+        exit 0
+    fi
+fi
+exec /usr/bin/xcrun "$@"

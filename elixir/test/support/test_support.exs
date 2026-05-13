@@ -1,5 +1,7 @@
 defmodule SymphonyElixir.TestSupport do
   @workflow_prompt "You are an agent for this repository."
+  @supervised_child_wait_ms 1_000
+  @supervised_child_retry_ms 10
 
   defmacro __using__(_opts) do
     quote do
@@ -30,7 +32,9 @@ defmodule SymphonyElixir.TestSupport do
           ensure_symphony_started!: 0,
           stop_default_orchestrator: 0,
           stop_default_http_server: 0,
-          stop_verification_port_pool: 0
+          stop_process: 1,
+          stop_verification_port_pool: 0,
+          clear_run_store!: 0
         ]
 
       setup do
@@ -46,13 +50,13 @@ defmodule SymphonyElixir.TestSupport do
         workflow_file = Path.join(repo_root, "WORKFLOW.md")
         Workflow.set_symphony_file_path(Path.join(workflow_root, "symphony.yml"))
         Workflow.set_workflow_file_path(workflow_file)
-        write_workflow_file!(workflow_file)
+        write_workflow_file!(workflow_file, tracker_api_token: nil)
         Workflow.set_workflow_file_path(workflow_file)
         ensure_symphony_started!()
         SymphonyElixir.TestSupport.ensure_pubsub_started!()
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         stop_default_orchestrator()
-        :ok = SymphonyElixir.RunStore.clear()
+        :ok = SymphonyElixir.TestSupport.clear_run_store!()
         stop_verification_port_pool()
         stop_default_http_server()
 
@@ -75,6 +79,7 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   def write_workflow_file!(path, overrides \\ []) do
+    overrides = Keyword.put_new(overrides, :workspace_root, Path.join(Path.dirname(path), "workspaces"))
     {system_config, repo_config, prompt} = split_workflow_content(path, overrides)
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, repo_workflow_content(repo_config, prompt))
@@ -142,34 +147,26 @@ defmodule SymphonyElixir.TestSupport do
 
   def ensure_symphony_started! do
     ensure_application_started()
+    ensure_named_supervised_child_started!(SymphonyElixir.TaskSupervisor, SymphonyElixir.TaskSupervisor)
   end
 
   def ensure_pubsub_started! do
     ensure_application_started()
-
-    case Process.whereis(SymphonyElixir.PubSub) do
-      pid when is_pid(pid) ->
-        :ok
-
-      _ ->
-        restart_supervised_child!(Phoenix.PubSub.Supervisor)
-    end
+    ensure_named_supervised_child_started!(Phoenix.PubSub.Supervisor, SymphonyElixir.PubSub)
   end
 
-  defp restart_supervised_child!(child_id) do
-    ensure_application_started()
+  def clear_run_store! do
+    case SymphonyElixir.RunStore.clear() do
+      :ok ->
+        :ok
 
-    case Process.whereis(SymphonyElixir.Supervisor) do
-      supervisor when is_pid(supervisor) ->
-        case Supervisor.restart_child(supervisor, child_id) do
-          {:ok, _pid} -> :ok
-          {:ok, _pid, _info} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-          {:error, reason} -> raise "failed to restart #{inspect(child_id)}: #{inspect(reason)}"
+      {:error, reason} ->
+        recover_run_store!(reason)
+
+        case SymphonyElixir.RunStore.clear() do
+          :ok -> :ok
+          {:error, retry_reason} -> raise "failed to clear RunStore after recovery: #{inspect(retry_reason)}"
         end
-
-      _ ->
-        ensure_application_started()
     end
   end
 
@@ -181,6 +178,8 @@ defmodule SymphonyElixir.TestSupport do
       _ ->
         do_ensure_application_started()
     end
+
+    wait_for_named_process!(SymphonyElixir.Supervisor)
   end
 
   defp do_ensure_application_started do
@@ -192,14 +191,123 @@ defmodule SymphonyElixir.TestSupport do
     end
   end
 
+  defp ensure_named_supervised_child_started!(child_id, process_name) do
+    case Process.whereis(process_name) do
+      pid when is_pid(pid) ->
+        :ok
+
+      _ ->
+        :ok = ensure_application_started()
+        restart_result = restart_supervised_child(child_id)
+
+        case wait_for_named_process(process_name) do
+          :ok ->
+            :ok
+
+          :timeout ->
+            raise "failed to start #{inspect(process_name)} from child #{inspect(child_id)}: #{inspect(restart_result)}"
+        end
+    end
+  end
+
+  defp restart_supervised_child(child_id) do
+    ensure_application_started()
+
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      supervisor when is_pid(supervisor) ->
+        case Supervisor.restart_child(supervisor, child_id) do
+          {:ok, _pid} -> :ok
+          {:ok, _pid, _info} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, :running} -> :ok
+          {:error, :restarting} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      _ ->
+        do_ensure_application_started()
+    end
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp recover_run_store!(reason) do
+    run_store_dir = SymphonyElixir.RunStore.store_dir()
+    stop_supervised_child(SymphonyElixir.RunStore)
+    stop_mnesia()
+    File.rm_rf(run_store_dir)
+    File.mkdir_p!(run_store_dir)
+
+    case restart_supervised_child(SymphonyElixir.RunStore) do
+      :ok ->
+        wait_for_named_process!(SymphonyElixir.RunStore)
+
+      {:error, restart_reason} ->
+        raise "failed to recover RunStore after #{inspect(reason)}: #{inspect(restart_reason)}"
+    end
+  end
+
+  defp stop_supervised_child(child_id) do
+    pid = Process.whereis(child_id)
+
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      supervisor when is_pid(supervisor) ->
+        case Supervisor.terminate_child(supervisor, child_id) do
+          :ok -> :ok
+          {:error, :not_found} -> :ok
+          {:error, _reason} -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+
+    stop_process(pid)
+  end
+
+  defp stop_mnesia do
+    case :mnesia.stop() do
+      :stopped -> :ok
+      :ok -> :ok
+      {:error, {:not_started, :mnesia}} -> :ok
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp wait_for_named_process!(process_name) do
+    case wait_for_named_process(process_name) do
+      :ok -> :ok
+      :timeout -> raise "timed out waiting for #{inspect(process_name)} to start"
+    end
+  end
+
+  defp wait_for_named_process(process_name) do
+    deadline_ms = System.monotonic_time(:millisecond) + @supervised_child_wait_ms
+    wait_for_named_process(process_name, deadline_ms)
+  end
+
+  defp wait_for_named_process(process_name, deadline_ms) do
+    case Process.whereis(process_name) do
+      pid when is_pid(pid) ->
+        :ok
+
+      _ ->
+        if System.monotonic_time(:millisecond) >= deadline_ms do
+          :timeout
+        else
+          Process.sleep(@supervised_child_retry_ms)
+          wait_for_named_process(process_name, deadline_ms)
+        end
+    end
+  end
+
   def stop_default_http_server do
     with supervisor when is_pid(supervisor) <- Process.whereis(SymphonyElixir.Supervisor),
          {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) <- find_default_http_server(supervisor) do
       :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.HttpServer)
 
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
-      end
+      stop_process(pid)
 
       :ok
     else
@@ -213,15 +321,39 @@ defmodule SymphonyElixir.TestSupport do
            find_default_orchestrator(supervisor) do
       :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.Orchestrator)
 
-      if Process.alive?(pid) do
-        Process.exit(pid, :normal)
-      end
+      stop_process(pid)
 
       :ok
     else
       _ -> :ok
     end
   end
+
+  def stop_process(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      ref = Process.monitor(pid)
+      Process.unlink(pid)
+      Process.exit(pid, :shutdown)
+
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _reason} ->
+          :ok
+      after
+        1_000 ->
+          Process.exit(pid, :kill)
+
+          receive do
+            {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+          after
+            1_000 -> :ok
+          end
+      end
+    else
+      :ok
+    end
+  end
+
+  def stop_process(_pid), do: :ok
 
   defp find_default_http_server(supervisor) do
     Enum.find(Supervisor.which_children(supervisor), fn

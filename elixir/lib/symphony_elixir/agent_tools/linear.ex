@@ -6,6 +6,8 @@ defmodule SymphonyElixir.AgentTools.Linear do
   pass an issue id through tool arguments.
   """
 
+  require Logger
+
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.Linear.{Client, Issue}
   alias SymphonyElixir.PathSafety
@@ -358,6 +360,39 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   def delete_comment(_context, _comment_id, _opts), do: {:error, :invalid_comment}
 
+  @spec list_own_comment_ids(context(), keyword()) :: {:ok, [String.t()]} | {:error, term()}
+  def list_own_comment_ids(context, opts \\ []) do
+    with {:ok, _issue_id} <- current_issue_id(context),
+         {:ok, viewer_id} <- viewer_id(opts),
+         {:ok, comments} <- get_comments(context, @comment_limit_max, opts) do
+      ids =
+        comments
+        |> Enum.filter(fn comment -> get_in(comment, ["user", "id"]) == viewer_id end)
+        |> Enum.map(& &1["id"])
+        |> Enum.filter(&is_binary/1)
+
+      {:ok, ids}
+    end
+  end
+
+  @spec recover_comment_registry_seeds(map(), String.t() | atom() | nil) :: [String.t()]
+  def recover_comment_registry_seeds(issue, tracker_kind),
+    do: recover_comment_registry_seeds(issue, tracker_kind, [])
+
+  @spec recover_comment_registry_seeds(map(), String.t() | atom() | nil, keyword()) :: [String.t()]
+  def recover_comment_registry_seeds(issue, "linear", opts) do
+    case list_own_comment_ids(%{issue: issue}, opts) do
+      {:ok, ids} ->
+        ids
+
+      {:error, reason} ->
+        Logger.warning("Failed to seed comment registry from Linear: #{inspect(reason)}")
+        []
+    end
+  end
+
+  def recover_comment_registry_seeds(_issue, _tracker_kind, _opts), do: []
+
   @spec attach_url(context(), String.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
   def attach_url(context, url, title), do: attach_url(context, url, title, [])
 
@@ -434,9 +469,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   defp resolve_assignee(assignee, opts) do
     case String.trim(assignee) do
       "self" ->
-        with {:ok, body} <- graphql(@viewer_query, %{}, opts) do
-          fetch_path(body, ["data", "viewer", "id"], :viewer_not_found)
-        end
+        viewer_id(opts)
 
       ":self" ->
         resolve_assignee("self", opts)
@@ -626,6 +659,12 @@ defmodule SymphonyElixir.AgentTools.Linear do
       {:ok, %File.Stat{type: :regular}} -> :ok
       {:ok, _stat} -> {:error, :not_regular_file}
       {:error, reason} -> {:error, {:file_stat_failed, reason}}
+    end
+  end
+
+  defp viewer_id(opts) do
+    with {:ok, body} <- graphql(@viewer_query, %{}, opts) do
+      fetch_path(body, ["data", "viewer", "id"], :viewer_not_found)
     end
   end
 

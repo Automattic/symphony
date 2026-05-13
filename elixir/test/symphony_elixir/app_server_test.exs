@@ -886,19 +886,13 @@ defmodule SymphonyElixir.AppServerTest do
 
                  payload["id"] == 2 and
                    get_in(payload, ["params", "approvalPolicy"]) == "never" and
-                   case get_in(payload, ["params", "dynamicTools"]) do
-                     [
-                       %{
-                         "description" => description,
-                         "inputSchema" => %{"required" => ["query"]},
-                         "name" => "linear_graphql"
-                       }
-                     ] ->
-                       description =~ "Linear"
-
-                     _ ->
-                       false
-                   end
+                   get_in(payload, ["params", "dynamicTools"])
+                   |> Enum.map(& &1["name"])
+                   |> then(fn tool_names ->
+                     "linear.get_current_issue" in tool_names and
+                       "linear.update_state" in tool_names and
+                       "linear_graphql" not in tool_names
+                   end)
                else
                  false
                end
@@ -1497,7 +1491,7 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           4)
             printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90\",\"status\":\"inProgress\",\"items\":[]}}}'
-            printf '%s\\n' '{\"id\":101,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"some_tool\",\"callId\":\"call-90\",\"threadId\":\"thread-90\",\"turnId\":\"turn-90\",\"arguments\":{}}}'
+            printf '%s\\n' '{\"id\":101,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"linear_graphql\",\"callId\":\"call-90\",\"threadId\":\"thread-90\",\"turnId\":\"turn-90\",\"arguments\":{\"query\":\"query Viewer { viewer { id } }\"}}}'
             ;;
           5)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -1541,10 +1535,10 @@ defmodule SymphonyElixir.AppServerTest do
 
                  payload["id"] == 101 and
                    get_in(payload, ["result", "success"]) == false and
-                   String.contains?(
-                     get_in(payload, ["result", "output"]),
-                     "Unsupported dynamic tool"
-                   )
+                   get_in(payload, ["result", "output"])
+                   |> Jason.decode!()
+                   |> get_in(["error", "code"])
+                   |> Kernel.==("tool_not_found")
                else
                  false
                end
@@ -1709,7 +1703,7 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           4)
             printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90a\",\"status\":\"inProgress\",\"items\":[]}}}'
-            printf '%s\\n' '{\"id\":102,\"method\":\"item/tool/call\",\"params\":{\"name\":\"linear_graphql\",\"callId\":\"call-90a\",\"threadId\":\"thread-90a\",\"turnId\":\"turn-90a\",\"arguments\":{\"query\":\"query Viewer { viewer { id } }\",\"variables\":{\"includeTeams\":false}}}}'
+            printf '%s\\n' '{\"id\":102,\"method\":\"item/tool/call\",\"params\":{\"name\":\"linear.get_current_issue\",\"callId\":\"call-90a\",\"threadId\":\"thread-90a\",\"turnId\":\"turn-90a\",\"arguments\":{}}}'
             ;;
           5)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -1758,11 +1752,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert {:ok, _result} =
                AppServer.run(workspace, "Handle supported tool calls", issue, tool_executor: tool_executor)
 
-      assert_received {:tool_called, "linear_graphql",
-                       %{
-                         "query" => "query Viewer { viewer { id } }",
-                         "variables" => %{"includeTeams" => false}
-                       }}
+      assert_received {:tool_called, "linear.get_current_issue", %{}}
 
       trace = File.read!(trace_file)
       lines = String.split(trace, "\n", trim: true)
@@ -1820,7 +1810,7 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           4)
             printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-90b\",\"status\":\"inProgress\",\"items\":[]}}}'
-            printf '%s\\n' '{\"id\":103,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"linear_graphql\",\"callId\":\"call-90b\",\"threadId\":\"thread-90b\",\"turnId\":\"turn-90b\",\"arguments\":{\"query\":\"query Viewer { viewer { id } }\"}}}'
+            printf '%s\\n' '{\"id\":103,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"linear.update_state\",\"callId\":\"call-90b\",\"threadId\":\"thread-90b\",\"turnId\":\"turn-90b\",\"arguments\":{\"state_name_or_id\":\"Done\"}}}'
             ;;
           5)
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -1874,9 +1864,9 @@ defmodule SymphonyElixir.AppServerTest do
                  tool_executor: tool_executor
                )
 
-      assert_received {:tool_called, "linear_graphql", %{"query" => "query Viewer { viewer { id } }"}}
+      assert_received {:tool_called, "linear.update_state", %{"state_name_or_id" => "Done"}}
 
-      assert_received {:app_server_message, %{event: :tool_call_failed, payload: %{"params" => %{"tool" => "linear_graphql"}}}}
+      assert_received {:app_server_message, %{event: :tool_call_failed, payload: %{"params" => %{"tool" => "linear.update_state"}}}}
     after
       File.rm_rf(test_root)
     end

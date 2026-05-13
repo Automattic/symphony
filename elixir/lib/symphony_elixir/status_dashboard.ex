@@ -58,6 +58,7 @@ defmodule SymphonyElixir.StatusDashboard do
     :last_rendered_at_ms,
     :pending_content,
     :flush_timer_ref,
+    :last_successful_snapshot_data,
     :last_snapshot_fingerprint
   ]
 
@@ -76,6 +77,7 @@ defmodule SymphonyElixir.StatusDashboard do
           last_rendered_at_ms: integer() | nil,
           pending_content: String.t() | nil,
           flush_timer_ref: reference() | nil,
+          last_successful_snapshot_data: {:ok, map()} | nil,
           last_snapshot_fingerprint: term() | nil
         }
 
@@ -127,6 +129,7 @@ defmodule SymphonyElixir.StatusDashboard do
        last_rendered_at_ms: nil,
        pending_content: nil,
        flush_timer_ref: nil,
+       last_successful_snapshot_data: nil,
        last_snapshot_fingerprint: nil
      }}
   end
@@ -197,8 +200,13 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp maybe_render(state) do
     now_ms = System.monotonic_time(:millisecond)
-    {snapshot_data, token_samples} = snapshot_with_samples(state.token_samples, now_ms)
+    {raw_snapshot_data, token_samples} = snapshot_with_samples(state.token_samples, now_ms)
+
+    snapshot_data =
+      snapshot_data_for_render(raw_snapshot_data, state.last_successful_snapshot_data)
+
     state = Map.put(state, :token_samples, token_samples)
+    state = maybe_store_successful_snapshot(state, raw_snapshot_data)
 
     current_tokens = snapshot_total_tokens(snapshot_data)
 
@@ -255,6 +263,20 @@ defmodule SymphonyElixir.StatusDashboard do
       Map.put(state, :last_snapshot_fingerprint, snapshot_data)
     end
   end
+
+  defp maybe_store_successful_snapshot(state, {:ok, _snapshot} = snapshot_data) do
+    Map.put(state, :last_successful_snapshot_data, snapshot_data)
+  end
+
+  defp maybe_store_successful_snapshot(state, _snapshot_data), do: state
+
+  defp snapshot_data_for_render({:ok, _snapshot} = snapshot_data, _last_successful_snapshot_data), do: snapshot_data
+
+  defp snapshot_data_for_render(:error, {:ok, snapshot}) when is_map(snapshot) do
+    {:ok, Map.put(snapshot, :snapshot_stale?, true)}
+  end
+
+  defp snapshot_data_for_render(snapshot_data, _last_successful_snapshot_data), do: snapshot_data
 
   defp periodic_rerender_due?(%{last_rendered_at_ms: nil}, _now_ms), do: true
 
@@ -325,6 +347,8 @@ defmodule SymphonyElixir.StatusDashboard do
              skipped: Map.get(snapshot, :skipped, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
+             workspace_lifecycle: Map.get(snapshot, :workspace_lifecycle),
+             dispatch_state: Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []}),
              polling: Map.get(snapshot, :polling)
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
@@ -372,11 +396,13 @@ defmodule SymphonyElixir.StatusDashboard do
           |> Map.get(:dispatch_state, %{active?: true, blockers: []})
           |> normalize_dispatch_state()
 
+        snapshot_status_lines = format_snapshot_status_lines(snapshot)
         dispatch_lines = format_dispatch_lines(dispatch_state)
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold)
          ] ++
+           snapshot_status_lines ++
            dispatch_lines ++
            [
              colorize("│ Agents: ", @ansi_bold) <>
@@ -510,6 +536,16 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_workspace_lifecycle_lines(_lifecycle), do: []
+
+  defp format_snapshot_status_lines(%{snapshot_stale?: true}) do
+    [
+      colorize("│ Snapshot: ", @ansi_bold) <>
+        colorize("stale", @ansi_yellow) <>
+        colorize(" (orchestrator refresh missed)", @ansi_gray)
+    ]
+  end
+
+  defp format_snapshot_status_lines(_snapshot), do: []
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())

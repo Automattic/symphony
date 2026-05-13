@@ -2112,34 +2112,19 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "prompt builder reports workflow load failures separately from template parse errors" do
-    original_workflow_path = Workflow.workflow_file_path()
-    workflow_store_pid = Process.whereis(SymphonyElixir.WorkflowStore)
+    missing_workflow_path = Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md")
+    repo_key = "missing-workflow-repo"
 
-    on_exit(fn ->
-      Workflow.set_workflow_file_path(original_workflow_path)
-
-      if is_pid(workflow_store_pid) and is_nil(Process.whereis(SymphonyElixir.WorkflowStore)) do
-        Enum.each(["default", "symphony"], fn repo_name ->
-          supervisor = SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
-
-          if GenServer.whereis(supervisor) do
-            Supervisor.restart_child(supervisor, {SymphonyElixir.WorkflowStore, repo_name})
-          end
-        end)
-      end
-    end)
-
-    Enum.each(["default", "symphony"], fn repo_name ->
-      supervisor = SymphonyElixir.Repo.Supervisor.supervisor_name(repo_name)
-
-      if GenServer.whereis(supervisor) do
-        Supervisor.terminate_child(supervisor, {SymphonyElixir.WorkflowStore, repo_name})
-      end
-    end)
-
-    if pid = Process.whereis(SymphonyElixir.WorkflowStore), do: GenServer.stop(pid)
-
-    Workflow.set_workflow_file_path(Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md"))
+    write_workflow_file!(Workflow.workflow_file_path(),
+      repos: [
+        %{
+          "name" => repo_key,
+          "path" => Path.dirname(missing_workflow_path),
+          "workflow" => Path.basename(missing_workflow_path),
+          "team" => "Test"
+        }
+      ]
+    )
 
     issue = %Issue{
       identifier: "MT-780",
@@ -2147,10 +2132,11 @@ defmodule SymphonyElixir.CoreTest do
       description: "Missing workflow file",
       state: "Todo",
       url: "https://example.org/issues/MT-780",
-      labels: []
+      labels: [],
+      repo_key: repo_key
     }
 
-    assert_raise RuntimeError, ~r/workflow_unavailable:/, fn ->
+    assert_raise RuntimeError, ~r/workflow_unavailable:.*missing_workflow_file/s, fn ->
       PromptBuilder.build_prompt(issue)
     end
   end

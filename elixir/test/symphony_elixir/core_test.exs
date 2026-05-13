@@ -2643,6 +2643,121 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner holds dependency approval before starting a continuation turn" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-dependency-hold-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-DEP-HOLD")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(Path.join(workspace, "mix.exs"), """
+      defmodule Demo.MixProject do
+        use Mix.Project
+        def project, do: []
+        def application, do: []
+        defp deps, do: [{:jason, "~> 1.4"}]
+      end
+      """)
+
+      System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+      System.cmd("git", ["-C", workspace, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", workspace, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", workspace, "add", "mix.exs"])
+      System.cmd("git", ["-C", workspace, "commit", "-m", "base"])
+      System.cmd("git", ["-C", workspace, "update-ref", "refs/remotes/origin/main", "HEAD"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-dep-hold"}}}'
+            ;;
+          4)
+            cat > mix.exs <<'MIX'
+      defmodule Demo.MixProject do
+        use Mix.Project
+        def project, do: []
+        def application, do: []
+        defp deps, do: [{:jason, "~> 1.4"}, {:helper, git: "https://github.com/attacker/helper.git"}]
+      end
+      MIX
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dep-hold-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf 'UNEXPECTED_SECOND_TURN\\n' >> "$trace_file"
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dep-hold-2"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      on_exit(fn ->
+        Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        max_turns: 2
+      )
+
+      assert :ok = SymphonyElixir.Notifications.subscribe()
+
+      issue = %Issue{
+        id: "issue-dep-hold",
+        identifier: "MT-DEP-HOLD",
+        title: "Dependency hold",
+        description: "Hold risky dependency",
+        state: "In Progress"
+      }
+
+      state_fetcher = fn _ids -> flunk("dependency hold should stop before issue continuation fetch") end
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 workspace_path: workspace,
+                 issue_state_fetcher: state_fetcher,
+                 issue_enricher: no_op_issue_enricher()
+               )
+
+      assert_receive {:memory_tracker_state_update, "issue-dep-hold", "In Review"}, 500
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "dependency_pending_approval",
+                        metadata: %{dependency_changes: [%{package: "helper", reason: "untrusted_git_source"}]}
+                      }},
+                     500
+
+      refute File.read!(trace_file) =~ "UNEXPECTED_SECOND_TURN"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner injects self-review findings once and then pushes with known limitations" do
     test_root =
       Path.join(

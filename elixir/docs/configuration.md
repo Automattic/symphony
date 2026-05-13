@@ -227,7 +227,7 @@ notifications:
   # channels:
   #   - kind: slack
   #     webhook_url: $SLACK_WEBHOOK_URL
-  #     events: [pr_opened, awaiting_review, run_failed, run_stuck, issue_completed, budget_exceeded, reviewer_commented, rework_pushed, ci_failed, ci_escalated]
+  #     events: [pr_opened, awaiting_review, run_failed, run_stuck, issue_completed, budget_exceeded, dependency_pending_approval, reviewer_commented, rework_pushed, ci_failed, ci_escalated]
   #   - kind: webhook
   #     url: $NOTIFY_WEBHOOK_URL
   #     events: [run_failed, run_stuck, budget_exceeded, ci_failed, ci_escalated]
@@ -247,6 +247,10 @@ self_review:
   model: claude-haiku-4-5-20251001
   diff_max_lines: 600
   max_rounds: 1                 # v1 only supports one correction round
+dependencies:
+  allow_registries: []
+  allow_git_sources: []
+  allow_path_sources: []
 repos:
   - name: my-repo
     workflow: ./WORKFLOW.md
@@ -358,13 +362,18 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 - The optional `ci` block is disabled by default. `poll_interval_ms` falls back to
   `polling.interval_ms` when omitted, `log_excerpt_lines` defaults to 200, `flaky_retry` defaults
   to true, `max_retries` defaults to 3, and `escalation_state` defaults to `In Review`.
+- The optional `dependencies` block extends the built-in dependency source trust defaults used by
+  the direct-manifest audit. `allow_registries`, `allow_git_sources`, and `allow_path_sources` are
+  additive allow-lists; anything outside the built-ins and these lists is held for review when a
+  manifest change introduces it.
 - The optional `notifications` block is disabled by default. When enabled, Symphony emits semantic
   lifecycle events to configured Slack incoming webhooks and generic JSON webhooks without blocking
   the orchestrator. Supported v1 events are `pr_opened`, `awaiting_review`, `run_failed`,
-  `run_stuck`, `issue_completed`, `budget_exceeded`, `reviewer_commented`, `rework_pushed`,
-  `ci_failed`, and `ci_escalated`. Per-channel `events` filters limit delivery; omitting `events`
-  sends all supported events to that channel. `redact_titles: true` suppresses issue and PR titles
-  while preserving identifiers and URLs. `notifications.channels[].webhook_url`, `url`, and
+  `run_stuck`, `issue_completed`, `budget_exceeded`, `dependency_pending_approval`,
+  `reviewer_commented`, `rework_pushed`, `ci_failed`, and `ci_escalated`. Per-channel `events`
+  filters limit delivery; omitting `events` sends all supported events to that channel.
+  `redact_titles: true` suppresses issue and PR titles while preserving identifiers and URLs.
+  `notifications.channels[].webhook_url`, `url`, and
   `headers.*` values expand `$VAR` from the process environment at startup, so a config can ship a
   literal `$SLACK_WEBHOOK_URL` placeholder in source control and resolve it from the operator's
   shell.

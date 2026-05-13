@@ -3,7 +3,17 @@ defmodule SymphonyElixir.Notifications.Formatter do
 
   alias SymphonyElixir.Notifications.Event
 
-  @pr_url_events ["pr_opened", "awaiting_review", "run_failed", "run_stuck", "reviewer_commented", "rework_pushed", "ci_failed", "ci_escalated"]
+  @pr_url_events [
+    "pr_opened",
+    "awaiting_review",
+    "run_failed",
+    "run_stuck",
+    "dependency_pending_approval",
+    "reviewer_commented",
+    "rework_pushed",
+    "ci_failed",
+    "ci_escalated"
+  ]
 
   @spec webhook_payload(Event.t(), keyword()) :: map()
   def webhook_payload(%Event{} = event, opts \\ []) do
@@ -154,6 +164,7 @@ defmodule SymphonyElixir.Notifications.Formatter do
   defp event_title("awaiting_review"), do: "Awaiting review"
   defp event_title("run_failed"), do: "Run failed"
   defp event_title("run_stuck"), do: "Run stuck"
+  defp event_title("dependency_pending_approval"), do: "Dependency approval needed"
   defp event_title("issue_completed"), do: "Issue completed"
   defp event_title("budget_exceeded"), do: "Budget exceeded"
   defp event_title("ci_failed"), do: "CI failed"
@@ -167,6 +178,7 @@ defmodule SymphonyElixir.Notifications.Formatter do
   defp event_color("ci_failed"), do: "danger"
   defp event_color("ci_escalated"), do: "warning"
   defp event_color("budget_exceeded"), do: "warning"
+  defp event_color("dependency_pending_approval"), do: "warning"
   defp event_color("issue_completed"), do: "good"
   defp event_color(_event), do: "#2f80ed"
 

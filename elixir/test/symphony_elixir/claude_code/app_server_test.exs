@@ -57,7 +57,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       allowed = get_in(result, ["sandbox", "network", "allowedDomains"])
       assert is_list(allowed)
       assert "github.com" in allowed
-      assert "api.github.com" in allowed
+      refute "api.github.com" in allowed
+      refute "api.linear.app" in allowed
       assert "example.com" in allowed
     end
 
@@ -72,7 +73,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       allowed = get_in(result, ["sandbox", "network", "allowedDomains"])
       refute "github.com" in allowed
-      assert "api.github.com" in allowed
+      assert "registry.npmjs.org" in allowed
     end
 
     test "block mode sets empty allowedDomains" do

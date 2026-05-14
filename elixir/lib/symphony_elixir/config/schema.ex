@@ -13,9 +13,10 @@ defmodule SymphonyElixir.Config.Schema do
 
   @type t :: %__MODULE__{}
 
+  # api.github.com and api.linear.app intentionally omitted: agents reach these
+  # only through brokered MCP / DynamicTool calls in the orchestrator process.
+  # Workspaces that need direct access can opt in via network_access.allowed_domains.
   @shared_built_in_network_allowed_domains [
-    "api.github.com",
-    "api.linear.app",
     "bitbucket.org",
     "codeload.github.com",
     "crates.io",

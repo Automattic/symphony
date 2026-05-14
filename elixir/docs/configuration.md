@@ -346,12 +346,6 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   `denied_domains` always takes precedence over built-in and user-provided `allowed_domains`.
 - `agent.command_timeout_ms` caps a single shell command even when it keeps streaming output.
   Default: `600000` (10 minutes). Set `0` to disable this command-level guard.
-- `agent.remote_control` defaults to `false`. For Claude agents on Claude Code `>= 2.1.140`,
-  set it to `true` to launch each turn with
-  `--remote-control "<issue.identifier>-<run_id>"`, allowing operators to attach to that named
-  control-channel handle while Symphony continues to use `--print --output-format stream-json`.
-  This option is Claude-only; setting it with `agent.kind: codex` makes the workflow config
-  invalid.
 - When `agent.turn_sandbox_policy` is set explicitly for Codex, Symphony forwards the configured
   map to Codex, but for `workspaceWrite` policies it ensures the current issue workspace stays in
   `writableRoots` at runtime when a workspace path is available. Symphony always includes the
@@ -565,9 +559,10 @@ quality_gate:
 The optional `self_review` block adds a conservative pre-push LLM gate after the agent completes
 validation and reviews the committed diff against the repo's configured `base_branch`, or
 `origin/HEAD`/`origin/main` when no repo base is configured. It is disabled by default. When enabled, the
-workflow prompt tells the agent to pause before `git push`; Symphony then reviews the committed
-diff, changed paths, commit subjects/bodies, and issue acceptance criteria using the same
-Anthropic/OpenAI provider modules as `quality_gate`.
+workflow prompt tells the agent to pause before `git push`; Symphony then builds a structured
+context pack from the committed diff, changed paths, commit subjects/bodies, issue acceptance
+criteria, workpad validation evidence, pending reviewer comments, and pending CI failure context
+using the same Anthropic/OpenAI provider modules as `quality_gate`.
 
 ```yaml
 self_review:
@@ -582,8 +577,23 @@ self_review:
   or `scope_creep`.
 - Style, design, speculative risk, and subjective test-coverage opinions are discarded and cannot
   block a push.
-- Diffs over `diff_max_lines` are truncated to the first N lines, the gate still runs, and Symphony
-  logs a warning naming the line cap.
+- Diffs over `diff_max_lines` are balanced per file instead of prefix-truncated. Every changed file
+  is represented by path, status, stats, classification, and hunk headers. Small source files can be
+  included as full diffs; large source files and generated, lock, or binary files are summarized with
+  explicit coverage metadata. Each file's rendered diff is also clamped to a fixed `[12, 160]`-line
+  window regardless of `diff_max_lines`, so raising `diff_max_lines` lets more files fit but does not
+  enlarge any single file's slice past 160 lines.
+- The context pack includes bounded nearby line windows around changed hunks when file contents are
+  readable, same-name test files when tracked, and best-effort `rg` call-site matches for changed
+  public function names defined in Elixir (`def`/`defmacro`) or JavaScript/TypeScript (`function`,
+  top-level `const`); other languages are not scanned in this first pass. Language-aware AST
+  extraction and semantic call graphs are also out of scope for now.
+- Reviewer output may include non-blocking advisory notes in `missing_context`, `test_evidence_gap`,
+  `docs_sync_risk`, `blast_radius_risk`, or `review_coverage_low`. These notes can be carried into
+  PR context, but they do not block push.
+- Self-review audit events record coverage metadata: fully reviewed files, summarized files,
+  generated/lock/binary files, adjacent-context coverage, validation evidence count, reviewer
+  comment count, and whether CI context was included.
 - Malformed LLM output or provider failures fail open as `approve`.
 - On `request_changes`, Symphony injects the findings into one additional agent pass. After the
   follow-up pass, Symphony prompts the agent to push regardless and includes a

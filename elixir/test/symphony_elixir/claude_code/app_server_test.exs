@@ -263,6 +263,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert text =~ "93"
     end
 
+    test "parses rate_limit_event with integer utilization" do
+      line =
+        ~s({"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day","utilization":1},"uuid":"u-1","session_id":"sess-1"})
+
+      assert {:notification, text} = AppServer.parse_event(line)
+      assert text =~ "seven_day"
+      assert text =~ "allowed_warning"
+      assert text =~ "100"
+    end
+
     test "parses rate_limit_event with blocking status as rate_limited" do
       line =
         ~s({"type":"rate_limit_event","rate_limit_info":{"status":"exceeded","rateLimitType":"per_minute","utilization":1.05},"uuid":"u-1","session_id":"sess-1"})
@@ -1084,54 +1094,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
-    test "adds remote-control flag for local Claude runs when enabled" do
-      test_root =
-        Path.join(
-          System.tmp_dir!(),
-          "symphony-elixir-claude-code-remote-control-#{System.unique_integer([:positive])}"
-        )
-
-      try do
-        workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-REMOTE-CONTROL")
-        fake_claude = Path.join(test_root, "fake-claude")
-        File.mkdir_p!(workspace)
-
-        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-remote-control"))
-        File.chmod!(fake_claude, 0o755)
-
-        write_workflow_file!(Workflow.workflow_file_path(),
-          workspace_root: workspace_root,
-          agent_kind: "claude",
-          agent_command: fake_claude,
-          agent_remote_control: true
-        )
-
-        {:ok, session} = AppServer.start_session(workspace)
-
-        assert {:ok, result} =
-                 AppServer.run_turn(session, "observe this run", %{identifier: "RSM-REMOTE-CONTROL"}, run_id: "run-123")
-
-        assert result.input_tokens == 6
-
-        assert File.read!(Path.join(workspace, "argv.trace")) |> String.split("\n", trim: true) == [
-                 "--remote-control",
-                 "RSM-REMOTE-CONTROL-run-123",
-                 "--setting-sources",
-                 "user",
-                 "--settings",
-                 session.settings_path,
-                 "--output-format",
-                 "stream-json",
-                 "--print",
-                 "observe this run"
-               ]
-      after
-        File.rm_rf(test_root)
-      end
-    end
-
-    test "omits remote-control flag for local Claude runs by default" do
+    test "omits remote-control flag for local Claude runs" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -1173,40 +1136,6 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  "--print",
                  "normal run"
                ]
-      after
-        File.rm_rf(test_root)
-      end
-    end
-
-    test "errors when remote_control is enabled but run_id is missing" do
-      test_root =
-        Path.join(
-          System.tmp_dir!(),
-          "symphony-elixir-claude-code-remote-control-missing-#{System.unique_integer([:positive])}"
-        )
-
-      try do
-        workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-REMOTE-MISSING")
-        fake_claude = Path.join(test_root, "fake-claude")
-        File.mkdir_p!(workspace)
-
-        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-missing"))
-        File.chmod!(fake_claude, 0o755)
-
-        write_workflow_file!(Workflow.workflow_file_path(),
-          workspace_root: workspace_root,
-          agent_kind: "claude",
-          agent_command: fake_claude,
-          agent_remote_control: true
-        )
-
-        {:ok, session} = AppServer.start_session(workspace)
-
-        assert {:error, :missing_remote_control_name} =
-                 AppServer.run_turn(session, "no run id", %{identifier: "RSM-REMOTE-MISSING"}, [])
-
-        refute File.exists?(Path.join(workspace, "argv.trace"))
       after
         File.rm_rf(test_root)
       end
@@ -1606,64 +1535,6 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
-    test "adds remote-control flag for ssh Claude runs when enabled" do
-      test_root =
-        Path.join(
-          System.tmp_dir!(),
-          "symphony-elixir-claude-code-remote-control-ssh-#{System.unique_integer([:positive])}"
-        )
-
-      previous_path = System.get_env("PATH")
-
-      on_exit(fn ->
-        restore_env("PATH", previous_path)
-      end)
-
-      try do
-        workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-REMOTE-SSH")
-        fake_ssh = Path.join(test_root, "ssh")
-        fake_claude = Path.join(test_root, "fake-claude-remote")
-        trace_file = Path.join(test_root, "ssh-command.trace")
-        File.mkdir_p!(workspace)
-        System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
-
-        File.write!(fake_ssh, executing_ssh_script(trace_file))
-        File.chmod!(fake_ssh, 0o755)
-        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-remote-control-ssh"))
-        File.chmod!(fake_claude, 0o755)
-
-        write_workflow_file!(Workflow.workflow_file_path(),
-          workspace_root: workspace_root,
-          agent_kind: "claude",
-          agent_command: "fake-claude-remote",
-          agent_remote_control: true
-        )
-
-        {:ok, session} = AppServer.start_session(workspace, worker_host: "worker-01")
-
-        assert {:ok, result} =
-                 AppServer.run_turn(session, "remote task", %{identifier: "RSM-REMOTE-SSH"}, run_id: "ssh-run-1")
-
-        assert result.input_tokens == 6
-
-        assert File.read!(Path.join(workspace, "argv.trace")) |> String.split("\n", trim: true) == [
-                 "--remote-control",
-                 "RSM-REMOTE-SSH-ssh-run-1",
-                 "--setting-sources",
-                 "user",
-                 "--settings",
-                 session.settings_path,
-                 "--output-format",
-                 "stream-json",
-                 "--print",
-                 "remote task"
-               ]
-      after
-        File.rm_rf(test_root)
-      end
-    end
-
     test "returns error when process exits 0 without emitting a result event" do
       test_root =
         Path.join(
@@ -1824,18 +1695,6 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     done
     printf '%s' "$last_arg" > "#{trace_file}"
     exit 0
-    """
-  end
-
-  defp executing_ssh_script(trace_file) do
-    """
-    #!/bin/sh
-    last_arg=""
-    for arg in "$@"; do
-      last_arg="$arg"
-    done
-    printf '%s' "$last_arg" > "#{trace_file}"
-    exec sh -c "$last_arg"
     """
   end
 

@@ -182,7 +182,7 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert result.findings == []
   end
 
-  test "truncates large diffs and logs a warning while still running the gate" do
+  test "summarizes large diffs and logs coverage while still running the gate" do
     repo = changed_repo!("feature.txt", Enum.map_join(1..20, "\n", &"line #{&1}"))
     Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
 
@@ -192,11 +192,40 @@ defmodule SymphonyElixir.SelfReviewTest do
         assert result.verdict == :approve
         assert result.source.diff_truncated?
         assert result.source.diff_line_count > 3
+        assert result.source.diff =~ "Changed file inventory:"
+        assert result.source.diff =~ "File: feature.txt"
+        assert result.source.review_coverage.summarized_files == ["feature.txt"]
       end)
 
-    assert log =~ "SelfReview diff truncated"
+    assert log =~ "SelfReview context summarized"
     assert_receive {:self_review_request, %{user: user}}
-    assert user =~ "Diff truncated: showing first 3"
+    assert user =~ "Per-file diff summarized"
+  end
+
+  test "structured pack represents late files that prefix truncation would hide" do
+    repo = Path.join(System.tmp_dir!(), "symphony-self-review-multi-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(repo)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(repo) end)
+    init_repo!(repo)
+
+    File.write!(Path.join(repo, "aaa-large.txt"), Enum.map_join(1..40, "\n", &"early line #{&1}"))
+    File.write!(Path.join(repo, "zzz-late.txt"), "late safety-sensitive change\n")
+    git!(repo, ["add", "aaa-large.txt", "zzz-late.txt"])
+    git!(repo, ["commit", "-m", "feat: add multi file review"])
+
+    Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
+
+    result = SelfReview.evaluate(issue(), repo, enabled_config(diff_max_lines: 12), provider_module: StubProvider)
+
+    assert result.verdict == :approve
+    assert result.source.diff_truncated?
+    assert result.source.changed_paths == ["aaa-large.txt", "zzz-late.txt"]
+    assert result.source.diff =~ "File: aaa-large.txt"
+    assert result.source.diff =~ "File: zzz-late.txt"
+    assert result.source.diff =~ "diff --git a/zzz-late.txt b/zzz-late.txt"
+    assert result.source.diff =~ "late safety-sensitive change"
+    assert "aaa-large.txt" in result.source.review_coverage.summarized_files
+    assert "zzz-late.txt" in result.source.review_coverage.fully_reviewed_files
   end
 
   test "malformed output fails open as approve" do
@@ -323,10 +352,41 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert {:ok, %{verdict: :approve, findings: []}} =
              SelfReview.parse_response(~s({"verdict":"request_changes","findings":["not a finding"]}))
 
+    assert {:ok,
+            %{
+              verdict: :approve,
+              findings: [],
+              acceptance_matrix: [%{criterion: "Add context", evidence: ["self_review.ex"], missing_evidence: false}],
+              advisory_notes: [%{category: :missing_context, description: "No validation evidence.", evidence: "coverage"}]
+            }} =
+             SelfReview.parse_response(
+               ~s({"verdict":"approve","findings":[],"acceptance_matrix":[{"criterion":"Add context","evidence":["self_review.ex"],"missing_evidence":false}],"advisory_notes":[{"category":"missing_context","description":"No validation evidence.","evidence":"coverage"}]})
+             )
+
+    assert {:ok, %{advisory_notes: [], acceptance_matrix: [%{evidence: []}]}} =
+             SelfReview.parse_response(~s({"verdict":"approve","findings":[],"acceptance_matrix":[{"criterion":"No evidence list","evidence":123},"bad"],"advisory_notes":["bad"]}))
+
+    assert {:error, {:malformed_response, :invalid_acceptance_matrix}} =
+             SelfReview.parse_response(~s({"verdict":"approve","findings":[],"acceptance_matrix":{}}))
+
+    assert {:error, {:malformed_response, :invalid_advisory_notes}} =
+             SelfReview.parse_response(~s({"verdict":"approve","findings":[],"advisory_notes":{}}))
+
     assert SelfReview.request_changes?(%{verdict: :request_changes, findings: [%{category: :scope_creep}]})
     refute SelfReview.request_changes?(%{verdict: :approve, findings: []})
     assert SelfReview.approval_prompt(%{}) =~ "approved"
+    assert SelfReview.push_prompt(%{}) =~ "no remaining blocking findings"
     assert SelfReview.push_prompt(%{findings: []}) =~ "no remaining blocking findings"
+
+    assert SelfReview.push_prompt(%{
+             findings: [],
+             advisory_notes: [%{category: :review_coverage_low, description: "Summary only."}]
+           }) =~ "Self-review advisory notes"
+
+    assert SelfReview.advisory_notes_section([
+             %{category: :missing_context, description: "Context was summarized.", evidence: "coverage"}
+           ]) =~ "Evidence: `coverage`"
+
     assert SelfReview.fail_open_prompt(%{fail_open_category: :parse_error}) =~ "Self-review did not run: parse_error."
     assert SelfReview.push_prompt(%{fail_open_category: :git_unavailable, findings: []}) =~ "Self-review did not run: git_unavailable."
 
@@ -354,8 +414,13 @@ defmodule SymphonyElixir.SelfReviewTest do
       case "$count" in
         1) printf '%s\\n' 'origin/main' ;;
         2) printf '%s\\n' 'diff --git a/remote.txt b/remote.txt' '+remote change' ;;
-        3) printf '%s\\n' 'remote.txt' ;;
-        *) printf '%s\\n' 'feat: remote self review' ;;
+        3) printf '%s\\n' 'M\tremote.txt' ;;
+        4) printf '%s\\n' ' remote.txt | 1 +' ;;
+        5) printf '%s\\n' '1\t0\tremote.txt' ;;
+        6) printf '%s\\n' 'diff --git a/remote.txt b/remote.txt' '@@ -0,0 +1 @@' '+remote change' ;;
+        7) printf '%s\\n' 'feat: remote self review' ;;
+        8) printf '%s\\n' 'remote change' ;;
+        *) printf '%s\\n' 'remote.txt' ;;
       esac
       """)
 
@@ -431,12 +496,95 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert result.source.issue_title == ""
     assert result.source.acceptance_criteria == ""
     assert result.source.git_range == "origin/main..HEAD"
-    assert result.source.diff == ""
+    assert result.source.diff =~ "Changed file inventory:"
+    assert result.source.diff =~ "Summarized context coverage:"
     assert result.source.diff_line_count == 0
     assert result.source.changed_paths == []
 
     assert_receive {:self_review_request, %{user: user}}
-    assert user =~ "Changed file paths:\n(none)"
+    assert user =~ "Structured context pack:"
+  end
+
+  test "source material includes adjacent context, workpad validation, reviewer comments, and CI context" do
+    repo = Path.join(System.tmp_dir!(), "symphony-self-review-context-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(repo)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(repo) end)
+    init_repo!(repo)
+
+    File.mkdir_p!(Path.join(repo, "lib"))
+    File.mkdir_p!(Path.join(repo, "test"))
+
+    File.write!(Path.join(repo, "lib/context_sample.ex"), """
+    defmodule ContextSample do
+      def public_value do
+        :ok
+      end
+    end
+    """)
+
+    File.write!(Path.join(repo, "lib/context_consumer.ex"), """
+    defmodule ContextConsumer do
+      def call, do: ContextSample.public_value()
+    end
+    """)
+
+    File.write!(Path.join(repo, "test/context_sample_test.exs"), """
+    defmodule ContextSampleTest do
+      use ExUnit.Case
+      test "public value", do: assert(ContextSample.public_value() == :ok)
+    end
+    """)
+
+    git!(repo, ["add", "lib/context_sample.ex", "lib/context_consumer.ex", "test/context_sample_test.exs"])
+    git!(repo, ["commit", "-m", "feat: add context sample"])
+
+    issue = %Issue{
+      issue()
+      | comments: [
+          %{
+            author: "Codex",
+            body: """
+            ## Codex Workpad
+
+            ### Acceptance Criteria
+
+            - [x] Implement context sample.
+
+            ### Validation
+
+            - [x] targeted tests: `mix test test/context_sample_test.exs`
+            """,
+            created_at: nil
+          }
+        ]
+    }
+
+    Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
+
+    result =
+      SelfReview.evaluate(issue, repo, enabled_config(),
+        provider_module: StubProvider,
+        reviewer_comments: [%{author: "Reviewer", body: "Please cover the context pack.", path: "lib/context_sample.ex", line: 2}],
+        ci_failure: %{
+          commit_sha: "abc123",
+          failed_checks: [%{name: "unit", conclusion: "failure", run_id: "42"}],
+          log_excerpt: "mix test failed"
+        }
+      )
+
+    assert result.source.diff =~ "Adjacent source/test context:"
+    assert result.source.diff =~ "lib/context_sample.ex:"
+    assert result.source.diff =~ "test/context_sample_test.exs"
+    assert result.source.diff =~ "public_value"
+    assert result.source.diff =~ "Validation/workpad evidence:"
+    assert result.source.diff =~ "mix test test/context_sample_test.exs"
+    assert result.source.diff =~ "Pending reviewer comments:"
+    assert result.source.diff =~ "Please cover the context pack."
+    assert result.source.diff =~ "CI failure summary:"
+    assert result.source.diff =~ "mix test failed"
+    assert result.source.review_coverage.validation_evidence_count >= 2
+    assert result.source.review_coverage.reviewer_comment_count == 1
+    assert result.source.review_coverage.ci_context_included?
   end
 
   test "bounds and delimits untrusted Linear source material before provider review" do

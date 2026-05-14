@@ -45,15 +45,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_turn(%{workspace: workspace, worker_host: worker_host} = session, prompt, issue, opts) do
+  def run_turn(%{workspace: workspace, worker_host: worker_host} = session, prompt, _issue, opts) do
     on_message = Keyword.get(opts, :on_message, fn _msg -> :ok end)
     settings = settings_from_opts(opts)
     command = settings.agent.command
     turn_timeout_ms = settings.agent.turn_timeout_ms
     command_timeout_ms = settings.agent.command_timeout_ms
 
-    with {:ok, remote_control_name} <- remote_control_name(settings.agent, issue, opts),
-         {:ok, port} <- start_port(workspace, command, prompt, worker_host, remote_control_name, session) do
+    with {:ok, port} <- start_port(workspace, command, prompt, worker_host, session) do
       try do
         read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms)
       after
@@ -156,7 +155,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp parse_decoded_event(%{"type" => "system", "session_id" => session_id}, _line), do: {:session_started, session_id}
+  defp parse_decoded_event(%{"type" => "system", "session_id" => session_id}, _line),
+    do: {:session_started, session_id}
 
   defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line),
     do: {:notification, summarize_assistant_message(message)}
@@ -173,8 +173,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     do: {:turn_completed, extract_turn_result(event)}
 
   defp parse_decoded_event(%{"type" => "result", "subtype" => "error"} = event, _line) do
-    reason = Map.get(event, "error", "unknown error")
-    classify_error_event(reason)
+    event
+    |> Map.get("error", "unknown error")
+    |> classify_error_event()
   end
 
   defp parse_decoded_event(_event, line), do: {:malformed, line}
@@ -484,29 +485,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp remote_control_name(%Agent{remote_control: true}, issue, opts) do
-    with {:ok, identifier} <- nonempty_string(Map.get(issue, :identifier)),
-         {:ok, run_id} <- nonempty_string(Keyword.get(opts, :run_id)) do
-      {:ok, "#{identifier}-#{run_id}"}
-    end
-  end
-
-  defp remote_control_name(%Agent{}, _issue, _opts), do: {:ok, nil}
-
-  defp nonempty_string(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> {:error, :missing_remote_control_name}
-      trimmed -> {:ok, trimmed}
-    end
-  end
-
-  defp nonempty_string(_), do: {:error, :missing_remote_control_name}
-
-  defp start_port(workspace, command, prompt, nil, remote_control_name, session) do
+  defp start_port(workspace, command, prompt, nil, session) do
     with {:ok, {executable, command_args}} <- local_command(workspace, command) do
       args =
         command_args ++
-          remote_control_args(remote_control_name) ++
           claude_settings_args(session) ++ ["--output-format", "stream-json", "--print", prompt]
 
       port =
@@ -527,13 +509,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp start_port(workspace, command, prompt, worker_host, remote_control_name, session) do
+  defp start_port(workspace, command, prompt, worker_host, session) do
     with {:ok, command_words} <- command_words(command) do
       reverse_forwards = mcp_reverse_forwards(session)
 
       ssh_module().start_port(
         worker_host,
-        remote_launch_command(workspace, command_words, prompt, remote_control_name, session.settings_path),
+        remote_launch_command(workspace, command_words, prompt, session.settings_path),
         line: @port_line_bytes,
         env: AgentEnv.build(),
         reverse_forwards: reverse_forwards
@@ -612,20 +594,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp remote_path_cleanup_command(_path), do: nil
 
-  defp remote_control_args(nil), do: []
-  defp remote_control_args(name), do: ["--remote-control", name]
-
   defp claude_settings_args(%{settings_path: settings_path}) when is_binary(settings_path) do
     ["--setting-sources", "user", "--settings", settings_path]
   end
 
   defp claude_settings_args(_session), do: []
 
-  defp remote_launch_command(workspace, command_words, prompt, remote_control_name, settings_path) do
+  defp remote_launch_command(workspace, command_words, prompt, settings_path) do
     command =
-      (command_words ++
-         remote_control_args(remote_control_name) ++
-         claude_settings_args(%{settings_path: settings_path}))
+      (command_words ++ claude_settings_args(%{settings_path: settings_path}))
       |> Enum.map_join(" ", &shell_escape/1)
 
     [
@@ -910,7 +887,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     message =
       case utilization do
         u when is_number(u) ->
-          percent = (u * 100) |> Float.round(0) |> trunc()
+          percent = round(u * 100)
           "rate_limit #{rate_limit_type} #{status} (#{percent}% utilization)"
 
         _ ->

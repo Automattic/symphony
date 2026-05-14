@@ -11,11 +11,19 @@ defmodule SymphonyElixir.SelfReview do
 
   alias SymphonyElixir.{Config.Schema, PromptSafety, QualityGate, SSH}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.SelfReview.Context
 
   @allowed_categories %{
     "acceptance_criteria" => :acceptance_criteria,
     "commit_message" => :commit_message,
     "scope_creep" => :scope_creep
+  }
+  @allowed_advisory_categories %{
+    "missing_context" => :missing_context,
+    "test_evidence_gap" => :test_evidence_gap,
+    "docs_sync_risk" => :docs_sync_risk,
+    "blast_radius_risk" => :blast_radius_risk,
+    "review_coverage_low" => :review_coverage_low
   }
   @max_tokens 2_048
 
@@ -27,10 +35,21 @@ defmodule SymphonyElixir.SelfReview do
   2. Commit-message honesty: do the commit subject and body accurately describe the diff without overclaiming?
   3. Scope creep: does the diff include work unrelated to the issue?
 
+  For each acceptance criterion, map it to concrete evidence from the structured context pack.
+  If evidence is missing or context coverage is low, report that as an advisory note, not a blocking finding,
+  unless the missing item directly violates one of the three blocking questions above.
+
   Allowed finding categories are exactly:
   - acceptance_criteria
   - commit_message
   - scope_creep
+
+  Allowed advisory note categories are exactly:
+  - missing_context
+  - test_evidence_gap
+  - docs_sync_risk
+  - blast_radius_risk
+  - review_coverage_low
 
   Explicitly disallowed:
   - style opinions
@@ -51,12 +70,28 @@ defmodule SymphonyElixir.SelfReview do
         "description": "<one sentence>",
         "evidence": "<quoted line from diff or commit, optional>"
       }
+    ],
+    "acceptance_matrix": [
+      {
+        "criterion": "<acceptance criterion>",
+        "evidence": ["<file/test/validation evidence>"],
+        "missing_evidence": false
+      }
+    ],
+    "advisory_notes": [
+      {
+        "category": "missing_context" | "test_evidence_gap" | "docs_sync_risk" | "blast_radius_risk" | "review_coverage_low",
+        "description": "<one sentence>",
+        "evidence": "<quoted coverage or validation context, optional>"
+      }
     ]
   }
   """
 
   @type verdict :: :approve | :request_changes
   @type finding_category :: :acceptance_criteria | :commit_message | :scope_creep
+  @type advisory_category ::
+          :missing_context | :test_evidence_gap | :docs_sync_risk | :blast_radius_risk | :review_coverage_low
   @type fail_open_category ::
           :disabled | :parse_error | :git_unavailable | :provider_unavailable | :self_review_unavailable
 
@@ -67,22 +102,34 @@ defmodule SymphonyElixir.SelfReview do
           optional(:evidence) => String.t()
         }
 
+  @type advisory_note :: %{
+          required(:category) => advisory_category(),
+          required(:description) => String.t(),
+          optional(:evidence) => String.t()
+        }
+
   @type source_material :: %{
           required(:issue_title) => String.t(),
           required(:issue_description) => String.t(),
           required(:acceptance_criteria) => String.t(),
+          required(:acceptance_criteria_items) => [String.t()],
           required(:linear_input_warnings) => [String.t()],
           required(:changed_paths) => [String.t()],
+          required(:changed_file_inventory) => [map()],
           required(:commit_messages) => String.t(),
           required(:git_range) => String.t(),
           required(:diff) => String.t(),
           required(:diff_line_count) => non_neg_integer(),
-          required(:diff_truncated?) => boolean()
+          required(:diff_truncated?) => boolean(),
+          required(:review_coverage) => map(),
+          required(:context_pack) => map()
         }
 
   @type result :: %{
           required(:verdict) => verdict(),
           required(:findings) => [finding()],
+          optional(:advisory_notes) => [advisory_note()],
+          optional(:acceptance_matrix) => [map()],
           optional(:source) => source_material(),
           optional(:fail_open_reason) => term(),
           optional(:fail_open_category) => fail_open_category()
@@ -124,8 +171,16 @@ defmodule SymphonyElixir.SelfReview do
     with {:ok, json} <- isolate_json_object(text),
          {:ok, decoded} <- decode_json(json),
          {:ok, _verdict} <- coerce_verdict(Map.get(decoded, "verdict")),
-         {:ok, findings} <- coerce_findings(Map.get(decoded, "findings")) do
+         {:ok, findings} <- coerce_findings(Map.get(decoded, "findings")),
+         {:ok, acceptance_matrix} <- coerce_acceptance_matrix(Map.get(decoded, "acceptance_matrix")),
+         {:ok, advisory_notes} <- coerce_advisory_notes(Map.get(decoded, "advisory_notes")) do
       {:ok, result_from_findings(findings)}
+      |> then(fn {:ok, result} ->
+        {:ok,
+         result
+         |> Map.put(:acceptance_matrix, acceptance_matrix)
+         |> Map.put(:advisory_notes, advisory_notes)}
+      end)
     else
       {:error, reason} -> {:error, {:malformed_response, reason}}
     end
@@ -140,11 +195,12 @@ defmodule SymphonyElixir.SelfReview do
   def fail_open?(_result), do: false
 
   @spec approval_prompt(result()) :: String.t()
-  def approval_prompt(_result) do
+  def approval_prompt(result) do
     """
     Pre-push self-review approved the committed diff.
 
     Continue the normal workflow push and PR handoff now. Do not add a "Known limitations from self-review" section to the PR description.
+    #{advisory_prompt_instruction(result)}
     """
   end
 
@@ -181,25 +237,27 @@ defmodule SymphonyElixir.SelfReview do
       #{fail_open_known_limitations_section(result)}
       """
     else
-      push_prompt_for_findings(Map.get(result, :findings, []))
+      push_prompt_for_result(Map.put_new(result, :findings, []))
     end
   end
 
-  defp push_prompt_for_findings([]) do
+  defp push_prompt_for_result(%{findings: []} = result) do
     """
     Final self-review found no remaining blocking findings.
 
     Push regardless now and complete the normal PR handoff. Do not add a "Known limitations from self-review" section to the PR description.
+    #{advisory_prompt_instruction(result)}
     """
   end
 
-  defp push_prompt_for_findings(findings) do
+  defp push_prompt_for_result(%{findings: findings} = result) do
     """
     Final self-review still reports blocking findings. Push regardless now.
 
     Append this exact section to the PR description so reviewers can see what the self-review flagged:
 
     #{known_limitations_section(findings)}
+    #{advisory_prompt_instruction(result)}
     """
   end
 
@@ -240,32 +298,35 @@ defmodule SymphonyElixir.SelfReview do
     |> String.trim()
   end
 
+  @spec advisory_notes_section([advisory_note()]) :: String.t()
+  def advisory_notes_section(notes) when is_list(notes) do
+    body =
+      notes
+      |> Enum.map_join("\n", fn note ->
+        evidence =
+          case Map.get(note, :evidence) do
+            evidence when is_binary(evidence) and evidence != "" -> " Evidence: `#{evidence}`"
+            _ -> ""
+          end
+
+        "- #{format_category(note.category)}: #{note.description}#{evidence}"
+      end)
+
+    """
+    ## Self-review advisory notes
+
+    #{body}
+    """
+    |> String.trim()
+  end
+
   defp source_material(issue, workspace, config, opts) do
     worker_host = Keyword.get(opts, :worker_host)
     comparison_base = comparison_base(workspace, opts, worker_host)
     git_range = "#{comparison_base}..HEAD"
+    git_fun = fn args -> git(workspace, args, worker_host) end
 
-    with {:ok, diff} <- git(workspace, ["diff", git_range], worker_host),
-         {:ok, changed_paths_output} <- git(workspace, ["diff", "--name-only", git_range], worker_host),
-         {:ok, commit_messages} <- git(workspace, ["log", "--reverse", "--format=%s%n%b%x1e", git_range], worker_host) do
-      changed_paths = split_lines(changed_paths_output)
-      {review_diff, diff_line_count, truncated?} = truncate_diff(diff, changed_paths, config.diff_max_lines, issue)
-      raw_acceptance_criteria = acceptance_criteria(issue.description)
-
-      {:ok,
-       %{
-         issue_title: present_linear(issue.title, &PromptSafety.linear_issue_title/1),
-         issue_description: present_linear(issue.description, &PromptSafety.linear_issue_body/1),
-         acceptance_criteria: present_linear(raw_acceptance_criteria, &PromptSafety.linear_issue_acceptance_criteria/1),
-         linear_input_warnings: linear_input_warnings(issue, raw_acceptance_criteria),
-         changed_paths: changed_paths,
-         commit_messages: String.trim(commit_messages),
-         git_range: git_range,
-         diff: review_diff,
-         diff_line_count: diff_line_count,
-         diff_truncated?: truncated?
-       }}
-    end
+    Context.build(issue, workspace, config, git_range, opts, git_fun)
   end
 
   defp invoke_provider(source, %Schema.SelfReview{} = config, opts) do
@@ -299,14 +360,17 @@ defmodule SymphonyElixir.SelfReview do
 
     #{PromptSafety.warning_section(Map.get(source, :linear_input_warnings, []))}
 
-    Changed file paths:
-    #{format_paths(source.changed_paths)}
-
     Commit subjects and bodies:
     #{blank_fallback(source.commit_messages)}
 
     Git diff #{source.git_range}:
+    Structured context pack:
     #{blank_fallback(source.diff)}
+
+    Reviewer task:
+    - Fill the acceptance matrix from concrete file, test, validation, reviewer, or CI evidence.
+    - Flag missing evidence in `acceptance_matrix` and, when useful, in `advisory_notes`.
+    - Only use `findings` for blocking issues in the three allowed categories.
     """
   end
 
@@ -345,29 +409,6 @@ defmodule SymphonyElixir.SelfReview do
       {:error, reason} ->
         Logger.info("SelfReview origin/HEAD unresolved, falling back to origin/main reason=#{inspect(reason)}")
         "origin/main"
-    end
-  end
-
-  defp truncate_diff(diff, changed_paths, max_lines, issue) do
-    line_count = count_lines(diff)
-
-    if line_count > max_lines do
-      Logger.warning("SelfReview diff truncated issue=#{issue.identifier || issue.id} lines=#{line_count} limit=#{max_lines}")
-
-      lines = String.split(diff, "\n", trim: false)
-      omitted = line_count - max_lines
-
-      tail_summary =
-        [
-          "",
-          "[Diff truncated: showing first #{max_lines} of #{line_count} lines; omitted #{omitted} line(s).]",
-          "[Changed files: #{format_paths(changed_paths)}]"
-        ]
-        |> Enum.join("\n")
-
-      {Enum.take(lines, max_lines) |> Enum.join("\n") |> Kernel.<>(tail_summary), line_count, true}
-    else
-      {diff, line_count, false}
     end
   end
 
@@ -460,6 +501,22 @@ defmodule SymphonyElixir.SelfReview do
 
   defp coerce_findings(_findings), do: {:error, :invalid_findings}
 
+  defp coerce_advisory_notes(nil), do: {:ok, []}
+
+  defp coerce_advisory_notes(notes) when is_list(notes) do
+    {:ok, Enum.flat_map(notes, &normalize_advisory_note/1)}
+  end
+
+  defp coerce_advisory_notes(_notes), do: {:error, :invalid_advisory_notes}
+
+  defp coerce_acceptance_matrix(nil), do: {:ok, []}
+
+  defp coerce_acceptance_matrix(matrix) when is_list(matrix) do
+    {:ok, Enum.flat_map(matrix, &normalize_acceptance_matrix_item/1)}
+  end
+
+  defp coerce_acceptance_matrix(_matrix), do: {:error, :invalid_acceptance_matrix}
+
   defp normalize_finding(%{"severity" => "blocking", "category" => category, "description" => description} = finding)
        when is_binary(description) do
     description = String.trim(description)
@@ -480,6 +537,44 @@ defmodule SymphonyElixir.SelfReview do
   end
 
   defp normalize_finding(_finding), do: []
+
+  defp normalize_advisory_note(%{"category" => category, "description" => description} = note)
+       when is_binary(description) do
+    description = String.trim(description)
+
+    with %{^category => normalized_category} <- @allowed_advisory_categories,
+         false <- description == "" do
+      [
+        %{
+          category: normalized_category,
+          description: description
+        }
+        |> maybe_put_evidence(Map.get(note, "evidence"))
+      ]
+    else
+      _ -> []
+    end
+  end
+
+  defp normalize_advisory_note(_note), do: []
+
+  defp normalize_acceptance_matrix_item(%{"criterion" => criterion} = item) when is_binary(criterion) do
+    criterion = String.trim(criterion)
+
+    if criterion == "" do
+      []
+    else
+      [
+        %{
+          criterion: criterion,
+          evidence: string_list(Map.get(item, "evidence")),
+          missing_evidence: Map.get(item, "missing_evidence") == true
+        }
+      ]
+    end
+  end
+
+  defp normalize_acceptance_matrix_item(_item), do: []
 
   defp maybe_put_evidence(finding, evidence) when is_binary(evidence) do
     case String.trim(evidence) do
@@ -524,32 +619,6 @@ defmodule SymphonyElixir.SelfReview do
   defp fail_open_category({:unsupported_provider, _provider}), do: :provider_unavailable
   defp fail_open_category(_reason), do: :self_review_unavailable
 
-  defp acceptance_criteria(description) when is_binary(description) do
-    case Regex.run(~r/^##\s+Acceptance criteria\s*(.*?)(?=^##\s+|\z)/ims, description, capture: :all_but_first) do
-      [criteria] -> String.trim(criteria)
-      _ -> ""
-    end
-  end
-
-  defp acceptance_criteria(_description), do: ""
-
-  defp linear_input_warnings(issue, acceptance_criteria) do
-    [
-      {"issue.title", issue.title},
-      {"issue.description", issue.description},
-      {"issue.acceptance_criteria", acceptance_criteria}
-    ]
-    |> PromptSafety.warning_fields()
-  end
-
-  defp count_lines(""), do: 0
-  defp count_lines(text) when is_binary(text), do: length(String.split(text, "\n", trim: false))
-
-  defp split_lines(text) when is_binary(text), do: text |> String.split("\n", trim: true) |> Enum.map(&String.trim/1)
-
-  defp format_paths([]), do: "(none)"
-  defp format_paths(paths), do: Enum.join(paths, "\n")
-
   defp format_findings(findings) do
     findings
     |> Enum.with_index(1)
@@ -567,6 +636,26 @@ defmodule SymphonyElixir.SelfReview do
   defp format_category(category) when is_atom(category), do: Atom.to_string(category)
   defp format_category(category), do: to_string(category)
 
+  defp advisory_prompt_instruction(%{advisory_notes: notes}) when is_list(notes) and notes != [] do
+    """
+
+    Append this exact non-blocking advisory section to the PR description:
+
+    #{advisory_notes_section(notes)}
+    """
+  end
+
+  defp advisory_prompt_instruction(_result), do: ""
+
+  defp string_list(values) when is_list(values) do
+    values
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp string_list(_values), do: []
+
   defp blank_fallback(value, fallback \\ "(none)")
 
   defp blank_fallback(value, fallback) when is_binary(value) do
@@ -575,12 +664,6 @@ defmodule SymphonyElixir.SelfReview do
       _ -> value
     end
   end
-
-  defp present_linear(value, _renderer) when value in [nil, ""], do: ""
-
-  defp present_linear(value, renderer) when is_binary(value), do: renderer.(value)
-
-  defp present_linear(value, renderer), do: value |> to_string() |> renderer.()
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"

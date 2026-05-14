@@ -473,6 +473,7 @@ defmodule SymphonyElixir.AgentRunner do
     provider_module = Keyword.get(opts, :self_review_provider_module)
     review_opts = [worker_host: worker_host, base_branch: self_review_base_branch(opts)]
     review_opts = if provider_module, do: Keyword.put(review_opts, :provider_module, provider_module), else: review_opts
+    review_opts = review_opts |> put_reviewer_comments(issue) |> put_ci_failure(issue)
 
     result = SelfReview.evaluate(issue, workspace, config, review_opts)
     audit_self_review(issue, Keyword.get(opts, :run_id), result, self_review_round(run_context), opts)

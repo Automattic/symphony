@@ -18,6 +18,7 @@ defmodule SymphonyElixir.AgentLabelsTest do
 
     assert AgentLabels.update_label(" ") == "Agent update"
     assert AgentLabels.workpad_heading("unknown") == "## Agent Workpad"
+    assert AgentLabels.workpad_heading(%{}) == "## Agent Workpad"
   end
 
   test "normalizes kind values" do
@@ -25,6 +26,7 @@ defmodule SymphonyElixir.AgentLabelsTest do
     assert AgentLabels.normalize_kind(" Claude ") == "claude"
     assert AgentLabels.normalize_kind(" ") == nil
     assert AgentLabels.normalize_kind(nil) == nil
+    assert AgentLabels.normalize_kind(%{}) == nil
   end
 
   test "returns known workpad markers" do

@@ -1244,8 +1244,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         #!/bin/sh
         prompt_file=$(find "${TMPDIR:-/tmp}" -path '*/symphony-claude-prompt-*/prompt' -type f | head -n 1)
         printf '%s' "$prompt_file" > "$PWD/prompt-path.trace"
-        (stat -f '%Lp' "$prompt_file" 2>/dev/null || stat -c '%a' "$prompt_file") > "$PWD/prompt-mode.trace"
-        (stat -f '%Lp' "$(dirname "$prompt_file")" 2>/dev/null || stat -c '%a' "$(dirname "$prompt_file")") > "$PWD/prompt-dir-mode.trace"
+        (stat -c '%a' "$prompt_file" 2>/dev/null || stat -f '%Lp' "$prompt_file") > "$PWD/prompt-mode.trace"
+        (stat -c '%a' "$(dirname "$prompt_file")" 2>/dev/null || stat -f '%Lp' "$(dirname "$prompt_file")") > "$PWD/prompt-dir-mode.trace"
         cat > "$PWD/stdin.trace"
         printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-prompt-file","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
         printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"sess-prompt-file","total_cost_usd":0.001,"usage":{"input_tokens":6,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'

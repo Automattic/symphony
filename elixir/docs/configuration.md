@@ -211,7 +211,6 @@ agent:
     # @anthropic-ai/sandbox-runtime `srt` command is installed for the agent.
     kind: none
     command: srt
-    enable_weaker_nested_sandbox: false
     enable_weaker_network_isolation: false
 pr_review:
   mode: tracker
@@ -358,9 +357,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
     `srt --settings <temporary-settings.json> <agent.command-with-codex-config>`.
   - `command` defaults to `srt` and may be a shell-like command string when a wrapper such as
     `mise exec -- srt` is required.
-  - `enable_weaker_nested_sandbox` and `enable_weaker_network_isolation` map directly to the same
-    sandbox-runtime settings. Keep them `false` unless the host environment requires one of those
-    compatibility modes.
+  - When SRT is enabled, Symphony sends Codex an `externalSandbox` turn policy so the SRT wrapper
+    owns command sandbox enforcement. This avoids nesting Codex's macOS `sandbox-exec` inside SRT's
+    macOS `sandbox-exec`.
+  - Symphony still emits SRT's `enableWeakerNestedSandbox: true` setting for Linux/Docker
+    compatibility.
+  - `enable_weaker_network_isolation` maps directly to the same sandbox-runtime setting. Keep it
+    `false` unless the host environment requires that compatibility mode.
   - Symphony generates the temporary settings file from `agent.network_access`,
     `workspace.sandbox.allow_read_paths`, and the shared sensitive path deny lists. The generated
     SRT policy denies reads for credential/config paths, allows writes to the issue workspace and

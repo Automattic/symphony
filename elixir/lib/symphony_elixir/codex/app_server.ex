@@ -404,7 +404,6 @@ defmodule SymphonyElixir.Codex.AppServer do
              Schema.codex_effective_network_allowed_domains(settings),
              network_access.denied_domains,
              workspace_sandbox_allow_read_paths(settings),
-             enable_weaker_nested_sandbox: runtime.enable_weaker_nested_sandbox,
              enable_weaker_network_isolation: runtime.enable_weaker_network_isolation
            ),
          {:ok, json} <- Jason.encode(srt_settings),

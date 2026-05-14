@@ -108,8 +108,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
                "allowlist",
                ["GitHub.com", "api.openai.com", "github.com"],
                [" API.GitHub.com "],
-               ["~/.npmrc"],
-               enable_weaker_nested_sandbox: true
+               ["~/.npmrc"]
              )
 
     assert settings["network"] == %{

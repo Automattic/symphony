@@ -739,6 +739,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       while IFS= read -r _line; do
         count=$((count + 1))
+        printf 'JSON:%s\\n' "$_line" >> "$trace_file"
 
         case "$count" in
           1)
@@ -1037,6 +1038,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       while IFS= read -r _line; do
         count=$((count + 1))
+        printf 'JSON:%s\\n' "$_line" >> "$trace_file"
 
         case "$count" in
           1)
@@ -1073,8 +1075,7 @@ defmodule SymphonyElixir.AppServerTest do
         },
         agent_sandbox_runtime: %{
           kind: "srt",
-          command: srt_binary,
-          enable_weaker_nested_sandbox: true
+          command: srt_binary
         }
       )
 
@@ -1096,6 +1097,24 @@ defmodule SymphonyElixir.AppServerTest do
       assert trace =~ "--config permissions.workspace_write.filesystem="
       assert trace =~ "--config permissions.workspace_write.network={\"enabled\"=true,\"mode\"=\"limited\"}"
       assert trace =~ " app-server"
+
+      json_payloads =
+        trace
+        |> String.split("\n", trim: true)
+        |> Enum.flat_map(fn
+          "JSON:" <> json -> [Jason.decode!(json)]
+          _line -> []
+        end)
+
+      assert Enum.any?(json_payloads, fn payload ->
+               payload["method"] == "thread/start" &&
+                 get_in(payload, ["params", "sandbox"]) == "workspace-write"
+             end)
+
+      assert Enum.any?(json_payloads, fn payload ->
+               payload["method"] == "turn/start" &&
+                 get_in(payload, ["params", "sandboxPolicy"]) == %{"type" => "externalSandbox"}
+             end)
 
       srt_settings_path =
         trace

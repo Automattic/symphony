@@ -1920,7 +1920,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.agent.network_access.denied_domains == []
     assert config.agent.sandbox_runtime.kind == "none"
     assert config.agent.sandbox_runtime.command == "srt"
-    assert config.agent.sandbox_runtime.enable_weaker_nested_sandbox == false
     assert config.agent.sandbox_runtime.enable_weaker_network_isolation == false
 
     assert {:ok, canonical_default_workspace_root} =
@@ -2258,6 +2257,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, runtime_settings} = Config.codex_runtime_settings()
     assert runtime_settings.approval_policy == "never"
     assert runtime_settings.auto_approve_requests == true
+  end
+
+  test "codex runtime delegates turn sandboxing to SRT when sandbox runtime is enabled" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_sandbox_runtime: %{kind: "srt"},
+      agent_thread_sandbox: "workspace-write",
+      agent_turn_sandbox_policy: %{type: "workspaceWrite", networkAccess: true}
+    )
+
+    assert Config.settings!().agent.sandbox_runtime.kind == "srt"
+    assert {:ok, runtime_settings} = Config.codex_runtime_settings()
+    assert runtime_settings.thread_sandbox == "workspace-write"
+    assert runtime_settings.turn_sandbox_policy == %{"type" => "externalSandbox"}
   end
 
   test "config warns that Codex approval policy never is deprecated" do
@@ -2655,7 +2667,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       agent_sandbox_runtime: %{
         kind: "srt",
         command: "/usr/local/bin/srt",
-        enable_weaker_nested_sandbox: true,
         enable_weaker_network_isolation: true
       }
     )
@@ -2663,7 +2674,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     runtime = Config.settings!().agent.sandbox_runtime
     assert runtime.kind == "srt"
     assert runtime.command == "/usr/local/bin/srt"
-    assert runtime.enable_weaker_nested_sandbox == true
     assert runtime.enable_weaker_network_isolation == true
 
     write_workflow_file!(Workflow.workflow_file_path(),

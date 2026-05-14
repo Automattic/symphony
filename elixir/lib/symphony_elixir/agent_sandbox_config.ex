@@ -127,7 +127,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
          "allowWrite" => srt_allow_write_paths(),
          "denyWrite" => srt_deny_write_paths()
        },
-       "enableWeakerNestedSandbox" => Keyword.get(opts, :enable_weaker_nested_sandbox, false),
+       "enableWeakerNestedSandbox" => true,
        "enableWeakerNetworkIsolation" => Keyword.get(opts, :enable_weaker_network_isolation, false)
      }}
   end

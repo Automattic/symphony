@@ -33,6 +33,7 @@ defmodule SymphonyElixir.Config do
   @codex_auto_approve_all_approval_policy "auto_approve_all"
   @codex_legacy_auto_approve_approval_policy "never"
   @codex_auto_approve_all_wire_approval_policy "never"
+  @codex_srt_turn_sandbox_policy %{"type" => "externalSandbox"}
 
   @type codex_runtime_settings :: %{
           approval_policy: String.t() | map(),
@@ -318,10 +319,19 @@ defmodule SymphonyElixir.Config do
          auto_approve_requests: auto_approve_requests,
          thread_sandbox: settings.agent.thread_sandbox,
          thread_config: Schema.resolve_codex_thread_config(settings),
-         turn_sandbox_policy: turn_sandbox_policy
+         turn_sandbox_policy: codex_turn_sandbox_policy_for_runtime(settings, turn_sandbox_policy)
        }}
     end
   end
+
+  defp codex_turn_sandbox_policy_for_runtime(
+         %Schema{agent: %{sandbox_runtime: %Schema.Agent.SandboxRuntime{kind: "srt"}}},
+         _turn_sandbox_policy
+       ) do
+    @codex_srt_turn_sandbox_policy
+  end
+
+  defp codex_turn_sandbox_policy_for_runtime(_settings, turn_sandbox_policy), do: turn_sandbox_policy
 
   defp validate_semantics(settings, system_config) do
     cond do

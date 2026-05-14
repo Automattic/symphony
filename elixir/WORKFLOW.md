@@ -141,7 +141,7 @@ the prompt-facing API.
 
 ## Status map
 
-- `Backlog` -> out of scope for this workflow; do not modify, except when the in-execution clarification escape hatch returns the issue to `Backlog` for human input.
+- `Backlog` -> out of scope for this workflow; do not modify, except when an escape hatch returns the issue to `Backlog` for human input or external unblock.
 - `Todo` -> queued; immediately transition to `In Progress` before active work.
   - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `In Review`).
 - `In Progress` -> implementation actively underway.
@@ -242,12 +242,14 @@ Use this whenever pushed checks come back failing, at any push gate (including t
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
 
 - GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
-- Do not move to `In Review` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
-- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `In Review` with a short blocker brief in the workpad that includes:
+- Do not use this escape hatch for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
+- If a non-GitHub required tool is missing, required non-GitHub auth/permission is unavailable, or sandbox/tooling startup blocks all required local work, post one short Linear blocker comment. This is an exception to the single-workpad rule.
+- Record the blocker comment URL in the workpad, then move the ticket to `Backlog` so it does not look like a validated PR review.
+- The blocker comment and workpad brief must include:
   - what is missing,
   - why it blocks required acceptance/validation,
   - exact human action needed to unblock.
-- Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
+- Keep the blocker comment concise and action-oriented; do not add any other top-level comments.
 
 ## In-execution clarification escape hatch (required behavior)
 
@@ -313,7 +315,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `In Review`.
-    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `In Review` with the blocker brief and explicit unblock actions.
+    - No blocked-access exception: blocked issues must follow the blocked-access escape hatch and move to `Backlog` with a blocker comment.
     - After the PR is attached and the issue is moved to `In Review`, end the turn. Do not continue ordinary implementation work unless Symphony injects reviewer, CI, self-review, or operator rework context.
 13. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
@@ -355,7 +357,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
 - For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
-- If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
+- If issue state is `Backlog`, do not modify it; wait for human to move it to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`{{ agent.workpad_heading }}`) per issue.
 - If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
@@ -375,7 +377,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
 - In `In Review`, do not make changes; wait and poll.
 - If state is terminal (`Done`), do nothing and shut down.
 - Keep issue text concise, specific, and reviewer-oriented.
-- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
+- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action, move the issue to `Backlog`, and stop.
 
 ## Workpad template
 

@@ -98,7 +98,7 @@ defmodule SymphonyElixir.ControlClient do
   end
 
   defp maybe_set_cookie(opts) do
-    case Keyword.get(opts, :cookie, System.get_env("SYMPHONY_COOKIE")) do
+    case Keyword.get_lazy(opts, :cookie, &cookie_from_env_or_file/0) do
       cookie when is_binary(cookie) and cookie != "" ->
         set_cookie = Keyword.get(opts, :set_cookie, &Node.set_cookie/1)
         set_cookie.(String.to_atom(cookie))
@@ -106,6 +106,28 @@ defmodule SymphonyElixir.ControlClient do
 
       _ ->
         :ok
+    end
+  end
+
+  defp cookie_from_env_or_file do
+    case System.get_env("SYMPHONY_COOKIE") do
+      cookie when is_binary(cookie) and cookie != "" ->
+        cookie
+
+      _ ->
+        read_persisted_cookie()
+    end
+  end
+
+  defp read_persisted_cookie do
+    path = SymphonyElixir.Paths.erlang_cookie_file()
+
+    with {:ok, contents} <- File.read(path),
+         cookie = String.trim(contents),
+         true <- cookie != "" do
+      cookie
+    else
+      _ -> nil
     end
   end
 

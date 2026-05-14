@@ -111,6 +111,11 @@ the release runs as `symphony@127.0.0.1`, and Mnesia tags every replica with `no
 - Dev default: `~/Library/Application Support/symphony/` and `~/Library/Logs/symphony/`
 - Release default: `~/Library/Application Support/symphony/release/` and `~/Library/Logs/symphony/release/`
 
+On first packaged-release startup, Symphony creates an Erlang distribution cookie at
+`~/Library/Application Support/symphony/release/erlang_cookie` with owner-only permissions and
+reuses it on later starts. Set `SYMPHONY_COOKIE` before launch to provide an explicit cookie
+instead; the release refuses the old public cookie value `symphony`.
+
 Set `SYMPHONY_STATE_ROOT` and `SYMPHONY_LOGS_ROOT` to point both modes at the same paths if you
 explicitly want shared state — but be aware the on-disk Mnesia schema is owned by whichever node
 created it, so the other mode will fail to load tables until the schema is reset or renamed.
@@ -274,6 +279,7 @@ Runtime paths default to per-user macOS locations:
 | Mnesia run store | `~/Library/Application Support/symphony/run_store` | `--state-root`, `SYMPHONY_STATE_ROOT` |
 | Audit NDJSON | `~/Library/Application Support/symphony/audit` | `--state-root`, `SYMPHONY_STATE_ROOT` |
 | Phoenix `secret_key_base` | `~/Library/Application Support/symphony/secret_key_base` | `--state-root`, `SYMPHONY_STATE_ROOT` |
+| Release BEAM cookie | `~/Library/Application Support/symphony/release/erlang_cookie` | `SYMPHONY_COOKIE`, `--state-root`, `SYMPHONY_STATE_ROOT` |
 
 `symphony.yml` stays cwd-relative and operator-supplied. Moving the binary does not change where
 the default config file is resolved from.
@@ -305,7 +311,19 @@ Lifecycle notifications (`pr_opened`, `awaiting_review`, `issue_completed`, etc.
 across restarts. Symphony persists per-run markers in the durable run store, so bouncing the
 process does not re-emit events for runs that already reached those milestones.
 
-If the dashboard is unavailable, use the mix task fallbacks against a named local Symphony node:
+If the dashboard is unavailable, use the mix task fallbacks against a named local Symphony node.
+For packaged releases, the control tasks read the persisted `erlang_cookie` from the same state
+root when `SYMPHONY_COOKIE` is unset:
+
+```bash
+export SYMPHONY_NODE=symphony@127.0.0.1
+mise exec -- mix symphony.pause "deploy window"
+mise exec -- mix symphony.resume
+mise exec -- mix symphony.stop RSM-123
+```
+
+For a local `./bin/symphony` or `mix run` process, start the node with an explicit non-default
+cookie and pass the same cookie to the control task shell:
 
 ```bash
 export SYMPHONY_COOKIE="replace-with-a-shared-cookie"

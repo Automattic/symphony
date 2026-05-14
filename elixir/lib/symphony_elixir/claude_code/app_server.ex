@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AgentEnv, AgentSandboxConfig, Config, McpServer, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, AgentSandboxConfig, Config, DependencyGate, McpServer, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
   alias SymphonyElixir.GitHub.Hosts
@@ -369,13 +369,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp start_mcp_session(workspace, worker_host, opts) do
+    issue = Keyword.get(opts, :issue)
+
     context = %{
-      issue: Keyword.get(opts, :issue),
+      issue: issue,
       issue_id: Keyword.get(opts, :issue_id),
       workspace: workspace,
       command_security: command_security_context(workspace, worker_host),
       comment_registry: Keyword.get(opts, :linear_comment_registry),
-      tool_opts: tool_opts(opts)
+      tool_opts: tool_opts(opts),
+      dependency_gate: DependencyGate.build(workspace, issue, Keyword.get(opts, :settings), opts)
     }
 
     mcp_opts =

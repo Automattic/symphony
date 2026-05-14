@@ -6,6 +6,7 @@ defmodule SymphonyElixir.McpServer do
   require Logger
 
   alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.DependencyGate
 
   @server_name "symphony"
   @protocol_version "2025-06-18"
@@ -487,7 +488,7 @@ defmodule SymphonyElixir.McpServer do
   defp handle_payload(%{"id" => id, "method" => "tools/call", "params" => params}, context) do
     tool = Map.get(params, "name")
     arguments = Map.get(params, "arguments", %{})
-    result = DynamicTool.execute(tool, arguments, tool_opts(context))
+    result = execute_tool(tool, arguments, context)
 
     response(id, %{
       "content" => [%{"type" => "text", "text" => Map.get(result, "output", "")}],
@@ -524,6 +525,23 @@ defmodule SymphonyElixir.McpServer do
       command_security: Map.get(context, :command_security) || %{},
       comment_registry: Map.get(context, :comment_registry)
     )
+  end
+
+  defp execute_tool(tool, arguments, context) do
+    case DependencyGate.evaluate_pr_create_tool(tool, Map.get(context, :dependency_gate)) do
+      :allow ->
+        DynamicTool.execute(tool, arguments, tool_opts(context))
+
+      {:hold, items, failure} ->
+        DependencyGate.react_to_hold(Map.fetch!(context, :dependency_gate), items)
+        failure
+
+      {:audit_error, reason, failure} ->
+        Logger.error("Dependency audit failed during MCP github_create_pull_request: #{inspect(reason)}")
+
+        DependencyGate.react_to_audit_error(Map.fetch!(context, :dependency_gate), reason)
+        failure
+    end
   end
 
   defp token do

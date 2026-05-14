@@ -517,6 +517,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload({:private_upload_denied_sensitive_filename, basename}) do
+    %{
+      "error" => %{
+        "code" => "private_upload_denied_sensitive_filename",
+        "message" => "Refused private Linear upload for sensitive filename #{inspect(basename)}. Choose a non-sensitive artifact.",
+        "filename" => basename
+      }
+    }
+  end
+
   defp tool_error_payload({:file_upload_too_large, details}) do
     %{
       "error" => %{

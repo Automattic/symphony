@@ -517,30 +517,41 @@ defmodule SymphonyElixir.AgentTools.Linear do
   end
 
   defp validate_file_upload_policy(path, size, true, opts) do
-    basename = Path.basename(path)
     max_bytes = Keyword.get(opts, :max_public_upload_bytes, @public_file_upload_max_bytes)
 
-    cond do
-      SensitivePath.sensitive_basename?(basename) ->
-        {:error, {:public_upload_denied_sensitive_filename, basename}}
-
-      size > max_bytes ->
+    with :ok <- reject_sensitive_upload_filename(path, true) do
+      if size > max_bytes do
         {:error, {:file_upload_too_large, %{actual_bytes: size, max_bytes: max_bytes, make_public: true}}}
-
-      true ->
+      else
         :ok
+      end
     end
   end
 
-  defp validate_file_upload_policy(_path, size, false, opts) do
+  defp validate_file_upload_policy(path, size, false, opts) do
     max_bytes = Keyword.get(opts, :max_private_upload_bytes, @private_file_upload_max_bytes)
 
-    if size > max_bytes do
-      {:error, {:file_upload_too_large, %{actual_bytes: size, max_bytes: max_bytes, make_public: false}}}
+    with :ok <- reject_sensitive_upload_filename(path, false) do
+      if size > max_bytes do
+        {:error, {:file_upload_too_large, %{actual_bytes: size, max_bytes: max_bytes, make_public: false}}}
+      else
+        :ok
+      end
+    end
+  end
+
+  defp reject_sensitive_upload_filename(path, make_public) do
+    basename = Path.basename(path)
+
+    if SensitivePath.sensitive_basename?(basename) do
+      {:error, {sensitive_upload_error(make_public), basename}}
     else
       :ok
     end
   end
+
+  defp sensitive_upload_error(true), do: :public_upload_denied_sensitive_filename
+  defp sensitive_upload_error(false), do: :private_upload_denied_sensitive_filename
 
   defp put_upload(contents, %{"uploadUrl" => upload_url} = upload, opts) when is_binary(upload_url) do
     upload_client = Keyword.get(opts, :upload_client, &Req.put/2)

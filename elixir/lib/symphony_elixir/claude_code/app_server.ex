@@ -196,6 +196,58 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   @doc false
   @spec event_to_update(any()) :: map() | nil
+  def event_to_update({:session_started, session_id}) when is_binary(session_id) do
+    %{
+      event: :session_started,
+      timestamp: DateTime.utc_now(),
+      session_id: session_id,
+      payload: %{session_id: session_id}
+    }
+  end
+
+  def event_to_update({:notification, message}) when is_binary(message) do
+    %{
+      event: :notification,
+      timestamp: DateTime.utc_now(),
+      payload: message
+    }
+  end
+
+  def event_to_update({:tool_use, name}) when is_binary(name) do
+    %{
+      event: :tool_use,
+      timestamp: DateTime.utc_now(),
+      payload: %{
+        method: "item/tool/call",
+        params: %{tool: name}
+      }
+    }
+  end
+
+  def event_to_update({:turn_completed, result}) when is_map(result) do
+    %{
+      event: :turn_completed,
+      timestamp: DateTime.utc_now(),
+      usage: result,
+      payload: %{
+        method: "turn/completed",
+        usage: result
+      }
+    }
+  end
+
+  def event_to_update({:turn_failed, reason}) when is_binary(reason) do
+    %{
+      event: :turn_failed,
+      timestamp: DateTime.utc_now(),
+      reason: reason,
+      payload: %{
+        method: "turn/failed",
+        params: %{error: %{message: reason}}
+      }
+    }
+  end
+
   def event_to_update({:rate_limited, info}) when is_map(info) do
     %{
       event: :rate_limited,
@@ -813,7 +865,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         %{acc | turn_failed: reason}
 
       {:tool_use, name} ->
-        on_message.({:notification, "tool: #{name}"})
+        on_message.({:tool_use, name})
         acc
 
       {:notification, text} ->
@@ -905,10 +957,24 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp extract_turn_result(event) do
     usage = Map.get(event, "usage", %{})
+    input_tokens = token_count(usage, "input_tokens", 0)
+    output_tokens = token_count(usage, "output_tokens", 0)
+    cached_input_tokens = token_count(usage, "cache_read_input_tokens", 0)
 
     %{
-      input_tokens: Map.get(usage, "input_tokens", 0),
-      output_tokens: Map.get(usage, "output_tokens", 0)
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      output_tokens: output_tokens,
+      total_tokens: token_count(usage, "total_tokens", nil) || input_tokens + output_tokens
     }
   end
+
+  defp token_count(usage, key, default) when is_map(usage) and is_binary(key) do
+    case Map.get(usage, key, default) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> default
+    end
+  end
+
+  defp token_count(_usage, _key, default), do: default
 end

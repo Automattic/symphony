@@ -43,7 +43,10 @@ defmodule SymphonyElixir.CLITest do
 
     assert {:error, banner} = CLI.evaluate([], deps)
     assert banner =~ "This Symphony implementation is a low key engineering preview."
-    assert banner =~ "Codex will run without any guardrails."
+    assert banner =~ "Codex and Claude will run without the usual guardrails."
+    assert banner =~ "Agents can access provider runtime config files:"
+    assert banner =~ "~/.codex/auth.json"
+    assert banner =~ "~/.claude/.credentials.json"
     assert banner =~ "SymphonyElixir is not a supported product and is presented as-is."
     assert banner =~ @ack_flag
     refute_received :file_checked

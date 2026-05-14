@@ -994,7 +994,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server strips provider and tracker secrets from the agent subprocess env" do
+  test "app server strips provider, tracker, GitHub, and SSH agent secrets from the agent subprocess env" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1004,7 +1004,10 @@ defmodule SymphonyElixir.AppServerTest do
     secret_vars = %{
       "LINEAR_API_KEY" => "lin_api_REDACTED_#{System.unique_integer([:positive])}",
       "ANTHROPIC_API_KEY" => "sk-ant-REDACTED_#{System.unique_integer([:positive])}",
-      "OPENAI_API_KEY" => "sk-REDACTED_#{System.unique_integer([:positive])}"
+      "OPENAI_API_KEY" => "sk-REDACTED_#{System.unique_integer([:positive])}",
+      "GH_TOKEN" => "gho_REDACTED_#{System.unique_integer([:positive])}",
+      "GITHUB_TOKEN" => "ghp_REDACTED_#{System.unique_integer([:positive])}",
+      "SSH_AUTH_SOCK" => "/tmp/ssh-REDACTED-#{System.unique_integer([:positive])}/agent.1"
     }
 
     previous = Enum.map(secret_vars, fn {name, _} -> {name, System.get_env(name)} end)
@@ -1024,6 +1027,9 @@ defmodule SymphonyElixir.AppServerTest do
       printf 'LINEAR=%s\\n' "${LINEAR_API_KEY-<unset>}" >> "$trace_file"
       printf 'ANTHROPIC=%s\\n' "${ANTHROPIC_API_KEY-<unset>}" >> "$trace_file"
       printf 'OPENAI=%s\\n' "${OPENAI_API_KEY-<unset>}" >> "$trace_file"
+      printf 'GH=%s\\n' "${GH_TOKEN-<unset>}" >> "$trace_file"
+      printf 'GITHUB=%s\\n' "${GITHUB_TOKEN-<unset>}" >> "$trace_file"
+      printf 'SSH_AUTH_SOCK=%s\\n' "${SSH_AUTH_SOCK-<unset>}" >> "$trace_file"
       printf 'RUNTIME=%s\\n' "${SYMPHONY_AGENT_RUNTIME-<unset>}" >> "$trace_file"
 
       count=0
@@ -1063,6 +1069,9 @@ defmodule SymphonyElixir.AppServerTest do
       assert trace =~ "LINEAR=<unset>"
       assert trace =~ "ANTHROPIC=<unset>"
       assert trace =~ "OPENAI=<unset>"
+      assert trace =~ "GH=<unset>"
+      assert trace =~ "GITHUB=<unset>"
+      assert trace =~ "SSH_AUTH_SOCK=<unset>"
       assert trace =~ "RUNTIME=1"
 
       Enum.each(secret_vars, fn {_name, value} ->

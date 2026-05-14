@@ -4,10 +4,11 @@ defmodule SymphonyElixir.AgentEnv do
 
   Erlang's `:env` option appends to the inherited environment — a child process
   spawned without an explicit list sees the full parent env. To prevent secrets
-  like `LINEAR_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` from reaching
-  the agent (and being exfiltrated via a legitimate `git push`), this module
-  emits an explicit whitelist for safe vars plus `{name, false}` entries that
-  remove every other inherited var.
+  like `LINEAR_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GH_TOKEN`,
+  `GITHUB_TOKEN`, or `SSH_AUTH_SOCK` from reaching the agent (and being
+  exfiltrated via a legitimate command), this module emits an explicit
+  whitelist for safe vars plus `{name, false}` entries that remove every other
+  inherited var.
 
   Provider credentials must reach the agent runtime through its own config
   files (`~/.codex/auth.json`, `~/.claude/.credentials.json`), not the process
@@ -30,9 +31,6 @@ defmodule SymphonyElixir.AgentEnv do
     TMPDIR
     SHELL
     TZ
-    SSH_AUTH_SOCK
-    GH_TOKEN
-    GITHUB_TOKEN
   )
 
   @doc """

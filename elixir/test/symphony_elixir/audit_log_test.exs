@@ -4,6 +4,8 @@ defmodule SymphonyElixir.AuditLogTest do
   alias SymphonyElixir.AuditLog
 
   @linear_secret "linear-secret-123456"
+  @gh_secret "gho-secret-123456"
+  @github_secret "ghp-secret-123456"
 
   setup do
     test_root =
@@ -14,14 +16,20 @@ defmodule SymphonyElixir.AuditLogTest do
 
     audit_dir = Path.join(test_root, "audit")
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+    previous_gh_token = System.get_env("GH_TOKEN")
+    previous_github_token = System.get_env("GITHUB_TOKEN")
     previous_audit_dir = Application.get_env(:symphony_elixir, :audit_log_dir)
 
     System.put_env("LINEAR_API_KEY", @linear_secret)
+    System.put_env("GH_TOKEN", @gh_secret)
+    System.put_env("GITHUB_TOKEN", @github_secret)
     Application.put_env(:symphony_elixir, :audit_log_dir, audit_dir)
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "$LINEAR_API_KEY")
 
     on_exit(fn ->
       restore_env("LINEAR_API_KEY", previous_linear_api_key)
+      restore_env("GH_TOKEN", previous_gh_token)
+      restore_env("GITHUB_TOKEN", previous_github_token)
       restore_app_env(:audit_log_dir, previous_audit_dir)
       File.rm_rf(test_root)
     end)
@@ -70,6 +78,54 @@ defmodule SymphonyElixir.AuditLogTest do
     refute Map.has_key?(event, "prompt")
     assert is_binary(event["record_hash"])
     assert {:ok, 2} = AuditLog.verify_file(path)
+  end
+
+  test "redacts common GitHub token env values from command output", %{audit_dir: audit_dir} do
+    timestamp = ~U[2026-05-07 12:00:00Z]
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 issue_id: "issue-1",
+                 run_id: "run-1",
+                 timestamp: timestamp,
+                 event_type: "tool_call",
+                 result: %{
+                   "output" => "GH_TOKEN=#{@gh_secret}\nGITHUB_TOKEN=#{@github_secret}"
+                 }
+               },
+               dir: audit_dir
+             )
+
+    path = Path.join(audit_dir, "2026-05-07.ndjson")
+    contents = File.read!(path)
+
+    refute contents =~ @gh_secret
+    refute contents =~ @github_secret
+    assert contents =~ "[REDACTED]"
+  end
+
+  test "keeps GH_TOKEN canary literal unredacted when no value is present in output", %{audit_dir: audit_dir} do
+    timestamp = ~U[2026-05-07 12:00:00Z]
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 issue_id: "issue-1",
+                 run_id: "run-1",
+                 timestamp: timestamp,
+                 event_type: "tool_call",
+                 command: "printf '%s\\n' '$GH_TOKEN'",
+                 result: %{"output" => "$GH_TOKEN\n"}
+               },
+               dir: audit_dir
+             )
+
+    path = Path.join(audit_dir, "2026-05-07.ndjson")
+    contents = File.read!(path)
+
+    assert contents =~ "$GH_TOKEN"
+    refute contents =~ "GH_TOKEN=[REDACTED]"
   end
 
   test "lists events chronologically across date ranges", %{audit_dir: audit_dir} do

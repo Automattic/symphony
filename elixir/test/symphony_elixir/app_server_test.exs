@@ -1006,11 +1006,35 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-SRT")
+      primary_repo = Path.join(test_root, "primary")
       codex_binary = Path.join(test_root, "fake-codex")
       srt_binary = Path.join(test_root, "fake-srt")
       trace_file = Path.join(test_root, "codex-srt-wrapper.trace")
       settings_copy = Path.join(test_root, "srt-settings-copy.json")
-      File.mkdir_p!(workspace)
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(primary_repo)
+
+      assert {_output, 0} = System.cmd("git", ["init", "-b", "main"], cd: primary_repo, stderr_to_stdout: true)
+      assert {_output, 0} = System.cmd("git", ["config", "user.name", "Test User"], cd: primary_repo)
+      assert {_output, 0} = System.cmd("git", ["config", "user.email", "test@example.com"], cd: primary_repo)
+      File.write!(Path.join(primary_repo, "README.md"), "test\n")
+      assert {_output, 0} = System.cmd("git", ["add", "README.md"], cd: primary_repo)
+      assert {_output, 0} = System.cmd("git", ["commit", "-m", "initial"], cd: primary_repo, stderr_to_stdout: true)
+
+      assert {_output, 0} =
+               System.cmd("git", ["worktree", "add", "-b", "auto/MT-SRT", workspace],
+                 cd: primary_repo,
+                 stderr_to_stdout: true
+               )
+
+      assert {git_dir_output, 0} =
+               System.cmd("git", ["-C", workspace, "rev-parse", "--path-format=absolute", "--git-dir"], stderr_to_stdout: true)
+
+      assert {git_common_dir_output, 0} =
+               System.cmd("git", ["-C", workspace, "rev-parse", "--path-format=absolute", "--git-common-dir"], stderr_to_stdout: true)
+
+      git_dir = String.trim(git_dir_output)
+      git_common_dir = String.trim(git_common_dir_output)
 
       File.write!(srt_binary, """
       #!/bin/sh
@@ -1136,7 +1160,10 @@ defmodule SymphonyElixir.AppServerTest do
       assert "~/.ssh" in settings["filesystem"]["denyRead"]
       assert "." in settings["filesystem"]["allowWrite"]
       assert "~/.codex" in settings["filesystem"]["allowWrite"]
+      assert git_dir in settings["filesystem"]["allowWrite"]
+      assert git_common_dir in settings["filesystem"]["allowWrite"]
       assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
+      assert Path.join(git_common_dir, "hooks") in settings["filesystem"]["denyWrite"]
       assert "~/.codex/auth.json" in settings["filesystem"]["denyWrite"]
       assert "~/.codex/config.toml" in settings["filesystem"]["denyWrite"]
       assert "~/.codex/AGENTS.md" in settings["filesystem"]["denyWrite"]

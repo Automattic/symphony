@@ -190,10 +190,11 @@ agent:
     command: srt
 ```
 
-Symphony generates the temporary `srt` settings file from the same workspace, filesystem deny-list,
-and network allow-list config it already sends to Codex. Because SRT wraps the whole Codex process,
-the policy also allows Codex to write its own `~/.codex` runtime state while protecting static
-Codex auth, config, and global-instruction files from writes. See
+Symphony generates the temporary `srt` settings file from the same workspace, Git metadata,
+filesystem deny-list, operator read exceptions, and network allow-list config it already sends to
+Codex. Because SRT wraps the whole Codex process, the policy also allows Codex to write its own
+`~/.codex` runtime state while protecting static Codex auth, config, and global-instruction files
+from writes. See
 [docs/configuration.md](docs/configuration.md) for the full option list and current limitations.
 
 `symphony.yml`:

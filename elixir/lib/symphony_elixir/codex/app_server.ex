@@ -296,7 +296,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     if is_nil(executable) do
       {:error, :bash_not_found}
     else
-      with {:ok, command, launch_cleanup_paths} <- command_with_sandbox_config(settings.agent.command, settings) do
+      with {:ok, command, launch_cleanup_paths} <- command_with_sandbox_config(settings.agent.command, settings, workspace) do
         port =
           Port.open(
             {:spawn_executable, String.to_charlist(executable)},
@@ -324,7 +324,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp remote_launch_command(workspace, settings) when is_binary(workspace) do
-    with {:ok, command, []} <- command_with_sandbox_config(settings.agent.command, settings, remote: true) do
+    with {:ok, command, []} <- command_with_sandbox_config(settings.agent.command, settings, workspace, remote: true) do
       script =
         [
           "cd #{shell_escape(workspace)}",
@@ -336,7 +336,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp command_with_sandbox_config(command, settings, opts \\ []) when is_binary(command) do
+  defp command_with_sandbox_config(command, settings, workspace, opts \\ []) when is_binary(command) do
     network_access = settings.agent.network_access || %Schema.Agent.NetworkAccess{}
 
     overrides =
@@ -347,11 +347,11 @@ defmodule SymphonyElixir.Codex.AppServer do
       )
 
     with {:ok, command} <- inject_config_overrides(command, overrides) do
-      maybe_wrap_sandbox_runtime(command, settings, opts)
+      maybe_wrap_sandbox_runtime(command, settings, workspace, opts)
     end
   end
 
-  defp maybe_wrap_sandbox_runtime(command, settings, opts) do
+  defp maybe_wrap_sandbox_runtime(command, settings, workspace, opts) do
     runtime = sandbox_runtime(settings)
 
     case runtime.kind do
@@ -362,7 +362,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         if Keyword.get(opts, :remote, false) do
           {:error, {:unsupported_agent_sandbox_runtime, "srt", :remote_worker}}
         else
-          wrap_srt_command(command, settings, runtime)
+          wrap_srt_command(command, settings, workspace, runtime)
         end
     end
   end
@@ -371,9 +371,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp sandbox_runtime(_settings), do: %Schema.Agent.SandboxRuntime{}
 
-  defp wrap_srt_command(command, settings, runtime) do
+  defp wrap_srt_command(command, settings, workspace, runtime) do
     with {:ok, srt_words} <- srt_command_words(runtime.command),
-         {:ok, settings_dir, settings_path} <- write_srt_settings(settings, runtime) do
+         {:ok, settings_dir, settings_path} <- write_srt_settings(settings, workspace, runtime) do
       wrapped_command =
         (srt_words ++ ["--settings", settings_path])
         |> Enum.map_join(" ", &shell_escape/1)
@@ -393,7 +393,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp srt_command_words(_command), do: {:error, {:invalid_srt_command, :not_a_string}}
 
-  defp write_srt_settings(settings, runtime) do
+  defp write_srt_settings(settings, workspace, runtime) do
     settings_dir = Path.join(System.tmp_dir!(), "symphony-srt-#{System.unique_integer([:positive])}")
     settings_path = Path.join(settings_dir, "settings.json")
     network_access = settings.agent.network_access || %Schema.Agent.NetworkAccess{}
@@ -404,6 +404,8 @@ defmodule SymphonyElixir.Codex.AppServer do
              Schema.codex_effective_network_allowed_domains(settings),
              network_access.denied_domains,
              workspace_sandbox_allow_read_paths(settings),
+             allow_write_paths: srt_workspace_write_paths(settings, workspace),
+             deny_write_paths: srt_workspace_deny_write_paths(settings, workspace),
              enable_weaker_network_isolation: runtime.enable_weaker_network_isolation
            ),
          {:ok, json} <- Jason.encode(srt_settings),
@@ -425,6 +427,30 @@ defmodule SymphonyElixir.Codex.AppServer do
     do: paths
 
   defp workspace_sandbox_allow_read_paths(_settings), do: []
+
+  defp srt_workspace_write_paths(settings, workspace) when is_binary(workspace) do
+    Schema.runtime_workspace_write_roots(settings, workspace)
+  end
+
+  defp srt_workspace_write_paths(_settings, _workspace), do: []
+
+  defp srt_workspace_deny_write_paths(settings, workspace) do
+    settings
+    |> srt_workspace_write_paths(workspace)
+    |> Enum.flat_map(&git_metadata_deny_write_paths/1)
+  end
+
+  defp git_metadata_deny_write_paths(path) when is_binary(path) do
+    path
+    |> Path.split()
+    |> Enum.any?(&(&1 == ".git"))
+    |> case do
+      true -> [Path.join(path, "hooks")]
+      false -> []
+    end
+  end
+
+  defp git_metadata_deny_write_paths(_path), do: []
 
   defp inject_config_overrides(command, overrides) do
     case shell_words(command) do

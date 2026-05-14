@@ -117,7 +117,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "allowLocalBinding" => false
            }
 
-    assert settings["filesystem"]["allowRead"] == []
+    assert settings["filesystem"]["allowRead"] == ["~/.npmrc"]
     assert "." in settings["filesystem"]["allowWrite"]
     assert System.tmp_dir!() in settings["filesystem"]["allowWrite"]
     assert "~/.codex" in settings["filesystem"]["allowWrite"]
@@ -130,6 +130,24 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     refute "~/.codex/skills" in settings["filesystem"]["denyWrite"]
     assert settings["enableWeakerNestedSandbox"] == true
     assert settings["enableWeakerNetworkIsolation"] == false
+  end
+
+  test "srt settings accept extra read and write paths for runtime-managed roots" do
+    assert {:ok, settings} =
+             AgentSandboxConfig.srt_settings(
+               "allowlist",
+               [],
+               [],
+               ["~/.ssh/known_hosts"],
+               allow_write_paths: ["/repo/.git/worktrees/MT-1", "relative/git"],
+               deny_write_paths: ["/repo/.git/hooks"]
+             )
+
+    assert "~/.ssh" in settings["filesystem"]["denyRead"]
+    assert "~/.ssh/known_hosts" in settings["filesystem"]["allowRead"]
+    assert "/repo/.git/worktrees/MT-1" in settings["filesystem"]["allowWrite"]
+    assert "./relative/git" in settings["filesystem"]["allowWrite"]
+    assert "/repo/.git/hooks" in settings["filesystem"]["denyWrite"]
   end
 
   test "srt settings map open and block network modes" do

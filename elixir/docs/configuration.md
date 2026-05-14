@@ -329,8 +329,10 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - `agent.sandbox_runtime.kind` defaults to `none`.
 - `workspace.sandbox.allow_read_paths` is an advanced escape hatch for paths that are denied by
   Symphony's default credential read-deny list but are required by the agent runtime for legitimate
-  repository work. Entries are exact sandbox paths such as `~/.npmrc` or `~/.cargo/credentials`.
-  For Codex they are rendered as read-only filesystem access instead of `none`. The shared sandbox
+  repository work. Entries are exact sandbox paths such as `~/.npmrc`, `~/.cargo/credentials`, or
+  a narrow SSH state file such as `~/.ssh/known_hosts`. For Codex they are rendered as read-only
+  filesystem access instead of `none`; for SRT they are also emitted as explicit `allowRead`
+  carve-outs so narrow files can be re-allowed inside denied directories. The shared sandbox
   helper can render the same deny-list subtraction for Claude, but the current Claude adapter does
   not pass these entries into its temporary settings, so treat this as Codex-effective until that
   adapter gap is closed. Do not use it for the agent runtime credential stores under `~/.codex` or
@@ -365,9 +367,10 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - `enable_weaker_network_isolation` maps directly to the same sandbox-runtime setting. Keep it
     `false` unless the host environment requires that compatibility mode.
   - Symphony generates the temporary settings file from `agent.network_access`,
-    `workspace.sandbox.allow_read_paths`, and the shared sensitive path deny lists. The generated
-    SRT policy denies reads for credential/config paths, allows writes to the issue workspace and
-    temp directories, protects the same workflow/config files from writes, and allows Codex to
+    `workspace.sandbox.allow_read_paths`, the current issue workspace, linked-worktree Git metadata
+    roots, and the shared sensitive path deny lists. The generated SRT policy denies reads for
+    credential/config paths, allows writes to the issue workspace, discovered Git metadata roots,
+    and temp directories, protects the same workflow/config files from writes, and allows Codex to
     write its own runtime state under `~/.codex` while deny-writing sensitive/static Codex files
     such as `auth.json`, `config.toml`, and `AGENTS.md`. Symphony removes the
     temporary settings file when the Codex session stops.

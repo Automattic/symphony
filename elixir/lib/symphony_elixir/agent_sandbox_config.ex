@@ -123,9 +123,9 @@ defmodule SymphonyElixir.AgentSandboxConfig do
        },
        "filesystem" => %{
          "denyRead" => Enum.reject(@deny_read_paths, &(&1 in allow_read_paths)),
-         "allowRead" => [],
-         "allowWrite" => srt_allow_write_paths(),
-         "denyWrite" => srt_deny_write_paths()
+         "allowRead" => allow_read_paths,
+         "allowWrite" => srt_allow_write_paths(Keyword.get(opts, :allow_write_paths, [])),
+         "denyWrite" => srt_deny_write_paths(Keyword.get(opts, :deny_write_paths, []))
        },
        "enableWeakerNestedSandbox" => true,
        "enableWeakerNetworkIsolation" => Keyword.get(opts, :enable_weaker_network_isolation, false)
@@ -177,8 +177,8 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   defp srt_allowed_domains("block", _allowed_domains), do: []
   defp srt_allowed_domains(_mode, allowed_domains), do: normalize_domains(allowed_domains)
 
-  defp srt_allow_write_paths do
-    [".", "/tmp", System.tmp_dir!() | @srt_codex_runtime_write_paths]
+  defp srt_allow_write_paths(extra_paths) do
+    ([".", "/tmp", System.tmp_dir!()] ++ @srt_codex_runtime_write_paths ++ normalize_sandbox_paths(extra_paths))
     |> Enum.map(fn
       "." -> "."
       "~/" <> _rest = path -> path
@@ -188,7 +188,17 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     |> Enum.uniq()
   end
 
-  defp srt_deny_write_paths, do: @deny_write_paths ++ @srt_codex_runtime_deny_write_paths
+  defp srt_deny_write_paths(extra_paths),
+    do: (@deny_write_paths ++ @srt_codex_runtime_deny_write_paths ++ normalize_sandbox_paths(extra_paths)) |> Enum.uniq()
+
+  defp normalize_sandbox_paths(paths) when is_list(paths) do
+    paths
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_sandbox_paths(_paths), do: []
 
   defp codex_network_policy("open"), do: toml_inline_table(enabled: true, mode: "full")
   defp codex_network_policy("block"), do: toml_inline_table(enabled: false)

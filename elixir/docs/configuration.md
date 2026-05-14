@@ -575,17 +575,20 @@ self_review:
 - Diffs over `diff_max_lines` are balanced per file instead of prefix-truncated. Every changed file
   is represented by path, status, stats, classification, and hunk headers. Small source files can be
   included as full diffs; large source files and generated, lock, or binary files are summarized with
-  explicit coverage metadata.
+  explicit coverage metadata. Each file's rendered diff is also clamped to a fixed `[12, 160]`-line
+  window regardless of `diff_max_lines`, so raising `diff_max_lines` lets more files fit but does not
+  enlarge any single file's slice past 160 lines.
 - The context pack includes bounded nearby line windows around changed hunks when file contents are
   readable, same-name test files when tracked, and best-effort `rg` call-site matches for changed
-  public function names. Language-aware AST extraction and semantic call graphs are intentionally out
-  of scope for this first pass.
+  public function names defined in Elixir (`def`/`defmacro`) or JavaScript/TypeScript (`function`,
+  top-level `const`); other languages are not scanned in this first pass. Language-aware AST
+  extraction and semantic call graphs are also out of scope for now.
 - Reviewer output may include non-blocking advisory notes in `missing_context`, `test_evidence_gap`,
   `docs_sync_risk`, `blast_radius_risk`, or `review_coverage_low`. These notes can be carried into
   PR context, but they do not block push.
 - Self-review audit events record coverage metadata: fully reviewed files, summarized files,
-  generated/lock/binary files, omitted files, adjacent-context coverage, validation evidence count,
-  reviewer comment count, and whether CI context was included.
+  generated/lock/binary files, adjacent-context coverage, validation evidence count, reviewer
+  comment count, and whether CI context was included.
 - Malformed LLM output or provider failures fail open as `approve`.
 - On `request_changes`, Symphony injects the findings into one additional agent pass. After the
   follow-up pass, Symphony prompts the agent to push regardless and includes a

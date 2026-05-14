@@ -497,7 +497,7 @@ defmodule SymphonyElixir.SelfReviewTest do
     assert result.source.acceptance_criteria == ""
     assert result.source.git_range == "origin/main..HEAD"
     assert result.source.diff =~ "Changed file inventory:"
-    assert result.source.diff =~ "Omitted/summarized context coverage:"
+    assert result.source.diff =~ "Summarized context coverage:"
     assert result.source.diff_line_count == 0
     assert result.source.changed_paths == []
 

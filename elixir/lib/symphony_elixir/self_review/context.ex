@@ -74,11 +74,11 @@ defmodule SymphonyElixir.SelfReview.Context do
       coverage = coverage_metadata(context_pack, rendered)
       warnings = linear_input_warnings(issue, raw_acceptance_criteria, workpad, reviewer_comments, ci_failure)
 
-      if coverage.summarized_files != [] or coverage.generated_lock_files != [] or coverage.omitted_files != [] do
+      if coverage.summarized_files != [] or coverage.generated_lock_files != [] do
         summary =
           "full=#{length(coverage.fully_reviewed_files)} " <>
             "summarized=#{length(coverage.summarized_files)} " <>
-            "generated_lock=#{length(coverage.generated_lock_files)} omitted=#{length(coverage.omitted_files)}"
+            "generated_lock=#{length(coverage.generated_lock_files)}"
 
         Logger.info("SelfReview context summarized issue=#{issue.identifier || issue.id} #{summary}")
       end
@@ -439,11 +439,10 @@ defmodule SymphonyElixir.SelfReview.Context do
     coverage = coverage_metadata(context_pack, %{files: files})
 
     """
-    Omitted/summarized context coverage:
+    Summarized context coverage:
     Fully reviewed files: #{format_list(coverage.fully_reviewed_files)}
     Summarized files: #{format_list(coverage.summarized_files)}
     Generated/lock/binary summary files: #{format_list(coverage.generated_lock_files)}
-    Omitted files: #{format_list(coverage.omitted_files)}
     Adjacent context files: #{format_list(coverage.adjacent_context_files)}
     Adjacent context omitted files: #{format_list(coverage.adjacent_context_omitted_files)}
     Validation evidence count: #{coverage.validation_evidence_count}
@@ -461,7 +460,6 @@ defmodule SymphonyElixir.SelfReview.Context do
       fully_reviewed_files: files |> Enum.filter(&(&1.coverage == :full)) |> Enum.map(& &1.path),
       summarized_files: files |> Enum.filter(&(&1.coverage == :summary and &1.classification == :source)) |> Enum.map(& &1.path),
       generated_lock_files: files |> Enum.filter(&(&1.classification in [:generated, :lock, :binary])) |> Enum.map(& &1.path),
-      omitted_files: files |> Enum.filter(&(&1.coverage == :omitted)) |> Enum.map(& &1.path),
       adjacent_context_files: adjacent_files,
       adjacent_context_omitted_files: changed_paths -- adjacent_files,
       validation_evidence_count: validation_evidence_count(context_pack.validation_evidence),
@@ -470,9 +468,7 @@ defmodule SymphonyElixir.SelfReview.Context do
     }
   end
 
-  defp summarized?(coverage) do
-    coverage.summarized_files != [] or coverage.generated_lock_files != [] or coverage.omitted_files != []
-  end
+  defp summarized?(coverage), do: coverage.summarized_files != []
 
   defp adjacent_context(_workspace, [], _git_fun, _opts), do: %{windows: [], same_name_tests: [], call_sites: []}
 
@@ -543,7 +539,7 @@ defmodule SymphonyElixir.SelfReview.Context do
 
     tracked
     |> Enum.filter(fn candidate ->
-      candidate != path and String.contains?(candidate, "test") and same_name_test?(candidate, base)
+      candidate != path and same_name_test?(candidate, base)
     end)
     |> Enum.flat_map(fn candidate ->
       case git_fun.(["show", "HEAD:#{candidate}"]) do
@@ -565,13 +561,20 @@ defmodule SymphonyElixir.SelfReview.Context do
   defp call_sites(_workspace, _inventory, worker_host) when is_binary(worker_host), do: []
 
   defp call_sites(workspace, inventory, _worker_host) do
-    symbols =
-      inventory
-      |> Enum.flat_map(&public_symbols/1)
-      |> Enum.uniq()
-      |> Enum.take(@max_symbols)
+    case System.find_executable("rg") do
+      nil ->
+        Logger.info("SelfReview call-site lookup skipped: rg executable not on PATH")
+        []
 
-    Enum.flat_map(symbols, &rg_call_sites(workspace, &1))
+      rg ->
+        symbols =
+          inventory
+          |> Enum.flat_map(&public_symbols/1)
+          |> Enum.uniq()
+          |> Enum.take(@max_symbols)
+
+        Enum.flat_map(symbols, &rg_call_sites(rg, workspace, &1))
+    end
   end
 
   defp public_symbols(%{patch: patch}) do
@@ -594,8 +597,8 @@ defmodule SymphonyElixir.SelfReview.Context do
     end)
   end
 
-  defp rg_call_sites(workspace, symbol) do
-    case System.cmd("rg", ["--fixed-strings", "--line-number", "--", symbol, workspace], stderr_to_stdout: true) do
+  defp rg_call_sites(rg, workspace, symbol) do
+    case System.cmd(rg, ["--fixed-strings", "--line-number", "--", symbol, workspace], stderr_to_stdout: true) do
       {output, 0} ->
         output
         |> String.split("\n", trim: true)

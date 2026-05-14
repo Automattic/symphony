@@ -337,7 +337,6 @@ defmodule SymphonyElixir.AuditLogTest do
           fully_reviewed_files: ["lib/a.ex"],
           summarized_files: ["lib/b.ex"],
           generated_lock_files: ["pnpm-lock.yaml"],
-          omitted_files: [],
           adjacent_context_files: ["lib/a.ex"],
           adjacent_context_omitted_files: ["lib/b.ex"],
           validation_evidence_count: 3,
@@ -368,7 +367,7 @@ defmodule SymphonyElixir.AuditLogTest do
     assert event["fully_reviewed_files"] == ["lib/a.ex"]
     assert event["summarized_files"] == ["lib/b.ex"]
     assert event["generated_lock_files"] == ["pnpm-lock.yaml"]
-    assert event["omitted_files"] == []
+    refute Map.has_key?(event, "omitted_files")
     assert event["adjacent_context_files"] == ["lib/a.ex"]
     assert event["adjacent_context_omitted_files"] == ["lib/b.ex"]
     assert event["validation_evidence_count"] == 3

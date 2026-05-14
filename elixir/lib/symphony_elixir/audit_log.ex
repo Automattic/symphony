@@ -211,7 +211,6 @@ defmodule SymphonyElixir.AuditLog do
       fully_reviewed_files: Map.get(coverage, :fully_reviewed_files),
       summarized_files: Map.get(coverage, :summarized_files),
       generated_lock_files: Map.get(coverage, :generated_lock_files),
-      omitted_files: Map.get(coverage, :omitted_files),
       adjacent_context_files: Map.get(coverage, :adjacent_context_files),
       adjacent_context_omitted_files: Map.get(coverage, :adjacent_context_omitted_files),
       validation_evidence_count: Map.get(coverage, :validation_evidence_count),

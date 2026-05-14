@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   require Logger
-  alias SymphonyElixir.{AuditLog, Config, Linear.Issue, Secret}
+  alias SymphonyElixir.{AgentLabels, AuditLog, Config, Linear.Issue, Secret}
   alias SymphonyElixir.GitHub.Hosts
 
   @issue_page_size 50
@@ -13,7 +13,7 @@ defmodule SymphonyElixir.Linear.Client do
   @enrichment_relation_first 50
   @enrichment_comment_limit 3
   @enrichment_comment_body_limit 800
-  @workpad_markers ["## Codex Workpad", "## Claude Workpad"]
+  @workpad_markers AgentLabels.known_workpad_markers()
   @max_error_body_log_bytes 1_000
   @team_id_pattern ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

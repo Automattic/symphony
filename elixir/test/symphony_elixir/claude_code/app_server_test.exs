@@ -4,6 +4,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
   alias SymphonyElixir.AgentSandboxConfig
   alias SymphonyElixir.ClaudeCode.AppServer
   alias SymphonyElixir.Config.Schema.Agent
+  import Bitwise, only: [band: 2]
 
   defmodule StubSSH do
     def run(worker_host, command, opts) do
@@ -41,6 +42,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                "./WORKFLOW.md",
                "./symphony.yml",
                "./symphony.local.yml",
+               "./.claude/settings.json",
                "./.git/hooks",
                "./mise.toml",
                "./.tool-versions"
@@ -211,6 +213,52 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       assert {:notification, "assistant message"} = AppServer.parse_event(line)
     end
+
+    test "parses user/tool_result event with string content and returns notification" do
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"Hello world"}]},"session_id":"sess-1"})
+
+      assert {:notification, text} = AppServer.parse_event(line)
+      assert text =~ "tool_result"
+      assert text =~ "Hello world"
+    end
+
+    test "parses user/tool_result event with nested tool_reference content and returns notification" do
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":[{"type":"tool_reference","tool_name":"Read"}]}]},"session_id":"sess-1"})
+
+      assert {:notification, text} = AppServer.parse_event(line)
+      assert text =~ "tool_result"
+      assert text =~ "Read"
+    end
+
+    test "parses user/tool_result event with no recognizable content and returns generic notification" do
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[]},"session_id":"sess-1"})
+
+      assert {:notification, "tool_result"} = AppServer.parse_event(line)
+    end
+
+    test "parses rate_limit_event with allowed_warning status as notification" do
+      line =
+        ~s({"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1778749200,"rateLimitType":"seven_day","utilization":0.93,"isUsingOverage":false,"surpassedThreshold":0.75},"uuid":"u-1","session_id":"sess-1"})
+
+      assert {:notification, text} = AppServer.parse_event(line)
+      assert text =~ "seven_day"
+      assert text =~ "allowed_warning"
+      assert text =~ "93"
+    end
+
+    test "parses rate_limit_event with blocking status as rate_limited" do
+      line =
+        ~s({"type":"rate_limit_event","rate_limit_info":{"status":"exceeded","rateLimitType":"per_minute","utilization":1.05},"uuid":"u-1","session_id":"sess-1"})
+
+      assert {:rate_limited, info, reason} = AppServer.parse_event(line)
+      assert reason =~ "per_minute"
+      assert reason =~ "exceeded"
+      assert info.message == reason
+      assert info.retry_after_seconds == nil
+    end
   end
 
   describe "event_to_update/1" do
@@ -241,7 +289,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
   end
 
   describe "start_session/2" do
-    test "writes .claude/settings.json and returns ok session for valid local workspace" do
+    test "writes private settings file and returns ok session for valid local workspace" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -265,8 +313,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert session.worker_host == nil
         assert is_map(session.metadata)
 
-        settings_path = Path.join(workspace, ".claude/settings.json")
+        workspace_settings_path = Path.join(workspace, ".claude/settings.json")
+        refute File.exists?(workspace_settings_path)
+
+        settings_path = session.settings_path
+        refute String.starts_with?(settings_path, workspace)
         assert File.exists?(settings_path)
+        assert band(File.stat!(Path.dirname(settings_path)).mode, 0o777) == 0o700
+        assert band(File.stat!(settings_path).mode, 0o777) == 0o600
 
         {:ok, contents} = Jason.decode(File.read!(settings_path))
         assert get_in(contents, ["sandbox", "enabled"]) == true
@@ -289,6 +343,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert File.exists?(session.mcp_session.socket_path)
         assert :ok = AppServer.stop_session(session)
         refute File.exists?(settings_path)
+        refute File.exists?(Path.dirname(settings_path))
         refute File.exists?(session.mcp_session.socket_path)
       after
         File.rm_rf(test_root)
@@ -320,7 +375,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
-    test "returns structured error when settings directory cannot be created" do
+    test "does not use workspace .claude path for private settings" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -339,16 +394,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
           agent_kind: "claude"
         )
 
-        assert {:error, {:claude_settings_write_failed, :mkdir_p, failed_path, _reason}} =
-                 AppServer.start_session(workspace)
+        assert {:ok, session} = AppServer.start_session(workspace)
+        refute String.starts_with?(session.settings_path, workspace)
+        assert File.exists?(session.settings_path)
+        assert File.read!(claude_path) == "not a directory"
 
-        assert String.ends_with?(failed_path, "/RSM-SETTINGS/.claude")
+        assert :ok = AppServer.stop_session(session)
       after
         File.rm_rf(test_root)
       end
     end
 
-    test "returns structured error when settings file cannot be written" do
+    test "leaves workspace settings untouched and writes token only to private settings" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -359,17 +416,21 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         workspace_root = Path.join(test_root, "workspaces")
         workspace = Path.join(workspace_root, "RSM-SETTINGS-WRITE")
         settings_path = Path.join(workspace, ".claude/settings.json")
-        File.mkdir_p!(settings_path)
+        File.mkdir_p!(Path.dirname(settings_path))
+        File.write!(settings_path, ~s({"permissions":{"deny":[]}}))
 
         write_workflow_file!(Workflow.workflow_file_path(),
           workspace_root: workspace_root,
           agent_kind: "claude"
         )
 
-        assert {:error, {:claude_settings_write_failed, :write, failed_path, _reason}} =
-                 AppServer.start_session(workspace)
+        assert {:ok, session} = AppServer.start_session(workspace)
+        refute session.settings_path == settings_path
+        assert File.read!(settings_path) == ~s({"permissions":{"deny":[]}})
+        refute File.read!(settings_path) =~ session.mcp_session.token
+        assert File.read!(session.settings_path) =~ session.mcp_session.token
 
-        assert String.ends_with?(failed_path, "/RSM-SETTINGS-WRITE/.claude/settings.json")
+        assert :ok = AppServer.stop_session(session)
       after
         File.rm_rf(test_root)
       end
@@ -489,12 +550,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         assert session.workspace == test_root
         assert session.worker_host == "worker-01"
-        assert session.settings_path == Path.join(test_root, ".claude/settings.json")
+        assert session.settings_path =~ "/tmp/symphony-claude-settings-"
+        assert String.ends_with?(session.settings_path, "/settings.json")
         refute File.exists?(session.settings_path)
 
         traced_command = File.read!(trace_file)
-        assert traced_command =~ "mkdir -p"
-        assert traced_command =~ ".claude/settings.json"
+        assert traced_command =~ "umask 077"
+        assert traced_command =~ "chmod 0700"
+        assert traced_command =~ "chmod 0600"
+        assert traced_command =~ "> '\"'\"'/tmp/symphony-claude-settings-"
         assert traced_command =~ "mcpServers"
         assert traced_command =~ "symphony-mcp-shim"
         assert traced_command =~ "/tmp/symphony-mcp-"
@@ -579,7 +643,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert install_command =~ "chmod 0700"
 
       settings_command = expect_stub_ssh_command()
-      assert settings_command =~ ".claude/settings.json"
+      assert settings_command =~ "/tmp/symphony-claude-settings-"
+      assert settings_command =~ "chmod 0600"
+      assert settings_command =~ "> '/tmp/symphony-claude-settings-"
       assert settings_command =~ session.mcp_remote_shim_path
       assert session.mcp_remote_shim_path =~ "/tmp/symphony-mcp-shim-"
     end
@@ -1037,6 +1103,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert File.read!(Path.join(workspace, "argv.trace")) |> String.split("\n", trim: true) == [
                  "--remote-control",
                  "RSM-REMOTE-CONTROL-run-123",
+                 "--setting-sources",
+                 "user",
+                 "--settings",
+                 session.settings_path,
                  "--output-format",
                  "stream-json",
                  "--print",
@@ -1078,7 +1148,17 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         args = File.read!(Path.join(workspace, "argv.trace")) |> String.split("\n", trim: true)
         refute "--remote-control" in args
-        assert args == ["--output-format", "stream-json", "--print", "normal run"]
+
+        assert args == [
+                 "--setting-sources",
+                 "user",
+                 "--settings",
+                 session.settings_path,
+                 "--output-format",
+                 "stream-json",
+                 "--print",
+                 "normal run"
+               ]
       after
         File.rm_rf(test_root)
       end
@@ -1498,7 +1578,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ "cd"
         assert traced_command =~ workspace
         assert traced_command =~ "fake-claude-remote"
-        assert traced_command =~ "--output-format stream-json"
+        assert traced_command =~ "--setting-sources"
+        assert traced_command =~ "--settings"
+        assert traced_command =~ session.settings_path
+        assert traced_command =~ "--output-format"
+        assert traced_command =~ "stream-json"
         assert traced_command =~ "--print"
         assert traced_command =~ "remote task"
         refute traced_command =~ "--remote-control"
@@ -1552,6 +1636,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert File.read!(Path.join(workspace, "argv.trace")) |> String.split("\n", trim: true) == [
                  "--remote-control",
                  "RSM-REMOTE-SSH-ssh-run-1",
+                 "--setting-sources",
+                 "user",
+                 "--settings",
+                 session.settings_path,
                  "--output-format",
                  "stream-json",
                  "--print",

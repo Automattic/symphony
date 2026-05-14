@@ -11,15 +11,16 @@ defmodule SymphonyElixir.Learnings.Store do
   A persisted learning entry.
 
   `:repo_key` is the durable RunStore partition key and controls storage,
-  pruning, and default listing. `:repo` is source metadata from the evidence
-  record, kept as a display/filter facet when the source repository slug is
-  useful to readers. Writers must provide `:repo_key`; `:repo` may differ when
-  the evidence source is more specific than the supervised repository
-  partition.
+  pruning, and default listing. `:host`, `:owner`, and `:repo` are source PR
+  coordinates used to build trusted evidence links. Older records may only have
+  the legacy concatenated `:repo` display value; dashboard rendering keeps that
+  shape readable but does not trust it without validation.
   """
   @type record :: %{
           required(:id) => String.t(),
           required(:repo_key) => String.t(),
+          optional(:host) => String.t(),
+          optional(:owner) => String.t(),
           required(:repo) => String.t(),
           required(:rule) => String.t(),
           required(:tags) => [String.t()],

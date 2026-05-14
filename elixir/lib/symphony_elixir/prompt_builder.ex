@@ -3,7 +3,7 @@ defmodule SymphonyElixir.PromptBuilder do
   Builds agent prompts from Linear issue data.
   """
 
-  alias SymphonyElixir.{Config, PromptSafety, Workflow}
+  alias SymphonyElixir.{AgentLabels, Config, PromptSafety, Workflow}
 
   @render_opts [strict_variables: true, strict_filters: true]
 
@@ -15,6 +15,7 @@ defmodule SymphonyElixir.PromptBuilder do
     ci_failure = normalize_ci_failure(raw_ci_failure)
     linear_input_warnings = linear_input_warnings(issue, raw_reviewer_comments, raw_ci_failure)
     {repo_key, workflow_source} = repo_context_for_prompt(issue, opts)
+    agent_context = agent_context_for_prompt(opts, workflow_source)
 
     template =
       workflow_for_prompt(workflow_source)
@@ -26,6 +27,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
+        "agent" => to_solid_value(agent_context),
         "repo_key" => repo_key,
         "issue" => issue |> prompt_issue_map(repo_key) |> to_solid_map(),
         "reviewer_comments" => to_solid_value(reviewer_comments),
@@ -151,6 +153,34 @@ defmodule SymphonyElixir.PromptBuilder do
 
   defp fallback_prompt({:repo, repo_key}), do: Config.workflow_prompt(repo_key)
   defp fallback_prompt(:current), do: Config.workflow_prompt()
+
+  defp agent_context_for_prompt(opts, workflow_source) do
+    agent_kind = agent_kind_from_opts(opts) || agent_kind_from_workflow_source(workflow_source)
+
+    AgentLabels.prompt_context(agent_kind)
+  end
+
+  defp agent_kind_from_opts(opts) do
+    present_string(Keyword.get(opts, :agent_kind)) ||
+      agent_kind_from_settings(Keyword.get(opts, :settings))
+  end
+
+  defp agent_kind_from_workflow_source({:repo, repo_key}) do
+    case Config.settings_for_repo(repo_key) do
+      {:ok, settings} -> agent_kind_from_settings(settings)
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp agent_kind_from_workflow_source(:current) do
+    case Config.settings() do
+      {:ok, settings} -> agent_kind_from_settings(settings)
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp agent_kind_from_settings(%{agent: %{kind: kind}}), do: present_string(kind)
+  defp agent_kind_from_settings(_settings), do: nil
 
   defp append_extra_prompt(prompt, extra_prompt) when is_binary(extra_prompt) do
     case String.trim(extra_prompt) do

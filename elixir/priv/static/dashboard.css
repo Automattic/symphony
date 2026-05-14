@@ -458,7 +458,10 @@ pre,
 
 .dashboard-filter-card {
   display: flex;
-  justify-content: flex-start;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
   border: 1px solid rgba(217, 217, 227, 0.82);
   border-radius: 8px;
   background: var(--card);
@@ -489,6 +492,13 @@ pre,
   letter-spacing: 0;
   padding: 0.4rem 0.6rem;
   text-transform: none;
+}
+
+.dashboard-refresh-status {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .section-card {

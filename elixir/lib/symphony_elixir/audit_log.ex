@@ -993,6 +993,17 @@ defmodule SymphonyElixir.AuditLog do
     |> List.to_tuple()
   end
 
+  defp redact_value(%mod{} = value, secrets, _key) do
+    fields =
+      value
+      |> Map.from_struct()
+      |> Enum.reduce(%{}, fn {key, nested}, acc ->
+        Map.put(acc, key, redact_value(nested, secrets, to_string(key)))
+      end)
+
+    struct(mod, fields)
+  end
+
   defp redact_value(value, secrets, _key) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, nested}, acc ->
       string_key = to_string(key)

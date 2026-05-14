@@ -5,9 +5,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.{Config, URLUtils}
+  alias SymphonyElixir.{AgentLabels, Config, URLUtils}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @dashboard_reload_task :dashboard_reload
   @default_control_confirm_timeout_ms 10_000
   @dashboard_pause_reason "Paused from dashboard"
 
@@ -21,6 +22,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:payload, payload)
       |> assign(:repo_filter, repo_filter)
       |> assign(:visible_payload, filter_payload(payload, repo_filter))
+      |> assign(:dashboard_refreshing?, false)
       |> assign(:now, DateTime.utc_now())
       |> assign(:pending_control, nil)
       |> assign(:pending_control_token, nil)
@@ -38,10 +40,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_params(params, _uri, socket) do
     repo_filter = normalize_repo_filter(Map.get(params, "repo"), socket.assigns.payload)
 
-    {:noreply,
-     socket
-     |> assign(:repo_filter, repo_filter)
-     |> assign(:visible_payload, filter_payload(socket.assigns.payload, repo_filter))}
+    {:noreply, assign_repo_filter(socket, repo_filter)}
   end
 
   @impl true
@@ -50,21 +49,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply, assign(socket, :now, DateTime.utc_now())}
   end
 
-  def handle_info({:observability_updated, %{repo_key: _repo_key}}, socket), do: reload_dashboard(socket)
+  def handle_info({:observability_updated, %{repo_key: _repo_key}}, socket) do
+    {:noreply, queue_dashboard_reload(socket)}
+  end
 
   def handle_info({:disarm_control, token}, %{assigns: %{pending_control_token: token}} = socket) do
     {:noreply, disarm_control(socket)}
   end
 
   def handle_info({:disarm_control, _token}, socket), do: {:noreply, socket}
-
-  defp reload_dashboard(socket) do
-    {:noreply,
-     socket
-     |> assign_payload(load_payload())
-     |> assign(:control_error, nil)
-     |> assign(:now, DateTime.utc_now())}
-  end
 
   @impl true
   def handle_event("arm-pause", _params, socket) do
@@ -86,7 +79,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   def handle_event("filter-repo", %{"repo" => repo_filter}, socket) do
-    {:noreply, push_patch(socket, to: dashboard_filter_path(repo_filter))}
+    repo_filter = normalize_repo_filter(repo_filter, socket.assigns.payload)
+
+    {:noreply,
+     socket
+     |> assign_repo_filter(repo_filter)
+     |> push_patch(to: dashboard_filter_path(repo_filter))}
   end
 
   def handle_event("arm-stop", %{"issue-id" => issue_id}, socket) do
@@ -96,6 +94,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_event("stop-running", %{"issue-id" => issue_id}, socket) do
     result = SymphonyElixir.Orchestrator.stop_running(orchestrator(), issue_id)
     {:noreply, reload_after_control(socket, result)}
+  end
+
+  @impl true
+  def handle_async(@dashboard_reload_task, {:ok, payload}, socket) do
+    {:noreply,
+     socket
+     |> assign_payload(payload)
+     |> assign(:dashboard_refreshing?, false)
+     |> assign(:control_error, nil)
+     |> assign(:now, DateTime.utc_now())}
+  end
+
+  def handle_async(@dashboard_reload_task, {:exit, _reason}, socket) do
+    {:noreply, assign(socket, :dashboard_refreshing?, false)}
   end
 
   @impl true
@@ -196,6 +208,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </select>
             </label>
           </form>
+          <span :if={@dashboard_refreshing?} class="dashboard-refresh-status">Updating...</span>
         </section>
 
         <section class="metric-grid dashboard-metrics">
@@ -282,7 +295,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
-                    <th>Codex update</th>
+                    <th><%= agent_update_label() %></th>
                     <th>Tokens</th>
                     <th>Links</th>
                     <th>Control</th>
@@ -658,6 +671,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
 
+  defp queue_dashboard_reload(socket) do
+    socket
+    |> assign(:dashboard_refreshing?, true)
+    |> start_async(@dashboard_reload_task, fn -> load_payload() end)
+  end
+
+  defp assign_repo_filter(socket, repo_filter) do
+    socket
+    |> assign(:repo_filter, repo_filter)
+    |> assign(:visible_payload, filter_payload(socket.assigns.payload, repo_filter))
+  end
+
   defp assign_payload(socket, payload) do
     repo_filter = normalize_repo_filter(socket.assigns.repo_filter, payload)
 
@@ -966,6 +991,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp current_repo_key, do: Config.repo_key_or_nil()
+
+  defp agent_update_label do
+    Config.settings!()
+    |> get_in([Access.key(:agent), Access.key(:kind)])
+    |> AgentLabels.update_label()
+  rescue
+    _error -> AgentLabels.update_label(nil)
+  end
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

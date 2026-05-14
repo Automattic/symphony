@@ -1664,6 +1664,27 @@ defmodule SymphonyElixir.CoreTest do
              "Repo default issue_repo=default ticket=S-REPO"
   end
 
+  test "prompt builder exposes configured agent labels in template context" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude",
+      agent_command: "claude",
+      agent_approval_policy: nil,
+      prompt: "kind={{ agent.kind }} name={{ agent.display_name }} update={{ agent.update_label }} workpad={{ agent.workpad_heading }}"
+    )
+
+    issue = %Issue{
+      identifier: "S-AGENT",
+      title: "Show agent context",
+      description: "Prompt should include agent labels",
+      state: "Todo",
+      url: "https://example.org/issues/S-AGENT",
+      labels: []
+    }
+
+    assert PromptBuilder.build_prompt(issue) ==
+             "kind=claude name=Claude update=Claude update workpad=## Claude Workpad"
+  end
+
   test "prompt builder derives repo_key from issue maps" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Repo {{ repo_key }} issue_repo={{ issue.repo_key }}")
 
@@ -2173,6 +2194,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker"
     assert prompt =~ "Do not include \"next steps for user\""
+    assert prompt =~ "## Codex Workpad"
     assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Continuation context:"
@@ -2641,6 +2663,7 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 0) =~ "Please tighten this branch."
       refute Enum.at(turn_texts, 1) =~ "First prompt MT-247"
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
+      assert Enum.at(turn_texts, 1) =~ "previous Codex turn completed"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
     after
       File.rm_rf(test_root)

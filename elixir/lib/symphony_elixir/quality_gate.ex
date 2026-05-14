@@ -27,13 +27,13 @@ defmodule SymphonyElixir.QualityGate do
 
   require Logger
 
-  alias SymphonyElixir.{AuditLog, Config.Schema, Linear.Issue, Secret}
+  alias SymphonyElixir.{AgentLabels, AuditLog, Config.Schema, Linear.Issue, Secret}
 
   @anthropic_provider "anthropic"
   @openai_provider "openai"
   @clarification_comment_marker "Symphony quality gate: clarification requested"
   @skip_comment_marker "Symphony quality gate: skipped"
-  @workpad_comment_markers ["## Codex Workpad", "## Claude Workpad"]
+  @workpad_comment_markers AgentLabels.known_workpad_markers()
   @fallback_questions [
     "What specific acceptance criteria should the agent satisfy before opening a PR?",
     "Which files, modules, or product areas should the agent focus on?",

@@ -406,6 +406,28 @@ defmodule SymphonyElixir.AuditLogTest do
     refute Map.has_key?(event, "diff_truncated")
   end
 
+  describe "redact_for_log/2" do
+    test "renders exception structs without raising" do
+      error = %Req.TransportError{reason: :timeout}
+
+      result = AuditLog.redact_for_log(error)
+
+      assert is_binary(result)
+      assert result =~ "Req.TransportError"
+      assert result =~ "timeout"
+    end
+
+    test "redacts secrets nested inside struct fields" do
+      error = %RuntimeError{message: "boom with #{@linear_secret} inside"}
+
+      result = AuditLog.redact_for_log(error)
+
+      refute result =~ @linear_secret
+      assert result =~ "[REDACTED]"
+      assert result =~ "RuntimeError"
+    end
+  end
+
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 end

@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single Linear issue in its workspace with Codex.
+  Executes a single Linear issue in its workspace with the configured agent.
   """
 
   require Logger
@@ -8,6 +8,7 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.{
     AgentTools,
     AgentTools.Linear.CommentRegistry,
+    AgentLabels,
     AuditLog,
     CiPoller,
     Config,
@@ -517,17 +518,26 @@ defmodule SymphonyElixir.AgentRunner do
     )
   end
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+  defp build_turn_prompt(_issue, opts, turn_number, max_turns) do
+    agent_name =
+      opts
+      |> Keyword.get(:settings)
+      |> agent_kind_from_settings()
+      |> AgentLabels.display_name()
+
     """
     Continuation guidance:
 
-    - The previous Codex turn completed normally, but the Linear issue is still in an active state.
+    - The previous #{agent_name} turn completed normally, but the Linear issue is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
   end
+
+  defp agent_kind_from_settings(%{agent: %{kind: kind}}), do: kind
+  defp agent_kind_from_settings(_settings), do: nil
 
   defp audit_prompt_sent(issue, run_id, prompt, turn_number, max_turns, agent_module, opts) do
     issue

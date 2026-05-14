@@ -5,7 +5,11 @@ defmodule SymphonyElixirWeb.LearningsLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.GitHub.Hosts
   alias SymphonyElixir.Learnings.Store
+
+  @trusted_linear_host "linear.app"
+  @repo_path_part_pattern ~r/^[A-Za-z0-9._-]+$/
 
   @impl true
   def mount(_params, _session, socket), do: {:ok, socket}
@@ -99,7 +103,7 @@ defmodule SymphonyElixirWeb.LearningsLive do
                 </thead>
                 <tbody>
                   <tr :for={entry <- @payload.records}>
-                    <td class="mono"><%= entry.repo %></td>
+                    <td class="mono"><%= repo_label(entry) %></td>
                     <td><strong><%= entry.rule %></strong></td>
                     <td>
                       <div class="tag-list">
@@ -136,7 +140,7 @@ defmodule SymphonyElixirWeb.LearningsLive do
         %{
           error: nil,
           filters: filters,
-          repos: records |> Enum.map(&Map.get(&1, :repo)) |> Enum.reject(&blank?/1) |> Enum.uniq() |> Enum.sort(),
+          repos: records |> Enum.map(&repo_label/1) |> Enum.reject(&blank?/1) |> Enum.uniq() |> Enum.sort(),
           tags: records |> Enum.flat_map(&Map.get(&1, :tags, [])) |> Enum.uniq() |> Enum.sort(),
           records: filter_records(records, filters)
         }
@@ -148,7 +152,7 @@ defmodule SymphonyElixirWeb.LearningsLive do
 
   defp filter_records(records, filters) do
     Enum.filter(records, fn record ->
-      matches_filter?(Map.get(record, :repo), filters.repo) and matches_tag?(Map.get(record, :tags, []), filters.tag)
+      matches_filter?(repo_label(record), filters.repo) and matches_tag?(Map.get(record, :tags, []), filters.tag)
     end)
   end
 
@@ -168,18 +172,63 @@ defmodule SymphonyElixirWeb.LearningsLive do
 
   defp normalize_filter(_value), do: nil
 
+  defp pr_href(%{host: host, owner: owner, repo: repo, evidence_pr_number: number})
+       when is_binary(host) and is_binary(owner) and is_binary(repo) and is_integer(number) do
+    trusted_pr_href(host, owner, repo, number)
+  end
+
   defp pr_href(%{repo: repo, evidence_pr_number: number})
        when is_binary(repo) and is_integer(number) do
-    "https://#{repo}/pull/#{number}"
+    case legacy_pr_coordinates(repo) do
+      {:ok, host, owner, repo} -> trusted_pr_href(host, owner, repo, number)
+      :error -> nil
+    end
   end
 
   defp pr_href(_entry), do: nil
 
   defp linear_href(%{evidence_issue_url: url}) when is_binary(url) and url != "" do
-    url
+    trimmed = String.trim(url)
+    uri = URI.parse(trimmed)
+
+    if uri.scheme == "https" and is_nil(uri.userinfo) and downcase(uri.host) == @trusted_linear_host do
+      trimmed
+    end
   end
 
   defp linear_href(_entry), do: nil
+
+  defp trusted_pr_href(host, owner, repo, number) when number > 0 do
+    with {:ok, host} <- Hosts.canonical_github_host(host),
+         true <- valid_repo_path_part?(owner),
+         true <- valid_repo_path_part?(repo) do
+      "https://#{host}/#{owner}/#{repo}/pull/#{number}"
+    else
+      _ -> nil
+    end
+  end
+
+  defp trusted_pr_href(_host, _owner, _repo, _number), do: nil
+
+  defp legacy_pr_coordinates(legacy) do
+    case String.split(legacy, "/", trim: true) do
+      [host, owner, repo] -> {:ok, host, owner, repo}
+      _ -> :error
+    end
+  end
+
+  defp repo_label(%{host: host, owner: owner, repo: repo})
+       when is_binary(host) and is_binary(owner) and is_binary(repo) do
+    "#{host}/#{owner}/#{repo}"
+  end
+
+  defp repo_label(%{repo: repo}) when is_binary(repo), do: repo
+  defp repo_label(_entry), do: nil
+
+  defp valid_repo_path_part?(value) when is_binary(value), do: Regex.match?(@repo_path_part_pattern, value)
+
+  defp downcase(value) when is_binary(value), do: String.downcase(value)
+  defp downcase(_value), do: nil
 
   defp short_id(value) when is_binary(value) and byte_size(value) > 8, do: binary_part(value, 0, 8)
   defp short_id(value), do: value

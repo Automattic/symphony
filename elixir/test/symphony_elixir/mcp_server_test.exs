@@ -24,9 +24,12 @@ defmodule SymphonyElixir.McpServerTest do
       response = request!(socket, 1, "tools/list")
       tool_names = response["result"]["tools"] |> Enum.map(& &1["name"])
 
+      assert "linear_get_current_issue" in tool_names
+      assert "linear_get_comments" in tool_names
       assert "linear_add_comment" in tool_names
       assert "github_create_pull_request" in tool_names
       refute "linear.add_comment" in tool_names
+      refute "mcp__claude_ai_Linear__create_comment" in tool_names
     after
       close_socket(socket)
       McpServer.stop_session(session, server: server)

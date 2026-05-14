@@ -3,6 +3,8 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   Reads pull request lifecycle state through the GitHub CLI.
   """
 
+  alias SymphonyElixir.GitHub.Hosts
+
   @type comment :: %{
           optional(:id) => String.t() | nil,
           optional(:node_id) => String.t() | nil,
@@ -107,12 +109,19 @@ defmodule SymphonyElixir.GitHub.PullRequest do
         :ok
 
       [_ | _] ->
-        args = ["pr", "edit", pr_url] ++ Enum.flat_map(reviewers, &["--add-reviewer", &1])
-
-        case run_gh(args, opts) do
-          {:ok, _output} -> :ok
-          {:error, reason} -> {:error, reason}
+        case parse_github_pr_url(pr_url, opts) do
+          {:ok, _host, _owner, _repo, _number} -> do_request_review(pr_url, reviewers, opts)
+          :error -> {:error, :invalid_pr_url}
         end
+    end
+  end
+
+  defp do_request_review(pr_url, reviewers, opts) do
+    args = ["pr", "edit", pr_url] ++ Enum.flat_map(reviewers, &["--add-reviewer", &1])
+
+    case run_gh(args, opts) do
+      {:ok, _output} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -121,7 +130,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   defp inline_comment?(_comment), do: false
 
   defp reply_to_inline_comment(pr_url, comment, body, opts) do
-    with {:ok, host, owner, repo, number} <- parse_github_pr_url(pr_url),
+    with {:ok, host, owner, repo, number} <- parse_github_pr_url(pr_url, opts),
          comment_id when is_binary(comment_id) <- comment_id(comment),
          {:ok, _output} <-
            run_gh(
@@ -138,6 +147,13 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   end
 
   defp reply_to_pr_comment(pr_url, body, opts) do
+    case parse_github_pr_url(pr_url, opts) do
+      {:ok, _host, _owner, _repo, _number} -> do_reply_to_pr_comment(pr_url, body, opts)
+      :error -> {:error, :invalid_pr_url}
+    end
+  end
+
+  defp do_reply_to_pr_comment(pr_url, body, opts) do
     case run_gh(["pr", "comment", pr_url, "--body", body], opts) do
       {:ok, _output} -> :ok
       {:error, reason} -> {:error, reason}
@@ -145,7 +161,8 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   end
 
   defp do_fetch_activity(pr_url, opts) do
-    with {:ok, pr} <- view_pr(pr_url, opts),
+    with {:ok, _host, _owner, _repo, _number} <- parse_github_pr_url(pr_url, opts),
+         {:ok, pr} <- view_pr(pr_url, opts),
          {:ok, inline_comments} <- fetch_inline_comments(pr_url, pr, opts) do
       comments = pr_comments(pr) ++ review_comments(pr) ++ inline_comments
       latest_activity_at = latest_activity_at(pr, comments)
@@ -163,6 +180,9 @@ defmodule SymphonyElixir.GitHub.PullRequest do
          latest_review_activity_at: latest_review_activity_at,
          comments: comments
        }}
+    else
+      :error -> {:error, :invalid_pr_url}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -175,7 +195,8 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       "number,state,title,url,headRefOid,statusCheckRollup"
     ]
 
-    with {:ok, output} <- run_gh(args, opts),
+    with {:ok, _host, _owner, _repo, _number} <- parse_github_pr_url(pr_url, opts),
+         {:ok, output} <- run_gh(args, opts),
          {:ok, pr} when is_map(pr) <- Jason.decode(output) do
       {:ok,
        %{
@@ -186,6 +207,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
          checks: normalize_status_check_rollup(Map.get(pr, "statusCheckRollup"))
        }}
     else
+      :error -> {:error, :invalid_pr_url}
       {:ok, _decoded} -> {:error, :invalid_pr_payload}
       {:error, %Jason.DecodeError{} = error} -> {:error, {:invalid_pr_payload, Exception.message(error)}}
       {:error, reason} -> {:error, reason}
@@ -212,7 +234,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   end
 
   defp fetch_inline_comments(pr_url, %{"number" => number}, opts) when is_integer(number) do
-    case parse_github_pr_url(pr_url) do
+    case parse_github_pr_url(pr_url, opts) do
       {:ok, host, owner, repo, _number} ->
         case run_gh(github_api_args(host, "repos/#{owner}/#{repo}/pulls/#{number}/comments"), opts) do
           {:ok, output} ->
@@ -346,11 +368,36 @@ defmodule SymphonyElixir.GitHub.PullRequest do
 
   defp comment_timestamps(_comment), do: []
 
-  defp parse_github_pr_url(url) when is_binary(url) do
-    case Regex.run(~r{^https://([^/\s]*github[^/\s]*)/([^/\s]+)/([^/\s]+)/pull/(\d+)(?:$|[/?#])}, url) do
-      [_full, host, owner, repo, number] -> {:ok, host, owner, repo, String.to_integer(number)}
+  defp parse_github_pr_url(url, opts) when is_binary(url) do
+    with %URI{scheme: "https", host: host, path: path} <- URI.parse(url),
+         {:ok, host} <- Hosts.canonical_github_host(host, opts),
+         {:ok, owner, repo, number} <- parse_pull_request_path(path) do
+      {:ok, host, owner, repo, number}
+    else
       _ -> :error
     end
+  end
+
+  defp parse_github_pr_url(_url, _opts), do: :error
+
+  defp parse_pull_request_path(path) when is_binary(path) do
+    case String.split(path, "/", trim: true) do
+      [owner, repo, "pull", number | _rest] ->
+        if valid_path_part?(owner) and valid_path_part?(repo) and number =~ ~r/^\d+$/ do
+          {:ok, owner, repo, String.to_integer(number)}
+        else
+          :error
+        end
+
+      _path_parts ->
+        :error
+    end
+  end
+
+  defp parse_pull_request_path(_path), do: :error
+
+  defp valid_path_part?(value) when is_binary(value) do
+    value != "" and not String.match?(value, ~r/\s/)
   end
 
   defp github_api_args("github.com", endpoint), do: ["api", endpoint]

@@ -452,6 +452,7 @@ defmodule SymphonyElixir.TestSupport do
           workspace_lifecycle: nil,
           worker_ssh_hosts: [],
           worker_max_concurrent_agents_per_host: nil,
+          github: nil,
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
@@ -518,6 +519,7 @@ defmodule SymphonyElixir.TestSupport do
     workspace_lifecycle = Keyword.get(config, :workspace_lifecycle)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
     worker_max_concurrent_agents_per_host = Keyword.get(config, :worker_max_concurrent_agents_per_host)
+    github = Keyword.get(config, :github)
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
@@ -586,6 +588,7 @@ defmodule SymphonyElixir.TestSupport do
         "  fetch_before_dispatch: #{yaml_value(workspace_fetch_before_dispatch)}",
         workspace_lifecycle && "  lifecycle: #{yaml_value(workspace_lifecycle)}",
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
+        github && "github: #{yaml_value(github)}",
         "agent:",
         "  kind: #{yaml_value(agent_kind)}",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",

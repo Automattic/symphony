@@ -357,6 +357,49 @@ defmodule SymphonyElixir.PrReviewPollerTest do
            ] = RunStore.list_pr_reviews()
   end
 
+  test "polling ignores malicious Linear GitHub attachments before GitHub fetch" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    issue =
+      Client.normalize_issue_for_test(%{
+        "id" => "issue-malicious",
+        "identifier" => "RSM-MAL",
+        "title" => "Malicious attachment",
+        "state" => %{"name" => "In Review"},
+        "url" => "https://linear.app/a8c/issue/RSM-MAL",
+        "attachments" => %{
+          "nodes" => [
+            %{
+              "sourceType" => "github",
+              "url" => "https://github-evil.attacker.tld/org/repo/pull/42"
+            }
+          ]
+        },
+        "updatedAt" => "2026-05-01T09:00:00Z"
+      })
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: @repo_key,
+               run_id: "run-malicious",
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               status: "success",
+               workspace_path: "/tmp/workspaces/RSM-MAL",
+               worker_host: nil,
+               started_at: DateTime.add(now, -120, :second),
+               ended_at: DateTime.add(now, -60, :second)
+             })
+
+    assert {:ok, %{discovered: 0, processed: 0, actions: []}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FailingGitHub, now: now)
+
+    assert RunStore.list_pr_reviews() == []
+    refute_receive {:github_fetch, _pr_url}
+  end
+
   test "discovers workspace from newest completed run regardless of store order" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)

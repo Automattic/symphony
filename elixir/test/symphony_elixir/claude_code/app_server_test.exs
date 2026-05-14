@@ -887,6 +887,86 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "adds remote-control flag for local Claude runs when enabled" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-control-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-REMOTE-CONTROL")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-remote-control"))
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_remote_control: true
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:ok, result} =
+                 AppServer.run_turn(session, "observe this run", %{identifier: "RSM-REMOTE-CONTROL"}, run_id: "run-123")
+
+        assert result.input_tokens == 6
+
+        assert File.read!(Path.join(workspace, "argv.trace")) |> String.split("\n", trim: true) == [
+                 "--remote-control",
+                 "RSM-REMOTE-CONTROL-run-123",
+                 "--output-format",
+                 "stream-json",
+                 "--print",
+                 "observe this run"
+               ]
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "omits remote-control flag for local Claude runs by default" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-no-remote-control-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-NO-REMOTE-CONTROL")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-no-remote-control"))
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:ok, result} =
+                 AppServer.run_turn(session, "normal run", %{identifier: "RSM-NO-REMOTE-CONTROL"}, run_id: "run-123")
+
+        assert result.input_tokens == 6
+
+        args = File.read!(Path.join(workspace, "argv.trace")) |> String.split("\n", trim: true)
+        refute "--remote-control" in args
+        assert args == ["--output-format", "stream-json", "--print", "normal run"]
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "runs a successful turn when workspace and command paths contain spaces" do
       test_root =
         Path.join(
@@ -1227,6 +1307,66 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ "--output-format stream-json"
         assert traced_command =~ "--print"
         assert traced_command =~ "remote task"
+        refute traced_command =~ "--remote-control"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "adds remote-control flag for ssh Claude runs when enabled" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-control-ssh-#{System.unique_integer([:positive])}"
+        )
+
+      previous_path = System.get_env("PATH")
+
+      on_exit(fn ->
+        restore_env("PATH", previous_path)
+      end)
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-REMOTE-SSH")
+        fake_ssh = Path.join(test_root, "ssh")
+        trace_file = Path.join(test_root, "ssh-command.trace")
+        File.mkdir_p!(workspace)
+        System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+        File.write!(fake_ssh, """
+        #!/bin/sh
+        last_arg=""
+        for arg in "$@"; do
+          last_arg="$arg"
+        done
+        printf '%s' "$last_arg" > "#{trace_file}"
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-remote-control-ssh","cwd":"/remote","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":200,"duration_api_ms":150,"is_error":false,"num_turns":1,"result":"remote done","session_id":"sess-remote-control-ssh","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_ssh, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: "fake-claude-remote",
+          agent_remote_control: true
+        )
+
+        {:ok, session} = AppServer.start_session(workspace, worker_host: "worker-01")
+
+        assert {:ok, result} =
+                 AppServer.run_turn(session, "remote task", %{identifier: "RSM-REMOTE-SSH"}, run_id: "ssh-run-1")
+
+        assert result.input_tokens == 5
+        traced_command = File.read!(trace_file)
+        assert traced_command =~ "fake-claude-remote"
+        assert traced_command =~ "--remote-control"
+        assert traced_command =~ "RSM-REMOTE-SSH-ssh-run-1"
+        assert traced_command =~ "--output-format stream-json"
+        assert traced_command =~ "--print"
       after
         File.rm_rf(test_root)
       end
@@ -1366,6 +1506,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     #!/bin/sh
     printf '%s\\n' '{"type":"system","subtype":"init","session_id":"#{session_id}","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
     printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"#{session_id}","total_cost_usd":0.001,"usage":{"input_tokens":#{input_tokens},"output_tokens":#{output_tokens},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+    exit 0
+    """
+  end
+
+  defp argv_tracing_fake_claude_script(session_id) do
+    """
+    #!/bin/sh
+    : > "$PWD/argv.trace"
+    for arg in "$@"; do
+      printf '%s\\n' "$arg" >> "$PWD/argv.trace"
+    done
+    printf '%s\\n' '{"type":"system","subtype":"init","session_id":"#{session_id}","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+    printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"#{session_id}","total_cost_usd":0.001,"usage":{"input_tokens":6,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
     exit 0
     """
   end

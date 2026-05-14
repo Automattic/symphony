@@ -109,6 +109,26 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
       end
     end
 
+    test "attach_file rejects private uploads for sensitive basenames before upload" do
+      workspace = tmp_workspace!("linear-agent-file-private-sensitive")
+      path = Path.join(workspace, ".env.local")
+      File.write!(path, "ordinary test fixture")
+
+      try do
+        assert {:error, {:private_upload_denied_sensitive_filename, ".env.local"}} =
+                 Linear.attach_file(secret_context(workspace), path, "Proof",
+                   linear_client: fn _query, _variables, _opts ->
+                     flunk("Linear should not request an upload for private sensitive filenames")
+                   end,
+                   upload_client: fn _url, _opts ->
+                     flunk("private sensitive filenames should not be uploaded")
+                   end
+                 )
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
     test "attach_file accepts normal files" do
       workspace = tmp_workspace!("linear-agent-file-normal")
       path = Path.join(workspace, "proof.txt")

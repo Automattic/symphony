@@ -410,6 +410,48 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end
   end
 
+  test "attach_file rejects private uploads for sensitive basenames before requesting an upload" do
+    workspace = tmp_workspace!("linear-attach-file-private-sensitive")
+
+    sensitive_files = [
+      {".env.local", "private_upload_denied_sensitive_filename"},
+      {"deploy.pem", "private_upload_denied_sensitive_filename"},
+      {"deploy.key", "private_upload_denied_sensitive_filename"}
+    ]
+
+    try do
+      Enum.each(sensitive_files, fn {filename, expected_code} ->
+        path = Path.join(workspace, filename)
+        File.write!(path, "ordinary test fixture")
+
+        response =
+          DynamicTool.execute(
+            "linear_attach_file",
+            %{"local_path" => path},
+            issue: %Issue{id: "issue-current"},
+            workspace: workspace,
+            linear_client: fn _query, _variables, _opts ->
+              flunk("linear client should not be called for denied private sensitive upload")
+            end,
+            upload_client: fn _url, _opts ->
+              flunk("sensitive private files should not be uploaded")
+            end
+          )
+
+        assert response["success"] == false
+
+        assert %{
+                 "error" => %{
+                   "code" => ^expected_code,
+                   "filename" => ^filename
+                 }
+               } = Jason.decode!(response["output"])
+      end)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
   test "attach_file enforces the public upload size cap before requesting an upload" do
     workspace = tmp_workspace!("linear-attach-file-size")
     path = Path.join(workspace, "large.txt")

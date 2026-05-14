@@ -13,18 +13,22 @@ defmodule SymphonyElixir.SSH do
     with {:ok, executable} <- ssh_executable() do
       line_bytes = Keyword.get(opts, :line)
       env = Keyword.get(opts, :env)
+      stdin_path = Keyword.get(opts, :stdin_path)
+      ssh_args = ssh_args(host, command, opts)
 
       port_opts =
         [
           :binary,
           :exit_status,
           :stderr_to_stdout,
-          args: Enum.map(ssh_args(host, command, opts), &String.to_charlist/1)
+          args: Enum.map(port_args(executable, ssh_args, stdin_path), &String.to_charlist/1)
         ]
         |> maybe_put_line_option(line_bytes)
         |> maybe_put_env_option(env)
 
-      {:ok, Port.open({:spawn_executable, String.to_charlist(executable)}, port_opts)}
+      with {:ok, spawn_executable} <- port_executable(executable, stdin_path) do
+        {:ok, Port.open({:spawn_executable, String.to_charlist(spawn_executable)}, port_opts)}
+      end
     end
   end
 
@@ -38,6 +42,29 @@ defmodule SymphonyElixir.SSH do
       nil -> {:error, :ssh_not_found}
       executable -> {:ok, executable}
     end
+  end
+
+  defp shell_executable do
+    case System.find_executable("sh") do
+      nil -> {:error, :shell_not_found}
+      executable -> {:ok, executable}
+    end
+  end
+
+  defp port_executable(ssh_executable, nil), do: {:ok, ssh_executable}
+  defp port_executable(_ssh_executable, stdin_path) when is_binary(stdin_path), do: shell_executable()
+
+  defp port_args(_ssh_executable, ssh_args, nil), do: ssh_args
+
+  defp port_args(ssh_executable, ssh_args, stdin_path) when is_binary(stdin_path) do
+    [
+      "-c",
+      "prompt_file=$1; shift; exec \"$@\" < \"$prompt_file\"",
+      "symphony-ssh-stdin",
+      stdin_path,
+      ssh_executable
+      | ssh_args
+    ]
   end
 
   defp ssh_args(host, command, opts \\ []) do

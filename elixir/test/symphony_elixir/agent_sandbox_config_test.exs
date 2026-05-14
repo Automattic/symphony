@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.AgentSandboxConfigTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias SymphonyElixir.AgentSandboxConfig
   alias SymphonyElixir.Config.{Schema, SystemSchema}
@@ -137,6 +137,24 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert {:ok, %{"network" => %{"allowedDomains" => []}}} = AgentSandboxConfig.srt_settings("block", ["github.com"], [])
   end
 
+  test "srt settings normalize malformed domains and relative temp dirs" do
+    relative_tmp = "symphony-relative-tmp-#{System.unique_integer([:positive])}"
+    previous_tmpdir = System.get_env("TMPDIR")
+
+    on_exit(fn ->
+      restore_env("TMPDIR", previous_tmpdir)
+      File.rm_rf(relative_tmp)
+    end)
+
+    File.mkdir_p!(relative_tmp)
+    System.put_env("TMPDIR", relative_tmp)
+
+    assert {:ok, settings} = AgentSandboxConfig.srt_settings("allowlist", :bad, :bad)
+    assert settings["network"]["allowedDomains"] == []
+    assert settings["network"]["deniedDomains"] == []
+    assert "./#{relative_tmp}" in settings["filesystem"]["allowWrite"]
+  end
+
   test "Codex filesystem config allows operator overrides for default read denies" do
     overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [], ["~/.npmrc", "~/.cargo/credentials"])
 
@@ -195,4 +213,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
 
     assert sandbox.allow_read_paths == []
   end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
 end

@@ -156,8 +156,9 @@ identical:
 
 - Codex starts one app-server thread for each Symphony worker run and reuses that `threadId` for
   continuation turns until the run ends.
-- Claude Code is launched as a CLI turn with `--print --output-format stream-json`; the current
-  adapter does not pass a Symphony-managed resume or thread id between continuation turns.
+- Claude Code is launched as a CLI turn with `--print --output-format stream-json` and receives the
+  prompt over stdin from a private temporary file; the current adapter does not pass a
+  Symphony-managed resume or thread id between continuation turns.
 - Practically, Codex continuation turns can rely on prior model-thread context, while Claude
   continuation turns must recover context from the workspace, workpad, Linear state, and the
   continuation prompt. Codex app-server token events also provide the most complete dashboard and

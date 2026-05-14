@@ -1209,9 +1209,71 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  "--strict-mcp-config",
                  "--output-format",
                  "stream-json",
-                 "--print",
-                 "normal run"
+                 "--print"
                ]
+
+        assert File.read!(Path.join(workspace, "stdin.trace")) == "normal run"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "uses a private prompt file for local Claude stdin and cleans it up" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-prompt-file-#{System.unique_integer([:positive])}"
+        )
+
+      previous_tmpdir = System.get_env("TMPDIR")
+
+      on_exit(fn ->
+        restore_env("TMPDIR", previous_tmpdir)
+      end)
+
+      try do
+        prompt_tmp_root = Path.join(test_root, "prompt-tmp")
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-PROMPT-FILE")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+        File.mkdir_p!(prompt_tmp_root)
+        System.put_env("TMPDIR", prompt_tmp_root)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        prompt_file=$(find "${TMPDIR:-/tmp}" -path '*/symphony-claude-prompt-*/prompt' -type f | head -n 1)
+        printf '%s' "$prompt_file" > "$PWD/prompt-path.trace"
+        (stat -f '%Lp' "$prompt_file" 2>/dev/null || stat -c '%a' "$prompt_file") > "$PWD/prompt-mode.trace"
+        (stat -f '%Lp' "$(dirname "$prompt_file")" 2>/dev/null || stat -c '%a' "$(dirname "$prompt_file")") > "$PWD/prompt-dir-mode.trace"
+        cat > "$PWD/stdin.trace"
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-prompt-file","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"sess-prompt-file","total_cost_usd":0.001,"usage":{"input_tokens":6,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+        prompt = "secret prompt body"
+
+        assert {:ok, result} = AppServer.run_turn(session, prompt, %{}, [])
+        assert result.input_tokens == 6
+        assert File.read!(Path.join(workspace, "stdin.trace")) == prompt
+
+        prompt_path = File.read!(Path.join(workspace, "prompt-path.trace"))
+        assert String.starts_with?(prompt_path, prompt_tmp_root)
+        refute String.starts_with?(prompt_path, workspace)
+        assert String.trim(File.read!(Path.join(workspace, "prompt-mode.trace"))) == "600"
+        assert String.trim(File.read!(Path.join(workspace, "prompt-dir-mode.trace"))) == "700"
+        refute File.exists?(prompt_path)
+        refute File.exists?(Path.dirname(prompt_path))
       after
         File.rm_rf(test_root)
       end
@@ -1234,17 +1296,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         File.write!(fake_claude, """
         #!/bin/sh
-        capture_next=0
-        for arg in "$@"; do
-          if [ "$capture_next" = "1" ]; then
-            printf '%s' "$arg" > "$PWD/args.trace"
-            capture_next=0
-          fi
-
-          if [ "$arg" = "--print" ]; then
-            capture_next=1
-          fi
-        done
+        cat > "$PWD/stdin.trace"
         printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-spaced","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
         printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"sess-spaced","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
         exit 0
@@ -1263,7 +1315,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         assert {:ok, result} = AppServer.run_turn(session, prompt, %{}, [])
         assert result.input_tokens == 10
-        assert File.read!(Path.join(workspace, "args.trace")) == prompt
+        assert File.read!(Path.join(workspace, "stdin.trace")) == prompt
       after
         File.rm_rf(test_root)
       end
@@ -1562,6 +1614,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         workspace = Path.join(workspace_root, "RSM-REMOTE")
         fake_ssh = Path.join(test_root, "ssh")
         trace_file = Path.join(test_root, "ssh-command.trace")
+        stdin_trace_file = Path.join(test_root, "ssh-stdin.trace")
         File.mkdir_p!(workspace)
         System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
 
@@ -1573,6 +1626,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
           last_arg="$arg"
         done
         printf '%s' "$last_arg" > "#{trace_file}"
+        case "$last_arg" in
+          *fake-claude-remote*)
+            cat > "#{stdin_trace_file}"
+            ;;
+        esac
         printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-remote","cwd":"/remote","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
         printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":200,"duration_api_ms":150,"is_error":false,"num_turns":1,"result":"remote done","session_id":"sess-remote","total_cost_usd":0.0,"usage":{"input_tokens":5,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
         exit 0
@@ -1608,7 +1666,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ "--output-format"
         assert traced_command =~ "stream-json"
         assert traced_command =~ "--print"
-        assert traced_command =~ "remote task"
+        assert traced_command =~ "umask 077"
+        assert traced_command =~ "mktemp -d"
+        assert traced_command =~ "cat >"
+        assert traced_command =~ "chmod 0600"
+        assert traced_command =~ "cleanup_prompt"
+        refute traced_command =~ "remote task"
+        refute traced_argv =~ "remote task"
+        assert File.read!(stdin_trace_file) == "remote task"
         refute traced_command =~ "--remote-control"
         assert traced_argv =~ "-R #{session.mcp_remote_socket_path}:#{session.mcp_session.socket_path}"
       after
@@ -1761,6 +1826,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     for arg in "$@"; do
       printf '%s\\n' "$arg" >> "$PWD/argv.trace"
     done
+    cat > "$PWD/stdin.trace"
     printf '%s\\n' '{"type":"system","subtype":"init","session_id":"#{session_id}","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
     printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"#{session_id}","total_cost_usd":0.001,"usage":{"input_tokens":6,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
     exit 0

@@ -549,6 +549,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           assert opts[:cd] == workspace
           {"auto/RSM-3051\n", 0}
 
+        ["remote", "get-url", "origin"], opts ->
+          assert opts[:cd] == workspace
+          {"git@github.com:acme/symphony.git\n", 0}
+
         ["push", "origin", "auto/RSM-3051"], opts ->
           assert opts[:cd] == workspace
           {"pushed\n", 0}
@@ -576,6 +580,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
           {"auto/RSM-3051\n", 0}
+
+        ["remote", "get-url", "origin"], opts ->
+          assert opts[:cd] == workspace
+          {"git@github.com:acme/symphony.git\n", 0}
 
         ["push", "origin", "auto/RSM-3051"], opts ->
           assert opts[:cd] == workspace
@@ -853,6 +861,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   defp github_tool_opts(workspace, opts) do
     opts
     |> Keyword.put(:workspace, workspace)
-    |> Keyword.put(:command_security, %{origin_repo: "acme/symphony", workspace: workspace})
+    |> Keyword.put(:command_security, %{
+      origin_repo: "acme/symphony",
+      origin_url: "git@github.com:acme/symphony.git",
+      workspace: workspace
+    })
   end
 end

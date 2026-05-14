@@ -63,6 +63,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   def push_branch(context, opts \\ []) do
     with {:ok, workspace} <- workspace(context),
          {:ok, branch} <- current_branch(context, opts),
+         :ok <- verify_current_origin(context, workspace, opts),
          {:ok, output} <- run_git(["push", "origin", branch], workspace, opts) do
       {:ok, %{"remote" => "origin", "branch" => branch, "output" => String.trim(output)}}
     end
@@ -134,6 +135,42 @@ defmodule SymphonyElixir.AgentTools.GitHub do
 
   defp command_security(context) when is_map(context), do: Map.get(context, :command_security) || %{}
   defp command_security(_context), do: %{}
+
+  defp verify_current_origin(context, workspace, opts) do
+    expected_origin_url = Map.get(command_security(context), :origin_url)
+
+    with expected when is_binary(expected) and expected != "" <- expected_origin_url,
+         {:ok, current_origin_url} <- current_origin_url(workspace, opts),
+         true <- normalize_git_url(current_origin_url) == normalize_git_url(expected) do
+      :ok
+    else
+      _reason -> {:error, :origin_url_mismatch}
+    end
+  end
+
+  defp current_origin_url(workspace, opts) do
+    with {:ok, output} <- run_git(["remote", "get-url", "origin"], workspace, opts),
+         origin_url when is_binary(origin_url) <- output |> String.trim() |> blank_to_nil() do
+      {:ok, origin_url}
+    else
+      _reason -> {:error, :origin_url_unavailable}
+    end
+  end
+
+  defp normalize_git_url(url) when is_binary(url) do
+    url
+    |> String.trim()
+    |> String.trim_trailing("/")
+    |> String.replace_suffix(".git", "")
+    |> String.downcase()
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      present -> present
+    end
+  end
 
   defp require_string(value, _reason) when is_binary(value), do: {:ok, value}
   defp require_string(_value, reason), do: {:error, reason}

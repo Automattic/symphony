@@ -547,9 +547,10 @@ quality_gate:
 The optional `self_review` block adds a conservative pre-push LLM gate after the agent completes
 validation and reviews the committed diff against the repo's configured `base_branch`, or
 `origin/HEAD`/`origin/main` when no repo base is configured. It is disabled by default. When enabled, the
-workflow prompt tells the agent to pause before `git push`; Symphony then reviews the committed
-diff, changed paths, commit subjects/bodies, and issue acceptance criteria using the same
-Anthropic/OpenAI provider modules as `quality_gate`.
+workflow prompt tells the agent to pause before `git push`; Symphony then builds a structured
+context pack from the committed diff, changed paths, commit subjects/bodies, issue acceptance
+criteria, workpad validation evidence, pending reviewer comments, and pending CI failure context
+using the same Anthropic/OpenAI provider modules as `quality_gate`.
 
 ```yaml
 self_review:
@@ -564,8 +565,20 @@ self_review:
   or `scope_creep`.
 - Style, design, speculative risk, and subjective test-coverage opinions are discarded and cannot
   block a push.
-- Diffs over `diff_max_lines` are truncated to the first N lines, the gate still runs, and Symphony
-  logs a warning naming the line cap.
+- Diffs over `diff_max_lines` are balanced per file instead of prefix-truncated. Every changed file
+  is represented by path, status, stats, classification, and hunk headers. Small source files can be
+  included as full diffs; large source files and generated, lock, or binary files are summarized with
+  explicit coverage metadata.
+- The context pack includes bounded nearby line windows around changed hunks when file contents are
+  readable, same-name test files when tracked, and best-effort `rg` call-site matches for changed
+  public function names. Language-aware AST extraction and semantic call graphs are intentionally out
+  of scope for this first pass.
+- Reviewer output may include non-blocking advisory notes in `missing_context`, `test_evidence_gap`,
+  `docs_sync_risk`, `blast_radius_risk`, or `review_coverage_low`. These notes can be carried into
+  PR context, but they do not block push.
+- Self-review audit events record coverage metadata: fully reviewed files, summarized files,
+  generated/lock/binary files, omitted files, adjacent-context coverage, validation evidence count,
+  reviewer comment count, and whether CI context was included.
 - Malformed LLM output or provider failures fail open as `approve`.
 - On `request_changes`, Symphony injects the findings into one additional agent pass. After the
   follow-up pass, Symphony prompts the agent to push regardless and includes a

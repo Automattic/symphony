@@ -329,7 +329,22 @@ defmodule SymphonyElixir.AuditLogTest do
     result = %{
       verdict: :approve,
       findings: [],
-      source: %{diff_truncated?: true, diff_line_count: 640}
+      advisory_notes: [%{category: :review_coverage_low, description: "Large file summarized."}],
+      source: %{
+        diff_truncated?: true,
+        diff_line_count: 640,
+        review_coverage: %{
+          fully_reviewed_files: ["lib/a.ex"],
+          summarized_files: ["lib/b.ex"],
+          generated_lock_files: ["pnpm-lock.yaml"],
+          omitted_files: [],
+          adjacent_context_files: ["lib/a.ex"],
+          adjacent_context_omitted_files: ["lib/b.ex"],
+          validation_evidence_count: 3,
+          reviewer_comment_count: 2,
+          ci_context_included?: true
+        }
+      }
     }
 
     assert :ok =
@@ -348,6 +363,17 @@ defmodule SymphonyElixir.AuditLogTest do
     assert event["finding_categories"] == []
     assert event["diff_truncated"] == true
     assert event["diff_line_count"] == 640
+    assert event["advisory_notes_count"] == 1
+    assert event["advisory_note_categories"] == ["review_coverage_low"]
+    assert event["fully_reviewed_files"] == ["lib/a.ex"]
+    assert event["summarized_files"] == ["lib/b.ex"]
+    assert event["generated_lock_files"] == ["pnpm-lock.yaml"]
+    assert event["omitted_files"] == []
+    assert event["adjacent_context_files"] == ["lib/a.ex"]
+    assert event["adjacent_context_omitted_files"] == ["lib/b.ex"]
+    assert event["validation_evidence_count"] == 3
+    assert event["reviewer_comment_count"] == 2
+    assert event["ci_context_included"] == true
     assert event["round"] == 1
     refute Map.has_key?(event, "fail_open_category")
   end

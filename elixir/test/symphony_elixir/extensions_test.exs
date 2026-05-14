@@ -90,6 +90,55 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
   end
 
+  defmodule BlockingSnapshotOrchestrator do
+    use GenServer
+
+    def start_link(opts) do
+      name = Keyword.fetch!(opts, :name)
+      GenServer.start_link(__MODULE__, opts, name: name)
+    end
+
+    def block_next_snapshot(pid), do: GenServer.call(pid, :block_next_snapshot)
+
+    def release_snapshot(pid) when is_pid(pid) do
+      send(pid, :release_snapshot)
+      :ok
+    end
+
+    def init(opts) do
+      {:ok,
+       %{
+         owner: Keyword.fetch!(opts, :owner),
+         snapshot: Keyword.fetch!(opts, :snapshot),
+         block_next_snapshot?: false
+       }}
+    end
+
+    def handle_call(:block_next_snapshot, _from, state) do
+      {:reply, :ok, %{state | block_next_snapshot?: true}}
+    end
+
+    def handle_call(:snapshot, _from, %{block_next_snapshot?: true} = state) do
+      send(state.owner, :snapshot_blocked)
+
+      receive do
+        :release_snapshot -> :ok
+      after
+        1_000 -> :ok
+      end
+
+      {:reply, state.snapshot, %{state | block_next_snapshot?: false}}
+    end
+
+    def handle_call(:snapshot, _from, state) do
+      {:reply, state.snapshot, state}
+    end
+
+    def handle_call(:request_refresh, _from, state) do
+      {:reply, :unavailable, state}
+    end
+  end
+
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
 
@@ -998,6 +1047,45 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "MT-HTTP"
     assert html =~ "MT-CONFLICT"
     assert html =~ "MT-WEB-RETRY"
+  end
+
+  test "dashboard repo filter remains responsive while refresh snapshot is pending" do
+    orchestrator_name = Module.concat(__MODULE__, :AsyncRepoFilterDashboardOrchestrator)
+
+    {:ok, orchestrator_pid} =
+      BlockingSnapshotOrchestrator.start_link(
+        name: orchestrator_name,
+        owner: self(),
+        snapshot: multi_repo_snapshot()
+      )
+
+    on_exit(fn -> BlockingSnapshotOrchestrator.release_snapshot(orchestrator_pid) end)
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 5_000)
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    assert html =~ "MT-API"
+    assert html =~ "MT-HTTP"
+    assert :ok = BlockingSnapshotOrchestrator.block_next_snapshot(orchestrator_pid)
+
+    assert :ok = ObservabilityPubSub.broadcast_update("api")
+    assert_receive :snapshot_blocked
+
+    html = render_change(view, "filter-repo", %{"repo" => "api"})
+
+    assert html =~ ~s(<option value="api" selected)
+    assert html =~ "MT-API"
+    assert html =~ "MT-API-WATCH"
+    assert html =~ "MT-CONFLICT"
+    assert html =~ "Updating..."
+    refute html =~ "MT-HTTP"
+    refute html =~ "MT-WEB-RETRY"
+
+    :ok = BlockingSnapshotOrchestrator.release_snapshot(orchestrator_pid)
+
+    html = render_async(view, 500)
+    refute html =~ "Updating..."
   end
 
   test "dashboard liveview allows an actual repo named conflict" do

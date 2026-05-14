@@ -115,7 +115,7 @@ defmodule SymphonyElixir.Learnings.Reflection do
 
     issue_url = present_optional(issue_field(issue, :url)) || present_optional(string_field(record, :issue_url))
 
-    with {:ok, repo, pr_number} <- pr_coordinates(pr_url) do
+    with {:ok, pr, pr_number} <- pr_coordinates(pr_url) do
       {:ok,
        %{
          issue_identifier: issue_identifier,
@@ -128,7 +128,10 @@ defmodule SymphonyElixir.Learnings.Reflection do
          pr_title: present(string_field(activity, :pr_title)),
          pr_description: present(string_field(activity, :pr_description)),
          pr_comments: Map.get(activity, :comments, []),
-         repo: repo,
+         repository: repository_label(pr),
+         host: pr.host,
+         owner: pr.owner,
+         repo: pr.repo,
          run_id: string_field(record, :run_id),
          transcript_events: transcript_events(record, Keyword.get(opts, :transcript_event_limit, @default_transcript_event_limit))
        }}
@@ -155,7 +158,7 @@ defmodule SymphonyElixir.Learnings.Reflection do
   defp user_prompt(source) do
     """
     Repository:
-    #{source.repo}
+    #{source.repository}
 
     Linear issue:
     #{blank_fallback(source.issue_identifier)}
@@ -271,6 +274,8 @@ defmodule SymphonyElixir.Learnings.Reflection do
       Map.merge(entry, %{
         id: new_id(),
         repo_key: repo_key || Config.repo_key!(),
+        host: source.host,
+        owner: source.owner,
         repo: source.repo,
         evidence_issue_identifier: source.issue_identifier,
         evidence_issue_url: source.issue_url,
@@ -291,8 +296,12 @@ defmodule SymphonyElixir.Learnings.Reflection do
 
     case {uri.host, path_parts} do
       {host, [owner, repo, "pull", number | _rest]} when is_binary(host) ->
-        case Integer.parse(number) do
-          {pr_number, ""} -> {:ok, "#{host}/#{owner}/#{repo}", pr_number}
+        with true <- valid_pr_path_part?(owner),
+             true <- valid_pr_path_part?(repo),
+             {pr_number, ""} <- Integer.parse(number) do
+          {:ok, %{host: String.downcase(host), owner: owner, repo: repo}, pr_number}
+        else
+          false -> {:error, :invalid_pr_url}
           _ -> {:error, :invalid_pr_number}
         end
 
@@ -302,6 +311,12 @@ defmodule SymphonyElixir.Learnings.Reflection do
   end
 
   defp pr_coordinates(_pr_url), do: {:error, :invalid_pr_url}
+
+  defp repository_label(%{host: host, owner: owner, repo: repo}), do: "#{host}/#{owner}/#{repo}"
+
+  defp valid_pr_path_part?(value) when is_binary(value) do
+    Regex.match?(~r/^[A-Za-z0-9._-]+$/, value)
+  end
 
   defp issue_field(%Issue{} = issue, field), do: Map.get(issue, field)
   defp issue_field(_issue, _field), do: nil

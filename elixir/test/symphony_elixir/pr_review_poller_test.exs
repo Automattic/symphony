@@ -1499,7 +1499,9 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert length(learnings) == 2
 
     assert %{
-             repo: "github.com/example/repo",
+             host: "github.com",
+             owner: "example",
+             repo: "repo",
              tags: ["docs", "workflow-config"],
              evidence_quote: "Remember to update docs.",
              evidence_issue_identifier: "RSM-1780",

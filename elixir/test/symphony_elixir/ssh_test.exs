@@ -157,6 +157,64 @@ defmodule SymphonyElixir.SSHTest do
     assert trace =~ "-T -p 2222 localhost bash -lc"
   end
 
+  test "start_port/3 supports reverse Unix socket forwards" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-reverse-port-test-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    install_fake_ssh!(test_root, trace_file, """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    printf 'ready\\n'
+    exit 0
+    """)
+
+    assert {:ok, port} =
+             SSH.start_port("localhost", "printf ok",
+               reverse_forwards: [
+                 :invalid,
+                 {"/tmp/symphony-mcp-remote.sock", "/tmp/symphony-mcp-local.sock"}
+               ]
+             )
+
+    assert is_port(port)
+    wait_for_trace!(trace_file)
+
+    trace = File.read!(trace_file)
+    assert trace =~ "-R /tmp/symphony-mcp-remote.sock:/tmp/symphony-mcp-local.sock -T localhost bash -lc"
+    refute trace =~ "invalid"
+  end
+
+  test "start_port/3 ignores malformed reverse forward option" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-reverse-invalid-test-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    install_fake_ssh!(test_root, trace_file, """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    printf 'ready\\n'
+    exit 0
+    """)
+
+    assert {:ok, port} = SSH.start_port("localhost", "printf ok", reverse_forwards: :invalid)
+    assert is_port(port)
+    wait_for_trace!(trace_file)
+
+    trace = File.read!(trace_file)
+    refute trace =~ " -R "
+  end
+
   test "remote_shell_command/1 escapes embedded single quotes" do
     assert SSH.remote_shell_command("printf 'hello'") ==
              "bash -lc 'printf '\"'\"'hello'\"'\"''"

@@ -62,6 +62,8 @@ defmodule SymphonyElixir.TestSupport do
 
         on_exit(fn ->
           stop_verification_port_pool()
+          stop_default_orchestrator()
+          stop_default_http_server()
           Application.delete_env(:symphony_elixir, :primary_repo_name)
           Application.delete_env(:symphony_elixir, :symphony_file_path)
           Application.delete_env(:symphony_elixir, :workflow_file_path)
@@ -171,7 +173,7 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   def ensure_application_started do
-    case Process.whereis(SymphonyElixir.Supervisor) do
+    case named_process(SymphonyElixir.Supervisor) do
       pid when is_pid(pid) ->
         :ok
 
@@ -201,20 +203,29 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp ensure_named_supervised_child_started!(child_id, process_name) do
-    case Process.whereis(process_name) do
+    case named_process(process_name) do
       pid when is_pid(pid) ->
         :ok
 
       _ ->
-        :ok = ensure_application_started()
-        restart_result = restart_supervised_child(child_id)
+        ensure_named_supervised_child_started!(child_id, process_name, false)
+    end
+  end
 
-        case wait_for_named_process(process_name) do
-          :ok ->
-            :ok
+  defp ensure_named_supervised_child_started!(child_id, process_name, recovered?) do
+    :ok = ensure_application_started()
+    restart_result = restart_supervised_child(child_id)
 
-          :timeout ->
-            raise "failed to start #{inspect(process_name)} from child #{inspect(child_id)}: #{inspect(restart_result)}"
+    case wait_for_named_process(process_name) do
+      :ok ->
+        :ok
+
+      :timeout ->
+        if not recovered? and recoverable_supervisor_restart_failure?(restart_result) do
+          recover_missing_application_supervisor!()
+          ensure_named_supervised_child_started!(child_id, process_name, true)
+        else
+          raise "failed to start #{inspect(process_name)} from child #{inspect(child_id)}: #{inspect(restart_result)}"
         end
     end
   end
@@ -222,7 +233,7 @@ defmodule SymphonyElixir.TestSupport do
   defp restart_supervised_child(child_id) do
     ensure_application_started()
 
-    case Process.whereis(SymphonyElixir.Supervisor) do
+    case named_process(SymphonyElixir.Supervisor) do
       supervisor when is_pid(supervisor) ->
         case Supervisor.restart_child(supervisor, child_id) do
           {:ok, _pid} -> :ok
@@ -238,6 +249,14 @@ defmodule SymphonyElixir.TestSupport do
     end
   catch
     :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp recoverable_supervisor_shutdown?({:error, {:exit, {:shutdown, _reason}}}), do: true
+  defp recoverable_supervisor_shutdown?({:error, {:exit, :shutdown}}), do: true
+  defp recoverable_supervisor_shutdown?(_result), do: false
+
+  defp recoverable_supervisor_restart_failure?(restart_result) do
+    recoverable_supervisor_shutdown?(restart_result) or is_nil(named_process(SymphonyElixir.Supervisor))
   end
 
   defp recover_run_store!(reason) do
@@ -259,7 +278,7 @@ defmodule SymphonyElixir.TestSupport do
   defp stop_supervised_child(child_id) do
     pid = Process.whereis(child_id)
 
-    case Process.whereis(SymphonyElixir.Supervisor) do
+    case named_process(SymphonyElixir.Supervisor) do
       supervisor when is_pid(supervisor) ->
         case Supervisor.terminate_child(supervisor, child_id) do
           :ok -> :ok
@@ -272,6 +291,8 @@ defmodule SymphonyElixir.TestSupport do
     end
 
     stop_process(pid)
+  catch
+    :exit, _reason -> stop_process(Process.whereis(child_id))
   end
 
   defp stop_mnesia do
@@ -297,7 +318,7 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp wait_for_named_process(process_name, deadline_ms) do
-    case Process.whereis(process_name) do
+    case named_process(process_name) do
       pid when is_pid(pid) ->
         :ok
 
@@ -311,8 +332,22 @@ defmodule SymphonyElixir.TestSupport do
     end
   end
 
+  defp named_process(process_name) do
+    case Process.whereis(process_name) do
+      pid when is_pid(pid) ->
+        case Process.info(pid, :status) do
+          {:status, :exiting} -> nil
+          nil -> nil
+          _status -> pid
+        end
+
+      _ ->
+        nil
+    end
+  end
+
   def stop_default_http_server do
-    with supervisor when is_pid(supervisor) <- Process.whereis(SymphonyElixir.Supervisor),
+    with supervisor when is_pid(supervisor) <- named_process(SymphonyElixir.Supervisor),
          {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) <- find_default_http_server(supervisor) do
       :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.HttpServer)
 
@@ -322,10 +357,12 @@ defmodule SymphonyElixir.TestSupport do
     else
       _ -> :ok
     end
+  catch
+    :exit, _reason -> :ok
   end
 
   def stop_default_orchestrator do
-    with supervisor when is_pid(supervisor) <- Process.whereis(SymphonyElixir.Supervisor),
+    with supervisor when is_pid(supervisor) <- named_process(SymphonyElixir.Supervisor),
          {SymphonyElixir.Orchestrator, pid, _type, _modules} when is_pid(pid) <-
            find_default_orchestrator(supervisor) do
       :ok = Supervisor.terminate_child(supervisor, SymphonyElixir.Orchestrator)
@@ -336,6 +373,8 @@ defmodule SymphonyElixir.TestSupport do
     else
       _ -> :ok
     end
+  catch
+    :exit, _reason -> :ok
   end
 
   def stop_process(pid) when is_pid(pid) do
@@ -369,6 +408,8 @@ defmodule SymphonyElixir.TestSupport do
       {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
       _child -> false
     end)
+  catch
+    :exit, _reason -> nil
   end
 
   defp find_default_orchestrator(supervisor) do
@@ -376,6 +417,8 @@ defmodule SymphonyElixir.TestSupport do
       {SymphonyElixir.Orchestrator, _pid, _type, _modules} -> true
       _child -> false
     end)
+  catch
+    :exit, _reason -> nil
   end
 
   def stop_verification_port_pool do

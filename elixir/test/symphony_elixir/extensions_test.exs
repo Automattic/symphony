@@ -84,6 +84,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
 
     def handle_call(:request_refresh, _from, state) do
+      if owner = Keyword.get(state, :owner), do: send(owner, :request_refresh_called)
+
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
   end
@@ -567,10 +569,96 @@ defmodule SymphonyElixir.ExtensionsTest do
              "error" => %{"code" => "issue_not_found", "message" => "Issue not found"}
            }
 
-    conn = post(build_conn(), "/api/v1/refresh", %{})
+    conn =
+      build_conn()
+      |> Plug.Conn.put_req_header("origin", "http://127.0.0.1:4000")
+      |> post("/api/v1/refresh", %{})
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+  end
+
+  test "phoenix observability api rejects cross-origin refresh before orchestration" do
+    snapshot = static_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :CrossOriginRefreshOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        owner: self(),
+        snapshot: snapshot,
+        refresh: %{
+          queued: true,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: ["poll"]
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    missing_origin_conn = post(build_conn(), "/api/v1/refresh", %{})
+
+    assert json_response(missing_origin_conn, 403) == %{
+             "error" => %{"code" => "forbidden_origin", "message" => "Origin is not allowed"}
+           }
+
+    refute_received :request_refresh_called
+
+    conn =
+      build_conn()
+      |> Plug.Conn.put_req_header("origin", "https://evil.example")
+      |> Plug.Conn.put_req_header("content-type", "text/plain")
+      |> post("/api/v1/refresh", "")
+
+    assert json_response(conn, 403) == %{
+             "error" => %{"code" => "forbidden_origin", "message" => "Origin is not allowed"}
+           }
+
+    refute_received :request_refresh_called
+
+    state_payload = json_response(get(build_conn(), "/api/v1/state"), 200)
+    assert state_payload["counts"] == %{"running" => 1, "watching" => 1, "conflicts" => 0, "retrying" => 1}
+  end
+
+  test "phoenix observability api allows configured origins to refresh" do
+    allowed_origins = System.get_env("SYMPHONY_DASHBOARD_ALLOWED_ORIGINS")
+
+    on_exit(fn ->
+      case allowed_origins do
+        nil -> System.delete_env("SYMPHONY_DASHBOARD_ALLOWED_ORIGINS")
+        value -> System.put_env("SYMPHONY_DASHBOARD_ALLOWED_ORIGINS", value)
+      end
+    end)
+
+    System.put_env("SYMPHONY_DASHBOARD_ALLOWED_ORIGINS", "https://dashboard.internal")
+
+    orchestrator_name = Module.concat(__MODULE__, :AllowedOriginRefreshOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        owner: self(),
+        snapshot: static_snapshot(),
+        refresh: %{
+          queued: true,
+          coalesced: false,
+          requested_at: DateTime.utc_now(),
+          operations: ["poll"]
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    conn =
+      build_conn()
+      |> Plug.Conn.put_req_header("origin", "https://dashboard.internal")
+      |> post("/api/v1/refresh", %{})
+
+    assert %{"queued" => true, "coalesced" => false, "operations" => ["poll"]} =
+             json_response(conn, 202)
+
+    assert_received :request_refresh_called
   end
 
   test "phoenix observability api exposes filtered quality runs and session reports" do
@@ -675,7 +763,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                "error" => %{"code" => "snapshot_unavailable", "message" => "Snapshot unavailable"}
              }
 
-    assert json_response(post(build_conn(), "/api/v1/refresh", %{}), 503) ==
+    unavailable_refresh_conn =
+      build_conn()
+      |> Plug.Conn.put_req_header("origin", "http://127.0.0.1:4000")
+      |> post("/api/v1/refresh", %{})
+
+    assert json_response(unavailable_refresh_conn, 503) ==
              %{
                "error" => %{
                  "code" => "orchestrator_unavailable",
@@ -1693,7 +1786,14 @@ defmodule SymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 50
     ]
 
-    start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh})
+    orchestrator_opts = [
+      name: orchestrator_name,
+      owner: self(),
+      snapshot: snapshot,
+      refresh: refresh
+    ]
+
+    start_supervised!({StaticOrchestrator, orchestrator_opts})
 
     start_supervised!({HttpServer, server_opts})
 
@@ -1712,14 +1812,25 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert phoenix_js.status == 200
     assert phoenix_js.body =~ "var Phoenix = (() => {"
 
+    cross_origin_refresh =
+      Req.post!("http://127.0.0.1:#{port}/api/v1/refresh",
+        headers: [{"origin", "https://evil.example"}, {"content-type", "text/plain"}],
+        body: ""
+      )
+
+    assert cross_origin_refresh.status == 403
+    assert cross_origin_refresh.body["error"]["code"] == "forbidden_origin"
+    refute_received :request_refresh_called
+
     refresh_response =
       Req.post!("http://127.0.0.1:#{port}/api/v1/refresh",
-        headers: [{"content-type", "application/x-www-form-urlencoded"}],
+        headers: [{"origin", "http://127.0.0.1:#{port}"}, {"content-type", "application/x-www-form-urlencoded"}],
         body: ""
       )
 
     assert refresh_response.status == 202
     assert refresh_response.body["queued"] == true
+    assert_received :request_refresh_called
 
     method_not_allowed_response =
       Req.post!("http://127.0.0.1:#{port}/api/v1/state",

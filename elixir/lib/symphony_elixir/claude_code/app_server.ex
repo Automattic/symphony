@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AgentEnv, AgentSandboxConfig, Config, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, AgentSandboxConfig, Config, McpServer, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
 
@@ -16,7 +16,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
           workspace: Path.t(),
           metadata: map(),
           worker_host: String.t() | nil,
-          settings_path: Path.t()
+          settings_path: Path.t(),
+          mcp_session: McpServer.session() | nil,
+          mcp_remote_socket_path: Path.t() | nil
         }
 
   # --- AgentBehaviour callbacks ---
@@ -27,13 +29,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     settings = settings_from_opts(opts)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, settings),
-         {:ok, settings_path} <- write_claude_settings(expanded_workspace, worker_host, settings) do
-      {:ok, %{workspace: expanded_workspace, metadata: %{}, worker_host: worker_host, settings_path: settings_path}}
+         {:ok, mcp_session, remote_socket_path} <- start_mcp_session(expanded_workspace, worker_host, opts) do
+      create_session(expanded_workspace, worker_host, settings, mcp_session, remote_socket_path)
     end
   end
 
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_turn(%{workspace: workspace, worker_host: worker_host} = _session, prompt, issue, opts) do
+  def run_turn(%{workspace: workspace, worker_host: worker_host} = session, prompt, issue, opts) do
     on_message = Keyword.get(opts, :on_message, fn _msg -> :ok end)
     settings = settings_from_opts(opts)
     command = settings.agent.command
@@ -41,7 +43,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     command_timeout_ms = settings.agent.command_timeout_ms
 
     with {:ok, remote_control_name} <- remote_control_name(settings.agent, issue, opts),
-         {:ok, port} <- start_port(workspace, command, prompt, worker_host, remote_control_name) do
+         {:ok, port} <- start_port(workspace, command, prompt, worker_host, remote_control_name, session) do
       try do
         read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms)
       after
@@ -51,13 +53,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   @spec stop_session(session()) :: :ok
-  def stop_session(%{settings_path: settings_path, worker_host: nil}) when is_binary(settings_path) do
+  def stop_session(%{settings_path: settings_path, worker_host: nil} = session) when is_binary(settings_path) do
     remove_local_settings(settings_path)
+    McpServer.stop_session(Map.get(session, :mcp_session))
   end
 
-  def stop_session(%{settings_path: settings_path, worker_host: worker_host})
+  def stop_session(%{settings_path: settings_path, worker_host: worker_host} = session)
       when is_binary(settings_path) and is_binary(worker_host) do
-    remove_remote_settings(worker_host, settings_path)
+    remove_remote_settings(worker_host, settings_path, Map.get(session, :mcp_remote_socket_path))
+    McpServer.stop_session(Map.get(session, :mcp_session))
   end
 
   def stop_session(_session), do: :ok
@@ -95,6 +99,27 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       "open" ->
         base
     end
+  end
+
+  @doc false
+  @spec build_sandbox_settings(Agent.NetworkAccess.t(), McpServer.session(), Path.t()) :: map()
+  def build_sandbox_settings(network_access, mcp_session, socket_path) do
+    network_access
+    |> build_sandbox_settings()
+    |> Map.put("mcpServers", %{
+      "symphony" => %{
+        "command" => mcp_session.shim_path,
+        "args" => ["--socket", socket_path, "--session", mcp_session.token]
+      }
+    })
+    |> Map.put("permissions", %{
+      "deny" => [
+        "Bash(gh:*)",
+        "Bash(git push:*)",
+        "Bash(git remote add:*)",
+        "Bash(git remote set-url:*)"
+      ]
+    })
   end
 
   # --- Event parsing ---
@@ -195,6 +220,25 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
+  defp create_session(workspace, worker_host, settings, mcp_session, remote_socket_path) do
+    case write_claude_settings(workspace, worker_host, settings, mcp_session, remote_socket_path) do
+      {:ok, settings_path} ->
+        {:ok,
+         %{
+           workspace: workspace,
+           metadata: %{},
+           worker_host: worker_host,
+           settings_path: settings_path,
+           mcp_session: mcp_session,
+           mcp_remote_socket_path: remote_socket_path
+         }}
+
+      {:error, reason} ->
+        McpServer.stop_session(mcp_session)
+        {:error, reason}
+    end
+  end
+
   defp validate_workspace_cwd(workspace, nil, settings) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
     expanded_root = Path.expand(settings.workspace.root)
@@ -237,9 +281,43 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_claude_settings(workspace, worker_host, settings) do
+  defp start_mcp_session(workspace, worker_host, opts) do
+    context = %{
+      issue: Keyword.get(opts, :issue),
+      issue_id: Keyword.get(opts, :issue_id),
+      workspace: workspace,
+      command_security: command_security_context(workspace, worker_host),
+      comment_registry: Keyword.get(opts, :linear_comment_registry),
+      tool_opts: tool_opts(opts)
+    }
+
+    mcp_opts =
+      [
+        run_id: Keyword.get(opts, :run_id),
+        server: Keyword.get(opts, :mcp_server, McpServer),
+        shim_path: Keyword.get(opts, :mcp_shim_path)
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+    with {:ok, mcp_session} <- McpServer.start_session(context, mcp_opts) do
+      {:ok, mcp_session, socket_path_for_worker(mcp_session, worker_host)}
+    end
+  end
+
+  defp tool_opts(opts) do
+    opts
+    |> Keyword.take([:linear_client, :upload_client, :gh_runner, :git_runner])
+  end
+
+  defp socket_path_for_worker(%{socket_path: socket_path}, nil), do: socket_path
+
+  defp socket_path_for_worker(%{id: id}, worker_host) when is_binary(worker_host) do
+    Path.join("/tmp", "symphony-mcp-#{id}.sock")
+  end
+
+  defp write_claude_settings(workspace, worker_host, settings, mcp_session, socket_path) do
     network_access = settings.agent.network_access
-    sandbox_json = build_sandbox_settings(network_access)
+    sandbox_json = build_sandbox_settings(network_access, mcp_session, socket_path)
     claude_dir = Path.join(workspace, ".claude")
     settings_path = Path.join(claude_dir, "settings.json")
 
@@ -311,7 +389,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp nonempty_string(_), do: {:error, :missing_remote_control_name}
 
-  defp start_port(workspace, command, prompt, nil, remote_control_name) do
+  defp start_port(workspace, command, prompt, nil, remote_control_name, _session) do
     with {:ok, {executable, command_args}} <- local_command(workspace, command) do
       args =
         command_args ++
@@ -335,13 +413,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp start_port(workspace, command, prompt, worker_host, remote_control_name) do
+  defp start_port(workspace, command, prompt, worker_host, remote_control_name, session) do
     with {:ok, command_words} <- command_words(command) do
+      reverse_forwards = mcp_reverse_forwards(session)
+
       ssh_module().start_port(
         worker_host,
         remote_launch_command(workspace, command_words, prompt, remote_control_name),
         line: @port_line_bytes,
-        env: AgentEnv.build()
+        env: AgentEnv.build(),
+        reverse_forwards: reverse_forwards
       )
     end
   end
@@ -395,15 +476,23 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.join(" && ")
   end
 
-  defp remote_remove_settings_command(settings_path) do
+  defp remote_remove_settings_command(settings_path, socket_path) do
     claude_dir = Path.dirname(settings_path)
 
     [
       "rm -f #{shell_escape(settings_path)}",
+      remote_socket_cleanup_command(socket_path),
       "rmdir #{shell_escape(claude_dir)} 2>/dev/null || true"
     ]
+    |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
   end
+
+  defp remote_socket_cleanup_command(path) when is_binary(path) and path != "" do
+    "rm -f #{shell_escape(path)}"
+  end
+
+  defp remote_socket_cleanup_command(_path), do: nil
 
   defp remote_control_args(nil), do: []
   defp remote_control_args(name), do: ["--remote-control", name]
@@ -431,8 +520,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     :ok
   end
 
-  defp remove_remote_settings(worker_host, settings_path) do
-    case ssh_module().run(worker_host, remote_remove_settings_command(settings_path), stderr_to_stdout: true) do
+  defp remove_remote_settings(worker_host, settings_path, socket_path) do
+    command = remote_remove_settings_command(settings_path, socket_path)
+
+    case ssh_module().run(worker_host, command, stderr_to_stdout: true) do
       {:ok, {_output, 0}} ->
         :ok
 
@@ -448,6 +539,80 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp mcp_reverse_forwards(%{mcp_session: %{socket_path: local_socket}, mcp_remote_socket_path: remote_socket})
+       when is_binary(local_socket) and is_binary(remote_socket) do
+    [{remote_socket, local_socket}]
+  end
+
+  defp mcp_reverse_forwards(_session), do: []
+
+  defp command_security_context(workspace, worker_host) do
+    origin_url = discover_origin_url(workspace, worker_host)
+
+    %{
+      origin_url: origin_url,
+      origin_repo: github_repo_from_url(origin_url),
+      origin_gh_repo: github_gh_repo_from_url(origin_url),
+      workspace: workspace,
+      worker_host: worker_host
+    }
+  end
+
+  defp discover_origin_url(workspace, nil) when is_binary(workspace) do
+    with git when is_binary(git) <- System.find_executable("git"),
+         {output, 0} <-
+           System.cmd(git, ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true) do
+      output |> String.trim() |> blank_to_nil()
+    else
+      _result -> nil
+    end
+  end
+
+  defp discover_origin_url(_workspace, worker_host) when is_binary(worker_host), do: nil
+
+  defp github_repo_from_url(url) when is_binary(url) do
+    case github_repo_parts_from_url(url) do
+      {_host, owner, repo} -> "#{owner}/#{repo}"
+      nil -> nil
+    end
+  end
+
+  defp github_repo_from_url(_url), do: nil
+
+  defp github_gh_repo_from_url(url) when is_binary(url) do
+    case github_repo_parts_from_url(url) do
+      {"github.com", owner, repo} -> "#{owner}/#{repo}"
+      {host, owner, repo} when is_binary(host) -> "#{host}/#{owner}/#{repo}"
+      nil -> nil
+    end
+  end
+
+  defp github_gh_repo_from_url(_url), do: nil
+
+  defp github_repo_parts_from_url(url) when is_binary(url) do
+    Enum.find_value(
+      [
+        ~r{^https?://([^/]+)/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$},
+        ~r{^ssh://[^@]+@([^/]+)/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$},
+        ~r{^(?:[^@]+@)?([^/:]+):([^/\s]+)/([^/\s]+?)(?:\.git)?/?$},
+        ~r{^([^/\s:]*github[^/\s:]*)/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$}
+      ],
+      fn regex ->
+        case Regex.run(regex, url) do
+          [_full, host, owner, repo] -> {String.downcase(host), owner, repo}
+          _ -> nil
+        end
+      end
+    )
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      present -> present
+    end
   end
 
   defp ssh_module do

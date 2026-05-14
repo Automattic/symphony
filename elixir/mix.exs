@@ -32,6 +32,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Orchestrator.State,
           SymphonyElixir.CiPoller,
           SymphonyElixir.PrReviewPoller,
+          SymphonyElixir.McpServer,
           SymphonyElixir.Quality,
           SymphonyElixir.QualityGate.Anthropic,
           SymphonyElixir.QualityGate.OpenAI,

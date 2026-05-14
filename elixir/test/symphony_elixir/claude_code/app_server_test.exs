@@ -267,8 +267,26 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         {:ok, contents} = Jason.decode(File.read!(settings_path))
         assert get_in(contents, ["sandbox", "enabled"]) == true
+        assert get_in(contents, ["mcpServers", "symphony", "command"]) =~ "symphony-mcp-shim"
+
+        assert get_in(contents, ["mcpServers", "symphony", "args"]) == [
+                 "--socket",
+                 session.mcp_session.socket_path,
+                 "--session",
+                 session.mcp_session.token
+               ]
+
+        assert get_in(contents, ["permissions", "deny"]) == [
+                 "Bash(gh:*)",
+                 "Bash(git push:*)",
+                 "Bash(git remote add:*)",
+                 "Bash(git remote set-url:*)"
+               ]
+
+        assert File.exists?(session.mcp_session.socket_path)
         assert :ok = AppServer.stop_session(session)
         refute File.exists?(settings_path)
+        refute File.exists?(session.mcp_session.socket_path)
       after
         File.rm_rf(test_root)
       end
@@ -474,6 +492,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         traced_command = File.read!(trace_file)
         assert traced_command =~ "mkdir -p"
         assert traced_command =~ ".claude/settings.json"
+        assert traced_command =~ "mcpServers"
+        assert traced_command =~ "symphony-mcp-shim"
+        assert traced_command =~ "/tmp/symphony-mcp-"
       after
         File.rm_rf(test_root)
       end
@@ -625,11 +646,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  workspace: "/remote/workspace",
                  metadata: %{},
                  worker_host: "worker-01",
-                 settings_path: "/remote/workspace/.claude/settings.json"
+                 settings_path: "/remote/workspace/.claude/settings.json",
+                 mcp_remote_socket_path: "/tmp/symphony-mcp-remote.sock"
                })
 
       assert_receive {:stub_ssh_run, "worker-01", command, [stderr_to_stdout: true]}
       assert command =~ "rm -f '/remote/workspace/.claude/settings.json'"
+      assert command =~ "rm -f '/tmp/symphony-mcp-remote.sock'"
       assert command =~ "rmdir '/remote/workspace/.claude' 2>/dev/null || true"
     end
 
@@ -684,7 +707,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                    workspace: "/remote/workspace",
                    metadata: %{},
                    worker_host: "worker-01",
-                   settings_path: "/remote/workspace/.claude/settings.json"
+                   settings_path: "/remote/workspace/.claude/settings.json",
+                   mcp_remote_socket_path: "/tmp/symphony-mcp-remote.sock"
                  })
 
         traced_command = File.read!(trace_file)
@@ -1168,6 +1192,47 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "removes settings and MCP socket after a killed agent port stops" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-killed-port-cleanup-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-KILLED")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        kill -9 $$
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+        assert File.exists?(session.settings_path)
+        assert File.exists?(session.mcp_session.socket_path)
+
+        assert {:error, {:exit_status, status}} = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert status > 0
+
+        assert :ok = AppServer.stop_session(session)
+        refute File.exists?(session.settings_path)
+        refute File.exists?(session.mcp_session.socket_path)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "returns error and forwards turn_failed event on result/error stream line" do
       test_root =
         Path.join(
@@ -1310,6 +1375,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         File.write!(fake_ssh, """
         #!/bin/sh
+        printf '%s' "$*" > "#{Path.join(test_root, "ssh-argv.trace")}"
         last_arg=""
         for arg in "$@"; do
           last_arg="$arg"
@@ -1335,6 +1401,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert result.input_tokens == 5
         assert result.output_tokens == 3
         traced_command = File.read!(trace_file)
+        traced_argv = File.read!(Path.join(test_root, "ssh-argv.trace"))
         assert traced_command =~ "cd"
         assert traced_command =~ workspace
         assert traced_command =~ "fake-claude-remote"
@@ -1342,6 +1409,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ "--print"
         assert traced_command =~ "remote task"
         refute traced_command =~ "--remote-control"
+        assert traced_argv =~ "-R #{session.mcp_remote_socket_path}:#{session.mcp_session.socket_path}"
       after
         File.rm_rf(test_root)
       end

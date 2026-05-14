@@ -64,6 +64,7 @@ defmodule SymphonyElixir.Application do
         [
           {Phoenix.PubSub, name: SymphonyElixir.PubSub},
           {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+          SymphonyElixir.McpServer,
           {Registry, keys: :unique, name: SymphonyElixir.Repo.Registry},
           repo_supervisor_specs(system_config.repos),
           SymphonyElixir.Notifications.Notifier

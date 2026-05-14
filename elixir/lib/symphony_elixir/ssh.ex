@@ -19,7 +19,7 @@ defmodule SymphonyElixir.SSH do
           :binary,
           :exit_status,
           :stderr_to_stdout,
-          args: Enum.map(ssh_args(host, command), &String.to_charlist/1)
+          args: Enum.map(ssh_args(host, command, opts), &String.to_charlist/1)
         ]
         |> maybe_put_line_option(line_bytes)
         |> maybe_put_env_option(env)
@@ -40,11 +40,12 @@ defmodule SymphonyElixir.SSH do
     end
   end
 
-  defp ssh_args(host, command) do
+  defp ssh_args(host, command, opts \\ []) do
     %{destination: destination, port: port} = parse_target(host)
 
     []
     |> maybe_put_config()
+    |> maybe_put_reverse_forwards(Keyword.get(opts, :reverse_forwards, []))
     |> Kernel.++(["-T"])
     |> maybe_put_port(port)
     |> Kernel.++([destination, remote_shell_command(command)])
@@ -68,6 +69,18 @@ defmodule SymphonyElixir.SSH do
 
   defp maybe_put_port(args, nil), do: args
   defp maybe_put_port(args, port), do: args ++ ["-p", port]
+
+  defp maybe_put_reverse_forwards(args, forwards) when is_list(forwards) do
+    Enum.reduce(forwards, args, fn
+      {remote_socket, local_socket}, acc when is_binary(remote_socket) and is_binary(local_socket) ->
+        acc ++ ["-R", "#{remote_socket}:#{local_socket}"]
+
+      _invalid, acc ->
+        acc
+    end)
+  end
+
+  defp maybe_put_reverse_forwards(args, _forwards), do: args
 
   defp parse_target(target) when is_binary(target) do
     trimmed_target = String.trim(target)

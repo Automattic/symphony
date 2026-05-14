@@ -1,0 +1,82 @@
+#!/usr/bin/env elixir
+
+defmodule SymphonyMcpShim do
+  @moduledoc false
+
+  @chunk_size 65_536
+
+  def main(args) do
+    with {:ok, socket_path, token} <- parse_args(args),
+         {:ok, socket} <- :socket.open(:local, :stream),
+         :ok <- :socket.connect(socket, %{family: :local, path: socket_path}),
+         :ok <- :socket.send(socket, "symphony-session-token: #{token}\r\n\r\n") do
+      pump(socket)
+    else
+      {:error, reason} ->
+        IO.puts(:stderr, "symphony-mcp-shim failed: #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  defp parse_args(args), do: parse_args(args, nil, nil)
+
+  defp parse_args(["--socket", socket_path | rest], _socket_path, token), do: parse_args(rest, socket_path, token)
+  defp parse_args(["--session", token | rest], socket_path, _token), do: parse_args(rest, socket_path, token)
+  defp parse_args([], socket_path, token) when is_binary(socket_path) and is_binary(token), do: {:ok, socket_path, token}
+  defp parse_args(_args, _socket_path, _token), do: {:error, :invalid_arguments}
+
+  defp pump(socket) do
+    parent = self()
+    spawn_link(fn -> stdin_to_socket(socket, parent) end)
+    spawn_link(fn -> socket_to_stdout(socket, parent) end)
+    wait_for_completion(socket)
+  end
+
+  defp stdin_to_socket(socket, parent) do
+    IO.binstream(:stdio, @chunk_size)
+    |> Enum.each(fn chunk -> :ok = :socket.send(socket, chunk) end)
+
+    shutdown_write(socket)
+    send(parent, :stdin_done)
+  end
+
+  defp socket_to_stdout(socket, parent) do
+    socket
+    |> socket_stream()
+    |> Enum.each(fn chunk -> IO.binwrite(:stdio, chunk) end)
+
+    send(parent, :socket_done)
+  end
+
+  defp socket_stream(socket) do
+    Stream.resource(
+      fn -> socket end,
+      fn socket ->
+        case :socket.recv(socket) do
+          {:ok, data} -> {[data], socket}
+          {:error, _reason} -> {:halt, socket}
+        end
+      end,
+      fn _socket -> :ok end
+    )
+  end
+
+  defp wait_for_completion(socket) do
+    receive do
+      :socket_done ->
+        :socket.close(socket)
+        :ok
+
+      :stdin_done ->
+        wait_for_completion(socket)
+    end
+  end
+
+  defp shutdown_write(socket) do
+    :socket.shutdown(socket, :write)
+  catch
+    :error, _reason -> :ok
+  end
+end
+
+SymphonyMcpShim.main(System.argv())

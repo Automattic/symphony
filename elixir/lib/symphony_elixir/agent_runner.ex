@@ -185,7 +185,15 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, agent_module} <- agent_module(),
          {:ok, linear_comment_registry} <- CommentRegistry.start_link(seed_ids: seed_ids),
-         {:ok, session} <- agent_module.start_session(workspace, worker_host: worker_host, settings: settings) do
+         {:ok, session} <-
+           agent_module.start_session(workspace,
+             worker_host: worker_host,
+             settings: settings,
+             issue: issue,
+             run_id: Keyword.get(opts, :run_id),
+             repo_key: Keyword.get(opts, :repo_key),
+             linear_comment_registry: linear_comment_registry
+           ) do
       send_agent_session_info(codex_update_recipient, issue, agent_module, session)
 
       run_context = %{

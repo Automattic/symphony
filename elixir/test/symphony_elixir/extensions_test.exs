@@ -903,6 +903,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
+    refute html =~ "<th>Self-review</th>"
     assert Regex.scan(~r/<th>Links<\/th>/, html) |> length() == 2
     assert html =~ "<th>Control</th>"
     assert html =~ "Stop"

@@ -403,27 +403,52 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp command_security_context(workspace, worker_host) do
     origin_url = discover_origin_url(workspace, worker_host)
+    current_branch = discover_current_branch(workspace, worker_host)
 
     %{
       origin_url: origin_url,
       origin_repo: github_repo_from_url(origin_url),
       origin_gh_repo: github_gh_repo_from_url(origin_url),
+      current_branch: current_branch,
       workspace: workspace,
       worker_host: worker_host
     }
   end
 
   defp discover_origin_url(workspace, nil) when is_binary(workspace) do
+    run_local_git(workspace, ["remote", "get-url", "origin"])
+  end
+
+  defp discover_origin_url(workspace, worker_host) when is_binary(workspace) and is_binary(worker_host) do
+    run_remote_git(worker_host, workspace, ["remote", "get-url", "origin"])
+  end
+
+  defp discover_current_branch(_workspace, nil), do: nil
+
+  defp discover_current_branch(workspace, worker_host) when is_binary(workspace) and is_binary(worker_host) do
+    run_remote_git(worker_host, workspace, ["branch", "--show-current"])
+  end
+
+  defp run_local_git(workspace, args) when is_binary(workspace) and is_list(args) do
     with git when is_binary(git) <- System.find_executable("git"),
-         {output, 0} <-
-           System.cmd(git, ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true) do
+         {output, 0} <- System.cmd(git, ["-C", workspace] ++ args, stderr_to_stdout: true) do
       output |> String.trim() |> blank_to_nil()
     else
       _result -> nil
     end
   end
 
-  defp discover_origin_url(_workspace, worker_host) when is_binary(worker_host), do: nil
+  defp run_remote_git(worker_host, workspace, args)
+       when is_binary(worker_host) and is_binary(workspace) and is_list(args) do
+    command =
+      ["git", "-C", workspace | args]
+      |> Enum.map_join(" ", &shell_escape/1)
+
+    case SSH.run(worker_host, command, stderr_to_stdout: true) do
+      {:ok, {output, 0}} -> output |> String.trim() |> blank_to_nil()
+      _result -> nil
+    end
+  end
 
   defp send_initialize(port, settings) do
     payload = %{

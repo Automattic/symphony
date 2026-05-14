@@ -649,6 +649,76 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end
   end
 
+  test "github.get_pull_request uses captured remote metadata without local workspace access" do
+    remote_workspace = "/remote/workspaces/MT-3187"
+
+    gh_runner = fn
+      ["pr", "view", "auto/RSM-3187", "--repo", "acme/symphony", "--json", fields], opts ->
+        refute Keyword.has_key?(opts, :cd)
+        assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+        {Jason.encode!(%{
+           "number" => 3187,
+           "state" => "OPEN",
+           "title" => "Remote PR",
+           "body" => "Body",
+           "url" => "https://github.com/acme/symphony/pull/3187",
+           "headRefName" => "auto/RSM-3187",
+           "baseRefName" => "main"
+         }), 0}
+    end
+
+    git_runner = fn _args, _opts -> flunk("remote dynamic GitHub tools should not run local git") end
+
+    response =
+      DynamicTool.execute(
+        "github_get_pull_request",
+        %{},
+        workspace: remote_workspace,
+        command_security: %{
+          origin_repo: "acme/symphony",
+          origin_url: "git@github.com:acme/symphony.git",
+          current_branch: "auto/RSM-3187",
+          workspace: remote_workspace,
+          worker_host: "worker-01"
+        },
+        gh_runner: gh_runner,
+        git_runner: git_runner
+      )
+
+    assert response["success"] == true
+    assert %{"url" => "https://github.com/acme/symphony/pull/3187"} = Jason.decode!(response["output"])
+  end
+
+  test "github.push_branch returns a clear unsupported error for ssh workers" do
+    remote_workspace = "/remote/workspaces/MT-3187"
+
+    response =
+      DynamicTool.execute(
+        "github_push_branch",
+        %{},
+        workspace: remote_workspace,
+        command_security: %{
+          origin_repo: "acme/symphony",
+          origin_url: "git@github.com:acme/symphony.git",
+          current_branch: "auto/RSM-3187",
+          workspace: remote_workspace,
+          worker_host: "worker-01"
+        }
+      )
+
+    assert response["success"] == false
+
+    assert %{
+             "error" => %{
+               "code" => "unsupported_for_ssh_worker",
+               "message" => message
+             }
+           } = Jason.decode!(response["output"])
+
+    assert message =~ "github_push_branch is not supported for SSH worker sessions"
+  end
+
   test "github.update_pull_request_body resolves the current branch PR server-side" do
     workspace = tmp_workspace!("github-update-pr-body")
 

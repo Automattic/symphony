@@ -301,6 +301,107 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     end
   end
 
+  test "pull request tools use captured remote branch without a local workspace" do
+    remote_workspace = "/remote/workspaces/MT-3187"
+    pr_url = "https://github.com/acme/symphony/pull/3187"
+    test_pid = self()
+
+    context = %{
+      workspace: remote_workspace,
+      command_security: %{
+        origin_repo: "acme/symphony",
+        origin_url: "git@github.com:acme/symphony.git",
+        current_branch: "auto/RSM-3187",
+        workspace: remote_workspace,
+        worker_host: "worker-01"
+      }
+    }
+
+    git_runner = fn _args, _opts -> flunk("remote PR tools should not shell out to local git") end
+
+    gh_runner = fn
+      ["pr", "view", "auto/RSM-3187", "--repo", "acme/symphony", "--json", fields], opts ->
+        refute Keyword.has_key?(opts, :cd)
+        assert fields == "number,state,title,body,url,headRefName,baseRefName"
+        send(test_pid, :viewed_remote_pr)
+
+        {Jason.encode!(%{
+           "number" => 3187,
+           "state" => "OPEN",
+           "title" => "Remote PR",
+           "body" => "Body",
+           "url" => pr_url,
+           "headRefName" => "auto/RSM-3187",
+           "baseRefName" => "main"
+         }), 0}
+
+      ["pr", "create", "--repo", "acme/symphony", "--head", "auto/RSM-3187", "--title", "Title", "--body", "Body"], opts ->
+        refute Keyword.has_key?(opts, :cd)
+        send(test_pid, :created_remote_pr)
+        {pr_url <> "\n", 0}
+
+      ["pr", "edit", ^pr_url, "--body", "Updated body"], opts ->
+        refute Keyword.has_key?(opts, :cd)
+        send(test_pid, :updated_remote_pr)
+        {"", 0}
+
+      ["pr", "comment", ^pr_url, "--body", "Validation passed"], opts ->
+        refute Keyword.has_key?(opts, :cd)
+        send(test_pid, :commented_remote_pr)
+        {"", 0}
+
+      ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], opts ->
+        refute Keyword.has_key?(opts, :cd)
+        send(test_pid, :checked_remote_pr)
+
+        {Jason.encode!(%{
+           "number" => 3187,
+           "state" => "OPEN",
+           "title" => "Remote PR",
+           "url" => pr_url,
+           "headRefOid" => "abc123",
+           "statusCheckRollup" => []
+         }), 0}
+    end
+
+    assert {:ok, %{"url" => ^pr_url}} = GitHub.get_pull_request(context, git_runner: git_runner, gh_runner: gh_runner)
+
+    assert {:ok, %{"url" => ^pr_url, "head" => "auto/RSM-3187"}} =
+             GitHub.create_pull_request(context, "Title", "Body", false, git_runner: git_runner, gh_runner: gh_runner)
+
+    assert {:ok, %{"url" => ^pr_url}} =
+             GitHub.update_pull_request_body(context, "Updated body", git_runner: git_runner, gh_runner: gh_runner)
+
+    assert {:ok, %{"url" => ^pr_url}} =
+             GitHub.add_pr_comment(context, "Validation passed", git_runner: git_runner, gh_runner: gh_runner)
+
+    assert {:ok, %{pr_url: ^pr_url, commit_sha: "abc123", checks: []}} =
+             GitHub.get_pr_checks(context, git_runner: git_runner, gh_runner: gh_runner)
+
+    assert_received :viewed_remote_pr
+    assert_received :created_remote_pr
+    assert_received :updated_remote_pr
+    assert_received :commented_remote_pr
+    assert_received :checked_remote_pr
+  end
+
+  test "push_branch is explicitly unsupported for ssh workers" do
+    remote_workspace = "/remote/workspaces/MT-3187"
+
+    context = %{
+      workspace: remote_workspace,
+      command_security: %{
+        origin_repo: "acme/symphony",
+        origin_url: "git@github.com:acme/symphony.git",
+        current_branch: "auto/RSM-3187",
+        workspace: remote_workspace,
+        worker_host: "worker-01"
+      }
+    }
+
+    assert {:error, {:unsupported_for_ssh_worker, :github_push_branch}} = GitHub.push_branch(context)
+  end
+
   test "pull request write and check tools require a resolved PR URL" do
     workspace = tmp_workspace!("github-agent-missing-pr-url")
 

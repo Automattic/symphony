@@ -565,6 +565,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload({:unsupported_for_ssh_worker, :github_push_branch}) do
+    %{
+      "error" => %{
+        "code" => "unsupported_for_ssh_worker",
+        "message" => "github_push_branch is not supported for SSH worker sessions. Symphony brokers GitHub PR API operations only; git push must use a separate secure push path."
+      }
+    }
+  end
+
   defp tool_error_payload(reason) do
     %{
       "error" => %{

@@ -2,7 +2,36 @@ defmodule SymphonyElixir.McpServerTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
+  alias SymphonyElixir.DependencyGate
   alias SymphonyElixir.McpServer
+
+  defmodule AllowAudit do
+    @moduledoc false
+
+    def audit(workspace, opts) do
+      opts[:command_runner].({:audit, workspace, opts})
+      {:ok, []}
+    end
+  end
+
+  defmodule HoldAudit do
+    @moduledoc false
+
+    def audit(workspace, opts) do
+      opts[:command_runner].({:audit, workspace, opts})
+
+      {:hold, [%{path: "mix.exs", package: "helper", from: nil, to: "git", reason: "untrusted_git_source"}]}
+    end
+  end
+
+  defmodule ErrorAudit do
+    @moduledoc false
+
+    def audit(workspace, opts) do
+      opts[:command_runner].({:audit, workspace, opts})
+      {:error, {:git_failed, ["diff"], "boom"}}
+    end
+  end
 
   test "lists scoped Linear and GitHub tools over a token-authenticated Unix socket" do
     server = unique_server()
@@ -104,9 +133,19 @@ defmodule SymphonyElixir.McpServerTest do
       {"https://github.com/acme/symphony/pull/123\n", 0}
     end
 
+    audit_runner = fn {:audit, audit_workspace, audit_opts} ->
+      send(test_pid, {:audit_called, audit_workspace, audit_opts})
+    end
+
     context = %{
       workspace: workspace,
       command_security: %{origin_repo: "acme/symphony", workspace: workspace},
+      dependency_gate:
+        DependencyGate.build(workspace, nil, nil,
+          dependency_audit_module: AllowAudit,
+          dependency_audit_command_runner: audit_runner,
+          repo_key: "default"
+        ),
       tool_opts: [git_runner: git_runner, gh_runner: gh_runner]
     }
 
@@ -123,6 +162,8 @@ defmodule SymphonyElixir.McpServerTest do
       refute response["result"]["isError"]
       [content] = response["result"]["content"]
       assert content["text"] =~ "https://github.com/acme/symphony/pull/123"
+      assert_receive {:audit_called, ^workspace, audit_opts}
+      assert audit_opts[:repo_key] == "default"
       assert_receive {:git_called, git_opts}
       assert git_opts[:cd] == workspace
 
@@ -141,6 +182,187 @@ defmodule SymphonyElixir.McpServerTest do
                "--body",
                "body"
              ]
+    after
+      close_socket(socket)
+      File.rm_rf(workspace)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "blocks github_create_pull_request over MCP when dependency audit holds" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    workspace = Path.join(System.tmp_dir!(), "symphony-mcp-github-hold-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+    end)
+
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
+    test_pid = self()
+
+    audit_runner = fn {:audit, audit_workspace, audit_opts} ->
+      send(test_pid, {:audit_called, audit_workspace, audit_opts})
+    end
+
+    git_runner = fn args, opts ->
+      send(test_pid, {:git_called, args, opts})
+      {"feature/rsm-3220", 0}
+    end
+
+    gh_runner = fn args, opts ->
+      send(test_pid, {:gh_called, args, opts})
+      {"https://github.com/acme/symphony/pull/blocked\n", 0}
+    end
+
+    issue = %Issue{
+      id: "issue-mcp-hold",
+      identifier: "RSM-MCP-HOLD",
+      title: "MCP hold",
+      description: "Block risky dependency PR from MCP",
+      state: "In Progress"
+    }
+
+    context = %{
+      issue: issue,
+      workspace: workspace,
+      command_security: %{origin_repo: "acme/symphony", workspace: workspace},
+      dependency_gate:
+        DependencyGate.build(workspace, issue, nil,
+          dependency_audit_module: HoldAudit,
+          dependency_audit_command_runner: audit_runner,
+          repo_key: "default"
+        ),
+      tool_opts: [git_runner: git_runner, gh_runner: gh_runner]
+    }
+
+    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
+    socket = connect!(session.socket_path, session.token)
+
+    try do
+      response =
+        request!(socket, 1, "tools/call", %{
+          "name" => "github_create_pull_request",
+          "arguments" => %{"title" => "RSM-3220", "body" => "body"}
+        })
+
+      assert response["result"]["isError"]
+      [content] = response["result"]["content"]
+      decoded = Jason.decode!(content["text"])
+      assert decoded["error"]["code"] == "dependency_source_requires_approval"
+      assert decoded["error"]["message"] =~ "dependency changes require approval"
+      assert [%{"package" => "helper", "reason" => "untrusted_git_source"}] = decoded["error"]["dependency_changes"]
+
+      assert_receive {:audit_called, ^workspace, audit_opts}
+      assert audit_opts[:repo_key] == "default"
+      refute_receive {:git_called, _args, _opts}, 100
+      refute_receive {:gh_called, _args, _opts}, 100
+
+      assert_receive {:memory_tracker_state_update, "issue-mcp-hold", "In Review"}, 500
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "dependency_pending_approval",
+                        metadata: %{dependency_changes: [%{package: "helper", reason: "untrusted_git_source"}]}
+                      }},
+                     500
+    after
+      close_socket(socket)
+      File.rm_rf(workspace)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "blocks github_create_pull_request over MCP when dependency audit errors" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    workspace = Path.join(System.tmp_dir!(), "symphony-mcp-github-audit-error-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+    end)
+
+    assert :ok = SymphonyElixir.Notifications.subscribe()
+
+    test_pid = self()
+
+    audit_runner = fn {:audit, audit_workspace, audit_opts} ->
+      send(test_pid, {:audit_called, audit_workspace, audit_opts})
+    end
+
+    git_runner = fn args, opts ->
+      send(test_pid, {:git_called, args, opts})
+      {"feature/rsm-3220", 0}
+    end
+
+    gh_runner = fn args, opts ->
+      send(test_pid, {:gh_called, args, opts})
+      {"https://github.com/acme/symphony/pull/blocked\n", 0}
+    end
+
+    issue = %Issue{
+      id: "issue-mcp-audit-error",
+      identifier: "RSM-MCP-AUDIT-ERROR",
+      title: "MCP audit error",
+      description: "Block PR when MCP dependency audit fails",
+      state: "In Progress"
+    }
+
+    context = %{
+      issue: issue,
+      workspace: workspace,
+      command_security: %{origin_repo: "acme/symphony", workspace: workspace},
+      dependency_gate:
+        DependencyGate.build(workspace, issue, nil,
+          dependency_audit_module: ErrorAudit,
+          dependency_audit_command_runner: audit_runner,
+          repo_key: "default"
+        ),
+      tool_opts: [git_runner: git_runner, gh_runner: gh_runner]
+    }
+
+    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
+    socket = connect!(session.socket_path, session.token)
+
+    try do
+      response =
+        request!(socket, 1, "tools/call", %{
+          "name" => "github_create_pull_request",
+          "arguments" => %{"title" => "RSM-3220", "body" => "body"}
+        })
+
+      assert response["result"]["isError"]
+      [content] = response["result"]["content"]
+      decoded = Jason.decode!(content["text"])
+      assert decoded["error"]["code"] == "dependency_audit_failed"
+      assert decoded["error"]["message"] =~ "dependency audit failed"
+      assert decoded["error"]["reason"] =~ "git_failed"
+
+      assert_receive {:audit_called, ^workspace, audit_opts}
+      assert audit_opts[:repo_key] == "default"
+      refute_receive {:git_called, _args, _opts}, 100
+      refute_receive {:gh_called, _args, _opts}, 100
+
+      assert_receive {:memory_tracker_state_update, "issue-mcp-audit-error", "In Review"}, 500
+
+      assert_receive {:notification_event,
+                      %SymphonyElixir.Notifications.Event{
+                        event: "dependency_pending_approval",
+                        reason: "dependency_audit_failed",
+                        metadata: %{audit_error: audit_error}
+                      }},
+                     500
+
+      assert audit_error =~ "git_failed"
     after
       close_socket(socket)
       File.rm_rf(workspace)

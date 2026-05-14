@@ -193,7 +193,10 @@ defmodule SymphonyElixir.AgentRunner do
              issue: issue,
              run_id: Keyword.get(opts, :run_id),
              repo_key: Keyword.get(opts, :repo_key),
-             linear_comment_registry: linear_comment_registry
+             linear_comment_registry: linear_comment_registry,
+             dependency_audit_module: dependency_audit_module(opts),
+             dependency_audit_base_ref: Keyword.get(opts, :dependency_audit_base_ref),
+             dependency_audit_command_runner: Keyword.get(opts, :dependency_audit_command_runner)
            ) do
       send_agent_session_info(codex_update_recipient, issue, agent_module, session)
 

@@ -113,14 +113,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     },
     %{
       "name" => "linear_attach_file",
-      "description" => "Upload and attach a workspace-local file to the current Linear issue.",
+      "description" => "Upload and attach a workspace-local file to the current Linear issue. Uploads are private by default; make_public true creates a world-readable Linear CDN URL.",
       "inputSchema" => %{
         "type" => "object",
         "additionalProperties" => false,
         "required" => ["local_path"],
         "properties" => %{
           "local_path" => %{"type" => "string"},
-          "title" => %{"type" => ["string", "null"], "maxLength" => 120}
+          "title" => %{"type" => ["string", "null"], "maxLength" => 120},
+          "make_public" => %{
+            "type" => "boolean",
+            "default" => false,
+            "description" => "Set true only when the artifact is intentionally shareable; public uploads create world-readable Linear CDN URLs."
+          }
         }
       }
     },
@@ -198,7 +203,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "linear_update_comment" => ["comment_id", "body"],
     "linear_delete_comment" => ["comment_id"],
     "linear_attach_url" => ["url", "title"],
-    "linear_attach_file" => ["local_path", "title"],
+    "linear_attach_file" => ["local_path", "title", "make_public"],
     "github_get_pull_request" => [],
     "github_create_pull_request" => ["title", "body", "draft"],
     "github_update_pull_request_body" => ["body"],
@@ -302,6 +307,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp execute_linear_tool("linear_attach_file", context, args, opts) do
+    opts = Keyword.put(opts, :make_public, Map.get(args, "make_public", false) == true)
     Linear.attach_file(context, Map.get(args, "local_path"), Map.get(args, "title"), opts)
   end
 
@@ -497,6 +503,28 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "message" => "Linear `#{field}` mutation reported success=false.",
         "field" => field,
         "body" => body
+      }
+    }
+  end
+
+  defp tool_error_payload({:public_upload_denied_sensitive_filename, basename}) do
+    %{
+      "error" => %{
+        "code" => "public_upload_denied_sensitive_filename",
+        "message" => "Refused public Linear upload for sensitive filename #{inspect(basename)}. Attach privately or choose a non-sensitive artifact.",
+        "filename" => basename
+      }
+    }
+  end
+
+  defp tool_error_payload({:file_upload_too_large, details}) do
+    %{
+      "error" => %{
+        "code" => "file_upload_too_large",
+        "message" => "Linear file upload is too large for the selected visibility. Actual bytes: #{details.actual_bytes}; limit: #{details.max_bytes}.",
+        "actual_bytes" => details.actual_bytes,
+        "max_bytes" => details.max_bytes,
+        "make_public" => details.make_public
       }
     }
   end

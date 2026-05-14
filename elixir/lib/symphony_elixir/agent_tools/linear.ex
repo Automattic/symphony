@@ -11,11 +11,14 @@ defmodule SymphonyElixir.AgentTools.Linear do
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.Linear.{Client, Issue}
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.SensitivePath
 
   @comment_limit_default 50
   @comment_limit_max 100
   @title_max_length 120
   @related_issue_first 50
+  @public_file_upload_max_bytes 5 * 1024 * 1024
+  @private_file_upload_max_bytes 50 * 1024 * 1024
 
   @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
@@ -490,11 +493,14 @@ defmodule SymphonyElixir.AgentTools.Linear do
   end
 
   defp request_file_upload(path, opts) do
+    make_public = Keyword.get(opts, :make_public, false) == true
+
     with {:ok, %File.Stat{size: size}} <- file_stat(path),
+         :ok <- validate_file_upload_policy(path, size, make_public, opts),
          {:ok, body} <-
            graphql(
              @file_upload_mutation,
-             %{filename: Path.basename(path), contentType: content_type(path), size: size, makePublic: true},
+             %{filename: Path.basename(path), contentType: content_type(path), size: size, makePublic: make_public},
              opts
            ),
          {:ok, upload_file} <- fetch_path(body, ["data", "fileUpload", "uploadFile"], :upload_not_available) do
@@ -502,6 +508,32 @@ defmodule SymphonyElixir.AgentTools.Linear do
         false -> {:error, {:linear_mutation_failed, "fileUpload", body}}
         _ -> {:ok, upload_file}
       end
+    end
+  end
+
+  defp validate_file_upload_policy(path, size, true, opts) do
+    basename = Path.basename(path)
+    max_bytes = Keyword.get(opts, :max_public_upload_bytes, @public_file_upload_max_bytes)
+
+    cond do
+      SensitivePath.sensitive_basename?(basename) ->
+        {:error, {:public_upload_denied_sensitive_filename, basename}}
+
+      size > max_bytes ->
+        {:error, {:file_upload_too_large, %{actual_bytes: size, max_bytes: max_bytes, make_public: true}}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_file_upload_policy(_path, size, false, opts) do
+    max_bytes = Keyword.get(opts, :max_private_upload_bytes, @private_file_upload_max_bytes)
+
+    if size > max_bytes do
+      {:error, {:file_upload_too_large, %{actual_bytes: size, max_bytes: max_bytes, make_public: false}}}
+    else
+      :ok
     end
   end
 

@@ -23,6 +23,16 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Enum.all?(DynamicTool.tool_specs(), fn spec ->
              get_in(spec, ["inputSchema", "additionalProperties"]) == false
            end)
+
+    assert %{
+             "inputSchema" => %{
+               "properties" => %{
+                 "make_public" => %{"type" => "boolean", "default" => false, "description" => make_public_description}
+               }
+             }
+           } = Enum.find(DynamicTool.tool_specs(), &(&1["name"] == "linear_attach_file"))
+
+    assert make_public_description =~ "world-readable"
   end
 
   test "unsupported raw linear_graphql returns tool_not_found" do
@@ -301,6 +311,135 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                Jason.decode!(response["output"])
     after
       File.rm_rf(test_root)
+    end
+  end
+
+  test "attach_file uploads privately by default" do
+    workspace = tmp_workspace!("linear-attach-file-private")
+    path = Path.join(workspace, "screenshot.png")
+    File.write!(path, "png")
+    test_pid = self()
+
+    try do
+      response =
+        DynamicTool.execute(
+          "linear_attach_file",
+          %{"local_path" => path, "title" => "Screenshot"},
+          successful_attach_file_opts(workspace, test_pid)
+        )
+
+      assert response["success"] == true
+      assert_received {:file_upload_requested, %{filename: "screenshot.png", size: 3, makePublic: false}}
+      assert_received {:file_uploaded, "https://linear-upload.example", [headers: [{"x-upload", "1"}], body: "png"]}
+      assert_received {:attachment_created, %{issueId: "issue-current", url: "https://linear-asset.example/screenshot.png", title: "Screenshot"}}
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "attach_file supports explicit public upload opt-in" do
+    workspace = tmp_workspace!("linear-attach-file-public")
+    path = Path.join(workspace, "screenshot.png")
+    File.write!(path, "png")
+    test_pid = self()
+
+    try do
+      response =
+        DynamicTool.execute(
+          "linear_attach_file",
+          %{"local_path" => path, "title" => "Screenshot", "make_public" => true},
+          successful_attach_file_opts(workspace, test_pid)
+        )
+
+      assert response["success"] == true
+      assert_received {:file_upload_requested, %{filename: "screenshot.png", size: 3, makePublic: true}}
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "attach_file private uploads are not constrained by the public size cap" do
+    workspace = tmp_workspace!("linear-attach-file-private-size")
+    path = Path.join(workspace, "artifact.txt")
+    File.write!(path, "123456")
+    test_pid = self()
+
+    try do
+      response =
+        DynamicTool.execute(
+          "linear_attach_file",
+          %{"local_path" => path},
+          successful_attach_file_opts(workspace, test_pid)
+          |> Keyword.put(:max_public_upload_bytes, 5)
+        )
+
+      assert response["success"] == true
+      assert_received {:file_upload_requested, %{filename: "artifact.txt", size: 6, makePublic: false}}
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "attach_file rejects public uploads for sensitive basenames before requesting an upload" do
+    workspace = tmp_workspace!("linear-attach-file-sensitive")
+    path = Path.join(workspace, ".env")
+    File.write!(path, "TOKEN=secret")
+
+    try do
+      response =
+        DynamicTool.execute(
+          "linear_attach_file",
+          %{"local_path" => path, "make_public" => true},
+          issue: %Issue{id: "issue-current"},
+          workspace: workspace,
+          linear_client: fn _query, _variables, _opts ->
+            flunk("linear client should not be called for denied public sensitive upload")
+          end
+        )
+
+      assert response["success"] == false
+
+      assert %{
+               "error" => %{
+                 "code" => "public_upload_denied_sensitive_filename",
+                 "filename" => ".env"
+               }
+             } = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "attach_file enforces the public upload size cap before requesting an upload" do
+    workspace = tmp_workspace!("linear-attach-file-size")
+    path = Path.join(workspace, "large.txt")
+    File.write!(path, "123456")
+
+    try do
+      response =
+        DynamicTool.execute(
+          "linear_attach_file",
+          %{"local_path" => path, "make_public" => true},
+          issue: %Issue{id: "issue-current"},
+          workspace: workspace,
+          max_public_upload_bytes: 5,
+          linear_client: fn _query, _variables, _opts ->
+            flunk("linear client should not be called for oversized public upload")
+          end
+        )
+
+      assert response["success"] == false
+
+      assert %{
+               "error" => %{
+                 "code" => "file_upload_too_large",
+                 "actual_bytes" => 6,
+                 "max_bytes" => 5,
+                 "make_public" => true
+               }
+             } = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
     end
   end
 
@@ -665,6 +804,50 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     workspace = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(workspace)
     workspace
+  end
+
+  defp successful_attach_file_opts(workspace, test_pid) do
+    [
+      issue: %Issue{id: "issue-current"},
+      workspace: workspace,
+      linear_client: fn query, variables, _opts ->
+        cond do
+          query =~ "SymphonyAgentFileUpload" ->
+            send(test_pid, {:file_upload_requested, variables})
+
+            {:ok,
+             %{
+               "data" => %{
+                 "fileUpload" => %{
+                   "success" => true,
+                   "uploadFile" => %{
+                     "uploadUrl" => "https://linear-upload.example",
+                     "assetUrl" => "https://linear-asset.example/#{variables.filename}",
+                     "headers" => [%{"key" => "x-upload", "value" => "1"}]
+                   }
+                 }
+               }
+             }}
+
+          query =~ "SymphonyAgentAttachFile" ->
+            send(test_pid, {:attachment_created, variables})
+
+            {:ok,
+             %{
+               "data" => %{
+                 "attachmentCreate" => %{
+                   "success" => true,
+                   "attachment" => %{"id" => "attachment-id"}
+                 }
+               }
+             }}
+        end
+      end,
+      upload_client: fn upload_url, opts ->
+        send(test_pid, {:file_uploaded, upload_url, opts})
+        {:ok, %{status: 200, body: ""}}
+      end
+    ]
   end
 
   defp github_tool_opts(workspace, opts) do

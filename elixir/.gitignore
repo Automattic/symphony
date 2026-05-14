@@ -23,6 +23,7 @@
 
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
+MnesiaCore.*
 
 # Elixir language server and tooling.
 /.elixir_ls/

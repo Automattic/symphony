@@ -38,6 +38,7 @@ defmodule SymphonyElixir.RunStore do
   @unpaused %{paused: false, reason: nil, paused_at: nil}
   @quality_gate_cache_key :quality_gate_cache
   @quality_gate_comment_keys_key :quality_gate_comment_keys
+  @mnesia_core_dir "core_dumps"
 
   defmodule State do
     @moduledoc false
@@ -621,39 +622,50 @@ defmodule SymphonyElixir.RunStore do
 
   defp setup_mnesia(dir) when is_binary(dir) do
     expanded_dir = Path.expand(dir)
+    core_dir = mnesia_core_dir(expanded_dir)
 
-    case File.mkdir_p(expanded_dir) do
-      :ok -> start_and_ensure_mnesia(expanded_dir)
+    case prepare_mnesia_dirs(expanded_dir, core_dir) do
+      :ok -> start_and_ensure_mnesia(expanded_dir, core_dir)
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp setup_mnesia(_dir), do: {:error, :invalid_run_store_dir}
 
-  defp start_and_ensure_mnesia(dir) do
-    case start_mnesia(dir) do
+  defp prepare_mnesia_dirs(dir, core_dir) do
+    with :ok <- File.mkdir_p(dir),
+         :ok <- File.mkdir_p(core_dir) do
+      :ok
+    end
+  end
+
+  defp mnesia_core_dir(dir), do: Path.join(dir, @mnesia_core_dir)
+
+  defp start_and_ensure_mnesia(dir, core_dir) do
+    case start_mnesia(dir, core_dir) do
       :ok -> ensure_tables()
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp start_mnesia(dir) do
+  defp start_mnesia(dir, core_dir) do
     case load_mnesia() do
-      :ok -> start_or_validate_mnesia(dir)
+      :ok -> start_or_validate_mnesia(dir, core_dir)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp start_or_validate_mnesia(dir) do
+  defp start_or_validate_mnesia(dir, core_dir) do
     if mnesia_running?() do
       ensure_running_mnesia_dir(dir)
     else
-      start_stopped_mnesia(dir)
+      start_stopped_mnesia(dir, core_dir)
     end
   end
 
-  defp start_stopped_mnesia(dir) do
+  defp start_stopped_mnesia(dir, core_dir) do
     Application.put_env(:mnesia, :dir, String.to_charlist(dir))
+    Application.put_env(:mnesia, :core_dir, String.to_charlist(core_dir))
 
     case create_schema() do
       :ok -> normalize_mnesia_start(:mnesia.start())

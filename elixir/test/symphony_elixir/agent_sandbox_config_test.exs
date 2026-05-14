@@ -150,6 +150,25 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "/repo/.git/hooks" in settings["filesystem"]["denyWrite"]
   end
 
+  test "srt settings normalize malformed domain and sandbox path inputs" do
+    assert {:ok, settings} =
+             AgentSandboxConfig.srt_settings(
+               "allowlist",
+               :bad_allowed_domains,
+               :bad_denied_domains,
+               :bad_allow_read_paths,
+               allow_write_paths: :bad_allow_write_paths,
+               deny_write_paths: :bad_deny_write_paths
+             )
+
+    assert settings["network"]["allowedDomains"] == []
+    assert settings["network"]["deniedDomains"] == []
+    assert settings["filesystem"]["allowRead"] == []
+    assert "." in settings["filesystem"]["allowWrite"]
+    assert "~/.codex" in settings["filesystem"]["allowWrite"]
+    assert settings["filesystem"]["denyWrite"] == AgentSandboxConfig.deny_write_paths() ++ ["~/.codex/auth.json", "~/.codex/config.toml", "~/.codex/AGENTS.md"]
+  end
+
   test "srt settings map open and block network modes" do
     assert {:error, :srt_open_network_unsupported} = AgentSandboxConfig.srt_settings("open", ["github.com"], [])
     assert {:ok, %{"network" => %{"allowedDomains" => []}}} = AgentSandboxConfig.srt_settings("block", ["github.com"], [])

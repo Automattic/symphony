@@ -49,6 +49,17 @@ defmodule SymphonyElixir.AgentTools.SecretScanner do
 
   def reject_if_secret_pattern(_content, _context, _tool, _field, _opts), do: :ok
 
+  @spec reject_fields_if_secret_pattern([{String.t() | atom(), term()}], map(), String.t(), keyword()) ::
+          :ok | {:error, :secret_pattern_detected}
+  def reject_fields_if_secret_pattern(fields, context, tool, opts \\ []) when is_list(fields) do
+    Enum.reduce_while(fields, :ok, fn {field, content}, :ok ->
+      case reject_if_secret_pattern(content, context, tool, to_string(field), opts) do
+        :ok -> {:cont, :ok}
+        {:error, :secret_pattern_detected} = error -> {:halt, error}
+      end
+    end)
+  end
+
   @spec detect(binary()) :: atom() | nil
   def detect(content) when is_binary(content) do
     if String.valid?(content), do: detect_valid_string(content), else: detect_binary(content)

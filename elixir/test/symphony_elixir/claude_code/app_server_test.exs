@@ -43,7 +43,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                "./symphony.yml",
                "./symphony.local.yml",
                "./.claude/settings.json",
-               "./.git/hooks",
+               "./.git",
                "./mise.toml",
                "./.tool-versions"
              ]

@@ -1163,7 +1163,18 @@ defmodule SymphonyElixir.AppServerTest do
       assert git_dir in settings["filesystem"]["allowWrite"]
       assert git_common_dir in settings["filesystem"]["allowWrite"]
       assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
-      assert Path.join(git_common_dir, "hooks") in settings["filesystem"]["denyWrite"]
+
+      for root <- [git_dir, git_common_dir] do
+        assert Path.join(root, "config") in settings["filesystem"]["denyWrite"]
+        assert Path.join(root, "config.worktree") in settings["filesystem"]["denyWrite"]
+        assert Path.join(root, "hooks") in settings["filesystem"]["denyWrite"]
+        assert Path.join(root, "info") in settings["filesystem"]["denyWrite"]
+        assert Path.join(root, "objects") in settings["filesystem"]["denyWrite"]
+        assert Path.join(root, "packed-refs") in settings["filesystem"]["denyWrite"]
+        assert Path.join([root, "worktrees", "*", "config"]) in settings["filesystem"]["denyWrite"]
+        assert Path.join([root, "worktrees", "*", "config.worktree"]) in settings["filesystem"]["denyWrite"]
+      end
+
       assert "~/.codex/auth.json" in settings["filesystem"]["denyWrite"]
       assert "~/.codex/config.toml" in settings["filesystem"]["denyWrite"]
       assert "~/.codex/AGENTS.md" in settings["filesystem"]["denyWrite"]

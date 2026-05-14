@@ -36,7 +36,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "./symphony.yml",
              "./symphony.local.yml",
              "./.claude/settings.json",
-             "./.git/hooks",
+             "./.git",
              "./mise.toml",
              "./.tool-versions"
            ]
@@ -73,7 +73,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("."="write")
     assert filesystem =~ ~s("WORKFLOW.md"="read")
     assert filesystem =~ ~s(".claude/settings.json"="read")
-    assert filesystem =~ ~s(".git/hooks"="read")
+    assert filesystem =~ ~s(".git"="read")
     assert filesystem =~ ~s("~/.ssh"="none")
     assert filesystem =~ ~s("~/.netrc"="none")
     assert filesystem =~ ~s("~/.npmrc"="none")
@@ -124,6 +124,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     refute "~/.npmrc" in settings["filesystem"]["denyRead"]
     assert "~/.ssh" in settings["filesystem"]["denyRead"]
     assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
+    assert "./.git" in settings["filesystem"]["denyWrite"]
     assert "~/.codex/auth.json" in settings["filesystem"]["denyWrite"]
     assert "~/.codex/config.toml" in settings["filesystem"]["denyWrite"]
     assert "~/.codex/AGENTS.md" in settings["filesystem"]["denyWrite"]
@@ -148,6 +149,26 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "/repo/.git/worktrees/MT-1" in settings["filesystem"]["allowWrite"]
     assert "./relative/git" in settings["filesystem"]["allowWrite"]
     assert "/repo/.git/hooks" in settings["filesystem"]["denyWrite"]
+  end
+
+  test "srt settings normalize malformed domains and extra sandbox paths" do
+    assert {:ok, settings} =
+             AgentSandboxConfig.srt_settings(
+               "allowlist",
+               :bad_domains,
+               :bad_denied_domains,
+               [],
+               allow_write_paths: :bad_allow_paths,
+               deny_write_paths: :bad_deny_paths
+             )
+
+    assert settings["network"]["allowedDomains"] == []
+    assert settings["network"]["deniedDomains"] == []
+    assert settings["filesystem"]["allowWrite"] == [".", "/tmp", System.tmp_dir!(), "~/.codex"]
+
+    assert settings["filesystem"]["denyWrite"] ==
+             AgentSandboxConfig.deny_write_paths() ++
+               ["~/.codex/auth.json", "~/.codex/config.toml", "~/.codex/AGENTS.md"]
   end
 
   test "srt settings map open and block network modes" do

@@ -696,7 +696,7 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_local_worktree_git_repo(repo) do
-    case System.cmd("git", ["-C", repo, "rev-parse", "--git-dir"], stderr_to_stdout: true) do
+    case SymphonyElixir.Workspace.safe_git(["-C", repo, "rev-parse", "--git-dir"]) do
       {_output, 0} ->
         :ok
 
@@ -706,7 +706,7 @@ defmodule SymphonyElixir.Config do
   end
 
   defp warn_if_local_worktree_repo_dirty(repo) do
-    case System.cmd("git", ["-C", repo, "status", "--porcelain"], stderr_to_stdout: true) do
+    case SymphonyElixir.Workspace.safe_git(["-C", repo, "status", "--porcelain"]) do
       {"", 0} ->
         :ok
 
@@ -731,8 +731,8 @@ defmodule SymphonyElixir.Config do
   def local_worktree_dirty_status(repo) when is_binary(repo) do
     with true <- File.dir?(repo),
          {_out, 0} <-
-           System.cmd("git", ["-C", repo, "rev-parse", "--git-dir"], stderr_to_stdout: true) do
-      case System.cmd("git", ["-C", repo, "status", "--porcelain"], stderr_to_stdout: true) do
+           SymphonyElixir.Workspace.safe_git(["-C", repo, "rev-parse", "--git-dir"]) do
+      case SymphonyElixir.Workspace.safe_git(["-C", repo, "status", "--porcelain"]) do
         {"", 0} -> :clean
         {output, 0} -> {:dirty, String.trim(output)}
         _ -> :not_applicable

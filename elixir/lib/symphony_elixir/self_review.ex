@@ -413,7 +413,7 @@ defmodule SymphonyElixir.SelfReview do
   end
 
   defp git(workspace, args, nil) do
-    case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+    case SymphonyElixir.Workspace.safe_git(["-C", workspace | args]) do
       {output, 0} -> {:ok, output}
       {output, status} -> {:error, {:git_failed, args, status, output}}
     end

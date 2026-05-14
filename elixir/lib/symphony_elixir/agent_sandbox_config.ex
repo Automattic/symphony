@@ -19,7 +19,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   Workflow guardrail files protected from writes (relative to workspace):
 
     * `WORKFLOW.md`, `symphony.yml`, `symphony.local.yml`
-    * `.git/hooks`, `mise.toml`, `.tool-versions`
+    * `.git`, `mise.toml`, `.tool-versions`
   """
 
   @codex_profile "workspace_write"
@@ -51,7 +51,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "./symphony.yml",
     "./symphony.local.yml",
     "./.claude/settings.json",
-    "./.git/hooks",
+    "./.git",
     "./mise.toml",
     "./.tool-versions"
   ]

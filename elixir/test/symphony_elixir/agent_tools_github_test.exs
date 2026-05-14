@@ -201,6 +201,40 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     end
   end
 
+  test "push_branch default git runner ignores malicious repo fsmonitor and verifies origin" do
+    test_root = tmp_workspace!("github-agent-safe-push")
+    workspace = Path.join(test_root, "workspace")
+    origin = Path.join(test_root, "origin.git")
+    proof = Path.join(test_root, "SYMPHONY_PWNED")
+
+    try do
+      File.mkdir_p!(workspace)
+      git!(test_root, ["init", "--bare", origin])
+      git!(workspace, ["init", "-b", "auto/RSM-3051"])
+      git!(workspace, ["config", "user.name", "Test User"])
+      git!(workspace, ["config", "user.email", "test@example.com"])
+      File.write!(Path.join(workspace, "README.md"), "safe push\n")
+      git!(workspace, ["add", "README.md"])
+      git!(workspace, ["commit", "-m", "initial"])
+      git!(workspace, ["remote", "add", "origin", origin])
+      git!(workspace, ["config", "core.fsmonitor", "sh -c 'touch \"#{proof}\"'"])
+
+      context = %{
+        workspace: workspace,
+        command_security: %{
+          origin_url: origin,
+          workspace: workspace
+        }
+      }
+
+      assert {:ok, %{"branch" => "auto/RSM-3051", "remote" => "origin"}} = GitHub.push_branch(context)
+      refute File.exists?(proof)
+      assert String.trim(git!(origin, ["rev-parse", "refs/heads/auto/RSM-3051"])) != ""
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "push_branch refuses when current origin differs from captured session origin" do
     workspace = tmp_workspace!("github-agent-retargeted-origin")
 
@@ -469,6 +503,13 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     workspace = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(workspace)
     workspace
+  end
+
+  defp git!(repo, args) do
+    case System.cmd("git", args, cd: repo, stderr_to_stdout: true) do
+      {output, 0} -> output
+      {output, status} -> flunk("git #{Enum.join(args, " ")} failed with #{status}: #{output}")
+    end
   end
 
   defp secret_fixtures do

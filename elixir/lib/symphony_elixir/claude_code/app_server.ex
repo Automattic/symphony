@@ -795,7 +795,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp discover_origin_url(workspace, nil) when is_binary(workspace) do
     with git when is_binary(git) <- System.find_executable("git"),
          {output, 0} <-
-           System.cmd(git, ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true) do
+           SymphonyElixir.Workspace.safe_git(git, ["-C", workspace, "remote", "get-url", "origin"]) do
       output |> String.trim() |> blank_to_nil()
     else
       _result -> nil

@@ -1804,7 +1804,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp git_metadata_roots(git, workspace, args, opts) do
-    case System.cmd(git, ["-C", workspace | args], stderr_to_stdout: true) do
+    case SymphonyElixir.Workspace.safe_git(git, ["-C", workspace | args]) do
       {output, 0} ->
         output
         |> String.split("\n", trim: true)

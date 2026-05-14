@@ -311,6 +311,8 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     [
       "sk-ant-" <> String.duplicate("a", 24),
       openai_fixture(),
+      "sk-proj-" <> String.duplicate("a", 24),
+      "sk-svcacct-" <> String.duplicate("a", 24),
       "ghp_" <> String.duplicate("A", 24),
       "ghu_" <> String.duplicate("B", 24),
       "gho_" <> String.duplicate("C", 24),
@@ -322,7 +324,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     ]
   end
 
-  defp openai_fixture, do: "sk-" <> String.duplicate("a", 24)
+  defp openai_fixture, do: "sk-" <> String.duplicate("a", 48)
 
   defp audit_events(dir) do
     dir

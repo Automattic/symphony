@@ -557,7 +557,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
     end
   end
 
-  defp put_upload(_path, _upload, _opts), do: {:error, :upload_url_missing}
+  defp put_upload(_contents, _upload, _opts), do: {:error, :upload_url_missing}
 
   defp file_stat(path) do
     case File.stat(path) do

@@ -8,6 +8,33 @@ defmodule SymphonyElixir.AgentTools.SecretScannerTest do
     refute SecretScanner.detect("normal code review text")
   end
 
+  test "OpenAI patterns require proj-/svcacct- prefix or full 48-char legacy form" do
+    assert SecretScanner.detect("sk-proj-" <> String.duplicate("a", 24)) == :openai_api_key
+    assert SecretScanner.detect("sk-svcacct-" <> String.duplicate("a", 24)) == :openai_api_key
+    assert SecretScanner.detect("sk-" <> String.duplicate("a", 48)) == :openai_api_key
+
+    refute SecretScanner.detect("sk-" <> String.duplicate("a", 24))
+    refute SecretScanner.detect("sk-test-" <> String.duplicate("a", 24))
+  end
+
+  test "Anthropic keys are reported as anthropic_api_key regardless of pattern ordering" do
+    assert SecretScanner.detect("sk-ant-" <> String.duplicate("a", 24)) == :anthropic_api_key
+  end
+
+  test "non-UTF-8 binary content is scanned for high-confidence prefixes" do
+    payload = <<0xFF, 0xFE, "leading bytes ", "sk-ant-", String.duplicate("a", 24)::binary, 0x00>>
+    refute String.valid?(payload)
+    assert SecretScanner.detect(payload) == :anthropic_api_key
+
+    github_payload = <<0xFF, "ghp_", String.duplicate("A", 24)::binary, 0xFE>>
+    refute String.valid?(github_payload)
+    assert SecretScanner.detect(github_payload) == :github_token
+
+    benign_binary = <<0xFF, 0xFE, "ordinary binary payload", 0x00>>
+    refute String.valid?(benign_binary)
+    refute SecretScanner.detect(benign_binary)
+  end
+
   test "four-argument rejection helper records string-key issue contexts" do
     workspace = tmp_workspace!("secret-scanner-string-issue")
     audit_dir = Path.join(workspace, "audit")
@@ -70,7 +97,7 @@ defmodule SymphonyElixir.AgentTools.SecretScannerTest do
     end
   end
 
-  defp openai_fixture, do: "sk-" <> String.duplicate("a", 24)
+  defp openai_fixture, do: "sk-" <> String.duplicate("a", 48)
 
   defp audit_events(dir) do
     dir

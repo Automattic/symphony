@@ -293,6 +293,26 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule GitHub do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    alias SymphonyElixir.Config.Schema
+
+    @primary_key false
+    embedded_schema do
+      field(:enterprise_hosts, {:array, :string}, default: [])
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enterprise_hosts], empty_values: [])
+      |> update_change(:enterprise_hosts, &Schema.normalize_domain_list/1)
+    end
+  end
+
   defmodule Agent do
     @moduledoc false
     use Ecto.Schema
@@ -1136,6 +1156,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:watchdog, Watchdog, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:github, GitHub, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
@@ -1298,6 +1319,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:watchdog, with: &Watchdog.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
+    |> cast_embed(:github, with: &GitHub.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
@@ -1464,7 +1486,9 @@ defmodule SymphonyElixir.Config.Schema do
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
 
-  defp normalize_domain_list(domains) when is_list(domains) do
+  @doc false
+  @spec normalize_domain_list(term()) :: [String.t()]
+  def normalize_domain_list(domains) when is_list(domains) do
     domains
     |> Enum.filter(&is_binary/1)
     |> Enum.map(&String.trim/1)
@@ -1473,7 +1497,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> Enum.uniq()
   end
 
-  defp normalize_domain_list(_domains), do: []
+  def normalize_domain_list(_domains), do: []
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)

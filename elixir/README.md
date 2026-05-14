@@ -249,6 +249,8 @@ stays empty until every repo's cache has warmed at least once.
 - `repos[].workspace.strategy: worktree` creates each issue workspace from that repo's existing
   local primary clone instead of cloning in `hooks.after_create`. Set `repos[].workspace.repo` to
   the primary clone.
+- `github.enterprise_hosts` adds exact GitHub Enterprise hosts accepted for PR attachments and
+  repository URLs. `github.com` and `www.github.com` are always accepted.
 - `workspace.lifecycle.*` controls workspace cleanup guardrails. By default Symphony removes local
   workspaces older than 14 days, logs startup orphans without deleting them, and leaves disk quota
   dispatch pauses disabled until `workspace.lifecycle.min_free_bytes` is configured.

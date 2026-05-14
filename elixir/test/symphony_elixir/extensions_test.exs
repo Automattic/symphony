@@ -1403,7 +1403,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "github.com/example/repo"
     assert html =~ ~s(href="https://github.com/example/repo/pull/12" target="_blank")
     assert html =~ ~s(href="https://linear.example.test/acme/RSM-LIVE-1" target="_blank")
-    refute html =~ "https://linear.app/a8c/issue/RSM-LIVE-3"
+    refute html =~ "https://linear.app/example/issue/RSM-LIVE-3"
     assert html =~ ~s(name="repo")
     assert html =~ ~s(name="tag")
     assert html =~ ~s(href="/quality")

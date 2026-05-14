@@ -366,7 +366,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
         "identifier" => "RSM-MAL",
         "title" => "Malicious attachment",
         "state" => %{"name" => "In Review"},
-        "url" => "https://linear.app/a8c/issue/RSM-MAL",
+        "url" => "https://linear.app/example/issue/RSM-MAL",
         "attachments" => %{
           "nodes" => [
             %{
@@ -549,7 +549,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                       issue_id: "issue-1780",
                       issue_identifier: "RSM-1780",
                       issue_title: "Review manager",
-                      issue_url: "https://linear.app/a8c/issue/RSM-1780",
+                      issue_url: "https://linear.app/example/issue/RSM-1780",
                       pr_url: "https://github.com/example/repo/pull/1780",
                       state: "In Progress",
                       reason: "1 actionable reviewer comment discovered",
@@ -896,7 +896,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                       issue_id: "issue-1780",
                       issue_identifier: "RSM-1780",
                       issue_title: "Review manager",
-                      issue_url: "https://linear.app/a8c/issue/RSM-1780",
+                      issue_url: "https://linear.app/example/issue/RSM-1780",
                       pr_url: "https://github.com/example/repo/pull/1780",
                       state: "In Progress",
                       reason: "1 actionable reviewer comment addressed",
@@ -1546,7 +1546,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              tags: ["docs", "workflow-config"],
              evidence_quote: "Remember to update docs.",
              evidence_issue_identifier: "RSM-1780",
-             evidence_issue_url: "https://linear.app/a8c/issue/RSM-1780",
+             evidence_issue_url: "https://linear.app/example/issue/RSM-1780",
              evidence_pr_number: 1780,
              evidence_run_id: "run-1780",
              created_at: ^now
@@ -1990,7 +1990,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       issue_id: "issue-1780",
       issue_identifier: "RSM-1780",
       issue_title: "Review manager",
-      issue_url: "https://linear.app/a8c/issue/RSM-1780",
+      issue_url: "https://linear.app/example/issue/RSM-1780",
       pr_url: "https://github.com/example/repo/pull/1780",
       workspace_path: "/tmp/workspaces/RSM-1780",
       worker_host: nil,
@@ -2013,7 +2013,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       title: "Review manager",
       description: "Poll PR state",
       state: "In Review",
-      url: "https://linear.app/a8c/issue/#{identifier}",
+      url: "https://linear.app/example/issue/#{identifier}",
       pr_urls: [pr_url],
       comments: Keyword.get(opts, :comments, []),
       updated_at: updated_at

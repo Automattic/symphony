@@ -111,6 +111,9 @@ the release runs as `symphony@127.0.0.1`, and Mnesia tags every replica with `no
 - Dev default: `~/Library/Application Support/symphony/` and `~/Library/Logs/symphony/`
 - Release default: `~/Library/Application Support/symphony/release/` and `~/Library/Logs/symphony/release/`
 
+Mnesia core dumps from RunStore failures are written to a `core_dumps/` subdirectory inside the
+resolved run store directory, so crash diagnostics do not land in the repository working tree.
+
 On first packaged-release startup, Symphony creates an Erlang distribution cookie at
 `~/Library/Application Support/symphony/release/erlang_cookie` with owner-only permissions and
 reuses it on later starts. Set `SYMPHONY_COOKIE` before launch to provide an explicit cookie

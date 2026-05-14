@@ -960,7 +960,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(<td class="links-cell">)
     assert html =~ ~s(<div class="link-actions">)
     assert html =~ "thread-h…"
-    assert html =~ "Codex update"
+    assert html =~ "Agent update"
     assert html =~ "Budget: 488 left"
     assert html =~ "/repos/default/issues/MT-HTTP/transcript"
     refute html =~ "data-runtime-clock="
@@ -1016,7 +1016,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
-  test "dashboard liveview labels agent updates from configured agent kind" do
+  test "dashboard liveview uses neutral agent update header for Claude config" do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_kind: "claude",
       agent_command: "claude",
@@ -1035,7 +1035,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, _view, html} = live(build_conn(), "/")
 
-    assert html =~ "Claude update"
+    assert html =~ "Agent update"
+    refute html =~ "Claude update"
     refute html =~ "Codex update"
   end
 

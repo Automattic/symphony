@@ -1573,6 +1573,39 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "local before_remove hook receives canonical repo and branch env from worktree settings" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-before-remove-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      workspace_root = Path.join(test_root, "workspaces")
+      marker = Path.join(test_root, "before_remove_env.log")
+
+      create_primary_repo!(primary_repo)
+      git!(primary_repo, ["remote", "add", "origin", "git@github.com:acme/symphony.git"])
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false,
+        hook_before_remove: "printf '%s\\n%s\\n' \"$SYMPHONY_REPO\" \"$SYMPHONY_BRANCH\" > \"#{marker}\""
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOK-ENV")
+      assert :ok = Workspace.remove_issue_workspaces("MT-HOOK-ENV")
+      refute File.exists?(workspace)
+      assert File.read!(marker) == "acme/symphony\nauto/MT-HOOK-ENV\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "run hooks receive verification port env when provided" do
     test_root =
       Path.join(
@@ -1598,6 +1631,41 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert File.read!(Path.join(workspace, "before-port.txt")) == "4077"
       assert File.read!(Path.join(workspace, "after-port.txt")) == "4077"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "before_remove hook receives canonical repo and branch env" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-before-remove-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      workspace_root = Path.join(test_root, "workspaces")
+      env_marker = Path.join(test_root, "before-remove-env.log")
+
+      create_primary_repo!(primary_repo)
+      git!(primary_repo, ["remote", "add", "origin", "git@github.com:acme/symphony.git"])
+
+      File.mkdir_p!(workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false,
+        hook_before_remove: "printf '%s\\n%s\\n' \"$SYMPHONY_REPO\" \"$SYMPHONY_BRANCH\" > \"#{env_marker}\""
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOK-ENV")
+      assert :ok = Workspace.remove_issue_workspaces("MT-HOOK-ENV")
+
+      assert File.read!(env_marker) == "acme/symphony\nauto/MT-HOOK-ENV\n"
+      refute File.exists?(workspace)
     after
       File.rm_rf(test_root)
     end
@@ -3123,6 +3191,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
+        workspace_repo: "git@github.com:acme/symphony.git",
         worker_ssh_hosts: ["worker-01:2200"],
         hook_before_run: "echo before-run",
         hook_after_run: "echo after-run",
@@ -3144,6 +3213,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert trace =~ "echo before-run"
       assert trace =~ "echo after-run"
       assert trace =~ "echo before-remove"
+      assert trace =~ "export SYMPHONY_REPO="
+      assert trace =~ "acme/symphony"
+      assert trace =~ "export SYMPHONY_BRANCH="
+      assert trace =~ "auto/MT-SSH-WS"
       assert trace =~ "rm -rf"
       assert trace =~ workspace_path
     after
@@ -3197,7 +3270,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         workspace_root: workspace_root,
         workspace_strategy: "worktree",
         workspace_repo: workspace_repo,
-        worker_ssh_hosts: ["worker-01:2200"]
+        worker_ssh_hosts: ["worker-01:2200"],
+        hook_before_remove: "echo before-remove"
       )
 
       assert :ok = Config.validate!()
@@ -3209,6 +3283,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert trace =~ "${repo#~/}"
       assert trace =~ "git -C \"$repo\" fetch origin"
       assert trace =~ "git -C \"$repo\" worktree add"
+      assert trace =~ "export SYMPHONY_BRANCH="
+      assert trace =~ "auto/MT-SSH-WT"
+      assert trace =~ "symphony_configured_repo="
+      assert trace =~ "~/primary-clone"
+      assert trace =~ "git -C \"$symphony_configured_repo\" remote get-url origin"
       assert trace =~ "workspace_worktree_list_failed"
       assert trace =~ "auto/MT-SSH-WT"
       assert trace =~ "git -C \"$repo\" worktree remove --force"

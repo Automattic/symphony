@@ -1,24 +1,24 @@
 defmodule Mix.Tasks.Workspace.BeforeRemove do
   use Mix.Task
 
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.GitHub.Repo, as: GitHubRepo
+
   @shortdoc "Close open GitHub PRs for the current branch before workspace removal"
 
   @moduledoc """
-  Closes open pull requests for the current Git branch.
+  Closes open pull requests for the branch supplied by Symphony.
 
   This task is intended for use from the `before_remove` workspace hook.
 
-  Repo precedence: `--repo` flag, then auto-detection from the
-  `origin` remote, then the hardcoded fallback.
+  Repo and branch precedence: `SYMPHONY_REPO` / `SYMPHONY_BRANCH`, then the
+  matching `--repo` / `--branch` flags for manual invocation.
 
   Usage:
 
       mix workspace.before_remove
-      mix workspace.before_remove --branch feature/my-branch
-      mix workspace.before_remove --repo owner/repo
+      mix workspace.before_remove --repo owner/repo --branch feature/my-branch
   """
-
-  @default_repo "chihsuan/symphony"
 
   @impl Mix.Task
   def run(args) do
@@ -36,62 +36,89 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
         Mix.raise("Invalid option(s): #{inspect(invalid)}")
 
       true ->
-        repo = opts[:repo] || detect_repo_from_origin() || @default_repo
-        branch = opts[:branch] || current_branch()
+        repo = configured_value("SYMPHONY_REPO", opts[:repo])
+        branch = configured_value("SYMPHONY_BRANCH", opts[:branch])
 
         maybe_close_open_pull_requests(repo, branch)
     end
   end
 
-  defp detect_repo_from_origin do
-    case run_command("git", ["remote", "get-url", "origin"]) do
-      {:ok, output} ->
-        output
-        |> String.trim()
-        |> parse_repo_from_origin()
-
-      {:error, _reason} ->
-        nil
-    end
-  end
-
-  defp parse_repo_from_origin(url) when is_binary(url) do
-    with {:ok, "github.com", path} <- split_origin_url(url),
-         [owner, repo] <- String.split(path, "/", trim: true) do
-      "#{owner}/#{String.replace_suffix(repo, ".git", "")}"
-    else
-      _ -> nil
-    end
-  end
-
-  defp split_origin_url("git@" <> rest) do
-    case String.split(rest, ":", parts: 2) do
-      [host, path] -> {:ok, host, path}
-      _ -> :error
-    end
-  end
-
-  defp split_origin_url(url) do
-    case URI.parse(url) do
-      %URI{scheme: scheme, host: host, path: path}
-      when scheme in ["http", "https", "ssh"] and is_binary(host) and is_binary(path) ->
-        {:ok, host, path}
-
-      _ ->
-        :error
-    end
+  defp configured_value(env_key, flag_value) do
+    [System.get_env(env_key), flag_value]
+    |> Enum.find_value(&present_string/1)
   end
 
   defp maybe_close_open_pull_requests(_repo, nil), do: :ok
+  defp maybe_close_open_pull_requests(nil, _branch), do: :ok
 
   defp maybe_close_open_pull_requests(repo, branch) do
-    if gh_available?() and gh_authenticated?() do
+    if configured_repo?(repo) and gh_available?() and gh_authenticated?() do
       repo
       |> list_open_pull_request_numbers(branch)
       |> Enum.each(&close_pull_request(repo, branch, &1))
     end
 
     :ok
+  end
+
+  defp configured_repo?(repo) do
+    case configured_github_repos() do
+      {:ok, []} ->
+        refuse_unconfigured_repo(repo, [])
+
+      {:ok, repos} ->
+        Enum.any?(repos, &GitHubRepo.same?(&1, repo)) ||
+          refuse_unconfigured_repo(repo, repos)
+
+      {:error, _reason} ->
+        refuse_unconfigured_repo(repo, [])
+    end
+  end
+
+  defp refuse_unconfigured_repo(repo, repos) do
+    Mix.shell().error("Refusing to close PRs for unconfigured repo #{repo}; configured repos: #{Enum.join(repos, ", ")}")
+    false
+  end
+
+  defp configured_github_repos do
+    with {:ok, repos} <- Config.repos() do
+      repos =
+        repos
+        |> Enum.flat_map(&configured_repo_paths/1)
+        |> Enum.map(&github_repo_from_git_origin/1)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq_by(&String.downcase/1)
+
+      {:ok, repos}
+    end
+  end
+
+  defp configured_repo_paths(repo) do
+    [
+      Map.get(repo, :path),
+      Config.settings_for_repo!(repo.name).workspace.repo
+    ]
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+  rescue
+    _error ->
+      [Map.get(repo, :path)]
+      |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+  end
+
+  defp github_repo_from_git_origin(path) when is_binary(path) do
+    GitHubRepo.from_url(path) || github_repo_from_git_dir(path)
+  end
+
+  defp github_repo_from_git_dir(path) do
+    case run_command("git", ["-C", Path.expand(path), "remote", "get-url", "origin"]) do
+      {:ok, output} ->
+        output
+        |> String.trim()
+        |> GitHubRepo.from_url()
+
+      {:error, _reason} ->
+        nil
+    end
   end
 
   defp gh_available? do
@@ -154,18 +181,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   defp format_output(""), do: ""
   defp format_output(output), do: " output=#{inspect(output)}"
 
-  defp current_branch do
-    case run_command("git", ["branch", "--show-current"]) do
-      {:ok, output} ->
-        case String.trim(output) do
-          "" -> nil
-          branch -> branch
-        end
-
-      {:error, _reason} ->
-        nil
+  defp present_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      string -> string
     end
   end
+
+  defp present_string(_value), do: nil
 
   defp run_command(command, args) do
     case System.find_executable(command) do

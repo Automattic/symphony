@@ -2073,6 +2073,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator snapshot includes retry backoff entries" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
     orchestrator_name = Module.concat(__MODULE__, :RetryOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 

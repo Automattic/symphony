@@ -432,8 +432,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     Schema.runtime_workspace_write_roots(settings, workspace)
   end
 
-  defp srt_workspace_write_paths(_settings, _workspace), do: []
-
   defp srt_workspace_deny_write_paths(settings, workspace) do
     settings
     |> srt_workspace_write_paths(workspace)

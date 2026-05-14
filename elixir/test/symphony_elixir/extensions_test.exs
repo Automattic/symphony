@@ -1359,7 +1359,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Prefer the existing helper.",
                    evidence_issue_identifier: "RSM-LIVE-1",
-                   evidence_issue_url: "https://linear.app/a8c/issue/RSM-LIVE-1",
+                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-1",
                    evidence_pr_number: 12,
                    evidence_run_id: "run-live-1",
                    created_at: now
@@ -1404,8 +1404,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Do not reconstruct Linear links without canonical issue URLs."
     assert html =~ "github.com/example/repo"
     assert html =~ ~s(href="https://github.com/example/repo/pull/12" target="_blank")
-    assert html =~ ~s(href="https://linear.app/a8c/issue/RSM-LIVE-1" target="_blank")
-    refute html =~ "https://linear.app/a8c/issue/RSM-LIVE-3"
+    assert html =~ ~s(href="https://linear.app/example/issue/RSM-LIVE-1" target="_blank")
+    refute html =~ "https://linear.app/example/issue/RSM-LIVE-3"
     assert html =~ ~s(name="repo")
     assert html =~ ~s(name="tag")
     assert html =~ ~s(href="/quality")
@@ -1430,7 +1430,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Trusted PR.",
                    evidence_issue_identifier: "RSM-LIVE-TRUSTED",
-                   evidence_issue_url: "https://linear.app/a8c/issue/RSM-LIVE-TRUSTED",
+                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-TRUSTED",
                    evidence_pr_number: 123,
                    evidence_run_id: "run-live-trusted",
                    created_at: now
@@ -1445,7 +1445,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Trusted GHE PR.",
                    evidence_issue_identifier: "RSM-LIVE-GHE",
-                   evidence_issue_url: "https://linear.app/a8c/issue/RSM-LIVE-GHE",
+                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-GHE",
                    evidence_pr_number: 456,
                    evidence_run_id: "run-live-ghe",
                    created_at: DateTime.add(now, -15, :second)
@@ -1460,7 +1460,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Attacker PR.",
                    evidence_issue_identifier: "RSM-LIVE-ATTACKER",
-                   evidence_issue_url: "https://linear.attacker.tld/a8c/issue/RSM-LIVE-ATTACKER",
+                   evidence_issue_url: "https://linear.attacker.tld/example/issue/RSM-LIVE-ATTACKER",
                    evidence_pr_number: 9,
                    evidence_run_id: "run-live-attacker",
                    created_at: DateTime.add(now, -30, :second)
@@ -1475,7 +1475,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Unsafe Linear scheme.",
                    evidence_issue_identifier: "RSM-LIVE-SCHEME",
-                   evidence_issue_url: "http://linear.app/a8c/issue/RSM-LIVE-SCHEME",
+                   evidence_issue_url: "http://linear.app/example/issue/RSM-LIVE-SCHEME",
                    evidence_pr_number: 124,
                    evidence_run_id: "run-live-linear-scheme",
                    created_at: DateTime.add(now, -60, :second)
@@ -1490,7 +1490,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "Keep trusted GitHub PRs linked."
     assert html =~ ~s(href="https://github.com/example/repo/pull/123" target="_blank")
-    assert html =~ ~s(href="https://linear.app/a8c/issue/RSM-LIVE-TRUSTED" target="_blank")
+    assert html =~ ~s(href="https://linear.app/example/issue/RSM-LIVE-TRUSTED" target="_blank")
 
     assert html =~ "Keep configured GitHub Enterprise PRs linked."
     assert html =~ ~s(href="https://github.example.com/enterprise/service/pull/456" target="_blank")
@@ -1498,11 +1498,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Do not link attacker PR hosts."
     assert html =~ "login-github.attacker.tld/foo/bar"
     refute html =~ "https://login-github.attacker.tld/foo/bar/pull/9"
-    refute html =~ "https://linear.attacker.tld/a8c/issue/RSM-LIVE-ATTACKER"
+    refute html =~ "https://linear.attacker.tld/example/issue/RSM-LIVE-ATTACKER"
 
     assert html =~ "Do not link non-HTTPS Linear URLs."
     assert html =~ ~s(href="https://github.com/example/other/pull/124" target="_blank")
-    refute html =~ "http://linear.app/a8c/issue/RSM-LIVE-SCHEME"
+    refute html =~ "http://linear.app/example/issue/RSM-LIVE-SCHEME"
   end
 
   test "dashboard liveview omits watching PR link when pull request URL is unavailable" do

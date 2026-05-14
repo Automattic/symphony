@@ -383,6 +383,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp success_response(payload) do
+    # Read tools must wrap any untrusted external text before returning it here;
+    # this boundary stays schema-neutral and only encodes the prepared payload.
     dynamic_tool_response(true, encode_payload(payload))
   end
 

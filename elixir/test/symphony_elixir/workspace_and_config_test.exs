@@ -3335,6 +3335,272 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "remote workspace setup rejects an existing symlink at the issue workspace path" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      outside_root = Path.join(ctx.test_root, "outside")
+      symlink_path = Path.join([workspace_root, "default", "MT-SYM"])
+
+      File.mkdir_p!(Path.dirname(symlink_path))
+      File.mkdir_p!(outside_root)
+      File.ln_s!(outside_root, symlink_path)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_prepare_failed, "worker-01", 51, output}} =
+               Workspace.create_for_issue("MT-SYM", "worker-01")
+
+      assert output =~ "workspace_symlink_rejected: #{symlink_path}"
+      assert {:ok, ^outside_root} = File.read_link(symlink_path)
+    end)
+  end
+
+  test "remote workspace setup rejects when physical workspace escapes root via a parent symlink" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      outside_root = Path.join(ctx.test_root, "outside")
+      parent_link = Path.join(workspace_root, "default")
+
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(outside_root)
+      File.ln_s!(outside_root, parent_link)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_prepare_failed, "worker-01", 53, output}} =
+               Workspace.create_for_issue("MT-OUT", "worker-01")
+
+      assert output =~ "workspace_outside_root:"
+      assert output =~ Path.join(outside_root, "MT-OUT")
+      assert output =~ "not under #{workspace_root}"
+
+      # The script may create the directory under the symlinked parent before the
+      # containment check fires; that's fine. The important thing is the script
+      # refuses to return the escaping path.
+    end)
+  end
+
+  test "remote workspace setup accepts an existing directory under the root" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      workspace_path = Path.join([workspace_root, "default", "MT-OK"])
+
+      File.mkdir_p!(workspace_path)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-OK", "worker-01")
+      assert File.dir?(workspace_path)
+    end)
+  end
+
+  test "remote workspace setup creates a new directory under the root and returns its canonical path" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      workspace_path = Path.join([workspace_root, "default", "MT-NEW"])
+
+      File.mkdir_p!(workspace_root)
+      refute File.exists?(workspace_path)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-NEW", "worker-01")
+      assert File.dir?(workspace_path)
+    end)
+  end
+
+  test "remote workspace setup canonicalizes a symlinked root before returning the workspace" do
+    with_real_exec_fake_ssh(fn ctx ->
+      actual_root = Path.join(ctx.test_root, "actual-wsroot")
+      linked_root = Path.join(ctx.test_root, "linked-wsroot")
+      expected_workspace = Path.join([actual_root, "default", "MT-LINK"])
+
+      File.mkdir_p!(actual_root)
+      File.ln_s!(actual_root, linked_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: linked_root,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:ok, ^expected_workspace} = Workspace.create_for_issue("MT-LINK", "worker-01")
+      assert File.dir?(expected_workspace)
+    end)
+  end
+
+  test "remote workspace setup fails closed when the configured root cannot be created" do
+    with_real_exec_fake_ssh(fn ctx ->
+      blocking_file = Path.join(ctx.test_root, "not-a-directory")
+      workspace_root = Path.join(blocking_file, "wsroot")
+
+      File.write!(blocking_file, "blocks mkdir -p\n")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_prepare_failed, "worker-01", 50, output}} =
+               Workspace.create_for_issue("MT-BAD-ROOT", "worker-01")
+
+      assert output =~ "workspace_root_unreadable: #{workspace_root}"
+    end)
+  end
+
+  test "remote worktree setup rejects an existing symlink at the issue workspace path" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      primary_repo = Path.join(ctx.test_root, "primary")
+      outside_root = Path.join(ctx.test_root, "outside")
+      symlink_path = Path.join([workspace_root, "default", "MT-WT-SYM"])
+
+      create_primary_repo!(primary_repo)
+      File.mkdir_p!(Path.dirname(symlink_path))
+      File.mkdir_p!(outside_root)
+      File.ln_s!(outside_root, symlink_path)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_prepare_failed, "worker-01", 51, output}} =
+               Workspace.create_for_issue("MT-WT-SYM", "worker-01")
+
+      assert output =~ "workspace_symlink_rejected: #{symlink_path}"
+      assert {:ok, ^outside_root} = File.read_link(symlink_path)
+    end)
+  end
+
+  test "remote worktree setup rejects when physical workspace escapes root via a parent symlink" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      primary_repo = Path.join(ctx.test_root, "primary")
+      outside_root = Path.join(ctx.test_root, "outside")
+      parent_link = Path.join(workspace_root, "default")
+
+      create_primary_repo!(primary_repo)
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(outside_root)
+      File.ln_s!(outside_root, parent_link)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_prepare_failed, "worker-01", 53, output}} =
+               Workspace.create_for_issue("MT-WT-OUT", "worker-01")
+
+      assert output =~ "workspace_outside_root:"
+      assert output =~ Path.join(outside_root, "MT-WT-OUT")
+      assert output =~ "not under #{workspace_root}"
+    end)
+  end
+
+  test "remote worktree setup creates and reuses a registered worktree under the root" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      primary_repo = Path.join(ctx.test_root, "primary")
+      workspace_path = Path.join([workspace_root, "default", "MT-WT-OK"])
+
+      create_primary_repo!(primary_repo)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-WT-OK", "worker-01")
+      assert File.read!(Path.join(workspace_path, "README.md")) == "initial\n"
+      assert String.trim(git!(workspace_path, ["branch", "--show-current"])) == "auto/MT-WT-OK"
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-WT-OK", "worker-01")
+      assert git_branch_exists?(primary_repo, "auto/MT-WT-OK")
+    end)
+  end
+
+  # Runs `fun` with a fake `ssh` on PATH that actually executes the remote
+  # `bash -lc <script>` payload against the local filesystem, so the
+  # workspace.ex containment script is exercised rather than stubbed out.
+  defp with_real_exec_fake_ssh(fun) do
+    raw_test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-containment-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(raw_test_root)
+
+    # Canonicalize so generated workspace paths match what `pwd -P` returns on
+    # the remote (macOS' /tmp and /var are symlinks under /private).
+    {:ok, test_root} = SymphonyElixir.PathSafety.canonicalize(raw_test_root)
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+      File.rm_rf(raw_test_root)
+    end)
+
+    trace_file = Path.join(test_root, "ssh.trace")
+    fake_ssh = Path.join(test_root, "ssh")
+    write_real_exec_fake_ssh!(fake_ssh)
+
+    System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+    System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+    fun.(%{test_root: test_root, trace_file: trace_file})
+  end
+
+  defp write_real_exec_fake_ssh!(path) do
+    File.write!(path, """
+    #!/usr/bin/env bash
+    set -u
+    trace_file="${SYMP_TEST_SSH_TRACE:-/dev/null}"
+    printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+
+    # SSH.run passes the remote `bash -lc <script>` as a single argv entry.
+    # Execute that locally so workspace.ex containment checks run against a real
+    # filesystem instead of a canned string fixture.
+    args=("$@")
+    script="${args[$((${#args[@]} - 1))]}"
+
+    if [ -n "$script" ]; then
+      /bin/bash -c "$script"
+      exit $?
+    fi
+
+    exit 0
+    """)
+
+    File.chmod!(path, 0o755)
+    :ok
+  end
+
   defp create_primary_repo!(primary_repo, origin_repo \\ nil) do
     File.mkdir_p!(primary_repo)
     git!(primary_repo, ["init", "-b", "main"])

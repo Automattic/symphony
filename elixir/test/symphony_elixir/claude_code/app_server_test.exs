@@ -867,6 +867,77 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "strips provider, tracker, GitHub, and SSH agent secrets from the Claude subprocess env" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-env-strip-#{System.unique_integer([:positive])}"
+        )
+
+      secret_vars = %{
+        "LINEAR_API_KEY" => "lin_api_REDACTED_#{System.unique_integer([:positive])}",
+        "ANTHROPIC_API_KEY" => "sk-ant-REDACTED_#{System.unique_integer([:positive])}",
+        "OPENAI_API_KEY" => "sk-REDACTED_#{System.unique_integer([:positive])}",
+        "GH_TOKEN" => "gho_REDACTED_#{System.unique_integer([:positive])}",
+        "GITHUB_TOKEN" => "ghp_REDACTED_#{System.unique_integer([:positive])}",
+        "SSH_AUTH_SOCK" => "/tmp/ssh-REDACTED-#{System.unique_integer([:positive])}/agent.1"
+      }
+
+      previous = Enum.map(secret_vars, fn {name, _} -> {name, System.get_env(name)} end)
+      on_exit(fn -> Enum.each(previous, fn {name, value} -> restore_env(name, value) end) end)
+      Enum.each(secret_vars, fn {name, value} -> System.put_env(name, value) end)
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-ENVSTRIP")
+        fake_claude = Path.join(test_root, "fake-claude")
+        trace_file = Path.join(test_root, "claude-env-strip.trace")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        trace_file="#{trace_file}"
+        printf 'LINEAR=%s\\n' "${LINEAR_API_KEY-<unset>}" >> "$trace_file"
+        printf 'ANTHROPIC=%s\\n' "${ANTHROPIC_API_KEY-<unset>}" >> "$trace_file"
+        printf 'OPENAI=%s\\n' "${OPENAI_API_KEY-<unset>}" >> "$trace_file"
+        printf 'GH=%s\\n' "${GH_TOKEN-<unset>}" >> "$trace_file"
+        printf 'GITHUB=%s\\n' "${GITHUB_TOKEN-<unset>}" >> "$trace_file"
+        printf 'SSH_AUTH_SOCK=%s\\n' "${SSH_AUTH_SOCK-<unset>}" >> "$trace_file"
+        printf 'RUNTIME=%s\\n' "${SYMPHONY_AGENT_RUNTIME-<unset>}" >> "$trace_file"
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-env-strip","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"sess-env-strip","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:ok, _result} = AppServer.run_turn(session, "confirm env strip", %{}, [])
+
+        trace = File.read!(trace_file)
+        assert trace =~ "LINEAR=<unset>"
+        assert trace =~ "ANTHROPIC=<unset>"
+        assert trace =~ "OPENAI=<unset>"
+        assert trace =~ "GH=<unset>"
+        assert trace =~ "GITHUB=<unset>"
+        assert trace =~ "SSH_AUTH_SOCK=<unset>"
+        assert trace =~ "RUNTIME=1"
+
+        Enum.each(secret_vars, fn {_name, value} ->
+          refute trace =~ value, "secret value leaked into Claude subprocess: #{value}"
+        end)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "runs a successful turn using a command found on PATH" do
       test_root =
         Path.join(

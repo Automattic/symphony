@@ -17,6 +17,8 @@ defmodule SymphonyElixir.AuditLog do
   @common_secret_envs [
     "LINEAR_API_KEY",
     "LINEAR_ASSIGNEE",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "SLACK_WEBHOOK_URL",

@@ -85,15 +85,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   # --- Sandbox settings ---
 
   @doc false
-  @spec build_sandbox_settings(Agent.NetworkAccess.t()) :: map()
-  def build_sandbox_settings(%Agent.NetworkAccess{mode: mode} = network_access) do
+  @spec build_sandbox_settings(Agent.NetworkAccess.t(), [String.t()]) :: map()
+  def build_sandbox_settings(%Agent.NetworkAccess{mode: mode} = network_access, allow_read_paths \\ []) do
     base =
       %{
         "sandbox" => %{
           "enabled" => true,
           "failIfUnavailable" => true,
           "allowUnsandboxedCommands" => false,
-          "filesystem" => AgentSandboxConfig.claude_filesystem_settings()
+          "filesystem" => AgentSandboxConfig.claude_filesystem_settings(allow_read_paths)
         }
       }
 
@@ -118,10 +118,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   @doc false
-  @spec build_sandbox_settings(Agent.NetworkAccess.t(), McpServer.session(), Path.t(), Path.t()) :: map()
-  def build_sandbox_settings(network_access, mcp_session, socket_path, shim_path) do
+  @spec build_sandbox_settings(Agent.NetworkAccess.t(), [String.t()], McpServer.session(), Path.t(), Path.t()) :: map()
+  def build_sandbox_settings(network_access, allow_read_paths, mcp_session, socket_path, shim_path) do
     network_access
-    |> build_sandbox_settings()
+    |> build_sandbox_settings(allow_read_paths)
     |> Map.put("mcpServers", %{
       "symphony" => %{
         "command" => shim_path,
@@ -396,9 +396,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp write_claude_settings(_workspace, worker_host, settings, mcp_session, socket_path, remote_shim_path) do
     network_access = settings.agent.network_access
+    allow_read_paths = workspace_sandbox_allow_read_paths(settings)
     effective_shim_path = effective_shim_path(mcp_session, remote_shim_path)
     effective_socket_path = socket_path || mcp_session.socket_path
-    sandbox_json = build_sandbox_settings(network_access, mcp_session, effective_socket_path, effective_shim_path)
+
+    sandbox_json =
+      build_sandbox_settings(network_access, allow_read_paths, mcp_session, effective_socket_path, effective_shim_path)
+
     settings_dir = claude_settings_dir(worker_host, mcp_session)
     settings_path = Path.join(settings_dir, "settings.json")
 
@@ -407,6 +411,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       {:ok, settings_path}
     end
   end
+
+  defp workspace_sandbox_allow_read_paths(%Schema{workspace: %{sandbox: %{allow_read_paths: paths}}}) when is_list(paths),
+    do: paths
+
+  defp workspace_sandbox_allow_read_paths(_settings), do: []
 
   defp claude_settings_dir(nil, %{id: id}) when is_binary(id) do
     Path.join(System.tmp_dir!(), "symphony-claude-settings-#{id}")

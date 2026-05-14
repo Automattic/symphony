@@ -184,8 +184,8 @@ tracker:
 workspace:
   root: ~/code/workspaces
   sandbox:
-    # Optional Codex read overrides for default-denied credential/config paths
-    # that a specific repo legitimately needs, such as private package registries.
+    # Optional read overrides for default-denied credential/config paths that
+    # a specific repo legitimately needs, such as private package registries.
     allow_read_paths: []
 github:
   # Optional GitHub Enterprise hosts accepted for PR URLs and repo URLs.
@@ -320,12 +320,12 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.
   - `agent.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace for Codex.
   - `agent.network_access.mode` defaults to `allowlist`.
-- `workspace.sandbox.allow_read_paths` is an advanced Codex-only escape hatch for paths that are
-  denied by Symphony's default credential read-deny list but are required by the agent runtime for
-  legitimate repository work. Entries are exact sandbox paths such as `~/.npmrc` or
-  `~/.cargo/credentials`; configured entries are rendered as read-only Codex filesystem access
-  instead of `none`. Do not use it for the agent runtime credential stores under `~/.codex` or
-  `~/.claude`.
+- `workspace.sandbox.allow_read_paths` is an advanced escape hatch for paths that are denied by
+  Symphony's default credential read-deny list but are required by the agent runtime for legitimate
+  repository work. Entries are exact sandbox paths such as `~/.npmrc` or `~/.cargo/credentials`.
+  For Codex they are rendered as read-only filesystem access instead of `none`; for Claude they are
+  removed from the `sandbox.filesystem.denyRead` list. Do not use it for the agent runtime
+  credential stores under `~/.codex` or `~/.claude`.
 - Supported `agent.approval_policy` values depend on the targeted Codex app-server version. In the
   current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and
   `auto_approve_all`, and object-form `reject` is also supported. `auto_approve_all` is the
@@ -419,6 +419,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 - With SSH workers, `workspace.root` and `repos[].workspace.repo` are both interpreted on the worker
   host. Each worker host needs its own primary clone per worktree-backed repo; Symphony surfaces a
   workspace error if it is missing.
+- For SSH workers, scoped Linear operations and GitHub PR API operations exposed through brokered
+  dynamic tools run in the orchestrator with orchestrator credentials. During Codex session setup,
+  Symphony discovers the remote workspace's `origin` URL and current branch over SSH and uses that
+  captured scope for `github_get_pull_request`, `github_create_pull_request`,
+  `github_update_pull_request_body`, `github_add_pr_comment`, and `github_get_pr_checks`. Git push
+  is separate: `github_push_branch` is not brokered for SSH workers and returns an unsupported
+  error.
 - `workspace.lifecycle.max_age_days` defaults to `14` and removes local workspaces older than that
   age on startup and then every `workspace.lifecycle.gc_interval_ms` milliseconds while Symphony is
   running. The age GC skips currently running workspaces, but does not require the associated issue

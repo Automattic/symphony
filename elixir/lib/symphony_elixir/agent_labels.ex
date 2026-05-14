@@ -43,6 +43,8 @@ defmodule SymphonyElixir.AgentLabels do
   end
 
   @spec normalize_kind(String.t() | atom() | nil) :: String.t() | nil
+  def normalize_kind(nil), do: nil
+
   def normalize_kind(kind) when is_atom(kind), do: kind |> Atom.to_string() |> normalize_kind()
 
   def normalize_kind(kind) when is_binary(kind) do

@@ -65,11 +65,15 @@ defmodule SymphonyElixir.AgentTools.GitHub do
 
   @spec push_branch(context(), keyword()) :: {:ok, map()} | {:error, term()}
   def push_branch(context, opts \\ []) do
-    with {:ok, workspace} <- workspace(context),
-         {:ok, branch} <- current_branch(context, opts),
-         :ok <- verify_current_origin(context, workspace, opts),
-         {:ok, output} <- run_git(["push", "origin", branch], workspace, opts) do
-      {:ok, %{"remote" => "origin", "branch" => branch, "output" => String.trim(output)}}
+    if ssh_worker?(context) do
+      {:error, {:unsupported_for_ssh_worker, :github_push_branch}}
+    else
+      with {:ok, workspace} <- workspace(context),
+           {:ok, branch} <- current_branch(context, opts),
+           :ok <- verify_current_origin(context, workspace, opts),
+           {:ok, output} <- run_git(["push", "origin", branch], workspace, opts) do
+        {:ok, %{"remote" => "origin", "branch" => branch, "output" => String.trim(output)}}
+      end
     end
   end
 
@@ -117,13 +121,40 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   end
 
   defp current_branch(context, opts) do
+    case captured_current_branch(context) do
+      {:ok, branch} ->
+        {:ok, branch}
+
+      {:error, _reason} = error ->
+        error
+
+      :missing ->
+        current_branch_from_workspace(context, opts)
+    end
+  end
+
+  defp captured_current_branch(context) do
+    case command_security(context) |> Map.get(:current_branch) do
+      branch when is_binary(branch) ->
+        normalize_branch(branch)
+
+      _missing ->
+        :missing
+    end
+  end
+
+  defp current_branch_from_workspace(context, opts) do
     with {:ok, workspace} <- workspace(context),
          {:ok, output} <- run_git(["branch", "--show-current"], workspace, opts) do
-      case String.trim(output) do
-        "" -> {:error, :missing_current_branch}
-        "HEAD" -> {:error, :detached_head}
-        branch -> {:ok, branch}
-      end
+      normalize_branch(output)
+    end
+  end
+
+  defp normalize_branch(branch) when is_binary(branch) do
+    case String.trim(branch) do
+      "" -> {:error, :missing_current_branch}
+      "HEAD" -> {:error, :detached_head}
+      branch -> {:ok, branch}
     end
   end
 
@@ -139,6 +170,13 @@ defmodule SymphonyElixir.AgentTools.GitHub do
 
   defp command_security(context) when is_map(context), do: Map.get(context, :command_security) || %{}
   defp command_security(_context), do: %{}
+
+  defp ssh_worker?(context) do
+    case Map.get(command_security(context), :worker_host) do
+      worker_host when is_binary(worker_host) and worker_host != "" -> true
+      _worker_host -> false
+    end
+  end
 
   defp verify_current_origin(context, workspace, opts) do
     expected_origin_url = Map.get(command_security(context), :origin_url)

@@ -1,5 +1,10 @@
 tracker:
   kind: linear
+  # endpoint: https://api.linear.app/graphql # Optional Linear API endpoint override.
+  # api_key: $LINEAR_API_KEY # Optional; defaults to LINEAR_API_KEY from the environment.
+  # project_slug: my-project # Optional global Linear project slug when repos do not set projects.
+  # team: ENG # Optional global Linear team key or ID.
+  # labels: [codex] # Optional global Linear labels; repo labels add tighter routing.
   assignee: me
   active_states:
     - Todo
@@ -14,6 +19,12 @@ tracker:
     - Done
 repos:
   - name: symphony
+    # default: true # Optional fallback repo when an issue does not match another repo route.
+    # path: ~/Projects/symphony # Optional legacy base path for resolving workflow.
+    # base_branch: main # Optional self-review comparison branch; defaults to origin/HEAD or origin/main.
+    # team: ENG # Optional repo-level Linear team selector.
+    # labels: [backend] # Optional repo-level Linear label selector.
+    # assignee: me # Optional repo-level assignee selector.
     projects: ["building-the-harness-ai-agents-that-ship-production-code-safely-f469eb38bbc5"]
     workflow: WORKFLOW.md
     workspace:
@@ -22,29 +33,58 @@ repos:
       fetch_before_dispatch: true
 workspace:
   root: ~/Projects/symphony-workspaces
+  # strategy: clone # Optional global default: clone or worktree. Prefer per-repo workspace for multi-repo configs.
+  # repo: ~/Projects/symphony # Required only when a global worktree strategy is used.
+  # fetch_before_dispatch: true # Fetch origin before each worktree dispatch.
+  # sandbox:
+  #   allow_read_paths: [] # Read overrides for default-denied credential/config paths, such as ~/.npmrc for private registries.
   lifecycle:
+    # age_gc_enabled: true # Remove old local workspaces on the cleanup interval.
     max_age_days: 14
     gc_interval_ms: 3600000
+    # min_free_bytes: 10737418240 # Pause new dispatch when workspace storage drops below this.
     orphan_action: log
     trash_dir: .trash
+# worker:
+#   ssh_hosts: [] # Optional SSH worker hosts, for example devbox-01 or devbox-01:2222.
+#   max_concurrent_agents_per_host: 2 # Optional per-host dispatch cap.
+# github:
+#   enterprise_hosts: [] # Optional GitHub Enterprise hosts accepted in repo and PR URLs.
 agent:
   kind: codex
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_HEADLESS="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_ISOLATED="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_ACTION="5000"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_NAVIGATION="15000"' app-server
   max_concurrent_agents: 10
+  # max_concurrent_agents_by_state:
+  #   rework: 2 # Optional per-Linear-state concurrency override.
   max_turns: 8
+  # max_retry_backoff_ms: 300000 # Maximum retry delay after failed runs.
   max_tokens_per_issue: 100000000
   max_tokens_per_day: 1000000000
+  # remote_control: false # Claude-only; invalid for Codex.
   approval_policy: auto_approve_all
   thread_sandbox: workspace-write
   network_access:
     mode: allowlist
+    # allowed_domains: [] # Extra domains agents may reach in allowlist mode.
+    # denied_domains: [] # Domains blocked even if built in or allowed above.
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+    # writableRoots: [] # Symphony adds the issue workspace and git metadata roots at runtime.
+  # turn_timeout_ms: 3600000 # Maximum time for one agent turn.
+  # read_timeout_ms: 5000 # App-server response read timeout.
+  # stall_timeout_ms: 300000 # No-progress timeout before retry handling.
+  # command_timeout_ms: 600000 # Maximum time for one shell command; 0 disables this guard.
 polling:
   interval_ms: 5000
 pr_review:
   mode: polling
+  # cooldown_minutes: 10 # Polling mode: wait before responding to review comments.
+  # stale_days: 7 # Polling mode: stop watching closed or idle PRs after this many days.
+  # github_user: your-github-user # Polling mode: current operator user, used for review filtering.
+  # bot_users: [] # Polling mode: GitHub users ignored as bot reviewers.
+  # auto_reply: false # Polling mode: reply to addressed review comments.
+  # auto_request_review: false # Polling mode: request another review after pushing rework.
 ci:
   enabled: true
   poll_interval_ms: 30000
@@ -52,35 +92,63 @@ ci:
   flaky_retry: true
   max_retries: 3
   escalation_state: In Review
+# verification:
+#   enabled: false # Optional dev-server verification before agent turns.
+#   port_allocation:
+#     range: [4000, 4099] # Ports exposed as SYMPHONY_VERIFICATION_PORT.
+#   dev_server:
+#     start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT" # Usually better in WORKFLOW.md.
+#     health_check_url: "http://localhost:${SYMPHONY_VERIFICATION_PORT}/healthz"
+#     health_timeout_ms: 30000
+#     stop_signal: TERM
+#     stop_timeout_ms: 10000
 quality_gate:
   enabled: false
-  provider: anthropic
+  provider: anthropic # Optional: anthropic or openai.
   model: claude-haiku-4-5-20251001
   pass_threshold: 6
   clarification_floor: 4
   max_clarification_rounds: 2
-  on_error: pass
+  # min_score: 6 # Legacy alias used only when pass_threshold is unset.
+  on_error: pass # Optional: pass dispatches if the scorer fails; skip retries later.
 learnings:
   enabled: true
-  provider: anthropic
+  provider: anthropic # Optional: anthropic or openai.
   model: claude-haiku-4-5-20251001
   max_total_per_repo: 500
   max_per_run: 3
 self_review:
   enabled: true
-  provider: anthropic
+  provider: anthropic # Optional: anthropic or openai.
   model: claude-sonnet-4-6
   diff_max_lines: 600
-  max_rounds: 1
+  max_rounds: 1 # v1 supports one correction round.
+# dependencies:
+#   allow_registries: [] # Extra package registries trusted by dependency audit.
+#   allow_git_sources: [] # Extra git dependency sources trusted by dependency audit.
+#   allow_path_sources: [] # Extra local path dependency sources trusted by dependency audit.
 watchdog:
   enabled: true
   tick_interval_ms: 60000
   no_progress_threshold_ms: 600000
 observability:
+  # dashboard_enabled: true # Start the local dashboard unless disabled.
+  # refresh_ms: 1000 # Dashboard polling interval.
+  # render_interval_ms: 16 # Transcript rendering throttle.
   transcript_buffer_size: 200
+# server:
+#   host: 127.0.0.1 # Optional dashboard host; CLI --host overrides this.
+#   port: 0 # Optional dashboard port; 0 means ephemeral and CLI --port overrides this.
 notifications:
   enabled: false
+  # redact_titles: false # Hide issue and PR titles in outgoing notifications.
   channels:
     - kind: slack
       webhook_url: $SLACK_WEBHOOK_URL
       events: [pr_opened, awaiting_review, run_failed, issue_completed, budget_exceeded, dependency_pending_approval, reviewer_commented, rework_pushed, ci_failed, ci_escalated]
+    # - kind: webhook
+    #   url: $NOTIFY_WEBHOOK_URL
+    #   allow_private: false # Set true only for trusted private/internal webhook hosts.
+    #   events: [run_failed, ci_failed]
+    #   headers:
+    #     Authorization: $NOTIFY_AUTH_HEADER

@@ -3226,8 +3226,13 @@ defmodule SymphonyElixir.AppServerTest do
       File.write!(fake_ssh, """
       #!/bin/sh
       trace_file="#{trace_file}"
-      count=0
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+
+      case "$*" in
+        *"remote"*"get-url"*"origin"*|*"branch"*"--show-current"*)
+          exit 0
+          ;;
+      esac
 
       while IFS= read -r line; do
         count=$((count + 1))
@@ -3336,6 +3341,139 @@ defmodule SymphonyElixir.AppServerTest do
                      get_in(payload, ["params", "cwd"]) == remote_workspace &&
                      get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_policy
                  end)
+               else
+                 false
+               end
+             end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server discovers remote github context over ssh for dynamic tools" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-remote-gh-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    on_exit(fn -> restore_env("PATH", previous_path) end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh-remote-gh.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      remote_workspace = "/remote/workspaces/MT-REMOTE-GH"
+
+      File.mkdir_p!(test_root)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+
+      case "$*" in
+        *"remote"*"get-url"*"origin"*)
+          printf 'DISCOVERY:origin\\n' >> "$trace_file"
+          printf '%s\\n' 'git@github.example.com:acme/symphony.git'
+          exit 0
+          ;;
+        *"branch"*"--show-current"*)
+          printf 'DISCOVERY:branch\\n' >> "$trace_file"
+          printf '%s\\n' 'feature/remote-gh'
+          exit 0
+          ;;
+      esac
+
+      while IFS= read -r line; do
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$line" in
+          *'"id":1'*)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          *'"method":"thread/start"'*)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-remote-gh"}}}'
+            ;;
+          *'"method":"turn/start"'*)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-remote-gh","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":89,"method":"item/tool/call","params":{"name":"github_get_pull_request","callId":"call-remote-gh","threadId":"thread-remote-gh","turnId":"turn-remote-gh","arguments":{}}}'
+            ;;
+          *'"id":89'*)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "/remote/workspaces",
+        github: %{enterprise_hosts: ["github.example.com"]},
+        agent_command: "fake-remote-codex app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-remote-gh",
+        identifier: "MT-REMOTE-GH",
+        title: "Remote GitHub context",
+        description: "Validate ssh-backed GitHub dynamic tools",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-REMOTE-GH",
+        labels: ["backend"]
+      }
+
+      gh_runner = fn
+        ["pr", "view", "feature/remote-gh", "--repo", "github.example.com/acme/symphony", "--json", fields], opts ->
+          refute Keyword.has_key?(opts, :cd)
+          assert fields == "number,state,title,body,url,headRefName,baseRefName"
+
+          {Jason.encode!(%{
+             "number" => 3187,
+             "state" => "OPEN",
+             "title" => "Remote GitHub context",
+             "body" => "Body",
+             "url" => "https://github.example.com/acme/symphony/pull/3187",
+             "headRefName" => "feature/remote-gh",
+             "baseRefName" => "main"
+           }), 0}
+      end
+
+      git_runner = fn _args, _opts -> flunk("remote dynamic GitHub tools should not run local git") end
+
+      assert {:ok, _result} =
+               AppServer.run(
+                 remote_workspace,
+                 "Read remote PR",
+                 issue,
+                 worker_host: "worker-01:2200",
+                 gh_runner: gh_runner,
+                 git_runner: git_runner
+               )
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      assert "DISCOVERY:origin" in lines
+      assert "DISCOVERY:branch" in lines
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 payload =
+                   line
+                   |> String.trim_leading("JSON:")
+                   |> Jason.decode!()
+
+                 payload["id"] == 89 and
+                   get_in(payload, ["result", "success"]) == true and
+                   get_in(payload, ["result", "output"])
+                   |> Jason.decode!()
+                   |> get_in(["url"])
+                   |> Kernel.==("https://github.example.com/acme/symphony/pull/3187")
                else
                  false
                end

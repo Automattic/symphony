@@ -5,9 +5,9 @@ defmodule SymphonyElixirWeb.LearningsLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.GitHub.Hosts
   alias SymphonyElixir.Learnings.Store
 
-  @trusted_pr_host "github.com"
   @trusted_linear_host "linear.app"
   @repo_path_part_pattern ~r/^[A-Za-z0-9._-]+$/
 
@@ -198,8 +198,12 @@ defmodule SymphonyElixirWeb.LearningsLive do
   defp linear_href(_entry), do: nil
 
   defp trusted_pr_href(host, owner, repo, number) when number > 0 do
-    if downcase(host) == @trusted_pr_host and valid_repo_path_part?(owner) and valid_repo_path_part?(repo) do
-      "https://#{@trusted_pr_host}/#{owner}/#{repo}/pull/#{number}"
+    with {:ok, host} <- Hosts.canonical_github_host(host),
+         true <- valid_repo_path_part?(owner),
+         true <- valid_repo_path_part?(repo) do
+      "https://#{host}/#{owner}/#{repo}/pull/#{number}"
+    else
+      _ -> nil
     end
   end
 

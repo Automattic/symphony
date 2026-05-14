@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   require Logger
   alias SymphonyElixir.{AuditLog, Config, Linear.Issue, Secret}
+  alias SymphonyElixir.GitHub.Hosts
 
   @issue_page_size 50
   @attachment_page_size 20
@@ -1038,41 +1039,22 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp extract_pull_request_url(_issue), do: nil
 
-  defp pull_request_attachment_url(%{"url" => url} = attachment) when is_binary(url) do
-    source_type = attachment["sourceType"]
-
-    if github_pull_request_url?(url, source_type) do
+  defp pull_request_attachment_url(%{"url" => url}) when is_binary(url) do
+    if github_pull_request_url?(url) do
       url
     end
   end
 
   defp pull_request_attachment_url(_attachment), do: nil
 
-  defp github_pull_request_url?(url, source_type) do
+  defp github_pull_request_url?(url) do
     case URI.parse(url) do
-      %URI{host: host, path: path} when is_binary(host) and is_binary(path) ->
-        (github_source?(source_type) or github_host?(host)) and github_pull_request_path?(path)
+      %URI{scheme: "https", host: host, path: path} when is_binary(host) and is_binary(path) ->
+        Hosts.github_host?(host) and github_pull_request_path?(path)
 
       _ ->
         false
     end
-  end
-
-  defp github_source?(source_type) when is_binary(source_type) do
-    source_type
-    |> String.trim()
-    |> String.downcase()
-    |> Kernel.==("github")
-  end
-
-  defp github_source?(_source_type), do: false
-
-  defp github_host?(host) when is_binary(host) do
-    normalized_host = String.downcase(host)
-
-    normalized_host in ["github.com", "www.github.com"] or
-      String.ends_with?(normalized_host, ".github.com") or
-      String.starts_with?(normalized_host, "github.")
   end
 
   defp github_pull_request_path?(path) when is_binary(path) do

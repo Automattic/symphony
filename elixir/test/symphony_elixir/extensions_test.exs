@@ -1413,6 +1413,8 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "learnings liveview hides untrusted PR and Linear evidence links" do
+    write_workflow_file!(Workflow.workflow_file_path(), github: %{enterprise_hosts: ["github.example.com"]})
+
     now = DateTime.utc_now()
 
     assert :ok =
@@ -1432,6 +1434,21 @@ defmodule SymphonyElixir.ExtensionsTest do
                    evidence_pr_number: 123,
                    evidence_run_id: "run-live-trusted",
                    created_at: now
+                 },
+                 %{
+                   repo_key: "default",
+                   id: "learning-live-ghe",
+                   host: "github.example.com",
+                   owner: "enterprise",
+                   repo: "service",
+                   rule: "Keep configured GitHub Enterprise PRs linked.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Trusted GHE PR.",
+                   evidence_issue_identifier: "RSM-LIVE-GHE",
+                   evidence_issue_url: "https://linear.app/a8c/issue/RSM-LIVE-GHE",
+                   evidence_pr_number: 456,
+                   evidence_run_id: "run-live-ghe",
+                   created_at: DateTime.add(now, -15, :second)
                  },
                  %{
                    repo_key: "default",
@@ -1474,6 +1491,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Keep trusted GitHub PRs linked."
     assert html =~ ~s(href="https://github.com/example/repo/pull/123" target="_blank")
     assert html =~ ~s(href="https://linear.app/a8c/issue/RSM-LIVE-TRUSTED" target="_blank")
+
+    assert html =~ "Keep configured GitHub Enterprise PRs linked."
+    assert html =~ ~s(href="https://github.example.com/enterprise/service/pull/456" target="_blank")
 
     assert html =~ "Do not link attacker PR hosts."
     assert html =~ "login-github.attacker.tld/foo/bar"

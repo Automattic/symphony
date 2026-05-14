@@ -5,6 +5,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.{Agent, StringOrMap}
   alias SymphonyElixir.Config.Schema.Verification.DevServer, as: DevServerConfig
   alias SymphonyElixir.Config.Schema.Workspace.Lifecycle, as: WorkspaceLifecycle
+  alias SymphonyElixir.GitHub.Hosts
   alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.Secret
 
@@ -686,6 +687,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "linear client normalizes blockers from inverse relations" do
+    write_workflow_file!(Workflow.workflow_file_path(), github: %{enterprise_hosts: ["github.example.com"]})
+
     raw_issue = %{
       "id" => "issue-1",
       "identifier" => "MT-1",
@@ -791,6 +794,67 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     issue = Client.normalize_issue_for_test(raw_issue)
 
     assert issue.pull_request_url == "https://github.com/example/repo/pull/42"
+  end
+
+  test "linear client rejects GitHub source attachments on non-allowlisted hosts" do
+    malicious_hosts = [
+      "evil.example",
+      "github.evil.tld",
+      "www.github.com.evil.tld"
+    ]
+
+    attachments =
+      Enum.map(malicious_hosts, fn host ->
+        %{
+          "sourceType" => "github",
+          "url" => "https://#{host}/example/repo/pull/42"
+        }
+      end) ++
+        [
+          %{
+            "sourceType" => "github",
+            "url" => "https://github.com/example/repo/pull/42"
+          }
+        ]
+
+    raw_issue = %{
+      "id" => "issue-pr-hosts",
+      "identifier" => "MT-PR-HOSTS",
+      "title" => "Reviewable issue",
+      "state" => %{"name" => "In Review"},
+      "attachments" => %{"nodes" => attachments}
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue)
+
+    assert issue.pr_urls == ["https://github.com/example/repo/pull/42"]
+    assert issue.pull_request_url == "https://github.com/example/repo/pull/42"
+  end
+
+  test "linear client accepts configured GitHub Enterprise pull request attachment URLs" do
+    write_workflow_file!(Workflow.workflow_file_path(), github: %{enterprise_hosts: ["GITHUB.EXAMPLE.COM", " github.example.com "]})
+
+    raw_issue = %{
+      "id" => "issue-pr-ghe",
+      "identifier" => "MT-PR-GHE",
+      "title" => "Reviewable issue",
+      "state" => %{"name" => "In Review"},
+      "attachments" => %{
+        "nodes" => [
+          %{
+            "sourceType" => "github",
+            "url" => "https://github.example.com/example/repo/pull/42"
+          }
+        ]
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue)
+
+    assert Config.settings!().github.enterprise_hosts == ["github.example.com"]
+    assert Hosts.allowed_github_hosts() == ["github.com", "www.github.com", "github.example.com"]
+    assert issue.pr_urls == ["https://github.example.com/example/repo/pull/42"]
+    assert issue.pull_request_url == "https://github.example.com/example/repo/pull/42"
   end
 
   test "linear client marks explicitly unassigned issues as not routed to worker" do

@@ -357,6 +357,49 @@ defmodule SymphonyElixir.PrReviewPollerTest do
            ] = RunStore.list_pr_reviews()
   end
 
+  test "polling ignores malicious Linear GitHub attachments before GitHub fetch" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    issue =
+      Client.normalize_issue_for_test(%{
+        "id" => "issue-malicious",
+        "identifier" => "RSM-MAL",
+        "title" => "Malicious attachment",
+        "state" => %{"name" => "In Review"},
+        "url" => "https://linear.app/example/issue/RSM-MAL",
+        "attachments" => %{
+          "nodes" => [
+            %{
+              "sourceType" => "github",
+              "url" => "https://github-evil.attacker.tld/org/repo/pull/42"
+            }
+          ]
+        },
+        "updatedAt" => "2026-05-01T09:00:00Z"
+      })
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: @repo_key,
+               run_id: "run-malicious",
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               status: "success",
+               workspace_path: "/tmp/workspaces/RSM-MAL",
+               worker_host: nil,
+               started_at: DateTime.add(now, -120, :second),
+               ended_at: DateTime.add(now, -60, :second)
+             })
+
+    assert {:ok, %{discovered: 0, processed: 0, actions: []}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FailingGitHub, now: now)
+
+    assert RunStore.list_pr_reviews() == []
+    refute_receive {:github_fetch, _pr_url}
+  end
+
   test "discovers workspace from newest completed run regardless of store order" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
@@ -506,7 +549,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                       issue_id: "issue-1780",
                       issue_identifier: "RSM-1780",
                       issue_title: "Review manager",
-                      issue_url: "https://linear.app/a8c/issue/RSM-1780",
+                      issue_url: "https://linear.app/example/issue/RSM-1780",
                       pr_url: "https://github.com/example/repo/pull/1780",
                       state: "In Progress",
                       reason: "1 actionable reviewer comment discovered",
@@ -853,7 +896,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                       issue_id: "issue-1780",
                       issue_identifier: "RSM-1780",
                       issue_title: "Review manager",
-                      issue_url: "https://linear.app/a8c/issue/RSM-1780",
+                      issue_url: "https://linear.app/example/issue/RSM-1780",
                       pr_url: "https://github.com/example/repo/pull/1780",
                       state: "In Progress",
                       reason: "1 actionable reviewer comment addressed",
@@ -1505,7 +1548,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              tags: ["docs", "workflow-config"],
              evidence_quote: "Remember to update docs.",
              evidence_issue_identifier: "RSM-1780",
-             evidence_issue_url: "https://linear.app/a8c/issue/RSM-1780",
+             evidence_issue_url: "https://linear.app/example/issue/RSM-1780",
              evidence_pr_number: 1780,
              evidence_run_id: "run-1780",
              created_at: ^now
@@ -1949,7 +1992,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       issue_id: "issue-1780",
       issue_identifier: "RSM-1780",
       issue_title: "Review manager",
-      issue_url: "https://linear.app/a8c/issue/RSM-1780",
+      issue_url: "https://linear.app/example/issue/RSM-1780",
       pr_url: "https://github.com/example/repo/pull/1780",
       workspace_path: "/tmp/workspaces/RSM-1780",
       worker_host: nil,
@@ -1972,7 +2015,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       title: "Review manager",
       description: "Poll PR state",
       state: "In Review",
-      url: "https://linear.app/a8c/issue/#{identifier}",
+      url: "https://linear.app/example/issue/#{identifier}",
       pr_urls: [pr_url],
       comments: Keyword.get(opts, :comments, []),
       updated_at: updated_at

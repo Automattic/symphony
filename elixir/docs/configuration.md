@@ -183,6 +183,9 @@ tracker:
   assignee: null
 workspace:
   root: ~/code/workspaces
+github:
+  # Optional GitHub Enterprise hosts accepted for PR URLs and repo URLs.
+  enterprise_hosts: []
 verification:
   enabled: true
   port_allocation:
@@ -361,6 +364,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   dashboard shows daily usage and remaining daily budget, and active session rows show per-issue
   token usage with remaining headroom. Token displays include cached and uncached input when the
   agent reports cached input tokens, so large gross totals can be distinguished from fresh context.
+- `github.enterprise_hosts` is an exact host allowlist for GitHub Enterprise PR and repository
+  URLs. `github.com` and `www.github.com` are always accepted; other GitHub-like hostnames are
+  ignored unless listed here.
 - `watchdog` is enabled by default and protects running agent sessions from silent no-progress
   stalls. It checks running agents every `watchdog.tick_interval_ms` (default: `60000`) and
   compares the current time with the latest transcript event timestamp. When no event has arrived

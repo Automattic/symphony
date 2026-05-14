@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Learnings.Reflection do
 
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.GitHub.Hosts
   alias SymphonyElixir.Learnings.Store
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.{QualityGate, RunStore}
@@ -298,10 +299,12 @@ defmodule SymphonyElixir.Learnings.Reflection do
       {host, [owner, repo, "pull", number | _rest]} when is_binary(host) ->
         with true <- valid_pr_path_part?(owner),
              true <- valid_pr_path_part?(repo),
+             {:ok, host} <- Hosts.canonical_github_host(host),
              {pr_number, ""} <- Integer.parse(number) do
-          {:ok, %{host: String.downcase(host), owner: owner, repo: repo}, pr_number}
+          {:ok, %{host: host, owner: owner, repo: repo}, pr_number}
         else
           false -> {:error, :invalid_pr_url}
+          :error -> {:error, :invalid_pr_url}
           _ -> {:error, :invalid_pr_number}
         end
 

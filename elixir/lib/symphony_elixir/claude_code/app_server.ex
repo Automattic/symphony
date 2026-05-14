@@ -7,6 +7,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   alias SymphonyElixir.{AgentEnv, AgentSandboxConfig, Config, McpServer, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
+  alias SymphonyElixir.GitHub.Hosts
 
   @agent_runtime_env AgentEnv.runtime_marker_name()
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
@@ -713,11 +714,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       ],
       fn regex ->
         case Regex.run(regex, url) do
-          [_full, host, owner, repo] -> {String.downcase(host), owner, repo}
+          [_full, host, owner, repo] -> canonical_github_repo_parts(host, owner, repo)
           _ -> nil
         end
       end
     )
+  end
+
+  defp canonical_github_repo_parts(host, owner, repo) do
+    case Hosts.canonical_github_host(host) do
+      {:ok, canonical_host} -> {canonical_host, owner, repo}
+      :error -> nil
+    end
   end
 
   defp blank_to_nil(value) when is_binary(value) do

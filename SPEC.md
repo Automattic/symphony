@@ -652,7 +652,16 @@ Fields:
 
 Polling-only options are ignored when `mode` is not `polling`.
 
-#### 5.4.7 `hooks` (object)
+#### 5.4.7 `github` (object)
+
+Fields:
+
+- `enterprise_hosts` (list of strings)
+  - Default: `[]`.
+  - Exact host allowlist for GitHub Enterprise PR and repository URLs.
+  - `github.com` and `www.github.com` are always accepted.
+
+#### 5.4.8 `hooks` (object)
 
 Fields:
 

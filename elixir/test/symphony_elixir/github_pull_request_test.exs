@@ -1,7 +1,23 @@
 defmodule SymphonyElixir.GitHub.PullRequestTest do
   use ExUnit.Case, async: true
 
+  alias SymphonyElixir.GitHub.Hosts
   alias SymphonyElixir.GitHub.PullRequest
+
+  test "GitHub host helper allowlists public and configured enterprise hosts exactly" do
+    assert Hosts.allowed_github_hosts(github_enterprise_hosts: [" GHE.EXAMPLE.COM "]) == ["github.com", "www.github.com", "ghe.example.com"]
+
+    assert Hosts.github_host?("GITHUB.COM")
+    assert Hosts.github_host?(" www.github.com ")
+    assert Hosts.github_host?("ghe.example.com", github_enterprise_hosts: ["GHE.EXAMPLE.COM"])
+
+    refute Hosts.github_host?(nil)
+    refute Hosts.github_host?("github.evil.tld", github_enterprise_hosts: [])
+
+    assert {:ok, "github.com"} = Hosts.canonical_github_host("www.github.com")
+    assert {:ok, "ghe.example.com"} = Hosts.canonical_github_host("ghe.example.com", github_enterprise_hosts: ["GHE.EXAMPLE.COM"])
+    assert :error = Hosts.canonical_github_host(nil)
+  end
 
   test "fetch_activity separates review timestamps from PR updates and supports enterprise hosts" do
     pr_url = "https://github.example.com/org/repo/pull/42"
@@ -49,7 +65,7 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
          ]), 0}
     end
 
-    assert {:ok, activity} = PullRequest.fetch_activity(pr_url, gh_runner: runner)
+    assert {:ok, activity} = PullRequest.fetch_activity(pr_url, gh_runner: runner, github_enterprise_hosts: ["github.example.com"])
 
     assert activity.pr_url == pr_url
     assert activity.pr_number == 42
@@ -158,10 +174,15 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
                pr_url,
                %{id: "123", kind: "inline_comment"},
                "Addressed.",
-               gh_runner: runner
+               gh_runner: runner,
+               github_enterprise_hosts: ["github.example.com"]
              )
 
-    assert :ok = PullRequest.request_review(pr_url, ["reviewer", "reviewer", "maintainer"], gh_runner: runner)
+    assert :ok =
+             PullRequest.request_review(pr_url, ["reviewer", "reviewer", "maintainer"],
+               gh_runner: runner,
+               github_enterprise_hosts: ["github.example.com"]
+             )
   end
 
   test "reply_to_comment can fall back to an inline comment node id" do
@@ -178,7 +199,70 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
                pr_url,
                %{node_id: "PRRC_kwDO", kind: "inline_comment"},
                "Addressed.",
-               gh_runner: runner
+               gh_runner: runner,
+               github_enterprise_hosts: ["github.example.com"]
              )
+  end
+
+  test "fetch_activity rejects non-allowlisted github-like hosts before gh commands" do
+    pr_url = "https://github-evil.attacker.tld/org/repo/pull/42"
+
+    runner = fn args, _opts ->
+      send(self(), {:gh_called, args})
+      {"", 1}
+    end
+
+    assert {:error, :invalid_pr_url} =
+             PullRequest.fetch_activity(pr_url, gh_runner: runner, github_enterprise_hosts: [])
+
+    refute_receive {:gh_called, _args}
+  end
+
+  test "fetch_activity accepts www.github.com through the public GitHub API host" do
+    pr_url = "https://www.github.com/org/repo/pull/42"
+
+    runner = fn
+      ["pr", "view", ^pr_url, "--json", _fields], _opts ->
+        {Jason.encode!(%{
+           "number" => 42,
+           "state" => "OPEN",
+           "updatedAt" => "2026-05-01T10:00:00Z",
+           "comments" => [],
+           "reviews" => []
+         }), 0}
+
+      ["api", "repos/org/repo/pulls/42/comments"], _opts ->
+        send(self(), :used_public_github_api_host)
+        {Jason.encode!([]), 0}
+    end
+
+    assert {:ok, _activity} = PullRequest.fetch_activity(pr_url, gh_runner: runner)
+    assert_receive :used_public_github_api_host
+  end
+
+  test "reply and review commands reject non-allowlisted github-like hosts" do
+    pr_url = "https://www.github.com.evil.tld/org/repo/pull/42"
+
+    runner = fn args, _opts ->
+      send(self(), {:gh_called, args})
+      {"", 1}
+    end
+
+    assert {:error, :invalid_pr_url} =
+             PullRequest.reply_to_comment(pr_url, %{id: "123", kind: "inline_comment"}, "Addressed.",
+               gh_runner: runner,
+               github_enterprise_hosts: []
+             )
+
+    assert {:error, :invalid_pr_url} =
+             PullRequest.reply_to_comment(pr_url, %{id: "123", kind: "comment"}, "Addressed.",
+               gh_runner: runner,
+               github_enterprise_hosts: []
+             )
+
+    assert {:error, :invalid_pr_url} =
+             PullRequest.request_review(pr_url, ["reviewer"], gh_runner: runner, github_enterprise_hosts: [])
+
+    refute_receive {:gh_called, _args}
   end
 end

@@ -6,12 +6,18 @@ defmodule SymphonyElixirWeb.Router do
   use Phoenix.Router
   import Phoenix.LiveView.Router
 
+  alias SymphonyElixirWeb.Plugs.SameOriginOrAllowlisted
+
   pipeline :browser do
     plug(:fetch_session)
     plug(:fetch_live_flash)
     plug(:put_root_layout, html: {SymphonyElixirWeb.Layouts, :root})
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
+  end
+
+  pipeline :api_state_changing do
+    plug(SameOriginOrAllowlisted)
   end
 
   scope "/", SymphonyElixirWeb do
@@ -32,6 +38,12 @@ defmodule SymphonyElixirWeb.Router do
   end
 
   scope "/", SymphonyElixirWeb do
+    pipe_through(:api_state_changing)
+
+    post("/api/v1/refresh", ObservabilityApiController, :refresh)
+  end
+
+  scope "/", SymphonyElixirWeb do
     get("/api/v1/state", ObservabilityApiController, :state)
     get("/api/v1/runs", ObservabilityApiController, :runs)
     get("/api/v1/runs/:session_id/report", ObservabilityApiController, :quality_report)
@@ -40,7 +52,6 @@ defmodule SymphonyElixirWeb.Router do
     match(:*, "/api/v1/state", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/runs", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/runs/:session_id/report", ObservabilityApiController, :method_not_allowed)
-    post("/api/v1/refresh", ObservabilityApiController, :refresh)
     match(:*, "/api/v1/refresh", ObservabilityApiController, :method_not_allowed)
     get("/api/v1/:issue_identifier", ObservabilityApiController, :issue)
     match(:*, "/api/v1/:issue_identifier", ObservabilityApiController, :method_not_allowed)

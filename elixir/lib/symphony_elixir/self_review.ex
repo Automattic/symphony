@@ -237,7 +237,7 @@ defmodule SymphonyElixir.SelfReview do
       #{fail_open_known_limitations_section(result)}
       """
     else
-      push_prompt_for_result(result)
+      push_prompt_for_result(Map.put_new(result, :findings, []))
     end
   end
 
@@ -260,8 +260,6 @@ defmodule SymphonyElixir.SelfReview do
     #{advisory_prompt_instruction(result)}
     """
   end
-
-  defp push_prompt_for_result(result), do: push_prompt_for_result(Map.put(result, :findings, []))
 
   @spec known_limitations_section([finding()]) :: String.t()
   def known_limitations_section(findings) when is_list(findings) do

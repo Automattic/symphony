@@ -363,15 +363,29 @@ defmodule SymphonyElixir.SelfReviewTest do
                ~s({"verdict":"approve","findings":[],"acceptance_matrix":[{"criterion":"Add context","evidence":["self_review.ex"],"missing_evidence":false}],"advisory_notes":[{"category":"missing_context","description":"No validation evidence.","evidence":"coverage"}]})
              )
 
+    assert {:ok, %{advisory_notes: [], acceptance_matrix: [%{evidence: []}]}} =
+             SelfReview.parse_response(~s({"verdict":"approve","findings":[],"acceptance_matrix":[{"criterion":"No evidence list","evidence":123},"bad"],"advisory_notes":["bad"]}))
+
+    assert {:error, {:malformed_response, :invalid_acceptance_matrix}} =
+             SelfReview.parse_response(~s({"verdict":"approve","findings":[],"acceptance_matrix":{}}))
+
+    assert {:error, {:malformed_response, :invalid_advisory_notes}} =
+             SelfReview.parse_response(~s({"verdict":"approve","findings":[],"advisory_notes":{}}))
+
     assert SelfReview.request_changes?(%{verdict: :request_changes, findings: [%{category: :scope_creep}]})
     refute SelfReview.request_changes?(%{verdict: :approve, findings: []})
     assert SelfReview.approval_prompt(%{}) =~ "approved"
+    assert SelfReview.push_prompt(%{}) =~ "no remaining blocking findings"
     assert SelfReview.push_prompt(%{findings: []}) =~ "no remaining blocking findings"
 
     assert SelfReview.push_prompt(%{
              findings: [],
              advisory_notes: [%{category: :review_coverage_low, description: "Summary only."}]
            }) =~ "Self-review advisory notes"
+
+    assert SelfReview.advisory_notes_section([
+             %{category: :missing_context, description: "Context was summarized.", evidence: "coverage"}
+           ]) =~ "Evidence: `coverage`"
 
     assert SelfReview.fail_open_prompt(%{fail_open_category: :parse_error}) =~ "Self-review did not run: parse_error."
     assert SelfReview.push_prompt(%{fail_open_category: :git_unavailable, findings: []}) =~ "Self-review did not run: git_unavailable."

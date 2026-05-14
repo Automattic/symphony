@@ -633,9 +633,9 @@ defmodule SymphonyElixir.RunStore do
   defp setup_mnesia(_dir), do: {:error, :invalid_run_store_dir}
 
   defp prepare_mnesia_dirs(dir, core_dir) do
-    with :ok <- File.mkdir_p(dir),
-         :ok <- File.mkdir_p(core_dir) do
-      :ok
+    case File.mkdir_p(dir) do
+      :ok -> File.mkdir_p(core_dir)
+      {:error, reason} -> {:error, reason}
     end
   end
 

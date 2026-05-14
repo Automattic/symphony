@@ -12,7 +12,7 @@ Symphony reads two complementary files:
 - **`symphony.yml`** — operator config: tracker, polling, workspace, agent, gates, pollers,
   notifications, verification port defaults, and the list of supervised repos (`repos:`). Plain
   YAML, no `---` fences.
-- **`WORKFLOW.md`** — repo-local file containing the Codex prompt body plus per-repo `hooks` and
+- **`WORKFLOW.md`** — repo-local file containing the agent prompt body plus per-repo `hooks` and
   verification dev-server overrides. YAML front matter between two `---` lines, then the prompt
   template. Each repo listed under
   `repos:` has its own `WORKFLOW.md`, located at `<repo.path>/<repo.workflow>`.
@@ -323,9 +323,11 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 - `workspace.sandbox.allow_read_paths` is an advanced escape hatch for paths that are denied by
   Symphony's default credential read-deny list but are required by the agent runtime for legitimate
   repository work. Entries are exact sandbox paths such as `~/.npmrc` or `~/.cargo/credentials`.
-  For Codex they are rendered as read-only filesystem access instead of `none`; for Claude they are
-  removed from the `sandbox.filesystem.denyRead` list. Do not use it for the agent runtime
-  credential stores under `~/.codex` or `~/.claude`.
+  For Codex they are rendered as read-only filesystem access instead of `none`. The shared sandbox
+  helper can render the same deny-list subtraction for Claude, but the current Claude adapter does
+  not pass these entries into its temporary settings, so treat this as Codex-effective until that
+  adapter gap is closed. Do not use it for the agent runtime credential stores under `~/.codex` or
+  `~/.claude`.
 - Supported `agent.approval_policy` values depend on the targeted Codex app-server version. In the
   current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and
   `auto_approve_all`, and object-form `reject` is also supported. `auto_approve_all` is the
@@ -362,20 +364,29 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   Compatibility for the remaining fields still depends on the targeted Codex app-server version
   rather than local Symphony validation. For known Codex policies with a boolean `networkAccess`
   field, `agent.network_access` controls that field.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
+- `agent.max_turns` caps how many back-to-back agent turns Symphony will run in a single worker
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+  Codex starts one app-server thread per worker run and reuses that `threadId` for continuation
+  turns. The current Claude adapter launches Claude Code as a CLI `--print --output-format
+  stream-json` turn and does not pass a Symphony-managed resume/thread id between continuation
+  turns, so Claude continuation depends on workspace, workpad, Linear state, and the continuation
+  prompt rather than model-thread history.
 - `agent.max_tokens_per_issue` and `agent.max_tokens_per_day` are token budget guardrails. Defaults
   are `500000` tokens per issue and `5000000` tokens per UTC day, so workflows have finite caps even
   when these keys are omitted. Raise either value by setting a larger positive integer, or set either
   key to `null` to disable that specific cap intentionally. The per-issue limit stops only the
   over-budget issue without retrying; the daily limit pauses new dispatch for the UTC day while
-  allowing already-running agents to continue. Budget enforcement depends on Codex app-server token
-  reporting, so Symphony warns if either budget is active with a command that may not report token
-  usage. Per-issue exhausted runs are rehydrated from run history across restarts while the current
-  limit still applies; raising or disabling the per-issue limit lets the issue dispatch again. The
-  dashboard shows daily usage and remaining daily budget, and active session rows show per-issue
-  token usage with remaining headroom. Token displays include cached and uncached input when the
-  agent reports cached input tokens, so large gross totals can be distinguished from fresh context.
+  allowing already-running agents to continue. Budget enforcement depends on coding-agent token
+  reporting being normalized into Symphony's structured event path. Codex app-server token reporting
+  currently provides the most complete budget and dashboard accounting path; non-Codex commands, and
+  the current Claude adapter in particular, should be treated as best-effort for token budget
+  enforcement until their usage events are normalized the same way. Symphony warns if either budget
+  is active with a command that may not report token usage. Per-issue exhausted runs are rehydrated
+  from run history across restarts while the current limit still applies; raising or disabling the
+  per-issue limit lets the issue dispatch again. The dashboard shows daily usage and remaining daily
+  budget, and active session rows show per-issue token usage with remaining headroom. Token displays
+  include cached and uncached input when the agent reports cached input tokens, so large gross totals
+  can be distinguished from fresh context.
 - `github.enterprise_hosts` is an exact host allowlist for GitHub Enterprise PR and repository
   URLs. `github.com` and `www.github.com` are always accepted; other GitHub-like hostnames are
   ignored unless listed here.

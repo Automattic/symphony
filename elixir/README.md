@@ -149,6 +149,20 @@ If `--config` is omitted, Symphony reads `./symphony.yml` from the current worki
 exits with an error if it is missing. Per-repo `WORKFLOW.md` files are resolved from each entry
 under `repos:` and never need to be passed on the command line.
 
+### Agent adapter behavior
+
+Codex and Claude use the same Symphony runner contract, but their continuation behavior is not
+identical:
+
+- Codex starts one app-server thread for each Symphony worker run and reuses that `threadId` for
+  continuation turns until the run ends.
+- Claude Code is launched as a CLI turn with `--print --output-format stream-json`; the current
+  adapter does not pass a Symphony-managed resume or thread id between continuation turns.
+- Practically, Codex continuation turns can rely on prior model-thread context, while Claude
+  continuation turns must recover context from the workspace, workpad, Linear state, and the
+  continuation prompt. Codex app-server token events also provide the most complete dashboard and
+  budget accounting path today.
+
 ### Minimal config
 
 Most local runs need these five pieces:

@@ -1594,8 +1594,10 @@ Startup MUST follow the configured adapter contract. Symphony additionally requi
 - Supply the absolute per-issue workspace path as the thread/turn working directory wherever the
   targeted protocol accepts cwd.
 - Start the first turn with the rendered issue prompt.
-- Start later in-worker continuation turns on the same live thread with continuation guidance rather
-  than resending the original issue prompt.
+- Start later in-worker continuation turns on the same live thread when the configured adapter
+  exposes persistent thread/session context. Adapters without persistent continuation support SHOULD
+  send continuation guidance and rely on workspace, workpad, and tracker state instead of assuming
+  model-thread history is available.
 - Supply the implementation's documented approval and sandbox policy using fields supported by the
   targeted protocol.
 - Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
@@ -1608,6 +1610,14 @@ Session identifiers:
   emit `session_id = "<thread_id>-<turn_id>"`.
 - Claude: extract `session_id` from the stream-json `system` event when present.
 - Reuse persistent thread/session context for continuation turns when the adapter supports it.
+
+Current Elixir adapter behavior:
+
+- Codex starts one app-server thread per worker run and reuses that thread for continuation turns
+  until the worker run ends.
+- Claude Code is launched as a CLI stream-json `--print` turn. The current adapter does not pass a
+  Symphony-managed resume/thread id between continuation turns, so continuation quality depends on
+  workspace state, the issue workpad, tracker state, and the continuation prompt.
 
 ### 10.3 Streaming Turn Processing
 

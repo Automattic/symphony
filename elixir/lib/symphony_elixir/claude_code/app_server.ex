@@ -388,18 +388,26 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_claude_settings(workspace, worker_host, settings, mcp_session, socket_path, remote_shim_path) do
+  defp write_claude_settings(_workspace, worker_host, settings, mcp_session, socket_path, remote_shim_path) do
     network_access = settings.agent.network_access
     effective_shim_path = effective_shim_path(mcp_session, remote_shim_path)
     effective_socket_path = socket_path || mcp_session.socket_path
     sandbox_json = build_sandbox_settings(network_access, mcp_session, effective_socket_path, effective_shim_path)
-    claude_dir = Path.join(workspace, ".claude")
-    settings_path = Path.join(claude_dir, "settings.json")
+    settings_dir = claude_settings_dir(worker_host, mcp_session)
+    settings_path = Path.join(settings_dir, "settings.json")
 
     with {:ok, json} <- encode_settings_json(sandbox_json),
-         :ok <- write_settings_file(claude_dir, settings_path, json, worker_host) do
+         :ok <- write_settings_file(settings_dir, settings_path, json, worker_host) do
       {:ok, settings_path}
     end
+  end
+
+  defp claude_settings_dir(nil, %{id: id}) when is_binary(id) do
+    Path.join(System.tmp_dir!(), "symphony-claude-settings-#{id}")
+  end
+
+  defp claude_settings_dir(worker_host, %{id: id}) when is_binary(worker_host) and is_binary(id) do
+    Path.join("/tmp", "symphony-claude-settings-#{id}")
   end
 
   defp effective_shim_path(_mcp_session, remote_shim_path) when is_binary(remote_shim_path),
@@ -416,14 +424,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_settings_file(claude_dir, settings_path, json, nil) do
-    with :ok <- mkdir_claude_dir(claude_dir) do
+  defp write_settings_file(settings_dir, settings_path, json, nil) do
+    with :ok <- mkdir_claude_dir(settings_dir) do
       write_local_settings_file(settings_path, json)
     end
   end
 
-  defp write_settings_file(claude_dir, settings_path, json, worker_host) when is_binary(worker_host) do
-    command = remote_write_settings_command(claude_dir, settings_path, json)
+  defp write_settings_file(settings_dir, settings_path, json, worker_host) when is_binary(worker_host) do
+    command = remote_write_settings_command(settings_dir, settings_path, json)
 
     case ssh_module().run(worker_host, command, stderr_to_stdout: true) do
       {:ok, {_output, 0}} ->
@@ -437,17 +445,29 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp mkdir_claude_dir(claude_dir) do
-    case File.mkdir_p(claude_dir) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:claude_settings_write_failed, :mkdir_p, claude_dir, reason}}
+  defp mkdir_claude_dir(settings_dir) do
+    case File.mkdir(settings_dir) do
+      :ok ->
+        case File.chmod(settings_dir, 0o700) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:claude_settings_write_failed, :chmod, settings_dir, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:claude_settings_write_failed, :mkdir, settings_dir, reason}}
     end
   end
 
   defp write_local_settings_file(settings_path, json) do
-    case File.write(settings_path, json) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:claude_settings_write_failed, :write, settings_path, reason}}
+    case File.open(settings_path, [:write, :exclusive], fn file -> IO.write(file, json) end) do
+      {:ok, :ok} ->
+        case File.chmod(settings_path, 0o600) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:claude_settings_write_failed, :chmod, settings_path, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:claude_settings_write_failed, :write, settings_path, reason}}
     end
   end
 
@@ -469,11 +489,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp nonempty_string(_), do: {:error, :missing_remote_control_name}
 
-  defp start_port(workspace, command, prompt, nil, remote_control_name, _session) do
+  defp start_port(workspace, command, prompt, nil, remote_control_name, session) do
     with {:ok, {executable, command_args}} <- local_command(workspace, command) do
       args =
         command_args ++
-          remote_control_args(remote_control_name) ++ ["--output-format", "stream-json", "--print", prompt]
+          remote_control_args(remote_control_name) ++
+          claude_settings_args(session) ++ ["--output-format", "stream-json", "--print", prompt]
 
       port =
         Port.open(
@@ -499,7 +520,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
       ssh_module().start_port(
         worker_host,
-        remote_launch_command(workspace, command_words, prompt, remote_control_name),
+        remote_launch_command(workspace, command_words, prompt, remote_control_name, session.settings_path),
         line: @port_line_bytes,
         env: AgentEnv.build(),
         reverse_forwards: reverse_forwards
@@ -548,10 +569,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp remote_write_settings_command(claude_dir, settings_path, json) do
+  defp remote_write_settings_command(settings_dir, settings_path, json) do
     [
-      "mkdir -p #{shell_escape(claude_dir)}",
-      "printf %s #{shell_escape(json)} > #{shell_escape(settings_path)}"
+      "umask 077",
+      "mkdir #{shell_escape(settings_dir)}",
+      "chmod 0700 #{shell_escape(settings_dir)}",
+      "printf %s #{shell_escape(json)} > #{shell_escape(settings_path)}",
+      "chmod 0600 #{shell_escape(settings_path)}"
     ]
     |> Enum.join(" && ")
   end
@@ -578,9 +602,17 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp remote_control_args(nil), do: []
   defp remote_control_args(name), do: ["--remote-control", name]
 
-  defp remote_launch_command(workspace, command_words, prompt, remote_control_name) do
+  defp claude_settings_args(%{settings_path: settings_path}) when is_binary(settings_path) do
+    ["--setting-sources", "user", "--settings", settings_path]
+  end
+
+  defp claude_settings_args(_session), do: []
+
+  defp remote_launch_command(workspace, command_words, prompt, remote_control_name, settings_path) do
     command =
-      (command_words ++ remote_control_args(remote_control_name))
+      (command_words ++
+         remote_control_args(remote_control_name) ++
+         claude_settings_args(%{settings_path: settings_path}))
       |> Enum.map_join(" ", &shell_escape/1)
 
     [

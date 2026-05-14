@@ -48,6 +48,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "./WORKFLOW.md",
     "./symphony.yml",
     "./symphony.local.yml",
+    "./.claude/settings.json",
     "./.git/hooks",
     "./mise.toml",
     "./.tool-versions"

@@ -35,6 +35,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "./WORKFLOW.md",
              "./symphony.yml",
              "./symphony.local.yml",
+             "./.claude/settings.json",
              "./.git/hooks",
              "./mise.toml",
              "./.tool-versions"
@@ -54,6 +55,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s(":project_roots"={)
     assert filesystem =~ ~s("."="write")
     assert filesystem =~ ~s("WORKFLOW.md"="read")
+    assert filesystem =~ ~s(".claude/settings.json"="read")
     assert filesystem =~ ~s(".git/hooks"="read")
     assert filesystem =~ ~s("~/.ssh"="none")
     assert filesystem =~ ~s("~/.netrc"="none")

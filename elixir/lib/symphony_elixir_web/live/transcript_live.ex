@@ -168,12 +168,12 @@ defmodule SymphonyElixirWeb.TranscriptLive do
             </div>
 
             <div class="transcript-filter-group" role="group" aria-label="Event type filters">
-              <button type="button" class="transcript-filter-button" data-transcript-filter="all" aria-pressed="true">All</button>
-              <button type="button" class="transcript-filter-button" data-transcript-filter="agent-text" aria-pressed="false">Agent</button>
+              <button type="button" class="transcript-filter-button" data-transcript-filter="all" aria-pressed="false">All</button>
+              <button type="button" class="transcript-filter-button" data-transcript-filter="agent-text" aria-pressed="true">Agent</button>
               <button type="button" class="transcript-filter-button" data-transcript-filter="tool-call" aria-pressed="false">Tool call</button>
               <button type="button" class="transcript-filter-button" data-transcript-filter="tool-result" aria-pressed="false">Tool result</button>
               <button type="button" class="transcript-filter-button" data-transcript-filter="session" aria-pressed="false">Session</button>
-              <button type="button" class="transcript-filter-button" data-transcript-filter="error" aria-pressed="false">Error</button>
+              <button type="button" class="transcript-filter-button" data-transcript-filter="error" aria-pressed="true">Error</button>
               <button type="button" class="transcript-filter-button" data-transcript-filter="event" aria-pressed="false">Event</button>
             </div>
           </div>
@@ -182,7 +182,15 @@ defmodule SymphonyElixirWeb.TranscriptLive do
             <p class="empty-state">No transcript events have arrived yet.</p>
           <% end %>
 
-          <div id="transcript-events" class="transcript-list" phx-update="stream" data-transcript-events="">
+          <div
+            id="transcript-events"
+            class="transcript-list"
+            phx-update="stream"
+            data-transcript-events=""
+            data-filter-active="true"
+            data-filter-agent-text="true"
+            data-filter-error="true"
+          >
             <article
               :for={{dom_id, entry} <- @streams.events}
               id={dom_id}

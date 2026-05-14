@@ -821,6 +821,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "TranscriptFilter"
     assert html =~ "installRestartAwareReconnect"
     assert html =~ "liveSocket.getSocket().connect()"
+    assert html =~ "this.activeFilters = this.initialFilters()"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
 
@@ -1561,6 +1562,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(data-transcript-filter="error")
     assert html =~ ~s(data-transcript-filter="event")
     assert html =~ ~s(data-transcript-events)
+    assert html =~ ~s(data-filter-active="true")
+    assert html =~ ~s(data-filter-agent-text="true")
+    assert html =~ ~s(data-filter-error="true")
+    assert html =~ ~r/data-transcript-filter="all"[^>]*aria-pressed="false"/
+    assert html =~ ~r/data-transcript-filter="agent-text"[^>]*aria-pressed="true"/
+    assert html =~ ~r/data-transcript-filter="error"[^>]*aria-pressed="true"/
     refute html =~ "phx-click"
     assert html =~ "buffered hello"
     assert html =~ "transcript-event-agent-text"

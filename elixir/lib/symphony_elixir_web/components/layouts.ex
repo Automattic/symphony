@@ -87,7 +87,7 @@ defmodule SymphonyElixirWeb.Layouts do
 
             var transcriptFilterHook = {
               mounted: function () {
-                this.activeFilters = new Set();
+                this.activeFilters = this.initialFilters();
                 this.handleFilterClick = function (event) {
                   var button = event.target.closest("[data-transcript-filter]");
                   if (!button || !this.el.contains(button)) return;
@@ -126,6 +126,20 @@ defmodule SymphonyElixirWeb.Layouts do
                   .filter(function (filter) {
                     return filter && filter !== "all";
                   });
+              },
+              initialFilters: function () {
+                return new Set(
+                  this.filterButtons()
+                    .filter(function (button) {
+                      return button.getAttribute("aria-pressed") === "true";
+                    })
+                    .map(function (button) {
+                      return button.getAttribute("data-transcript-filter");
+                    })
+                    .filter(function (filter) {
+                      return filter && filter !== "all";
+                    })
+                );
               },
               applyFilters: function () {
                 var events = this.el.querySelector("[data-transcript-events]");

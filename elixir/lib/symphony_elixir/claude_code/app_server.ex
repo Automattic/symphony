@@ -294,34 +294,22 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp remote_control_name(%Agent{remote_control: true}, issue, opts) do
-    with {:ok, identifier} <- string_value(issue, [:identifier, "identifier"]),
-         {:ok, run_id} <- string_value(opts, [:run_id]) do
+    with {:ok, identifier} <- nonempty_string(Map.get(issue, :identifier)),
+         {:ok, run_id} <- nonempty_string(Keyword.get(opts, :run_id)) do
       {:ok, "#{identifier}-#{run_id}"}
     end
   end
 
   defp remote_control_name(%Agent{}, _issue, _opts), do: {:ok, nil}
 
-  defp string_value(values, keys) do
-    case Enum.find_value(keys, &normalize_string_value(fetch_value(values, &1))) do
-      value when is_binary(value) -> {:ok, value}
-      nil -> {:error, :missing_remote_control_name}
-    end
-  end
-
-  defp normalize_string_value(value) when is_binary(value) do
+  defp nonempty_string(value) when is_binary(value) do
     case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
+      "" -> {:error, :missing_remote_control_name}
+      trimmed -> {:ok, trimmed}
     end
   end
 
-  defp normalize_string_value(nil), do: nil
-  defp normalize_string_value(value), do: to_string(value)
-
-  defp fetch_value(values, key) when is_map(values), do: Map.get(values, key)
-  defp fetch_value(values, key) when is_list(values), do: Keyword.get(values, key)
-  defp fetch_value(_values, _key), do: nil
+  defp nonempty_string(_), do: {:error, :missing_remote_control_name}
 
   defp start_port(workspace, command, prompt, nil, remote_control_name) do
     with {:ok, {executable, command_args}} <- local_command(workspace, command) do

@@ -967,6 +967,40 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "errors when remote_control is enabled but run_id is missing" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-remote-control-missing-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-REMOTE-MISSING")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-missing"))
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_remote_control: true
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:error, :missing_remote_control_name} =
+                 AppServer.run_turn(session, "no run id", %{identifier: "RSM-REMOTE-MISSING"}, [])
+
+        refute File.exists?(Path.join(workspace, "argv.trace"))
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "runs a successful turn when workspace and command paths contain spaces" do
       test_root =
         Path.join(
@@ -1363,10 +1397,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert result.input_tokens == 5
         traced_command = File.read!(trace_file)
         assert traced_command =~ "fake-claude-remote"
-        assert traced_command =~ "--remote-control"
         assert traced_command =~ "RSM-REMOTE-SSH-ssh-run-1"
-        assert traced_command =~ "--output-format stream-json"
         assert traced_command =~ "--print"
+        assert traced_command =~ ~r/--remote-control \S+ --output-format stream-json/
       after
         File.rm_rf(test_root)
       end

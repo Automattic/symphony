@@ -37,6 +37,13 @@ defmodule SymphonyElixir.RunStoreTest do
              RunStore.put_learnings([%{id: "learning-missing-repo", repo: "github.com/example/repo", created_at: DateTime.utc_now()}])
   end
 
+  test "configures Mnesia core dumps under the run store directory" do
+    expected_core_dir = Path.join(Path.expand(RunStore.store_dir()), "core_dumps")
+
+    assert File.dir?(expected_core_dir)
+    assert :mnesia.system_info(:core_dir) |> to_string() |> Path.expand() == expected_core_dir
+  end
+
   test "fails startup with an explicit schema mismatch for legacy Mnesia tables" do
     original_run_store_dir = Application.fetch_env!(:symphony_elixir, :run_store_dir)
     legacy_dir = Path.join(System.tmp_dir!(), "symphony-legacy-run-store-#{System.unique_integer([:positive])}")

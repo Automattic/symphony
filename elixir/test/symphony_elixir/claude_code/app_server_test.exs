@@ -98,6 +98,20 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert get_in(result, ["sandbox", "enabled"]) == true
       refute Map.has_key?(result["sandbox"], "network")
     end
+
+    test "operator allow_read_paths drops entries from sandbox denyRead" do
+      network_access = %Agent.NetworkAccess{
+        mode: "allowlist",
+        allowed_domains: [],
+        denied_domains: []
+      }
+
+      result = AppServer.build_sandbox_settings(network_access, ["~/.npmrc"])
+
+      deny_read = get_in(result, ["sandbox", "filesystem", "denyRead"])
+      refute "~/.npmrc" in deny_read
+      assert "~/.ssh" in deny_read
+    end
   end
 
   describe "parse_event/1" do

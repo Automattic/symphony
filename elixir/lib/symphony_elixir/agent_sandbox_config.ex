@@ -4,7 +4,9 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
   Produces Claude Code `sandbox.filesystem` settings and Codex
   `permissions.workspace_write.*` `--config` overrides from a single deny
-  list so both adapters stay in sync.
+  list so both adapters stay in sync. Operator-supplied
+  `workspace.sandbox.allow_read_paths` entries are subtracted from the
+  shared `denyRead` set for both runtimes.
 
   Currently covered credential / config stores (read-deny):
 
@@ -63,10 +65,12 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   def deny_write_paths, do: @deny_write_paths
 
   @doc false
-  @spec claude_filesystem_settings() :: map()
-  def claude_filesystem_settings do
+  @spec claude_filesystem_settings([String.t()]) :: map()
+  def claude_filesystem_settings(allow_read_paths \\ []) do
+    allow_read_paths = normalize_allow_read_paths(allow_read_paths)
+
     %{
-      "denyRead" => @deny_read_paths,
+      "denyRead" => Enum.reject(@deny_read_paths, &(&1 in allow_read_paths)),
       "denyWrite" => @deny_write_paths
     }
   end

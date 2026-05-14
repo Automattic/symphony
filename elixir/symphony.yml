@@ -37,7 +37,7 @@ workspace:
   # repo: ~/Projects/symphony # Required only when a global worktree strategy is used.
   # fetch_before_dispatch: true # Fetch origin before each worktree dispatch.
   # sandbox:
-  #   allow_read_paths: [] # Advanced Codex-only read allowances, such as ~/.npmrc for private registries.
+  #   allow_read_paths: [] # Read overrides for default-denied credential/config paths, such as ~/.npmrc for private registries.
   lifecycle:
     # age_gc_enabled: true # Remove old local workspaces on the cleanup interval.
     max_age_days: 14

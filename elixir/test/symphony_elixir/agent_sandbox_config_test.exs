@@ -47,6 +47,23 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
            }
   end
 
+  test "Claude filesystem settings drop operator allow_read_paths from denyRead" do
+    settings = AgentSandboxConfig.claude_filesystem_settings(["~/.npmrc", "~/.cargo/credentials"])
+
+    refute "~/.npmrc" in settings["denyRead"]
+    refute "~/.cargo/credentials" in settings["denyRead"]
+    assert "~/.ssh" in settings["denyRead"]
+    assert settings["denyWrite"] == AgentSandboxConfig.deny_write_paths()
+  end
+
+  test "Claude filesystem settings normalize malformed operator allow_read_paths" do
+    settings = AgentSandboxConfig.claude_filesystem_settings(["", " ~/.npmrc ", "~/.npmrc", :bad])
+    refute "~/.npmrc" in settings["denyRead"]
+
+    defaults = AgentSandboxConfig.claude_filesystem_settings(:bad)
+    assert "~/.npmrc" in defaults["denyRead"]
+  end
+
   test "Codex allowlist config denies sensitive reads and protects workflow files from writes" do
     overrides = AgentSandboxConfig.codex_config_overrides("allowlist", ["github.com", "api.openai.com"])
 
@@ -129,6 +146,10 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("~/.npmrc"="read")
     refute filesystem =~ ~s("~/.npmrc"="none")
     assert filesystem =~ ~s("~/.netrc"="none")
+
+    claude_settings = AgentSandboxConfig.claude_filesystem_settings(settings.workspace.sandbox.allow_read_paths)
+    refute "~/.npmrc" in claude_settings["denyRead"]
+    assert "~/.netrc" in claude_settings["denyRead"]
   end
 
   test "workspace sandbox allow_read_paths defaults to an empty list" do

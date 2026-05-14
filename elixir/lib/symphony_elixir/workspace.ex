@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Workspace do
 
   require Logger
   alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.GitHub.Repo, as: GitHubRepo
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
@@ -832,13 +833,16 @@ defmodule SymphonyElixir.Workspace do
             :ok
 
           command ->
+            env = before_remove_hook_env(issue_context)
+
             run_hook(
               command,
               workspace,
               issue_context,
               "before_remove",
               nil,
-              hooks.timeout_ms
+              hooks.timeout_ms,
+              env
             )
             |> ignore_hook_failure()
         end
@@ -849,17 +853,21 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_before_remove_hook(workspace, issue_context, worker_host) when is_binary(worker_host) do
-    hooks = hooks_for_issue_context(issue_context)
+    settings = settings_for_issue_context(issue_context)
+    hooks = settings.hooks
 
     case hooks.before_remove do
       nil ->
         :ok
 
       command ->
+        env = before_remove_hook_env(issue_context)
+
         script =
           [
             remote_shell_assign("workspace", workspace),
             "if [ -d \"$workspace\" ]; then",
+            remote_before_remove_env_assignments(env, settings),
             "  cd \"$workspace\"",
             "  #{command}",
             "fi"
@@ -916,6 +924,90 @@ defmodule SymphonyElixir.Workspace do
 
   defp ignore_hook_failure(:ok), do: :ok
   defp ignore_hook_failure({:error, _reason}), do: :ok
+
+  defp before_remove_hook_env(issue_context) do
+    settings = settings_for_issue_context(issue_context)
+    branch = worktree_branch(issue_context)
+
+    case configured_hook_repo(issue_context, settings) do
+      nil -> [{"SYMPHONY_BRANCH", branch}]
+      repo -> [{"SYMPHONY_REPO", repo}, {"SYMPHONY_BRANCH", branch}]
+    end
+  end
+
+  defp configured_hook_repo(issue_context, settings) do
+    issue_context
+    |> configured_repo_paths(settings)
+    |> Enum.find_value(&(GitHubRepo.from_url(&1) || github_repo_from_git_dir(&1)))
+  end
+
+  defp configured_repo_paths(%{repo_key: repo_key}, settings) do
+    (repo_paths_for_key(repo_key) ++ [settings.workspace.repo])
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+    |> Enum.uniq()
+  end
+
+  defp repo_paths_for_key(repo_key) do
+    case Config.repos() do
+      {:ok, repos} ->
+        repos
+        |> Enum.filter(&(&1.name == repo_key))
+        |> Enum.map(& &1.path)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp github_repo_from_git_dir(path) do
+    expanded_path = Path.expand(path)
+
+    if File.dir?(expanded_path) do
+      case git_output(expanded_path, ["remote", "get-url", "origin"]) do
+        {:ok, output} -> GitHubRepo.from_url(String.trim(output))
+        {:error, _reason, _output} -> nil
+      end
+    end
+  end
+
+  defp remote_before_remove_env_assignments(env, settings) do
+    env
+    |> remote_env_assignments()
+    |> Kernel.++(remote_before_remove_repo_env_fallback(settings))
+    |> Enum.join("\n")
+  end
+
+  defp remote_before_remove_repo_env_fallback(%{workspace: %{repo: repo}}) when is_binary(repo) and repo != "" do
+    [
+      remote_shell_assign("symphony_configured_repo", repo),
+      """
+      if [ -z "${SYMPHONY_REPO:-}" ] && [ -n "$symphony_configured_repo" ]; then
+        symphony_origin_url="$symphony_configured_repo"
+        if [ -d "$symphony_configured_repo" ]; then
+          symphony_origin_url=$(git -C "$symphony_configured_repo" remote get-url origin 2>/dev/null || true)
+        fi
+        case "$symphony_origin_url" in
+          git@github.com:*)
+            SYMPHONY_REPO="${symphony_origin_url#git@github.com:}"
+            ;;
+          https://github.com/*)
+            SYMPHONY_REPO="${symphony_origin_url#https://github.com/}"
+            ;;
+          ssh://git@github.com/*)
+            SYMPHONY_REPO="${symphony_origin_url#ssh://git@github.com/}"
+            ;;
+        esac
+        SYMPHONY_REPO="${SYMPHONY_REPO%.git}"
+        SYMPHONY_REPO="${SYMPHONY_REPO%/}"
+        if [ -n "$SYMPHONY_REPO" ]; then
+          export SYMPHONY_REPO
+        fi
+      fi
+      """
+    ]
+  end
+
+  defp remote_before_remove_repo_env_fallback(_settings), do: []
 
   defp run_hook(command, workspace, issue_context, hook_name, worker_host, timeout_ms, env \\ [])
 

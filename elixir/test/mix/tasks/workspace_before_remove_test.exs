@@ -2,12 +2,28 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   use ExUnit.Case, async: false
 
   alias Mix.Tasks.Workspace.BeforeRemove
+  alias SymphonyElixir.GitHub.Repo, as: GitHubRepo
+  alias SymphonyElixir.Workflow
 
   import ExUnit.CaptureIO
 
   setup do
     Mix.Task.reenable("workspace.before_remove")
-    :ok
+    configured_repo = "chihsuan/symphony"
+    root = Path.join(System.tmp_dir!(), "workspace-before-remove-config-#{System.unique_integer([:positive, :monotonic])}")
+    primary_repo = configured_primary_repo!(root, configured_repo)
+
+    write_workflow_config!(root, primary_repo)
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :symphony_file_path)
+      Application.delete_env(:symphony_elixir, :workflow_file_path)
+      File.rm_rf(root)
+      System.delete_env("SYMPHONY_REPO")
+      System.delete_env("SYMPHONY_BRANCH")
+    end)
+
+    {:ok, configured_repo: configured_repo}
   end
 
   test "prints help" do
@@ -25,7 +41,19 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     end
   end
 
-  test "no-ops when branch is unavailable" do
+  test "GitHub repo parser accepts supported GitHub origin forms" do
+    assert GitHubRepo.from_url("git@github.com:acme/symphony.git") == "acme/symphony"
+    assert GitHubRepo.from_url("https://github.com/acme/symphony.git") == "acme/symphony"
+    assert GitHubRepo.from_url("ssh://git@github.com/acme/symphony.git") == "acme/symphony"
+    assert GitHubRepo.from_url("git@gitlab.com:acme/symphony.git") == nil
+    assert GitHubRepo.from_url("not-a-url") == nil
+    assert GitHubRepo.from_url(nil) == nil
+    assert GitHubRepo.same?("Acme/Symphony.git", "acme/symphony")
+    refute GitHubRepo.same?("acme/symphony", "other/symphony")
+    refute GitHubRepo.same?(nil, "acme/symphony")
+  end
+
+  test "no-ops when repo and branch are unavailable" do
     with_path([], fn ->
       in_temp_dir(fn ->
         output =
@@ -38,49 +66,69 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     end)
   end
 
+  test "no-ops when repo resolves blank while branch is supplied" do
+    System.put_env("SYMPHONY_REPO", " ")
+
+    output =
+      capture_io(fn ->
+        BeforeRemove.run(["--branch", "feature/no-repo"])
+      end)
+
+    assert output == ""
+  end
+
+  test "no-ops when branch resolves blank" do
+    System.put_env("SYMPHONY_BRANCH", " ")
+
+    output =
+      capture_io(fn ->
+        BeforeRemove.run(["--repo", "chihsuan/symphony"])
+      end)
+
+    assert output == ""
+  end
+
   test "no-ops when gh is unavailable" do
-    with_path([], fn ->
+    with_fake_git_only(fn log_path ->
       output =
         capture_io(fn ->
-          BeforeRemove.run(["--branch", "feature/no-gh"])
+          BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/no-gh"])
         end)
 
       assert output == ""
+      assert File.read!(log_path) == ""
     end)
   end
 
-  test "uses current branch for lookup when branch option is omitted" do
-    with_fake_gh_and_git(
-      """
-      #!/bin/sh
-      printf '%s\n' "$*" >> "$GH_LOG"
+  test "no-ops when branch is supplied but repo is unavailable" do
+    output =
+      capture_io(fn ->
+        BeforeRemove.run(["--branch", "feature/no-repo"])
+      end)
 
-      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-        exit 0
-      fi
+    assert output == ""
+  end
 
-      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-        printf '101\n102\n'
-        exit 0
-      fi
+  test "blank env values fall through to manual flags" do
+    System.put_env("SYMPHONY_REPO", " ")
+    System.put_env("SYMPHONY_BRANCH", " ")
 
-      if [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "101" ]; then
-        exit 0
-      fi
+    with_fake_gh(fn log_path ->
+      capture_task_output(fn ->
+        BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/flag"])
+      end)
 
-      if [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "102" ]; then
-        printf 'boom\n' >&2
-        exit 17
-      fi
+      assert File.read!(log_path) =~ "pr list --repo chihsuan/symphony --head feature/flag"
+    end)
+  end
 
-      exit 99
-      """,
-      """
-      #!/bin/sh
-      printf 'feature/workpad\n'
-      exit 0
-      """,
-      fn log_path ->
+  test "uses env repo and branch for lookup and ignores cwd git state" do
+    with_fake_gh(fn log_path ->
+      in_temp_dir(fn ->
+        write_fake_gitdir!("git@github.com:attacker/important.git", "feature/attacker")
+        System.put_env("SYMPHONY_REPO", "chihsuan/symphony")
+        System.put_env("SYMPHONY_BRANCH", "feature/workpad")
+
         {output, error_output} =
           capture_task_output(fn ->
             BeforeRemove.run([])
@@ -94,10 +142,12 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         assert log =~
                  "pr list --repo chihsuan/symphony --head feature/workpad --state open --json number --jq .[].number"
 
+        refute log =~ "attacker/important"
+        refute log =~ "feature/attacker"
         assert log =~ "pr close 101 --repo chihsuan/symphony"
         assert log =~ "pr close 102 --repo chihsuan/symphony"
-      end
-    )
+      end)
+    end)
   end
 
   test "closes open pull requests for the branch and tolerates close failures" do
@@ -106,7 +156,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
 
       {output, error_output} =
         capture_task_output(fn ->
-          BeforeRemove.run(["--branch", "feature/workpad"])
+          BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/workpad"])
         end)
 
       assert output =~ "Closed PR #101 for branch feature/workpad"
@@ -119,14 +169,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       assert log =~ "pr close 101 --repo chihsuan/symphony"
       assert log =~ "pr close 102 --repo chihsuan/symphony"
 
-      {second_output, error_output} =
+      {second_output, second_error_output} =
         capture_task_output(fn ->
           Mix.Task.reenable("workspace.before_remove")
-          BeforeRemove.run(["--branch", "feature/workpad"])
+          BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/workpad"])
         end)
 
       assert second_output =~ "Closed PR #101 for branch feature/workpad"
-      assert error_output =~ "Failed to close PR #102 for branch feature/workpad"
+      assert second_error_output =~ "Failed to close PR #102 for branch feature/workpad"
     end)
   end
 
@@ -134,14 +184,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     with_fake_gh(
       """
       #!/bin/sh
-      printf '%s\n' "$*" >> "$GH_LOG"
+      printf '%s\\n' "$*" >> "$GH_LOG"
 
       if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
         exit 0
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-        printf '102\n'
+        printf '102\\n'
         exit 0
       fi
 
@@ -155,7 +205,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         error_output =
           capture_io(:stderr, fn ->
             Mix.Task.reenable("workspace.before_remove")
-            BeforeRemove.run(["--branch", "feature/no-output"])
+            BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/no-output"])
           end)
 
         assert error_output =~ "Failed to close PR #102 for branch feature/no-output: exit 17"
@@ -171,7 +221,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     with_fake_gh(
       """
       #!/bin/sh
-      printf '%s\n' "$*" >> "$GH_LOG"
+      printf '%s\\n' "$*" >> "$GH_LOG"
 
       if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
         exit 0
@@ -186,7 +236,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         output =
           capture_io(fn ->
-            BeforeRemove.run(["--branch", "feature/list-fails"])
+            BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/list-fails"])
           end)
 
         assert output == ""
@@ -202,24 +252,11 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
-  test "no-ops when git current branch is blank" do
-    with_fake_gh_and_git(
-      """
-      #!/bin/sh
-      printf '%s\n' "$*" >> "$GH_LOG"
+  test "no-ops when repo and branch are not supplied even if cwd git reports values" do
+    with_fake_gh(fn log_path ->
+      in_temp_dir(fn ->
+        write_fake_gitdir!("git@github.com:attacker/important.git", "feature/attacker")
 
-      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-        exit 0
-      fi
-
-      exit 99
-      """,
-      """
-      #!/bin/sh
-      printf '\n'
-      exit 0
-      """,
-      fn log_path ->
         output =
           capture_io(fn ->
             BeforeRemove.run([])
@@ -229,67 +266,129 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
 
         log = File.read!(log_path)
         assert log == ""
-        refute log =~ "pr list"
-      end
-    )
+      end)
+    end)
   end
 
-  test "auto-detects repo from `git remote get-url origin`" do
-    with_fake_gh_and_git(
-      """
-      #!/bin/sh
-      printf '%s\n' "$*" >> "$GH_LOG"
+  test "refuses repos outside configured Symphony repos" do
+    with_fake_gh(fn log_path ->
+      {_output, error_output} =
+        capture_task_output(fn ->
+          BeforeRemove.run(["--repo", "bobthebuilder/things", "--branch", "feature/auto-detect"])
+        end)
 
-      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-        exit 0
-      fi
+      log = File.read!(log_path)
 
-      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-        printf '101\n'
-        exit 0
-      fi
+      assert error_output =~ "Refusing to close PRs for unconfigured repo bobthebuilder/things"
+      assert log == ""
+    end)
+  end
 
-      if [ "$1" = "pr" ] && [ "$2" = "close" ]; then
-        exit 0
-      fi
+  test "refuses when configured repos cannot be resolved from config" do
+    previous_symphony_file = Application.get_env(:symphony_elixir, :symphony_file_path)
 
-      exit 99
-      """,
-      """
-      #!/bin/sh
-      if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
-        printf 'git@github.com:bobthebuilder/things.git\n'
-        exit 0
-      fi
+    try do
+      Workflow.set_symphony_file_path(Path.join(System.tmp_dir!(), "missing-symphony-#{System.unique_integer([:positive])}.yml"))
 
-      printf 'feature/auto-detect\n'
-      exit 0
-      """,
-      fn log_path ->
+      {_output, error_output} =
+        capture_task_output(fn ->
+          BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/config-error"])
+        end)
+
+      assert error_output =~ "Refusing to close PRs for unconfigured repo chihsuan/symphony"
+    after
+      case previous_symphony_file do
+        nil -> Application.delete_env(:symphony_elixir, :symphony_file_path)
+        value -> Application.put_env(:symphony_elixir, :symphony_file_path, value)
+      end
+    end
+  end
+
+  test "refuses when configured repo paths have no GitHub origin" do
+    root = Path.join(System.tmp_dir!(), "workspace-before-remove-no-origin-#{System.unique_integer([:positive, :monotonic])}")
+    primary_repo = configured_primary_repo!(root, "chihsuan/symphony")
+    {_output, 0} = System.cmd("git", ["-C", primary_repo, "remote", "remove", "origin"], stderr_to_stdout: true)
+    write_workflow_config!(root, primary_repo)
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    {_output, error_output} =
+      capture_task_output(fn ->
+        BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/no-origin"])
+      end)
+
+    assert error_output =~ "Refusing to close PRs for unconfigured repo chihsuan/symphony"
+  end
+
+  test "refuses when git is unavailable while resolving configured repos" do
+    with_path([], fn ->
+      {_output, error_output} =
+        capture_task_output(fn ->
+          BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/no-git"])
+        end)
+
+      assert error_output =~ "Refusing to close PRs for unconfigured repo chihsuan/symphony"
+    end)
+  end
+
+  test "env repo takes precedence over repo flag" do
+    with_fake_gh(fn log_path ->
+      System.put_env("SYMPHONY_REPO", "chihsuan/symphony")
+      System.put_env("SYMPHONY_BRANCH", "feature/env")
+
+      capture_task_output(fn ->
+        BeforeRemove.run(["--repo", "bobthebuilder/things", "--branch", "feature/flag"])
+      end)
+
+      log = File.read!(log_path)
+
+      assert log =~ "pr list --repo chihsuan/symphony --head feature/env"
+      refute log =~ "bobthebuilder/things"
+      refute log =~ "feature/flag"
+    end)
+  end
+
+  test "fake worktree gitdir cannot select attacker repo without env or flags" do
+    with_fake_gh(fn log_path ->
+      in_temp_dir(fn ->
+        write_fake_gitdir!("git@github.com:attacker/important-repo.git", "main")
+
         capture_task_output(fn ->
           BeforeRemove.run([])
         end)
 
-        log = File.read!(log_path)
-
-        assert log =~ "pr list --repo bobthebuilder/things --head feature/auto-detect"
-        assert log =~ "pr close 101 --repo bobthebuilder/things"
-      end
-    )
+        assert File.read!(log_path) == ""
+      end)
+    end)
   end
 
-  test "auto-detects repo from HTTPS origin URLs" do
-    with_fake_gh_and_git(
+  test "configured repo may be supplied via HTTPS origin URL" do
+    configured_repo = "octocat/widgets"
+    root = Path.join(System.tmp_dir!(), "workspace-before-remove-https-#{System.unique_integer([:positive, :monotonic])}")
+    primary_repo = configured_primary_repo!(root, configured_repo)
+
+    {_output, 0} =
+      System.cmd(
+        "git",
+        ["-C", primary_repo, "remote", "set-url", "origin", "https://github.com/#{configured_repo}.git"],
+        stderr_to_stdout: true
+      )
+
+    write_workflow_config!(root, primary_repo)
+
+    on_exit(fn -> File.rm_rf(root) end)
+
+    with_fake_gh(
       """
       #!/bin/sh
-      printf '%s\n' "$*" >> "$GH_LOG"
+      printf '%s\\n' "$*" >> "$GH_LOG"
 
       if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
         exit 0
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-        printf '101\n'
+        printf '101\\n'
         exit 0
       fi
 
@@ -299,19 +398,9 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
 
       exit 99
       """,
-      """
-      #!/bin/sh
-      if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
-        printf 'https://github.com/octocat/widgets.git\n'
-        exit 0
-      fi
-
-      printf 'feature/https-origin\n'
-      exit 0
-      """,
       fn log_path ->
         capture_task_output(fn ->
-          BeforeRemove.run([])
+          BeforeRemove.run(["--repo", configured_repo, "--branch", "feature/https-origin"])
         end)
 
         log = File.read!(log_path)
@@ -322,56 +411,18 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
-  test "falls back to default repo when origin URL is malformed" do
-    with_fake_gh_and_git(
-      """
-      #!/bin/sh
-      printf '%s\n' "$*" >> "$GH_LOG"
-
-      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-        exit 0
-      fi
-
-      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-        exit 0
-      fi
-
-      exit 99
-      """,
-      """
-      #!/bin/sh
-      if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
-        printf 'git@github.com-octocat/widgets.git\n'
-        exit 0
-      fi
-
-      printf 'feature/malformed-origin\n'
-      exit 0
-      """,
-      fn log_path ->
-        capture_task_output(fn ->
-          BeforeRemove.run([])
-        end)
-
-        log = File.read!(log_path)
-
-        assert log =~ "pr list --repo chihsuan/symphony --head feature/malformed-origin"
-      end
-    )
-  end
-
   test "no-ops when gh auth is unavailable" do
     with_fake_gh(
       """
       #!/bin/sh
-      printf '%s\n' "$*" >> "$GH_LOG"
+      printf '%s\\n' "$*" >> "$GH_LOG"
       if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
         exit 1
       fi
       exit 99
       """,
       fn log_path ->
-        BeforeRemove.run(["--branch", "feature/no-auth"])
+        BeforeRemove.run(["--repo", "chihsuan/symphony", "--branch", "feature/no-auth"])
 
         log = File.read!(log_path)
         assert log =~ "auth status"
@@ -380,34 +431,79 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     )
   end
 
+  defp configured_primary_repo!(root, github_repo) do
+    primary_repo = Path.join(root, "primary")
+
+    File.rm_rf!(root)
+    File.mkdir_p!(primary_repo)
+    {_output, 0} = System.cmd("git", ["-C", primary_repo, "init", "-b", "main"], stderr_to_stdout: true)
+    {_output, 0} = System.cmd("git", ["-C", primary_repo, "config", "user.name", "Test User"], stderr_to_stdout: true)
+    {_output, 0} = System.cmd("git", ["-C", primary_repo, "config", "user.email", "test@example.com"], stderr_to_stdout: true)
+    {_output, 0} = System.cmd("git", ["-C", primary_repo, "commit", "--allow-empty", "-m", "initial"], stderr_to_stdout: true)
+    {_output, 0} = System.cmd("git", ["-C", primary_repo, "remote", "add", "origin", "git@github.com:#{github_repo}.git"], stderr_to_stdout: true)
+
+    primary_repo
+  end
+
+  defp write_workflow_config!(root, primary_repo) do
+    workflow_file = Path.join(root, "WORKFLOW.md")
+    symphony_file = Path.join(root, "symphony.yml")
+
+    Workflow.set_workflow_file_path(workflow_file)
+    Workflow.set_symphony_file_path(symphony_file)
+
+    File.write!(workflow_file, "Test prompt\n")
+
+    File.write!(symphony_file, """
+    workspace:
+      strategy: "worktree"
+      repo: #{inspect(primary_repo)}
+      fetch_before_dispatch: false
+    repos:
+      - name: "default"
+        path: #{inspect(primary_repo)}
+        workflow: "WORKFLOW.md"
+        default: true
+    """)
+  end
+
+  defp write_fake_gitdir!(origin_url, branch) do
+    File.mkdir_p!("fake-git")
+    File.write!(".git", "gitdir: ./fake-git\n")
+    File.write!("fake-git/HEAD", "ref: refs/heads/#{branch}\n")
+
+    File.write!("fake-git/config", """
+    [remote "origin"]
+      url = #{origin_url}
+    """)
+  end
+
   defp with_fake_gh(fun) do
-    with_fake_binaries(
-      %{
-        "gh" => """
-        #!/bin/sh
-        printf '%s\n' "$*" >> "$GH_LOG"
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\\n' "$*" >> "$GH_LOG"
 
-        if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-          exit 0
-        fi
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
 
-        if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-          printf '101\n102\n'
-          exit 0
-        fi
+      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+        printf '101\\n102\\n'
+        exit 0
+      fi
 
-        if [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "101" ]; then
-          exit 0
-        fi
+      if [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "101" ]; then
+        exit 0
+      fi
 
-        if [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "102" ]; then
-          printf 'boom\n' >&2
-          exit 17
-        fi
+      if [ "$1" = "pr" ] && [ "$2" = "close" ] && [ "$3" = "102" ]; then
+        printf 'boom\\n' >&2
+        exit 17
+      fi
 
-        exit 99
-        """
-      },
+      exit 99
+      """,
       fun
     )
   end
@@ -416,11 +512,22 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     with_fake_binaries(%{"gh" => script}, fun)
   end
 
-  defp with_fake_gh_and_git(gh_script, git_script, fun) do
-    with_fake_binaries(%{"gh" => gh_script, "git" => git_script}, fun)
+  defp with_fake_git_only(fun) do
+    git = System.find_executable("git")
+
+    with_fake_binaries(
+      %{
+        "git" => """
+        #!/bin/sh
+        exec #{git} "$@"
+        """
+      },
+      fun,
+      include_original_path?: false
+    )
   end
 
-  defp with_fake_binaries(scripts, fun) do
+  defp with_fake_binaries(scripts, fun, opts \\ []) do
     unique = System.unique_integer([:positive, :monotonic])
     root = Path.join(System.tmp_dir!(), "workspace-before-remove-task-test-#{unique}")
     bin_dir = Path.join(root, "bin")
@@ -431,7 +538,13 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       File.mkdir_p!(bin_dir)
       File.write!(log_path, "")
       original_path = System.get_env("PATH") || ""
-      path_with_binaries = Enum.join([bin_dir, original_path], ":")
+
+      path_with_binaries =
+        if Keyword.get(opts, :include_original_path?, true) do
+          Enum.join([bin_dir, original_path], ":")
+        else
+          bin_dir
+        end
 
       Enum.each(scripts, fn {name, script} ->
         path = Path.join(bin_dir, name)

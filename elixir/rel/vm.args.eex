@@ -1,2 +1,1 @@
--name symphony@127.0.0.1
--setcookie symphony
+## -mode/-name/-sname/-setcookie are configured via env vars in env.sh.eex.

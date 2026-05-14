@@ -157,8 +157,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       {:ok, %{"type" => "assistant", "message" => message}} ->
         {:notification, summarize_assistant_message(message)}
 
+      {:ok, %{"type" => "user", "message" => message}} ->
+        {:notification, summarize_user_message(message)}
+
       {:ok, %{"type" => "tool_use", "name" => name}} ->
         {:tool_use, name}
+
+      {:ok, %{"type" => "rate_limit_event", "rate_limit_info" => info}} ->
+        classify_rate_limit_event(info)
 
       {:ok, %{"type" => "result", "subtype" => "success"} = event} ->
         {:turn_completed, extract_turn_result(event)}
@@ -864,6 +870,54 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp summarize_assistant_message(_), do: "assistant message"
+
+  defp summarize_user_message(%{"content" => content}) when is_list(content) do
+    content
+    |> Enum.find_value(&tool_result_summary/1)
+    |> case do
+      nil -> "tool_result"
+      text -> "tool_result: " <> String.slice(text, 0, 120)
+    end
+  end
+
+  defp summarize_user_message(_), do: "tool_result"
+
+  defp tool_result_summary(%{"type" => "tool_result", "content" => content}) when is_binary(content),
+    do: content
+
+  defp tool_result_summary(%{"type" => "tool_result", "content" => content}) when is_list(content) do
+    Enum.find_value(content, fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> text
+      %{"type" => "tool_reference", "tool_name" => name} when is_binary(name) -> name
+      _ -> nil
+    end)
+  end
+
+  defp tool_result_summary(_), do: nil
+
+  defp classify_rate_limit_event(info) when is_map(info) do
+    rate_limit_type = Map.get(info, "rateLimitType", "rate_limit")
+    status = Map.get(info, "status", "unknown")
+    utilization = Map.get(info, "utilization")
+
+    message =
+      case utilization do
+        u when is_number(u) ->
+          percent = (u * 100) |> Float.round(0) |> trunc()
+          "rate_limit #{rate_limit_type} #{status} (#{percent}% utilization)"
+
+        _ ->
+          "rate_limit #{rate_limit_type} #{status}"
+      end
+
+    case status do
+      "allowed_warning" -> {:notification, message}
+      "allowed" -> {:notification, message}
+      _ -> {:rate_limited, %{retry_after_seconds: nil, message: message}, message}
+    end
+  end
+
+  defp classify_rate_limit_event(_), do: {:notification, "rate_limit event"}
 
   defp extract_turn_result(event) do
     usage = Map.get(event, "usage", %{})

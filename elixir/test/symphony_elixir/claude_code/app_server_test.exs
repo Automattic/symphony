@@ -213,6 +213,52 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       assert {:notification, "assistant message"} = AppServer.parse_event(line)
     end
+
+    test "parses user/tool_result event with string content and returns notification" do
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"Hello world"}]},"session_id":"sess-1"})
+
+      assert {:notification, text} = AppServer.parse_event(line)
+      assert text =~ "tool_result"
+      assert text =~ "Hello world"
+    end
+
+    test "parses user/tool_result event with nested tool_reference content and returns notification" do
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":[{"type":"tool_reference","tool_name":"Read"}]}]},"session_id":"sess-1"})
+
+      assert {:notification, text} = AppServer.parse_event(line)
+      assert text =~ "tool_result"
+      assert text =~ "Read"
+    end
+
+    test "parses user/tool_result event with no recognizable content and returns generic notification" do
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[]},"session_id":"sess-1"})
+
+      assert {:notification, "tool_result"} = AppServer.parse_event(line)
+    end
+
+    test "parses rate_limit_event with allowed_warning status as notification" do
+      line =
+        ~s({"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1778749200,"rateLimitType":"seven_day","utilization":0.93,"isUsingOverage":false,"surpassedThreshold":0.75},"uuid":"u-1","session_id":"sess-1"})
+
+      assert {:notification, text} = AppServer.parse_event(line)
+      assert text =~ "seven_day"
+      assert text =~ "allowed_warning"
+      assert text =~ "93"
+    end
+
+    test "parses rate_limit_event with blocking status as rate_limited" do
+      line =
+        ~s({"type":"rate_limit_event","rate_limit_info":{"status":"exceeded","rateLimitType":"per_minute","utilization":1.05},"uuid":"u-1","session_id":"sess-1"})
+
+      assert {:rate_limited, info, reason} = AppServer.parse_event(line)
+      assert reason =~ "per_minute"
+      assert reason =~ "exceeded"
+      assert info.message == reason
+      assert info.retry_after_seconds == nil
+    end
   end
 
   describe "event_to_update/1" do

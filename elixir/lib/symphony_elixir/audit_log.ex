@@ -164,10 +164,12 @@ defmodule SymphonyElixir.AuditLog do
   def record_self_review(issue, run_id, %{verdict: verdict} = result, opts \\ [])
       when is_map(issue) and verdict in [:approve, :request_changes] do
     findings = Map.get(result, :findings, [])
+    advisory_notes = Map.get(result, :advisory_notes, [])
     source = Map.get(result, :source)
 
     record(
-      %{
+      %{}
+      |> Map.merge(%{
         repo_key: repo_key(issue, opts),
         issue_id: issue_id(issue),
         issue_identifier: issue_identifier(issue),
@@ -175,14 +177,46 @@ defmodule SymphonyElixir.AuditLog do
         event_type: "self_review",
         verdict: verdict,
         fail_open_category: Map.get(result, :fail_open_category),
-        findings_count: length(findings),
-        finding_categories: findings |> Enum.map(& &1.category) |> Enum.uniq(),
-        diff_truncated: source && Map.get(source, :diff_truncated?),
-        diff_line_count: source && Map.get(source, :diff_line_count),
         round: Keyword.get(opts, :round)
-      },
+      })
+      |> Map.merge(self_review_finding_attrs(findings, advisory_notes))
+      |> Map.merge(self_review_source_attrs(source)),
       opts
     )
+  end
+
+  defp self_review_finding_attrs(findings, advisory_notes) do
+    %{
+      findings_count: length(findings),
+      finding_categories: findings |> Enum.map(& &1.category) |> Enum.uniq(),
+      advisory_notes_count: length(advisory_notes),
+      advisory_note_categories: advisory_notes |> Enum.map(& &1.category) |> Enum.uniq()
+    }
+  end
+
+  defp self_review_source_attrs(nil), do: %{diff_truncated: nil, diff_line_count: nil}
+
+  defp self_review_source_attrs(source) do
+    source
+    |> Map.get(:review_coverage, %{})
+    |> self_review_coverage_attrs()
+    |> Map.merge(%{
+      diff_truncated: Map.get(source, :diff_truncated?),
+      diff_line_count: Map.get(source, :diff_line_count)
+    })
+  end
+
+  defp self_review_coverage_attrs(coverage) do
+    %{
+      fully_reviewed_files: Map.get(coverage, :fully_reviewed_files),
+      summarized_files: Map.get(coverage, :summarized_files),
+      generated_lock_files: Map.get(coverage, :generated_lock_files),
+      adjacent_context_files: Map.get(coverage, :adjacent_context_files),
+      adjacent_context_omitted_files: Map.get(coverage, :adjacent_context_omitted_files),
+      validation_evidence_count: Map.get(coverage, :validation_evidence_count),
+      reviewer_comment_count: Map.get(coverage, :reviewer_comment_count),
+      ci_context_included: Map.get(coverage, :ci_context_included?)
+    }
   end
 
   @spec list_events(String.t(), Date.t() | String.t(), Date.t() | String.t(), query_opts()) ::

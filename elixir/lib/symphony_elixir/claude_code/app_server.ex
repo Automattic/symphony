@@ -156,7 +156,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp parse_decoded_event(%{"type" => "system", "session_id" => session_id}, _line), do: {:session_started, session_id}
+  defp parse_decoded_event(%{"type" => "system", "session_id" => session_id}, _line),
+    do: {:session_started, session_id}
 
   defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line),
     do: {:notification, summarize_assistant_message(message)}
@@ -173,8 +174,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     do: {:turn_completed, extract_turn_result(event)}
 
   defp parse_decoded_event(%{"type" => "result", "subtype" => "error"} = event, _line) do
-    reason = Map.get(event, "error", "unknown error")
-    classify_error_event(reason)
+    event
+    |> Map.get("error", "unknown error")
+    |> classify_error_event()
   end
 
   defp parse_decoded_event(_event, line), do: {:malformed, line}
@@ -400,6 +402,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
     sandbox_json =
       build_sandbox_settings(network_access, allow_read_paths, mcp_session, effective_socket_path, effective_shim_path)
+
     settings_dir = claude_settings_dir(worker_host, mcp_session)
     settings_path = Path.join(settings_dir, "settings.json")
 

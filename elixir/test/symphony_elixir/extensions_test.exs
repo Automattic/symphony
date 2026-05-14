@@ -1354,12 +1354,14 @@ defmodule SymphonyElixir.ExtensionsTest do
                  %{
                    repo_key: "default",
                    id: "learning-live-1",
-                   repo: "github.com/example/repo",
+                   host: "github.com",
+                   owner: "example",
+                   repo: "repo",
                    rule: "Prefer existing dashboard helpers.",
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Prefer the existing helper.",
                    evidence_issue_identifier: "RSM-LIVE-1",
-                   evidence_issue_url: "https://linear.example.test/acme/RSM-LIVE-1",
+                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-1",
                    evidence_pr_number: 12,
                    evidence_run_id: "run-live-1",
                    created_at: now
@@ -1404,12 +1406,124 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Do not reconstruct Linear links without canonical issue URLs."
     assert html =~ "github.com/example/repo"
     assert html =~ ~s(href="https://github.com/example/repo/pull/12" target="_blank")
-    assert html =~ ~s(href="https://linear.example.test/acme/RSM-LIVE-1" target="_blank")
+    assert html =~ ~s(href="https://linear.app/example/issue/RSM-LIVE-1" target="_blank")
     refute html =~ "https://linear.app/example/issue/RSM-LIVE-3"
     assert html =~ ~s(name="repo")
     assert html =~ ~s(name="tag")
     assert html =~ ~s(href="/quality")
     refute html =~ "Keep unrelated records filterable."
+  end
+
+  test "learnings liveview hides untrusted PR and Linear evidence links" do
+    write_workflow_file!(Workflow.workflow_file_path(), github: %{enterprise_hosts: ["github.example.com"]})
+
+    now = DateTime.utc_now()
+
+    assert :ok =
+             RunStore.put_learnings(
+               [
+                 %{
+                   repo_key: "default",
+                   id: "learning-live-trusted",
+                   host: "github.com",
+                   owner: "example",
+                   repo: "repo",
+                   rule: "Keep trusted GitHub PRs linked.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Trusted PR.",
+                   evidence_issue_identifier: "RSM-LIVE-TRUSTED",
+                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-TRUSTED",
+                   evidence_pr_number: 123,
+                   evidence_run_id: "run-live-trusted",
+                   created_at: now
+                 },
+                 %{
+                   repo_key: "default",
+                   id: "learning-live-ghe",
+                   host: "github.example.com",
+                   owner: "enterprise",
+                   repo: "service",
+                   rule: "Keep configured GitHub Enterprise PRs linked.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Trusted GHE PR.",
+                   evidence_issue_identifier: "RSM-LIVE-GHE",
+                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-GHE",
+                   evidence_pr_number: 456,
+                   evidence_run_id: "run-live-ghe",
+                   created_at: DateTime.add(now, -15, :second)
+                 },
+                 %{
+                   repo_key: "default",
+                   id: "learning-live-attacker",
+                   host: "login-github.attacker.tld",
+                   owner: "foo",
+                   repo: "bar",
+                   rule: "Do not link attacker PR hosts.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Attacker PR.",
+                   evidence_issue_identifier: "RSM-LIVE-ATTACKER",
+                   evidence_issue_url: "https://linear.attacker.tld/example/issue/RSM-LIVE-ATTACKER",
+                   evidence_pr_number: 9,
+                   evidence_run_id: "run-live-attacker",
+                   created_at: DateTime.add(now, -30, :second)
+                 },
+                 %{
+                   repo_key: "default",
+                   id: "learning-live-linear-scheme",
+                   host: "github.com",
+                   owner: "example",
+                   repo: "other",
+                   rule: "Do not link non-HTTPS Linear URLs.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Unsafe Linear scheme.",
+                   evidence_issue_identifier: "RSM-LIVE-SCHEME",
+                   evidence_issue_url: "http://linear.app/example/issue/RSM-LIVE-SCHEME",
+                   evidence_pr_number: 124,
+                   evidence_run_id: "run-live-linear-scheme",
+                   created_at: DateTime.add(now, -60, :second)
+                 },
+                 %{
+                   repo_key: "default",
+                   id: "learning-live-linear-userinfo",
+                   host: "github.com",
+                   owner: "example",
+                   repo: "info",
+                   rule: "Do not link Linear URLs with userinfo.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Userinfo Linear URL.",
+                   evidence_issue_identifier: "RSM-LIVE-USERINFO",
+                   evidence_issue_url: "https://attacker.tld@linear.app/example/issue/RSM-LIVE-USERINFO",
+                   evidence_pr_number: 125,
+                   evidence_run_id: "run-live-linear-userinfo",
+                   created_at: DateTime.add(now, -90, :second)
+                 }
+               ],
+               500
+             )
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :LearningsLiveSecurityOrchestrator), snapshot_timeout_ms: 5)
+
+    {:ok, _view, html} = live(build_conn(), "/learnings?tag=dashboard")
+
+    assert html =~ "Keep trusted GitHub PRs linked."
+    assert html =~ ~s(href="https://github.com/example/repo/pull/123" target="_blank")
+    assert html =~ ~s(href="https://linear.app/example/issue/RSM-LIVE-TRUSTED" target="_blank")
+
+    assert html =~ "Keep configured GitHub Enterprise PRs linked."
+    assert html =~ ~s(href="https://github.example.com/enterprise/service/pull/456" target="_blank")
+
+    assert html =~ "Do not link attacker PR hosts."
+    assert html =~ "login-github.attacker.tld/foo/bar"
+    refute html =~ "https://login-github.attacker.tld/foo/bar/pull/9"
+    refute html =~ "https://linear.attacker.tld/example/issue/RSM-LIVE-ATTACKER"
+
+    assert html =~ "Do not link non-HTTPS Linear URLs."
+    assert html =~ ~s(href="https://github.com/example/other/pull/124" target="_blank")
+    refute html =~ "http://linear.app/example/issue/RSM-LIVE-SCHEME"
+
+    assert html =~ "Do not link Linear URLs with userinfo."
+    assert html =~ ~s(href="https://github.com/example/info/pull/125" target="_blank")
+    refute html =~ "attacker.tld@linear.app/example/issue/RSM-LIVE-USERINFO"
   end
 
   test "dashboard liveview omits watching PR link when pull request URL is unavailable" do

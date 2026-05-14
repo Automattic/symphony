@@ -134,6 +134,15 @@ defmodule SymphonyElixir.StatusDashboard do
      }}
   end
 
+  @spec render_offline_status_for_runtime() :: :ok
+  def render_offline_status_for_runtime do
+    if dashboard_enabled?() do
+      render_offline_status()
+    else
+      :ok
+    end
+  end
+
   @spec render_offline_status() :: :ok
   def render_offline_status do
     content =

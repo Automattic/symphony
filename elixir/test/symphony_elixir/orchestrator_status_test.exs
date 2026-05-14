@@ -3964,14 +3964,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert StatusDashboard.humanize_codex_message(fallback_reasoning) == "reasoning update"
   end
 
-  test "application stop renders offline status" do
+  test "application stop skips offline status in test runtime" do
     rendered =
       ExUnit.CaptureIO.capture_io(fn ->
         assert :ok = SymphonyElixir.Application.stop(:normal)
       end)
 
-    assert rendered =~ "app_status=offline"
-    refute rendered =~ "Timestamp:"
+    assert rendered == ""
   end
 
   defp put_budget_exhausted_run(attrs) do

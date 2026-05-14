@@ -593,6 +593,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
+        github: %{enterprise_hosts: ["github.example.com"]},
         agent_command: "#{codex_binary} app-server"
       )
 

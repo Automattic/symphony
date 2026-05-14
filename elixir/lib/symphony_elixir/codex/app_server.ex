@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.DependencyAudit
+  alias SymphonyElixir.GitHub.Hosts
   alias SymphonyElixir.Notifications
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SensitivePath
@@ -1933,11 +1934,18 @@ defmodule SymphonyElixir.Codex.AppServer do
       ],
       fn regex ->
         case Regex.run(regex, url) do
-          [_full, host, owner, repo] -> {String.downcase(host), owner, repo}
+          [_full, host, owner, repo] -> canonical_github_repo_parts(host, owner, repo)
           _ -> nil
         end
       end
     )
+  end
+
+  defp canonical_github_repo_parts(host, owner, repo) do
+    case Hosts.canonical_github_host(host) do
+      {:ok, canonical_host} -> {canonical_host, owner, repo}
+      :error -> nil
+    end
   end
 
   defp normalize_git_url(url) when is_binary(url) do

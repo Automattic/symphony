@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   @primary_key false
   @allowed_keys ~w(
-    agent ci dependencies dispatch learnings notifications observability polling pr_review quality_gate repos self_review
+    agent ci dependencies dispatch github learnings notifications observability polling pr_review quality_gate repos self_review
     server token_budget tracker verification watchdog worker workspace
   )
 
@@ -124,6 +124,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     embeds_one(:watchdog, Schema.Watchdog, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Schema.Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Schema.Worker, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:github, Schema.GitHub, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Schema.Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Schema.Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:pr_review, Schema.PrReview, on_replace: :update, defaults_to_struct: true)
@@ -167,6 +168,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
       "watchdog" => struct_to_map(system_config.watchdog),
       "workspace" => workspace_to_map(system_config.workspace),
       "worker" => struct_to_map(system_config.worker),
+      "github" => struct_to_map(system_config.github),
       "agent" => agent_to_map(system_config.agent),
       "observability" => struct_to_map(system_config.observability),
       "pr_review" => struct_to_map(system_config.pr_review),
@@ -226,6 +228,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast_embed(:watchdog, with: &Schema.Watchdog.changeset/2)
     |> cast_embed(:workspace, with: &Schema.Workspace.changeset/2)
     |> cast_embed(:worker, with: &Schema.Worker.changeset/2)
+    |> cast_embed(:github, with: &Schema.GitHub.changeset/2)
     |> cast_embed(:agent, with: &Schema.Agent.changeset/2)
     |> cast_embed(:observability, with: &Schema.Observability.changeset/2)
     |> cast_embed(:pr_review, with: &Schema.PrReview.changeset/2)

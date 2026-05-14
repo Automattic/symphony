@@ -129,6 +129,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:turn_completed, result} = AppServer.parse_event(line)
       assert result.input_tokens == 100
       assert result.output_tokens == 50
+      assert result.cached_input_tokens == 0
+      assert result.total_tokens == 150
     end
 
     test "parses result/error event and returns turn_failed with reason" do
@@ -305,10 +307,45 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert primary == %{remaining: 0}
     end
 
-    test "returns nil for events that don't need orchestrator state" do
-      assert AppServer.event_to_update({:notification, "hello"}) == nil
-      assert AppServer.event_to_update({:turn_failed, "boom"}) == nil
-      assert AppServer.event_to_update({:session_started, "sess-1"}) == nil
+    test "converts Claude progress events into worker update maps" do
+      assert %{
+               event: :session_started,
+               timestamp: %DateTime{},
+               session_id: "sess-1",
+               payload: %{session_id: "sess-1"}
+             } = AppServer.event_to_update({:session_started, "sess-1"})
+
+      assert %{
+               event: :notification,
+               timestamp: %DateTime{},
+               payload: "hello"
+             } = AppServer.event_to_update({:notification, "hello"})
+
+      assert %{
+               event: :tool_use,
+               timestamp: %DateTime{},
+               payload: %{method: "item/tool/call", params: %{tool: "bash"}}
+             } = AppServer.event_to_update({:tool_use, "bash"})
+
+      usage = %{input_tokens: 10, cached_input_tokens: 3, output_tokens: 5, total_tokens: 15}
+
+      assert %{
+               event: :turn_completed,
+               timestamp: %DateTime{},
+               usage: ^usage,
+               payload: %{method: "turn/completed", usage: ^usage}
+             } = AppServer.event_to_update({:turn_completed, usage})
+
+      assert %{
+               event: :turn_failed,
+               timestamp: %DateTime{},
+               reason: "boom",
+               payload: %{method: "turn/failed", params: %{error: %{message: "boom"}}}
+             } = AppServer.event_to_update({:turn_failed, "boom"})
+    end
+
+    test "returns nil for malformed events that don't need orchestrator state" do
+      assert AppServer.event_to_update({:malformed, "not json"}) == nil
     end
   end
 
@@ -1657,7 +1694,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert result.output_tokens == 3
 
         # The oversized tool_use line must have been reassembled and parsed correctly
-        assert_received {:turn_msg, {:notification, "tool: bash"}}
+        assert_received {:turn_msg, {:tool_use, "bash"}}
       after
         File.rm_rf(test_root)
       end

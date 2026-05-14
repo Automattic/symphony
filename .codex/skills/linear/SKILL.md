@@ -35,8 +35,10 @@ arguments from prompts.
   created earlier by this run.
 - `linear_attach_url` with `{"url": "https://...", "title": "..."}`: attaches a
   valid HTTP(S) URL to the current issue. Titles are capped.
-- `linear_attach_file` with `{"local_path": "path/in/workspace", "title": "..."}`:
+- `linear_attach_file` with `{"local_path": "path/in/workspace", "title": "...", "make_public": false}`:
   uploads and attaches a file only when the path resolves inside the workspace.
+  Uploads are private by default. Set `make_public` to `true` only for artifacts
+  intentionally safe to expose through a world-readable Linear CDN URL.
 
 ## Rules
 

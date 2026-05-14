@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.GitHub.Hosts
   alias SymphonyElixir.Notifications
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.SensitivePath
   alias SymphonyElixir.SSH
   alias SymphonyElixir.Tracker
 
@@ -1232,7 +1233,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     tokens = command_tokens(command)
 
     cond do
-      secret_path = denied_secret_path(tokens) ->
+      secret_path = SensitivePath.denied_secret_path(tokens) ->
         {:review, approval_review("sandbox_denied_path", "read", secret_path)}
 
       domain = denied_domain_in_values([command], approval_context) ->
@@ -1383,7 +1384,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp denied_write_path?(_path, _payload, _approval_context), do: false
 
   defp denied_read_path?(path, payload, approval_context) when is_binary(path) do
-    secret_path(path) != nil or
+    SensitivePath.secret_path(path) != nil or
       (not sandbox_read_allows_full_access?(approval_context) and
          denied_write_path?(path, payload, approval_context))
   end
@@ -1602,7 +1603,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp secret_path_refusal(tokens, command) do
-    if secret_path = denied_secret_path(tokens) do
+    if secret_path = SensitivePath.denied_secret_path(tokens) do
       {:refuse,
        refusal(
          "secret_file_read",
@@ -1731,43 +1732,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> String.split(~r/(;|&&|\|\|)/, include_captures: true, trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
-  end
-
-  defp denied_secret_path(tokens) do
-    Enum.find_value(tokens, fn token ->
-      token
-      |> option_value()
-      |> secret_path()
-    end)
-  end
-
-  defp secret_path(token) when is_binary(token) do
-    normalized = token |> String.trim() |> String.trim_trailing(":")
-    basename = Path.basename(normalized)
-
-    cond do
-      String.starts_with?(normalized, ["~/.ssh/", "~/.aws/", "~/.config/gh/"]) ->
-        normalized
-
-      String.contains?(normalized, ["/.ssh/", "/.aws/", "/.config/gh/"]) ->
-        normalized
-
-      String.starts_with?(basename, ".env") ->
-        normalized
-
-      String.ends_with?(String.downcase(basename), [".pem", ".key"]) ->
-        normalized
-
-      true ->
-        nil
-    end
-  end
-
-  defp option_value(token) when is_binary(token) do
-    case String.split(token, "=", parts: 2) do
-      [_option, value] -> value
-      [value] -> value
-    end
   end
 
   defp gh_pr_create_repo(tokens) do

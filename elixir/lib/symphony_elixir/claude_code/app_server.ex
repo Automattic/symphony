@@ -400,6 +400,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
     sandbox_json =
       build_sandbox_settings(network_access, allow_read_paths, mcp_session, effective_socket_path, effective_shim_path)
+
     settings_dir = claude_settings_dir(worker_host, mcp_session)
     settings_path = Path.join(settings_dir, "settings.json")
 

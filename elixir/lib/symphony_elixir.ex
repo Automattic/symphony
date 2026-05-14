@@ -45,7 +45,7 @@ defmodule SymphonyElixir.Application do
 
   @impl true
   def stop(_state) do
-    SymphonyElixir.StatusDashboard.render_offline_status()
+    SymphonyElixir.StatusDashboard.render_offline_status_for_runtime()
     :ok
   end
 

@@ -50,8 +50,11 @@ Optional flags:
 - `--host` pins the Phoenix observability service to a specific host
 - `--port` pins the Phoenix observability service to a specific port
 
-The state root contains `run_store/`, `audit/`, and `secret_key_base`. Override order is
-`--state-root`, `SYMPHONY_STATE_ROOT`, app env `:state_root`, then the macOS default. The logs root
+The state root contains `run_store/`, `audit/`, `secret_key_base`, and for packaged releases,
+`erlang_cookie`. Override order is `--state-root`, `SYMPHONY_STATE_ROOT`, app env `:state_root`,
+then the macOS default. The release boot script creates `erlang_cookie` with owner-only
+permissions on first start and exports it as `RELEASE_COOKIE`; set `SYMPHONY_COOKIE` to override
+that persisted cookie explicitly. The old public cookie value `symphony` is refused. The logs root
 contains `symphony.log`; its override order is `--logs-root`, `SYMPHONY_LOGS_ROOT`, app env
 `:logs_root`, then the macOS default.
 

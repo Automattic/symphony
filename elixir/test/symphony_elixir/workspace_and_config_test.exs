@@ -2285,39 +2285,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.agent.approval_policy == "never"
   end
 
-  test "config defaults Claude remote control to false" do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      agent_kind: "claude",
-      agent_command: "claude"
-    )
-
-    config = Config.settings!()
-    assert config.agent.kind == "claude"
-    assert config.agent.remote_control == false
-  end
-
-  test "config accepts remote control for Claude agents" do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      agent_kind: "claude",
-      agent_command: "claude",
-      agent_remote_control: true
-    )
-
-    config = Config.settings!()
-    assert config.agent.remote_control == true
-  end
-
-  test "config rejects remote control for Codex agents" do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      agent_kind: "codex",
-      agent_command: "codex app-server",
-      agent_remote_control: true
-    )
-
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.remote_control is only supported when agent.kind is claude"
-  end
-
   test "config validates local worktree repository settings" do
     test_root =
       Path.join(

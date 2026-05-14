@@ -60,7 +60,6 @@ agent:
   # max_retry_backoff_ms: 300000 # Maximum retry delay after failed runs.
   max_tokens_per_issue: 100000000
   max_tokens_per_day: 1000000000
-  remote_control: true # Claude Code >= 2.1.140 control-channel handle for live attach.
   network_access:
     mode: allowlist
     # allowed_domains: [] # Extra domains agents may reach in allowlist mode.

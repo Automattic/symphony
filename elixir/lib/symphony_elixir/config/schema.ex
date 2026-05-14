@@ -404,7 +404,6 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_tokens_per_issue, :integer, default: @default_max_tokens_per_issue)
       field(:max_tokens_per_day, :integer, default: @default_max_tokens_per_day)
       field(:command, :string)
-      field(:remote_control, :boolean, default: false)
 
       field(:approval_policy, StringOrMap)
 
@@ -431,7 +430,6 @@ defmodule SymphonyElixir.Config.Schema do
           :max_tokens_per_issue,
           :max_tokens_per_day,
           :command,
-          :remote_control,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
@@ -1401,16 +1399,8 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp validate_finalized_settings(settings) do
-    with :ok <- validate_remote_control_agent_kind(settings.agent) do
-      validate_finalized_notification_urls(settings.notifications)
-    end
+    validate_finalized_notification_urls(settings.notifications)
   end
-
-  defp validate_remote_control_agent_kind(%Agent{kind: "codex", remote_control: true}) do
-    {:error, "agent.remote_control is only supported when agent.kind is claude"}
-  end
-
-  defp validate_remote_control_agent_kind(_agent), do: :ok
 
   defp normalize_notifications(%Notifications{} = notifications) do
     %{notifications | channels: Enum.map(notifications.channels || [], &normalize_notification_channel/1)}

@@ -402,6 +402,26 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     assert {:error, {:unsupported_for_ssh_worker, :github_push_branch}} = GitHub.push_branch(context)
   end
 
+  test "captured remote branch errors are surfaced before pull request lookup" do
+    remote_workspace = "/remote/workspaces/MT-3187"
+
+    context = %{
+      workspace: remote_workspace,
+      command_security: %{
+        origin_repo: "acme/symphony",
+        current_branch: "HEAD",
+        workspace: remote_workspace,
+        worker_host: "worker-01"
+      }
+    }
+
+    assert {:error, :detached_head} =
+             GitHub.get_pull_request(context,
+               git_runner: fn _args, _opts -> flunk("captured branch should skip local git") end,
+               gh_runner: fn _args, _opts -> flunk("invalid captured branch should skip gh") end
+             )
+  end
+
   test "pull request write and check tools require a resolved PR URL" do
     workspace = tmp_workspace!("github-agent-missing-pr-url")
 

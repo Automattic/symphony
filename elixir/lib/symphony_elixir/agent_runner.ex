@@ -6,9 +6,9 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
 
   alias SymphonyElixir.{
+    AgentLabels,
     AgentTools,
     AgentTools.Linear.CommentRegistry,
-    AgentLabels,
     AuditLog,
     CiPoller,
     Config,

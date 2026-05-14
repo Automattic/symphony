@@ -151,35 +151,33 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
           | {:malformed, String.t()}
   def parse_event(line) when is_binary(line) do
     case Jason.decode(line) do
-      {:ok, %{"type" => "system", "session_id" => session_id}} ->
-        {:session_started, session_id}
-
-      {:ok, %{"type" => "assistant", "message" => message}} ->
-        {:notification, summarize_assistant_message(message)}
-
-      {:ok, %{"type" => "user", "message" => message}} ->
-        {:notification, summarize_user_message(message)}
-
-      {:ok, %{"type" => "tool_use", "name" => name}} ->
-        {:tool_use, name}
-
-      {:ok, %{"type" => "rate_limit_event", "rate_limit_info" => info}} ->
-        classify_rate_limit_event(info)
-
-      {:ok, %{"type" => "result", "subtype" => "success"} = event} ->
-        {:turn_completed, extract_turn_result(event)}
-
-      {:ok, %{"type" => "result", "subtype" => "error"} = event} ->
-        reason = Map.get(event, "error", "unknown error")
-        classify_error_event(reason)
-
-      {:ok, _other} ->
-        {:malformed, line}
-
-      {:error, _reason} ->
-        {:malformed, line}
+      {:ok, event} -> parse_decoded_event(event, line)
+      {:error, _reason} -> {:malformed, line}
     end
   end
+
+  defp parse_decoded_event(%{"type" => "system", "session_id" => session_id}, _line), do: {:session_started, session_id}
+
+  defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line),
+    do: {:notification, summarize_assistant_message(message)}
+
+  defp parse_decoded_event(%{"type" => "user", "message" => message}, _line),
+    do: {:notification, summarize_user_message(message)}
+
+  defp parse_decoded_event(%{"type" => "tool_use", "name" => name}, _line), do: {:tool_use, name}
+
+  defp parse_decoded_event(%{"type" => "rate_limit_event", "rate_limit_info" => info}, _line),
+    do: classify_rate_limit_event(info)
+
+  defp parse_decoded_event(%{"type" => "result", "subtype" => "success"} = event, _line),
+    do: {:turn_completed, extract_turn_result(event)}
+
+  defp parse_decoded_event(%{"type" => "result", "subtype" => "error"} = event, _line) do
+    reason = Map.get(event, "error", "unknown error")
+    classify_error_event(reason)
+  end
+
+  defp parse_decoded_event(_event, line), do: {:malformed, line}
 
   @rate_limit_pattern ~r/rate[\s_-]?limit|429|too many requests/i
   @retry_after_pattern ~r/retry[\s_-]?after[^\d]{0,8}(\d+)|(\d+)\s*seconds?/i

@@ -831,6 +831,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.pull_request_url == "https://github.com/example/repo/pull/42"
   end
 
+  test "linear client warns when GitHub source PR attachments use unconfigured enterprise hosts" do
+    raw_issue = %{
+      "id" => "issue-pr-unconfigured-ghe",
+      "identifier" => "MT-PR-UNCONFIGURED-GHE",
+      "title" => "Reviewable issue",
+      "state" => %{"name" => "In Review"},
+      "attachments" => %{
+        "nodes" => [
+          %{
+            "sourceType" => "github",
+            "url" => "https://ghe.example.com/example/repo/pull/42"
+          }
+        ]
+      }
+    }
+
+    log =
+      capture_log([level: :warning], fn ->
+        issue = Client.normalize_issue_for_test(raw_issue)
+
+        assert issue.pr_urls == []
+        assert issue.pull_request_url == nil
+      end)
+
+    assert log =~ ~s(Ignoring Linear GitHub PR attachment from unconfigured host "ghe.example.com")
+    assert log =~ "github.enterprise_hosts"
+  end
+
   test "linear client accepts configured GitHub Enterprise pull request attachment URLs" do
     write_workflow_file!(Workflow.workflow_file_path(), github: %{enterprise_hosts: ["GITHUB.EXAMPLE.COM", " github.example.com "]})
 

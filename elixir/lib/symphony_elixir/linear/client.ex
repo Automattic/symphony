@@ -896,6 +896,7 @@ defmodule SymphonyElixir.Linear.Client do
   # keep the default true value.
   defp normalize_issue(issue, assignee_filter) when is_map(issue) do
     assignee = issue["assignee"]
+    pr_urls = extract_pr_urls(issue)
 
     %Issue{
       id: issue["id"],
@@ -908,9 +909,9 @@ defmodule SymphonyElixir.Linear.Client do
       project: extract_project(issue),
       branch_name: issue["branchName"],
       url: issue["url"],
-      pull_request_url: extract_pull_request_url(issue),
+      pull_request_url: List.first(pr_urls),
       assignee_id: assignee_field(assignee, "id"),
-      pr_urls: extract_pr_urls(issue),
+      pr_urls: pr_urls,
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
       comments: extract_comments(issue),
@@ -1032,28 +1033,38 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp extract_pr_urls(_issue), do: []
 
-  defp extract_pull_request_url(%{"attachments" => %{"nodes" => attachments}})
-       when is_list(attachments) do
-    Enum.find_value(attachments, &pull_request_attachment_url/1)
-  end
+  defp pull_request_attachment_url(%{"url" => url} = attachment) when is_binary(url) do
+    case github_pull_request_url(url) do
+      :ok ->
+        url
 
-  defp extract_pull_request_url(_issue), do: nil
+      {:unconfigured_github_host, host} ->
+        warn_unconfigured_github_attachment_host(attachment, host)
+        nil
 
-  defp pull_request_attachment_url(%{"url" => url}) when is_binary(url) do
-    if github_pull_request_url?(url) do
-      url
+      :error ->
+        nil
     end
   end
 
   defp pull_request_attachment_url(_attachment), do: nil
 
-  defp github_pull_request_url?(url) do
+  defp github_pull_request_url(url) do
     case URI.parse(url) do
       %URI{scheme: "https", host: host, path: path} when is_binary(host) and is_binary(path) ->
-        Hosts.github_host?(host) and github_pull_request_path?(path)
+        cond do
+          not github_pull_request_path?(path) ->
+            :error
+
+          Hosts.github_host?(host) ->
+            :ok
+
+          true ->
+            {:unconfigured_github_host, normalize_host(host)}
+        end
 
       _ ->
-        false
+        :error
     end
   end
 
@@ -1064,6 +1075,35 @@ defmodule SymphonyElixir.Linear.Client do
       [_owner, _repo, "pull", pull_number | _rest] -> pull_number =~ ~r/^\d+$/
       _path_parts -> false
     end
+  end
+
+  # Linear sourceType is not trusted for acceptance; it only lets us explain
+  # likely legacy GitHub Enterprise attachments that now require explicit config.
+  defp warn_unconfigured_github_attachment_host(%{"sourceType" => source_type}, host)
+       when is_binary(host) do
+    if github_source?(source_type) do
+      Logger.warning(
+        "Ignoring Linear GitHub PR attachment from unconfigured host #{inspect(host)}; " <>
+          "add it to github.enterprise_hosts if this is your GitHub Enterprise host"
+      )
+    end
+  end
+
+  defp warn_unconfigured_github_attachment_host(_attachment, _host), do: :ok
+
+  defp github_source?(source_type) when is_binary(source_type) do
+    source_type
+    |> String.trim()
+    |> String.downcase()
+    |> Kernel.==("github")
+  end
+
+  defp github_source?(_source_type), do: false
+
+  defp normalize_host(host) when is_binary(host) do
+    host
+    |> String.trim()
+    |> String.downcase()
   end
 
   defp extract_blockers(%{"inverseRelations" => %{"nodes" => inverse_relations}})

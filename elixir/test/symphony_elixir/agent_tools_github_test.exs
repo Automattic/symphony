@@ -96,6 +96,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     try do
       ok_tuple_runner = fn
         ["branch", "--show-current"], _opts -> {:ok, "auto/RSM-3051\n"}
+        ["remote", "get-url", "origin"], _opts -> {:ok, "git@github.com:acme/symphony.git\n"}
         ["push", "origin", "auto/RSM-3051"], _opts -> {:ok, "pushed\n"}
       end
 
@@ -105,6 +106,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
       nonzero_runner = fn
         ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+        ["remote", "get-url", "origin"], _opts -> {"git@github.com:acme/symphony.git\n", 0}
         ["push", "origin", "auto/RSM-3051"], _opts -> {"rejected\n", 1}
       end
 
@@ -132,8 +134,42 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     try do
       {_output, 0} = System.cmd("git", ["init"], cd: workspace, stderr_to_stdout: true)
 
-      assert {:error, {:git_failed, ["push", "origin", _branch], _status, _output}} =
+      assert {:error, :origin_url_mismatch} =
                GitHub.push_branch(scoped_context(workspace))
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "push_branch refuses when current origin differs from captured session origin" do
+    workspace = tmp_workspace!("github-agent-retargeted-origin")
+
+    try do
+      git_runner = fn
+        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+        ["remote", "get-url", "origin"], _opts -> {"ssh://attacker.example/repo.git\n", 0}
+        ["push", "origin", "auto/RSM-3051"], _opts -> flunk("push should not run when origin is retargeted")
+      end
+
+      assert {:error, :origin_url_mismatch} =
+               GitHub.push_branch(scoped_context(workspace), git_runner: git_runner)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "push_branch refuses when current origin is unavailable" do
+    workspace = tmp_workspace!("github-agent-missing-origin")
+
+    try do
+      git_runner = fn
+        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+        ["remote", "get-url", "origin"], _opts -> {"\n", 0}
+        ["push", "origin", "auto/RSM-3051"], _opts -> flunk("push should not run without a provable origin")
+      end
+
+      assert {:error, :origin_url_mismatch} =
+               GitHub.push_branch(scoped_context(workspace), git_runner: git_runner)
     after
       File.rm_rf(workspace)
     end
@@ -230,7 +266,14 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
   end
 
   defp scoped_context(workspace) do
-    %{workspace: workspace, command_security: %{origin_repo: "acme/symphony", workspace: workspace}}
+    %{
+      workspace: workspace,
+      command_security: %{
+        origin_repo: "acme/symphony",
+        origin_url: "git@github.com:acme/symphony.git",
+        workspace: workspace
+      }
+    }
   end
 
   defp branch_runner(workspace) do

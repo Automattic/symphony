@@ -1633,6 +1633,8 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp git_push_refusal(tokens, command, command_security) do
     with push_target when is_binary(push_target) <- git_push_target(tokens),
+         nil <- git_push_config_override(tokens),
+         nil <- git_push_repo_context_override(tokens),
          false <- allowed_git_push_target?(push_target, command_security) do
       {:refuse,
        refusal(
@@ -1647,7 +1649,36 @@ defmodule SymphonyElixir.Codex.AppServer do
          }
        )}
     else
-      _ -> nil
+      {:unsafe_config, token} ->
+        {:refuse,
+         refusal(
+           "git_push",
+           "git_config_override_not_allowed",
+           "Refused git push because Git configuration override #{inspect(token)} can alter remote resolution.",
+           command,
+           %{
+             token: token,
+             allowed_remote: "origin",
+             allowed_origin_url: Map.get(command_security || %{}, :origin_url)
+           }
+         )}
+
+      {:repo_context, token} ->
+        {:refuse,
+         refusal(
+           "git_push",
+           "git_repo_context_override_not_allowed",
+           "Refused git push because Git repository context override #{inspect(token)} prevents proving the destination.",
+           command,
+           %{
+             token: token,
+             allowed_remote: "origin",
+             allowed_origin_url: Map.get(command_security || %{}, :origin_url)
+           }
+         )}
+
+      _ ->
+        nil
     end
   end
 
@@ -1765,6 +1796,63 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp match_git_push_target(["push" | push_args]), do: first_git_push_target(push_args)
   defp match_git_push_target(_tokens), do: nil
 
+  defp git_push_config_override(tokens) do
+    cond do
+      not git_push_command?(tokens) ->
+        nil
+
+      token = git_config_env_token(tokens) ->
+        {:unsafe_config, token}
+
+      true ->
+        tokens
+        |> command_windows("git")
+        |> Enum.find_value(&git_push_window_config_override/1)
+    end
+  end
+
+  defp git_push_window_config_override(tokens) do
+    if git_push_command_window?(tokens) do
+      tokens
+      |> git_config_override_tokens()
+      |> Enum.find(&unsafe_git_config_override?/1)
+      |> case do
+        nil -> nil
+        token -> {:unsafe_config, token}
+      end
+    end
+  end
+
+  defp git_push_repo_context_override(tokens) do
+    tokens
+    |> command_windows("git")
+    |> Enum.find_value(&git_push_window_repo_context_override/1)
+  end
+
+  defp git_push_window_repo_context_override(tokens) do
+    if git_push_command_window?(tokens) do
+      tokens
+      |> git_repo_context_override_tokens()
+      |> repo_context_override()
+    end
+  end
+
+  defp repo_context_override([token | _rest]), do: {:repo_context, token}
+  defp repo_context_override(_tokens), do: nil
+
+  defp git_push_command?(tokens) do
+    tokens
+    |> command_windows("git")
+    |> Enum.any?(&git_push_command_window?/1)
+  end
+
+  defp git_push_command_window?(["git", "push" | _push_args]), do: true
+  defp git_push_command_window?(["git" | rest]), do: rest |> skip_global_git_options() |> match_git_push_command?()
+  defp git_push_command_window?(_tokens), do: false
+
+  defp match_git_push_command?(["push" | _push_args]), do: true
+  defp match_git_push_command?(_tokens), do: false
+
   defp first_git_push_target(push_args) do
     push_args
     |> skip_options()
@@ -1834,9 +1922,10 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp skip_global_git_options(["-C", _path | rest]), do: skip_global_git_options(rest)
   defp skip_global_git_options(["-c", _config | rest]), do: skip_global_git_options(rest)
+  defp skip_global_git_options(["--config-env", _config | rest]), do: skip_global_git_options(rest)
 
   defp skip_global_git_options([option | rest]) when is_binary(option) do
-    if String.starts_with?(option, ["--git-dir=", "--work-tree=", "-"]) do
+    if String.starts_with?(option, ["--git-dir=", "--work-tree=", "--config-env=", "-c", "-"]) do
       skip_global_git_options(rest)
     else
       [option | rest]
@@ -1854,7 +1943,79 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp skip_options(tokens), do: tokens
 
-  defp allowed_git_push_target?("origin", _command_security), do: true
+  defp git_config_env_token(tokens) do
+    Enum.find(tokens, fn token ->
+      token
+      |> String.trim()
+      |> String.upcase()
+      |> String.starts_with?("GIT_CONFIG")
+    end)
+  end
+
+  defp git_config_override_tokens(["git" | rest]), do: git_config_override_tokens(rest, [])
+  defp git_config_override_tokens(_tokens), do: []
+
+  defp git_config_override_tokens(["-c", config | rest], acc),
+    do: git_config_override_tokens(rest, [config | acc])
+
+  defp git_config_override_tokens(["--config-env", config | rest], acc),
+    do: git_config_override_tokens(rest, ["--config-env #{config}" | acc])
+
+  defp git_config_override_tokens([option | rest], acc) when is_binary(option) do
+    cond do
+      String.starts_with?(option, "-c") and byte_size(option) > 2 ->
+        option
+        |> String.trim_leading("-c")
+        |> then(&git_config_override_tokens(rest, [&1 | acc]))
+
+      String.starts_with?(option, "--config-env=") ->
+        git_config_override_tokens(rest, [option | acc])
+
+      true ->
+        git_config_override_tokens(rest, acc)
+    end
+  end
+
+  defp git_config_override_tokens(_tokens, acc), do: Enum.reverse(acc)
+
+  defp unsafe_git_config_override?(config) when is_binary(config) do
+    config_key =
+      config
+      |> String.trim()
+      |> String.trim_leading("--config-env=")
+      |> String.split("=", parts: 2)
+      |> List.first()
+      |> String.downcase()
+
+    String.match?(config_key, ~r/^remote\..+\.(url|pushurl)$/) or
+      String.match?(config_key, ~r/^url\..+\.(insteadof|pushinsteadof)$/) or
+      String.starts_with?(config, "--config-env")
+  end
+
+  defp unsafe_git_config_override?(_config), do: false
+
+  defp git_repo_context_override_tokens(["git" | rest]), do: git_repo_context_override_tokens(rest, [])
+  defp git_repo_context_override_tokens(_tokens), do: []
+
+  defp git_repo_context_override_tokens(["-C", path | rest], acc),
+    do: git_repo_context_override_tokens(rest, ["-C #{path}" | acc])
+
+  defp git_repo_context_override_tokens([option | rest], acc) when is_binary(option) do
+    if String.starts_with?(option, ["--git-dir=", "--work-tree="]) do
+      git_repo_context_override_tokens(rest, [option | acc])
+    else
+      git_repo_context_override_tokens(rest, acc)
+    end
+  end
+
+  defp git_repo_context_override_tokens(_tokens, acc), do: Enum.reverse(acc)
+
+  defp allowed_git_push_target?("origin", command_security) do
+    case current_origin_url(command_security) do
+      {:ok, current_origin_url} -> same_origin_url?(current_origin_url, Map.get(command_security || %{}, :origin_url))
+      _error -> false
+    end
+  end
 
   defp allowed_git_push_target?(target, command_security) when is_binary(target) do
     allowed_origin_url = Map.get(command_security || %{}, :origin_url)
@@ -1880,6 +2041,20 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp same_origin_url?(_left, _right), do: false
+
+  defp current_origin_url(command_security) do
+    workspace = Map.get(command_security || %{}, :workspace)
+
+    with workspace when is_binary(workspace) <- workspace,
+         true <- File.dir?(workspace),
+         git when is_binary(git) <- System.find_executable("git"),
+         {output, 0} <- System.cmd(git, ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true),
+         origin_url when is_binary(origin_url) <- output |> String.trim() |> blank_to_nil() do
+      {:ok, origin_url}
+    else
+      _result -> {:error, :origin_url_unavailable}
+    end
+  end
 
   defp same_repo?(left, right) when is_binary(left) and is_binary(right),
     do: String.downcase(left) == String.downcase(right)

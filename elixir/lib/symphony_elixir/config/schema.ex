@@ -394,6 +394,40 @@ defmodule SymphonyElixir.Config.Schema do
       end
     end
 
+    defmodule SandboxRuntime do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @type t :: %__MODULE__{}
+
+      @primary_key false
+      @kinds ["none", "srt"]
+
+      embedded_schema do
+        field(:kind, :string, default: "none")
+        field(:command, :string, default: "srt")
+        field(:enable_weaker_nested_sandbox, :boolean, default: false)
+        field(:enable_weaker_network_isolation, :boolean, default: false)
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:kind, :command, :enable_weaker_nested_sandbox, :enable_weaker_network_isolation], empty_values: [])
+        |> validate_required([:kind])
+        |> validate_inclusion(:kind, @kinds)
+        |> validate_command_when_enabled()
+      end
+
+      defp validate_command_when_enabled(changeset) do
+        case get_field(changeset, :kind) do
+          "srt" -> validate_required(changeset, [:command])
+          _kind -> changeset
+        end
+      end
+    end
+
     @primary_key false
     embedded_schema do
       field(:kind, :string)
@@ -410,6 +444,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
       embeds_one(:network_access, NetworkAccess, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:sandbox_runtime, SandboxRuntime, on_replace: :update, defaults_to_struct: true)
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
@@ -454,6 +489,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
       |> cast_embed(:network_access, with: &NetworkAccess.changeset/2)
+      |> cast_embed(:sandbox_runtime, with: &SandboxRuntime.changeset/2)
     end
   end
 
@@ -1399,8 +1435,30 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp validate_finalized_settings(settings) do
-    validate_finalized_notification_urls(settings.notifications)
+    with :ok <- validate_agent_sandbox_runtime(settings.agent) do
+      validate_finalized_notification_urls(settings.notifications)
+    end
   end
+
+  defp validate_agent_sandbox_runtime(%Agent{
+         kind: "codex",
+         sandbox_runtime: %Agent.SandboxRuntime{kind: "srt"},
+         network_access: %Agent.NetworkAccess{mode: "open"}
+       }) do
+    {:error, "agent.sandbox_runtime.kind=\"srt\" does not support agent.network_access.mode=\"open\""}
+  end
+
+  defp validate_agent_sandbox_runtime(%Agent{kind: "codex"}), do: :ok
+
+  defp validate_agent_sandbox_runtime(%Agent{sandbox_runtime: %Agent.SandboxRuntime{kind: kind}})
+       when kind in [nil, "none"],
+       do: :ok
+
+  defp validate_agent_sandbox_runtime(%Agent{sandbox_runtime: %Agent.SandboxRuntime{kind: kind}}) do
+    {:error, "agent.sandbox_runtime.kind=#{inspect(kind)} is only supported for agent.kind=codex"}
+  end
+
+  defp validate_agent_sandbox_runtime(_agent), do: :ok
 
   defp normalize_notifications(%Notifications{} = notifications) do
     %{notifications | channels: Enum.map(notifications.channels || [], &normalize_notification_channel/1)}

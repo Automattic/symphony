@@ -56,6 +56,16 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "./.tool-versions"
   ]
 
+  @srt_codex_runtime_write_paths [
+    "~/.codex"
+  ]
+
+  @srt_codex_runtime_deny_write_paths [
+    "~/.codex/auth.json",
+    "~/.codex/config.toml",
+    "~/.codex/AGENTS.md"
+  ]
+
   @doc false
   @spec deny_read_paths() :: [String.t()]
   def deny_read_paths, do: @deny_read_paths
@@ -84,6 +94,42 @@ defmodule SymphonyElixir.AgentSandboxConfig do
       "permissions.#{@codex_profile}.network=#{codex_network_policy(network_mode)}",
       "permissions.#{@codex_profile}.network.domains=#{codex_network_domains(network_mode, allowed_domains)}"
     ]
+  end
+
+  @doc false
+  @spec srt_settings(String.t(), [String.t()], [String.t()]) :: {:ok, map()} | {:error, term()}
+  def srt_settings(network_mode, allowed_domains, denied_domains),
+    do: srt_settings(network_mode, allowed_domains, denied_domains, [], [])
+
+  @doc false
+  @spec srt_settings(String.t(), [String.t()], [String.t()], [String.t()]) :: {:ok, map()} | {:error, term()}
+  def srt_settings(network_mode, allowed_domains, denied_domains, allow_read_paths),
+    do: srt_settings(network_mode, allowed_domains, denied_domains, allow_read_paths, [])
+
+  @doc false
+  @spec srt_settings(String.t(), [String.t()], [String.t()], [String.t()], keyword()) :: {:ok, map()} | {:error, term()}
+  def srt_settings("open", _allowed_domains, _denied_domains, _allow_read_paths, _opts),
+    do: {:error, :srt_open_network_unsupported}
+
+  def srt_settings(network_mode, allowed_domains, denied_domains, allow_read_paths, opts) do
+    allow_read_paths = normalize_allow_read_paths(allow_read_paths)
+
+    {:ok,
+     %{
+       "network" => %{
+         "allowedDomains" => srt_allowed_domains(network_mode, allowed_domains),
+         "deniedDomains" => normalize_domains(denied_domains),
+         "allowLocalBinding" => false
+       },
+       "filesystem" => %{
+         "denyRead" => Enum.reject(@deny_read_paths, &(&1 in allow_read_paths)),
+         "allowRead" => [],
+         "allowWrite" => srt_allow_write_paths(),
+         "denyWrite" => srt_deny_write_paths()
+       },
+       "enableWeakerNestedSandbox" => Keyword.get(opts, :enable_weaker_nested_sandbox, false),
+       "enableWeakerNetworkIsolation" => Keyword.get(opts, :enable_weaker_network_isolation, false)
+     }}
   end
 
   defp codex_filesystem_policy(allow_read_paths) do
@@ -116,6 +162,33 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   end
 
   defp normalize_allow_read_paths(_paths), do: []
+
+  defp normalize_domains(domains) when is_list(domains) do
+    domains
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.map(&String.downcase/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_domains(_domains), do: []
+
+  defp srt_allowed_domains("block", _allowed_domains), do: []
+  defp srt_allowed_domains(_mode, allowed_domains), do: normalize_domains(allowed_domains)
+
+  defp srt_allow_write_paths do
+    [".", "/tmp", System.tmp_dir!() | @srt_codex_runtime_write_paths]
+    |> Enum.map(fn
+      "." -> "."
+      "~/" <> _rest = path -> path
+      "/" <> _rest = path -> path
+      path -> "./#{path}"
+    end)
+    |> Enum.uniq()
+  end
+
+  defp srt_deny_write_paths, do: @deny_write_paths ++ @srt_codex_runtime_deny_write_paths
 
   defp codex_network_policy("open"), do: toml_inline_table(enabled: true, mode: "full")
   defp codex_network_policy("block"), do: toml_inline_table(enabled: false)

@@ -995,6 +995,148 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server can wrap Codex app-server with srt settings" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-srt-wrapper-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SRT")
+      codex_binary = Path.join(test_root, "fake-codex")
+      srt_binary = Path.join(test_root, "fake-srt")
+      trace_file = Path.join(test_root, "codex-srt-wrapper.trace")
+      settings_copy = Path.join(test_root, "srt-settings-copy.json")
+      File.mkdir_p!(workspace)
+
+      File.write!(srt_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      settings_copy="#{settings_copy}"
+      settings_path=""
+
+      printf 'SRT_ARGV:%s\\n' "$*" >> "$trace_file"
+
+      if [ "${1-}" = "--settings" ]; then
+        settings_path="$2"
+        shift 2
+      fi
+
+      printf 'SRT_SETTINGS:%s\\n' "$settings_path" >> "$trace_file"
+      cp "$settings_path" "$settings_copy"
+      exec "$@"
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      printf 'CODEX_ARGV:%s\\n' "$*" >> "$trace_file"
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-srt"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-srt","status":"inProgress","items":[]}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(srt_binary, 0o755)
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_sandbox: %{allow_read_paths: ["~/.npmrc"]},
+        agent_command: "#{codex_binary} app-server",
+        agent_network_access: %{
+          mode: "allowlist",
+          allowed_domains: ["api.mycompany.com"],
+          denied_domains: ["github.com"]
+        },
+        agent_sandbox_runtime: %{
+          kind: "srt",
+          command: srt_binary,
+          enable_weaker_nested_sandbox: true
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-srt",
+        identifier: "MT-SRT",
+        title: "Validate srt wrapper",
+        description: "Ensure Codex launch can be wrapped by sandbox-runtime",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SRT",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Validate srt wrapper", issue)
+
+      trace = File.read!(trace_file)
+      assert trace =~ "SRT_ARGV:--settings "
+      assert trace =~ "CODEX_ARGV:--config default_permissions=\"workspace_write\""
+      assert trace =~ "--config permissions.workspace_write.filesystem="
+      assert trace =~ "--config permissions.workspace_write.network={\"enabled\"=true,\"mode\"=\"limited\"}"
+      assert trace =~ " app-server"
+
+      srt_settings_path =
+        trace
+        |> String.split("\n", trim: true)
+        |> Enum.find_value(fn
+          "SRT_SETTINGS:" <> path -> path
+          _line -> nil
+        end)
+
+      assert is_binary(srt_settings_path)
+      refute File.exists?(srt_settings_path)
+
+      settings = settings_copy |> File.read!() |> Jason.decode!()
+      assert "api.mycompany.com" in settings["network"]["allowedDomains"]
+      assert "api.openai.com" in settings["network"]["allowedDomains"]
+      refute "github.com" in settings["network"]["allowedDomains"]
+      assert settings["network"]["deniedDomains"] == ["github.com"]
+      refute "~/.npmrc" in settings["filesystem"]["denyRead"]
+      assert "~/.ssh" in settings["filesystem"]["denyRead"]
+      assert "." in settings["filesystem"]["allowWrite"]
+      assert "~/.codex" in settings["filesystem"]["allowWrite"]
+      assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
+      assert "~/.codex/auth.json" in settings["filesystem"]["denyWrite"]
+      assert "~/.codex/config.toml" in settings["filesystem"]["denyWrite"]
+      assert "~/.codex/AGENTS.md" in settings["filesystem"]["denyWrite"]
+      assert settings["enableWeakerNestedSandbox"] == true
+      assert settings["enableWeakerNetworkIsolation"] == false
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server rejects srt sandbox runtime for remote workers" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_sandbox_runtime: %{kind: "srt"}
+    )
+
+    assert {:error, {:unsupported_agent_sandbox_runtime, "srt", :remote_worker}} =
+             AppServer.start_session("/remote/workspace", worker_host: "worker-01")
+  end
+
   test "app server strips provider, tracker, GitHub, and SSH agent secrets from the agent subprocess env" do
     test_root =
       Path.join(

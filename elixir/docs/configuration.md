@@ -206,6 +206,13 @@ agent:
     mode: allowlist
     allowed_domains: []
     denied_domains: []
+  sandbox_runtime:
+    # Optional Codex-only outer sandbox wrapper. Use kind: srt when the
+    # @anthropic-ai/sandbox-runtime `srt` command is installed for the agent.
+    kind: none
+    command: srt
+    enable_weaker_nested_sandbox: false
+    enable_weaker_network_isolation: false
 pr_review:
   mode: tracker
   # The following keys are polling-mode only and are ignored while mode is tracker.
@@ -320,6 +327,7 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.
   - `agent.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace for Codex.
   - `agent.network_access.mode` defaults to `allowlist`.
+  - `agent.sandbox_runtime.kind` defaults to `none`.
 - `workspace.sandbox.allow_read_paths` is an advanced escape hatch for paths that are denied by
   Symphony's default credential read-deny list but are required by the agent runtime for legitimate
   repository work. Entries are exact sandbox paths such as `~/.npmrc` or `~/.cargo/credentials`.
@@ -344,6 +352,29 @@ Title: {{ issue.title }} Body: {{ issue.description }}
     matching the previous broad `networkAccess: true` behavior.
   - `block`: disables the Codex sandbox network switch, matching `networkAccess: false`.
   `denied_domains` always takes precedence over built-in and user-provided `allowed_domains`.
+- `agent.sandbox_runtime` is a Codex-only optional outer sandbox wrapper:
+  - `kind: none` keeps the current launch path.
+  - `kind: srt` wraps local Codex launch as
+    `srt --settings <temporary-settings.json> <agent.command-with-codex-config>`.
+  - `command` defaults to `srt` and may be a shell-like command string when a wrapper such as
+    `mise exec -- srt` is required.
+  - `enable_weaker_nested_sandbox` and `enable_weaker_network_isolation` map directly to the same
+    sandbox-runtime settings. Keep them `false` unless the host environment requires one of those
+    compatibility modes.
+  - Symphony generates the temporary settings file from `agent.network_access`,
+    `workspace.sandbox.allow_read_paths`, and the shared sensitive path deny lists. The generated
+    SRT policy denies reads for credential/config paths, allows writes to the issue workspace and
+    temp directories, protects the same workflow/config files from writes, and allows Codex to
+    write its own runtime state under `~/.codex` while deny-writing sensitive/static Codex files
+    such as `auth.json`, `config.toml`, and `AGENTS.md`. Symphony removes the
+    temporary settings file when the Codex session stops.
+  - `agent.network_access.mode: open` is rejected with SRT because sandbox-runtime does not support
+    an unrestricted domain wildcard. Use `allowlist` or `block`.
+  - SRT support is local-only today. Remote SSH workers reject `kind: srt` at launch time because
+    the temporary settings file is generated on the orchestrator host.
+  - SRT wraps the whole Codex process tree, so it cannot distinguish Codex's own credential reads
+    from commands launched beneath Codex. Treat this as an additional OS guardrail, not a complete
+    credential isolation boundary.
 - `agent.command_timeout_ms` caps a single shell command even when it keeps streaming output.
   Default: `600000` (10 minutes). Set `0` to disable this command-level guard.
 - When `agent.turn_sandbox_policy` is set explicitly for Codex, Symphony forwards the configured

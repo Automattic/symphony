@@ -41,6 +41,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           workspace: Path.t(),
           worker_host: String.t() | nil,
           command_security: map(),
+          launch_cleanup_paths: [Path.t()],
           settings: Schema.t()
         }
 
@@ -61,7 +62,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     settings = settings_from_opts(opts)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, settings),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, settings) do
+         {:ok, port, launch_cleanup_paths} <- start_port(expanded_workspace, worker_host, settings) do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host, settings),
@@ -79,11 +80,13 @@ defmodule SymphonyElixir.Codex.AppServer do
            workspace: expanded_workspace,
            worker_host: worker_host,
            command_security: command_security_context(expanded_workspace, worker_host),
+           launch_cleanup_paths: launch_cleanup_paths,
            settings: settings
          }}
       else
         {:error, reason} ->
           stop_port(port)
+          cleanup_launch_paths(launch_cleanup_paths)
           {:error, reason}
       end
     end
@@ -195,8 +198,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   @spec stop_session(session()) :: :ok
-  def stop_session(%{port: port}) when is_port(port) do
+  def stop_session(%{port: port} = session) when is_port(port) do
     stop_port(port)
+    cleanup_launch_paths(Map.get(session, :launch_cleanup_paths, []))
   end
 
   defp settings_from_opts(opts) do
@@ -292,7 +296,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     if is_nil(executable) do
       {:error, :bash_not_found}
     else
-      with {:ok, command} <- command_with_sandbox_config(settings.agent.command, settings) do
+      with {:ok, command, launch_cleanup_paths} <- command_with_sandbox_config(settings.agent.command, settings) do
         port =
           Port.open(
             {:spawn_executable, String.to_charlist(executable)},
@@ -307,19 +311,20 @@ defmodule SymphonyElixir.Codex.AppServer do
             ]
           )
 
-        {:ok, port}
+        {:ok, port, launch_cleanup_paths}
       end
     end
   end
 
   defp start_port(workspace, worker_host, settings) when is_binary(worker_host) do
-    with {:ok, remote_command} <- remote_launch_command(workspace, settings) do
-      SSH.start_port(worker_host, remote_command, line: @port_line_bytes, env: AgentEnv.build())
+    with {:ok, remote_command} <- remote_launch_command(workspace, settings),
+         {:ok, port} <- SSH.start_port(worker_host, remote_command, line: @port_line_bytes, env: AgentEnv.build()) do
+      {:ok, port, []}
     end
   end
 
   defp remote_launch_command(workspace, settings) when is_binary(workspace) do
-    with {:ok, command} <- command_with_sandbox_config(settings.agent.command, settings) do
+    with {:ok, command, []} <- command_with_sandbox_config(settings.agent.command, settings, remote: true) do
       script =
         [
           "cd #{shell_escape(workspace)}",
@@ -331,7 +336,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp command_with_sandbox_config(command, settings) when is_binary(command) do
+  defp command_with_sandbox_config(command, settings, opts \\ []) when is_binary(command) do
     network_access = settings.agent.network_access || %Schema.Agent.NetworkAccess{}
 
     overrides =
@@ -341,7 +346,80 @@ defmodule SymphonyElixir.Codex.AppServer do
         workspace_sandbox_allow_read_paths(settings)
       )
 
-    inject_config_overrides(command, overrides)
+    with {:ok, command} <- inject_config_overrides(command, overrides) do
+      maybe_wrap_sandbox_runtime(command, settings, opts)
+    end
+  end
+
+  defp maybe_wrap_sandbox_runtime(command, settings, opts) do
+    runtime = sandbox_runtime(settings)
+
+    case runtime.kind do
+      kind when kind in [nil, "none"] ->
+        {:ok, command, []}
+
+      "srt" ->
+        if Keyword.get(opts, :remote, false) do
+          {:error, {:unsupported_agent_sandbox_runtime, "srt", :remote_worker}}
+        else
+          wrap_srt_command(command, settings, runtime)
+        end
+    end
+  end
+
+  defp sandbox_runtime(%Schema{agent: %{sandbox_runtime: %Schema.Agent.SandboxRuntime{} = runtime}}), do: runtime
+
+  defp sandbox_runtime(_settings), do: %Schema.Agent.SandboxRuntime{}
+
+  defp wrap_srt_command(command, settings, runtime) do
+    with {:ok, srt_words} <- srt_command_words(runtime.command),
+         {:ok, settings_dir, settings_path} <- write_srt_settings(settings, runtime) do
+      wrapped_command =
+        (srt_words ++ ["--settings", settings_path])
+        |> Enum.map_join(" ", &shell_escape/1)
+        |> Kernel.<>(" #{command}")
+
+      {:ok, wrapped_command, [settings_dir]}
+    end
+  end
+
+  defp srt_command_words(command) when is_binary(command) do
+    case shell_words(command) do
+      {:ok, [_ | _] = words} -> {:ok, words}
+      {:ok, []} -> {:error, {:invalid_srt_command, :empty}}
+      {:error, reason} -> {:error, {:invalid_srt_command, reason}}
+    end
+  end
+
+  defp srt_command_words(_command), do: {:error, {:invalid_srt_command, :not_a_string}}
+
+  defp write_srt_settings(settings, runtime) do
+    settings_dir = Path.join(System.tmp_dir!(), "symphony-srt-#{System.unique_integer([:positive])}")
+    settings_path = Path.join(settings_dir, "settings.json")
+    network_access = settings.agent.network_access || %Schema.Agent.NetworkAccess{}
+
+    with {:ok, srt_settings} <-
+           AgentSandboxConfig.srt_settings(
+             network_access.mode,
+             Schema.codex_effective_network_allowed_domains(settings),
+             network_access.denied_domains,
+             workspace_sandbox_allow_read_paths(settings),
+             enable_weaker_nested_sandbox: runtime.enable_weaker_nested_sandbox,
+             enable_weaker_network_isolation: runtime.enable_weaker_network_isolation
+           ),
+         {:ok, json} <- Jason.encode(srt_settings),
+         :ok <- File.mkdir_p(settings_dir),
+         :ok <- File.write(settings_path, json),
+         :ok <- File.chmod(settings_path, 0o600) do
+      {:ok, settings_dir, settings_path}
+    else
+      {:error, :srt_open_network_unsupported} = error ->
+        error
+
+      {:error, reason} ->
+        _ = File.rm_rf(settings_dir)
+        {:error, {:srt_settings_write_failed, reason}}
+    end
   end
 
   defp workspace_sandbox_allow_read_paths(%Schema{workspace: %{sandbox: %{allow_read_paths: paths}}}) when is_list(paths),
@@ -2870,6 +2948,19 @@ defmodule SymphonyElixir.Codex.AppServer do
         end
     end
   end
+
+  defp cleanup_launch_paths(paths) when is_list(paths) do
+    Enum.each(paths, fn
+      path when is_binary(path) ->
+        _ = File.rm_rf(path)
+        :ok
+
+      _path ->
+        :ok
+    end)
+  end
+
+  defp cleanup_launch_paths(_paths), do: :ok
 
   defp emit_message(on_message, event, details, metadata) when is_function(on_message, 1) do
     message =

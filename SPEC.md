@@ -759,6 +759,24 @@ fields locally if they want stricter startup checks.
   - `denied_domains` MUST take precedence over both built-in and user-provided domains.
   - The Elixir Claude adapter writes equivalent sandbox/network settings to `.claude/settings.json`
     in the issue workspace for the duration of a session.
+- `sandbox_runtime` (object, Codex-only)
+  - Default `kind`: `none`.
+  - `kind`: one of `none` or `srt`.
+    - `none`: no outer sandbox wrapper.
+    - `srt`: wrap local Codex launch with Anthropic Sandbox Runtime (`srt`) using a temporary
+      settings file generated from the effective network policy and shared filesystem deny lists.
+  - `command`: shell-like command string used to invoke SRT, default `srt`.
+  - `enable_weaker_nested_sandbox`: boolean, default `false`, passed through to SRT settings.
+  - `enable_weaker_network_isolation`: boolean, default `false`, passed through to SRT settings.
+  - SRT settings SHOULD allow the configured Codex runtime to write its own runtime state directory
+    while deny-writing static or sensitive Codex config files such as auth, config, and global
+    instructions.
+  - SRT wraps the whole Codex process tree and therefore SHOULD be documented as an additional OS
+    guardrail rather than a complete credential isolation boundary for the Codex runtime itself.
+  - Implementations MUST reject `kind: srt` with `network_access.mode: open` unless the targeted
+    SRT version provides a valid unrestricted-network representation.
+  - Implementations MUST reject `kind: srt` for non-Codex adapters and MAY reject it for remote
+    worker launch modes that cannot access the generated temporary settings file.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
@@ -1117,6 +1135,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.network_access.mode`: `allowlist`, `open`, or `block`, default `allowlist`
 - `agent.network_access.allowed_domains`: list of additional allowed domains, default `[]`
 - `agent.network_access.denied_domains`: list of domains removed from the effective allowlist, default `[]`
+- `agent.sandbox_runtime.kind`: `none` or `srt`, default `none`
+- `agent.sandbox_runtime.command`: SRT command string, default `srt`
 - `agent.turn_timeout_ms`: integer, default `3600000`
 - `agent.read_timeout_ms`: integer, default `5000`
 - `agent.stall_timeout_ms`: integer, default `300000`
@@ -1568,7 +1588,9 @@ Subprocess launch parameters:
 Notes:
 
 - The Elixir implementation requires an explicit `agent.command`.
-- Codex local launch invokes `bash -lc <agent.command>` in the workspace. Codex remote launch runs
+- Codex local launch invokes `bash -lc <agent.command>` in the workspace. When
+  `agent.sandbox_runtime.kind: srt`, the local command is wrapped as
+  `<srt command> --settings <temporary-settings.json> <agent.command>`. Codex remote launch runs
   the configured command after `cd <workspace>` over SSH stdio.
 - Claude local launch parses `agent.command` with shell-like word splitting, starts the executable
   directly, and appends `--output-format stream-json --print <prompt>`. Claude remote launch runs
@@ -2917,7 +2939,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 ### 17.5 Coding-Agent Adapter Client
 
 - Launch command uses workspace cwd and follows the `agent.kind` adapter launch semantics.
-- Codex launch invokes `bash -lc <agent.command>` locally.
+- Codex launch invokes `bash -lc <agent.command>` locally, optionally wrapped by the configured
+  `agent.sandbox_runtime`.
 - Claude launch parses `agent.command`, appends stream-json print arguments, and enforces
   `agent.command_timeout_ms` after streamed tool-use events.
 - Session startup follows the configured adapter protocol.

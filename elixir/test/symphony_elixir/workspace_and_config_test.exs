@@ -1918,6 +1918,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.agent.network_access.mode == "allowlist"
     assert config.agent.network_access.allowed_domains == []
     assert config.agent.network_access.denied_domains == []
+    assert config.agent.sandbox_runtime.kind == "none"
+    assert config.agent.sandbox_runtime.command == "srt"
+    assert config.agent.sandbox_runtime.enable_weaker_nested_sandbox == false
+    assert config.agent.sandbox_runtime.enable_weaker_network_isolation == false
 
     assert {:ok, canonical_default_workspace_root} =
              SymphonyElixir.PathSafety.canonicalize(Path.join(System.tmp_dir!(), "symphony_workspaces"))
@@ -2644,6 +2648,40 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Schema.resolve_turn_sandbox_policy(open_settings)["networkAccess"] == true
     assert Schema.resolve_codex_thread_config(open_settings) == nil
+  end
+
+  test "schema parses codex sandbox runtime config" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_sandbox_runtime: %{
+        kind: "srt",
+        command: "/usr/local/bin/srt",
+        enable_weaker_nested_sandbox: true,
+        enable_weaker_network_isolation: true
+      }
+    )
+
+    runtime = Config.settings!().agent.sandbox_runtime
+    assert runtime.kind == "srt"
+    assert runtime.command == "/usr/local/bin/srt"
+    assert runtime.enable_weaker_nested_sandbox == true
+    assert runtime.enable_weaker_network_isolation == true
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_network_access: %{mode: "open"},
+      agent_sandbox_runtime: %{kind: "srt"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "agent.sandbox_runtime.kind=\"srt\" does not support agent.network_access.mode=\"open\""
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude",
+      agent_command: "claude",
+      agent_sandbox_runtime: %{kind: "srt"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "agent.sandbox_runtime.kind=\"srt\" is only supported for agent.kind=codex"
   end
 
   test "schema network helpers tolerate missing embedded network config" do

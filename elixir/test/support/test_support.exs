@@ -466,6 +466,7 @@ defmodule SymphonyElixir.TestSupport do
           agent_thread_sandbox: "workspace-write",
           agent_turn_sandbox_policy: nil,
           agent_network_access: nil,
+          agent_sandbox_runtime: nil,
           agent_turn_timeout_ms: 3_600_000,
           agent_read_timeout_ms: 5_000,
           agent_stall_timeout_ms: 300_000,
@@ -533,6 +534,7 @@ defmodule SymphonyElixir.TestSupport do
     agent_thread_sandbox = Keyword.get(config, :agent_thread_sandbox)
     agent_turn_sandbox_policy = Keyword.get(config, :agent_turn_sandbox_policy)
     agent_network_access = Keyword.get(config, :agent_network_access)
+    agent_sandbox_runtime = Keyword.get(config, :agent_sandbox_runtime)
     agent_turn_timeout_ms = Keyword.get(config, :agent_turn_timeout_ms)
     agent_read_timeout_ms = Keyword.get(config, :agent_read_timeout_ms)
     agent_stall_timeout_ms = Keyword.get(config, :agent_stall_timeout_ms)
@@ -603,6 +605,7 @@ defmodule SymphonyElixir.TestSupport do
         "  thread_sandbox: #{yaml_value(agent_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(agent_turn_sandbox_policy)}",
         agent_network_access && "  network_access: #{yaml_value(agent_network_access)}",
+        agent_sandbox_runtime && "  sandbox_runtime: #{yaml_value(agent_sandbox_runtime)}",
         "  turn_timeout_ms: #{yaml_value(agent_turn_timeout_ms)}",
         "  read_timeout_ms: #{yaml_value(agent_read_timeout_ms)}",
         "  stall_timeout_ms: #{yaml_value(agent_stall_timeout_ms)}",

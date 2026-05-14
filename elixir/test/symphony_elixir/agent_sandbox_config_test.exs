@@ -102,6 +102,42 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "permissions.workspace_write.network.domains={}" in overrides
   end
 
+  test "srt settings render network and filesystem guardrails" do
+    assert {:ok, settings} =
+             AgentSandboxConfig.srt_settings(
+               "allowlist",
+               ["GitHub.com", "api.openai.com", "github.com"],
+               [" API.GitHub.com "],
+               ["~/.npmrc"],
+               enable_weaker_nested_sandbox: true
+             )
+
+    assert settings["network"] == %{
+             "allowedDomains" => ["github.com", "api.openai.com"],
+             "deniedDomains" => ["api.github.com"],
+             "allowLocalBinding" => false
+           }
+
+    assert settings["filesystem"]["allowRead"] == []
+    assert "." in settings["filesystem"]["allowWrite"]
+    assert System.tmp_dir!() in settings["filesystem"]["allowWrite"]
+    assert "~/.codex" in settings["filesystem"]["allowWrite"]
+    refute "~/.npmrc" in settings["filesystem"]["denyRead"]
+    assert "~/.ssh" in settings["filesystem"]["denyRead"]
+    assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
+    assert "~/.codex/auth.json" in settings["filesystem"]["denyWrite"]
+    assert "~/.codex/config.toml" in settings["filesystem"]["denyWrite"]
+    assert "~/.codex/AGENTS.md" in settings["filesystem"]["denyWrite"]
+    refute "~/.codex/skills" in settings["filesystem"]["denyWrite"]
+    assert settings["enableWeakerNestedSandbox"] == true
+    assert settings["enableWeakerNetworkIsolation"] == false
+  end
+
+  test "srt settings map open and block network modes" do
+    assert {:error, :srt_open_network_unsupported} = AgentSandboxConfig.srt_settings("open", ["github.com"], [])
+    assert {:ok, %{"network" => %{"allowedDomains" => []}}} = AgentSandboxConfig.srt_settings("block", ["github.com"], [])
+  end
+
   test "Codex filesystem config allows operator overrides for default read denies" do
     overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [], ["~/.npmrc", "~/.cargo/credentials"])
 

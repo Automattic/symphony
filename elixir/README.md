@@ -178,6 +178,24 @@ Most local runs need these five pieces:
 The quality gate is disabled by default. To opt in, set `quality_gate.enabled: true` and provide
 `ANTHROPIC_API_KEY` (or configure another provider/model under `quality_gate`).
 
+Codex can also be wrapped in Anthropic's Sandbox Runtime (`srt`) when that command is installed in
+the agent environment:
+
+```yaml
+agent:
+  kind: codex
+  command: codex app-server
+  sandbox_runtime:
+    kind: srt
+    command: srt
+```
+
+Symphony generates the temporary `srt` settings file from the same workspace, filesystem deny-list,
+and network allow-list config it already sends to Codex. Because SRT wraps the whole Codex process,
+the policy also allows Codex to write its own `~/.codex` runtime state while protecting static
+Codex auth, config, and global-instruction files from writes. See
+[docs/configuration.md](docs/configuration.md) for the full option list and current limitations.
+
 `symphony.yml`:
 
 ```yaml
@@ -463,7 +481,7 @@ workspaces.
 
 The configured `agent.command` controls which Codex app-server schema Symphony talks to. Run that
 command by hand to confirm it starts, then compare your `agent.approval_policy`,
-`agent.turn_sandbox_policy`, and `agent.network_access` settings with
+`agent.turn_sandbox_policy`, `agent.network_access`, and `agent.sandbox_runtime` settings with
 [docs/configuration.md](docs/configuration.md). Upgrade Codex or remove unsupported policy fields
 for the app-server version you are running.
 

@@ -375,6 +375,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     agent
     |> struct_to_map()
     |> Map.update("network_access", nil, &struct_to_map/1)
+    |> Map.update("sandbox_runtime", nil, &struct_to_map/1)
   end
 
   defp workspace_to_map(%Schema.Workspace{} = workspace) do

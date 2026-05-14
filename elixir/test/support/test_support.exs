@@ -417,6 +417,7 @@ defmodule SymphonyElixir.TestSupport do
           max_tokens_per_day: nil,
           agent_kind: "codex",
           agent_command: "codex app-server",
+          agent_remote_control: nil,
           agent_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           agent_thread_sandbox: "workspace-write",
           agent_turn_sandbox_policy: nil,
@@ -482,6 +483,7 @@ defmodule SymphonyElixir.TestSupport do
     max_tokens_per_day = Keyword.get(config, :max_tokens_per_day)
     agent_kind = Keyword.get(config, :agent_kind)
     agent_command = Keyword.get(config, :agent_command)
+    agent_remote_control = Keyword.get(config, :agent_remote_control)
     agent_approval_policy = Keyword.get(config, :agent_approval_policy)
     agent_thread_sandbox = Keyword.get(config, :agent_thread_sandbox)
     agent_turn_sandbox_policy = Keyword.get(config, :agent_turn_sandbox_policy)
@@ -550,6 +552,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_tokens_per_issue: #{yaml_value(max_tokens_per_issue)}",
         "  max_tokens_per_day: #{yaml_value(max_tokens_per_day)}",
         "  command: #{yaml_value(agent_command)}",
+        if(is_nil(agent_remote_control), do: nil, else: "  remote_control: #{yaml_value(agent_remote_control)}"),
         "  approval_policy: #{yaml_value(agent_approval_policy)}",
         "  thread_sandbox: #{yaml_value(agent_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(agent_turn_sandbox_policy)}",

@@ -33,14 +33,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_turn(%{workspace: workspace, worker_host: worker_host} = _session, prompt, _issue, opts) do
+  def run_turn(%{workspace: workspace, worker_host: worker_host} = _session, prompt, issue, opts) do
     on_message = Keyword.get(opts, :on_message, fn _msg -> :ok end)
     settings = settings_from_opts(opts)
     command = settings.agent.command
     turn_timeout_ms = settings.agent.turn_timeout_ms
     command_timeout_ms = settings.agent.command_timeout_ms
 
-    with {:ok, port} <- start_port(workspace, command, prompt, worker_host) do
+    with {:ok, remote_control_name} <- remote_control_name(settings.agent, issue, opts),
+         {:ok, port} <- start_port(workspace, command, prompt, worker_host, remote_control_name) do
       try do
         read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms)
       after
@@ -292,9 +293,29 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp start_port(workspace, command, prompt, nil) do
+  defp remote_control_name(%Agent{remote_control: true}, issue, opts) do
+    with {:ok, identifier} <- nonempty_string(Map.get(issue, :identifier)),
+         {:ok, run_id} <- nonempty_string(Keyword.get(opts, :run_id)) do
+      {:ok, "#{identifier}-#{run_id}"}
+    end
+  end
+
+  defp remote_control_name(%Agent{}, _issue, _opts), do: {:ok, nil}
+
+  defp nonempty_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, :missing_remote_control_name}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp nonempty_string(_), do: {:error, :missing_remote_control_name}
+
+  defp start_port(workspace, command, prompt, nil, remote_control_name) do
     with {:ok, {executable, command_args}} <- local_command(workspace, command) do
-      args = command_args ++ ["--output-format", "stream-json", "--print", prompt]
+      args =
+        command_args ++
+          remote_control_args(remote_control_name) ++ ["--output-format", "stream-json", "--print", prompt]
 
       port =
         Port.open(
@@ -314,11 +335,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp start_port(workspace, command, prompt, worker_host) do
+  defp start_port(workspace, command, prompt, worker_host, remote_control_name) do
     with {:ok, command_words} <- command_words(command) do
       ssh_module().start_port(
         worker_host,
-        remote_launch_command(workspace, command_words, prompt),
+        remote_launch_command(workspace, command_words, prompt, remote_control_name),
         line: @port_line_bytes,
         env: AgentEnv.build()
       )
@@ -384,8 +405,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.join(" && ")
   end
 
-  defp remote_launch_command(workspace, command_words, prompt) do
-    command = command_words |> Enum.map_join(" ", &shell_escape/1)
+  defp remote_control_args(nil), do: []
+  defp remote_control_args(name), do: ["--remote-control", name]
+
+  defp remote_launch_command(workspace, command_words, prompt, remote_control_name) do
+    command =
+      (command_words ++ remote_control_args(remote_control_name))
+      |> Enum.map_join(" ", &shell_escape/1)
 
     [
       "cd #{shell_escape(workspace)}",

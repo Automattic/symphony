@@ -326,6 +326,12 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   `denied_domains` always takes precedence over built-in and user-provided `allowed_domains`.
 - `agent.command_timeout_ms` caps a single shell command even when it keeps streaming output.
   Default: `600000` (10 minutes). Set `0` to disable this command-level guard.
+- `agent.remote_control` defaults to `false`. For Claude agents on Claude Code `>= 2.1.140`,
+  set it to `true` to launch each turn with
+  `--remote-control "<issue.identifier>-<run_id>"`, allowing operators to attach to that named
+  control-channel handle while Symphony continues to use `--print --output-format stream-json`.
+  This option is Claude-only; setting it with `agent.kind: codex` makes the workflow config
+  invalid.
 - When `agent.turn_sandbox_policy` is set explicitly for Codex, Symphony forwards the configured
   map to Codex, but for `workspaceWrite` policies it ensures the current issue workspace stays in
   `writableRoots` at runtime when a workspace path is available. Symphony always includes the

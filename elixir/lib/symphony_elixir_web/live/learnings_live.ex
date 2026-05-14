@@ -188,10 +188,11 @@ defmodule SymphonyElixirWeb.LearningsLive do
   defp pr_href(_entry), do: nil
 
   defp linear_href(%{evidence_issue_url: url}) when is_binary(url) and url != "" do
-    uri = url |> String.trim() |> URI.parse()
+    trimmed = String.trim(url)
+    uri = URI.parse(trimmed)
 
-    if uri.scheme == "https" and downcase(uri.host) == @trusted_linear_host do
-      String.trim(url)
+    if uri.scheme == "https" and is_nil(uri.userinfo) and downcase(uri.host) == @trusted_linear_host do
+      trimmed
     end
   end
 
@@ -209,8 +210,8 @@ defmodule SymphonyElixirWeb.LearningsLive do
 
   defp trusted_pr_href(_host, _owner, _repo, _number), do: nil
 
-  defp legacy_pr_coordinates(repo) do
-    case String.split(repo, "/", trim: true) do
+  defp legacy_pr_coordinates(legacy) do
+    case String.split(legacy, "/", trim: true) do
       [host, owner, repo] -> {:ok, host, owner, repo}
       _ -> :error
     end

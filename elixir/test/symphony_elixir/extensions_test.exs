@@ -1479,6 +1479,21 @@ defmodule SymphonyElixir.ExtensionsTest do
                    evidence_pr_number: 124,
                    evidence_run_id: "run-live-linear-scheme",
                    created_at: DateTime.add(now, -60, :second)
+                 },
+                 %{
+                   repo_key: "default",
+                   id: "learning-live-linear-userinfo",
+                   host: "github.com",
+                   owner: "example",
+                   repo: "info",
+                   rule: "Do not link Linear URLs with userinfo.",
+                   tags: ["dashboard", "repo-patterns"],
+                   evidence_quote: "Userinfo Linear URL.",
+                   evidence_issue_identifier: "RSM-LIVE-USERINFO",
+                   evidence_issue_url: "https://attacker.tld@linear.app/example/issue/RSM-LIVE-USERINFO",
+                   evidence_pr_number: 125,
+                   evidence_run_id: "run-live-linear-userinfo",
+                   created_at: DateTime.add(now, -90, :second)
                  }
                ],
                500
@@ -1503,6 +1518,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Do not link non-HTTPS Linear URLs."
     assert html =~ ~s(href="https://github.com/example/other/pull/124" target="_blank")
     refute html =~ "http://linear.app/example/issue/RSM-LIVE-SCHEME"
+
+    assert html =~ "Do not link Linear URLs with userinfo."
+    assert html =~ ~s(href="https://github.com/example/info/pull/125" target="_blank")
+    refute html =~ "attacker.tld@linear.app/example/issue/RSM-LIVE-USERINFO"
   end
 
   test "dashboard liveview omits watching PR link when pull request URL is unavailable" do

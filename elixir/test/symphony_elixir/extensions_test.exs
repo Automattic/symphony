@@ -1016,6 +1016,29 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "dashboard liveview labels agent updates from configured agent kind" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude",
+      agent_command: "claude",
+      agent_approval_policy: nil
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :ClaudeDashboardOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "Claude update"
+    refute html =~ "Codex update"
+  end
+
   test "dashboard liveview narrows rows from repo query string" do
     orchestrator_name = Module.concat(__MODULE__, :FilteredDashboardOrchestrator)
     snapshot = multi_repo_snapshot()

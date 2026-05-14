@@ -921,6 +921,12 @@ Template input variables:
 - `attempt` (integer or null)
   - `null`/absent on first attempt.
   - Integer on retry or continuation run.
+- `agent` (object)
+  - `kind`: configured `agent.kind` (`codex` or `claude`).
+  - `display_name`: human-facing agent name (`Codex` or `Claude`).
+  - `update_label`: dashboard/update label such as `Codex update` or `Claude update`.
+  - `workpad_heading`: Linear workpad heading such as `## Codex Workpad` or
+    `## Claude Workpad`.
 - `repo_key` (string or null)
   - Matched repo route name when known.
 - `reviewer_comments` (list)
@@ -2842,7 +2848,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `agent.kind` and `agent.command` are required
 - `agent.command` is preserved as a shell command string
 - Per-state concurrency override map normalizes state names and rejects invalid values
-- Prompt template renders `issue`, `attempt`, and `repo_key`
+- Prompt template renders `issue`, `attempt`, `agent`, and `repo_key`
 - Prompt rendering fails on unknown variables (strict mode)
 
 ### 17.2 Workspace Manager and Safety
@@ -2989,7 +2995,7 @@ Use the same validation profiles as Section 17:
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
 - Coding-agent adapter client for configured `agent.kind`
 - Agent launch command config (`agent.kind`, `agent.command`)
-- Strict prompt rendering with `issue`, `attempt`, and `repo_key` variables
+- Strict prompt rendering with `issue`, `attempt`, `agent`, and `repo_key` variables
 - Exponential retry queue with continuation retries after normal exit
 - Configurable retry backoff cap (`agent.max_retry_backoff_ms`, default 5m)
 - Reconciliation that stops runs on terminal/non-active tracker states

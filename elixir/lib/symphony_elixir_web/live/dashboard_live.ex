@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.{Config, URLUtils}
+  alias SymphonyElixir.{AgentLabels, Config, URLUtils}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
   @dashboard_reload_task :dashboard_reload
@@ -295,7 +295,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
-                    <th>Codex update</th>
+                    <th><%= agent_update_label() %></th>
                     <th>Tokens</th>
                     <th>Links</th>
                     <th>Control</th>
@@ -991,6 +991,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp current_repo_key, do: Config.repo_key_or_nil()
+
+  defp agent_update_label do
+    Config.settings!()
+    |> get_in([Access.key(:agent), Access.key(:kind)])
+    |> AgentLabels.update_label()
+  rescue
+    _error -> AgentLabels.update_label(nil)
+  end
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

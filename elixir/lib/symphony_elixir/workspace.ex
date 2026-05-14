@@ -85,7 +85,9 @@ defmodule SymphonyElixir.Workspace do
     script =
       [
         "set -eu",
+        remote_shell_assign("root", settings.workspace.root),
         remote_shell_assign("workspace", workspace),
+        remote_workspace_containment_preamble(),
         "if [ -d \"$workspace\" ]; then",
         "  created=0",
         "elif [ -e \"$workspace\" ]; then",
@@ -97,7 +99,9 @@ defmodule SymphonyElixir.Workspace do
         "  created=1",
         "fi",
         "cd \"$workspace\"",
-        "printf '%s\\t%s\\t%s\\n' '#{@remote_workspace_marker}' \"$created\" \"$(pwd -P)\""
+        "physical_workspace=$(pwd -P)",
+        remote_workspace_containment_check(),
+        "printf '%s\\t%s\\t%s\\n' '#{@remote_workspace_marker}' \"$created\" \"$physical_workspace\""
       ]
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n")
@@ -128,6 +132,7 @@ defmodule SymphonyElixir.Workspace do
     script =
       [
         "set -eu",
+        remote_shell_assign("root", settings.workspace.root),
         remote_shell_assign("repo", settings.workspace.repo || ""),
         remote_shell_assign("workspace", workspace),
         "branch=#{shell_escape(branch)}",
@@ -141,6 +146,7 @@ defmodule SymphonyElixir.Workspace do
         "fi",
         "git -C \"$repo\" rev-parse --git-dir >/dev/null",
         settings.workspace.fetch_before_dispatch && "git -C \"$repo\" fetch origin",
+        remote_workspace_containment_preamble(),
         "if [ -d \"$workspace\" ]; then",
         "  if ! worktrees=$(git -C \"$repo\" worktree list --porcelain); then",
         "    echo \"workspace_worktree_list_failed: $repo\"",
@@ -161,7 +167,9 @@ defmodule SymphonyElixir.Workspace do
         "  created=1",
         "fi",
         "cd \"$workspace\"",
-        "printf '%s\\t%s\\t%s\\n' '#{@remote_workspace_marker}' \"$created\" \"$(pwd -P)\""
+        "physical_workspace=$(pwd -P)",
+        remote_workspace_containment_check(),
+        "printf '%s\\t%s\\t%s\\n' '#{@remote_workspace_marker}' \"$created\" \"$physical_workspace\""
       ]
       |> Enum.reject(&(&1 in ["", nil, false]))
       |> Enum.join("\n")
@@ -235,6 +243,45 @@ defmodule SymphonyElixir.Workspace do
 
   defp remote_worktree_add_command do
     "if git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
+  end
+
+  # Builds the shell preamble that canonicalizes the remote workspace root
+  # ($physical_root) and rejects any pre-existing symlink at $workspace before
+  # the script touches it. Mirrors the local containment model from
+  # validate_workspace_path/2 (nil worker_host), but runs on the remote host so
+  # symlinks under the remote filesystem can be resolved.
+  defp remote_workspace_containment_preamble do
+    """
+    mkdir -p "$root" || {
+      echo "workspace_root_unreadable: $root"
+      exit 50
+    }
+    physical_root=$(cd "$root" 2>/dev/null && pwd -P) || {
+      echo "workspace_root_unreadable: $root"
+      exit 50
+    }
+    if [ -z "$physical_root" ]; then
+      echo "workspace_root_unreadable: $root"
+      exit 50
+    fi
+    if [ -L "$workspace" ]; then
+      echo "workspace_symlink_rejected: $workspace"
+      exit 51
+    fi\
+    """
+  end
+
+  # Asserts $physical_workspace lies strictly under $physical_root (which both
+  # paths must by then be canonical, symlink-resolved absolute paths). Compared
+  # with trailing slashes so /root-evil cannot satisfy a /root prefix.
+  defp remote_workspace_containment_check do
+    """
+    case "$physical_workspace/" in
+      "$physical_root"/) echo "workspace_equals_root: $physical_workspace"; exit 52 ;;
+      "$physical_root"/*) ;;
+      *) echo "workspace_outside_root: $physical_workspace not under $physical_root"; exit 53 ;;
+    esac\
+    """
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}

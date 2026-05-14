@@ -238,7 +238,7 @@ defmodule SymphonyElixir.AgentRunner do
              repo_key: Keyword.get(opts, :repo_key),
              run_id: Keyword.get(opts, :run_id),
              linear_comment_registry: Keyword.get(opts, :linear_comment_registry),
-             dependency_audit_module: Keyword.get(opts, :dependency_audit_module),
+             dependency_audit_module: dependency_audit_module(opts),
              dependency_audit_base_ref: Keyword.get(opts, :dependency_audit_base_ref),
              dependency_audit_command_runner: Keyword.get(opts, :dependency_audit_command_runner)
            ) do
@@ -286,7 +286,7 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp maybe_hold_for_dependency_approval(workspace, issue, turn_session, opts) do
-    audit_module = Keyword.get(opts, :dependency_audit_module, DependencyAudit)
+    audit_module = dependency_audit_module(opts)
 
     audit_opts =
       opts
@@ -304,6 +304,10 @@ defmodule SymphonyElixir.AgentRunner do
       {:error, reason} ->
         {:error, {:dependency_audit_failed, reason}}
     end
+  end
+
+  defp dependency_audit_module(opts) do
+    Keyword.get(opts, :dependency_audit_module) || DependencyAudit
   end
 
   defp hold_dependency_approval(%Issue{id: issue_id} = issue, items, turn_session, opts)

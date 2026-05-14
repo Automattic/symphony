@@ -237,7 +237,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server denies gh pr create when dependency audit holds" do
+  test "app server defaults nil dependency audit module when dependency audit holds" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -328,7 +328,7 @@ defmodule SymphonyElixir.AppServerTest do
         state: "In Progress"
       }
 
-      assert {:ok, _result} = AppServer.run(workspace, "Open PR", issue)
+      assert {:ok, _result} = AppServer.run(workspace, "Open PR", issue, dependency_audit_module: nil)
 
       trace = File.read!(trace_file)
       assert trace =~ ~s("id":44)

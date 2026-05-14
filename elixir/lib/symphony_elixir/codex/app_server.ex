@@ -2415,10 +2415,14 @@ defmodule SymphonyElixir.Codex.AppServer do
       issue: issue,
       settings: settings,
       repo_key: Keyword.get(opts, :repo_key),
-      audit_module: Keyword.get(opts, :dependency_audit_module, DependencyAudit),
+      audit_module: dependency_audit_module(opts),
       base_ref: Keyword.get(opts, :dependency_audit_base_ref),
       command_runner: Keyword.get(opts, :dependency_audit_command_runner)
     }
+  end
+
+  defp dependency_audit_module(opts) do
+    Keyword.get(opts, :dependency_audit_module) || DependencyAudit
   end
 
   defp maybe_block_dynamic_pr_create(tool, dependency_gate, on_message, metadata) do

@@ -13,6 +13,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     def start_port(_worker_host, _command, _opts), do: {:error, :unexpected_start_port}
   end
 
+  defp expect_stub_ssh_command do
+    receive do
+      {:stub_ssh_run, _worker_host, command, _opts} -> command
+    after
+      100 -> flunk("expected an SSH stub call but none arrived")
+    end
+  end
+
   describe "build_sandbox_settings/1" do
     test "allowlist mode includes built-in domains and sets allowManagedDomainsOnly" do
       network_access = %Agent.NetworkAccess{
@@ -510,7 +518,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                AppServer.start_session("/remote/work\nspace", worker_host: "worker-01")
     end
 
-    test "returns structured error when remote settings write exits non-zero" do
+    test "returns structured error when remote shim install exits non-zero" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -531,7 +539,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         File.write!(fake_ssh, failing_ssh_script(42))
         File.chmod!(fake_ssh, 0o755)
 
-        assert {:error, {:claude_settings_write_failed, :remote, "worker-01", 42, output}} =
+        assert {:error, {:claude_mcp_shim_install_failed, "worker-01", 42, output}} =
                  AppServer.start_session(test_root, worker_host: "worker-01")
 
         assert output =~ "ssh failed"
@@ -540,7 +548,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
-    test "returns structured error when ssh is unavailable for remote settings write" do
+    test "returns structured error when ssh is unavailable for remote shim install" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -557,11 +565,28 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         File.mkdir_p!(test_root)
         System.put_env("PATH", test_root)
 
-        assert {:error, {:claude_settings_write_failed, :remote, "worker-01", :ssh_not_found}} =
+        assert {:error, {:claude_mcp_shim_install_failed, "worker-01", :ssh_not_found}} =
                  AppServer.start_session(test_root, worker_host: "worker-01")
       after
         File.rm_rf(test_root)
       end
+    end
+
+    test "installs MCP shim on remote worker and references it in settings.json" do
+      Application.put_env(:symphony_elixir, :claude_code_ssh_module, StubSSH)
+      on_exit(fn -> Application.delete_env(:symphony_elixir, :claude_code_ssh_module) end)
+
+      assert {:ok, session} = AppServer.start_session("/remote/workspace", worker_host: "worker-01")
+
+      install_command = expect_stub_ssh_command()
+      assert install_command =~ "printf %s "
+      assert install_command =~ "/tmp/symphony-mcp-shim-"
+      assert install_command =~ "chmod 0700"
+
+      settings_command = expect_stub_ssh_command()
+      assert settings_command =~ ".claude/settings.json"
+      assert settings_command =~ session.mcp_remote_shim_path
+      assert session.mcp_remote_shim_path =~ "/tmp/symphony-mcp-shim-"
     end
   end
 
@@ -647,12 +672,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  metadata: %{},
                  worker_host: "worker-01",
                  settings_path: "/remote/workspace/.claude/settings.json",
-                 mcp_remote_socket_path: "/tmp/symphony-mcp-remote.sock"
+                 mcp_remote_socket_path: "/tmp/symphony-mcp-remote.sock",
+                 mcp_remote_shim_path: "/tmp/symphony-mcp-shim-remote"
                })
 
       assert_receive {:stub_ssh_run, "worker-01", command, [stderr_to_stdout: true]}
       assert command =~ "rm -f '/remote/workspace/.claude/settings.json'"
       assert command =~ "rm -f '/tmp/symphony-mcp-remote.sock'"
+      assert command =~ "rm -f '/tmp/symphony-mcp-shim-remote'"
       assert command =~ "rmdir '/remote/workspace/.claude' 2>/dev/null || true"
     end
 

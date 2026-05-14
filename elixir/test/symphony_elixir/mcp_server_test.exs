@@ -172,6 +172,143 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
+  test "rejects connections that omit the session token header" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        socket_path: socket_path(),
+        shim_path: "/tmp/shim"
+      )
+
+    try do
+      {:ok, socket} = :socket.open(:local, :stream)
+      :ok = :socket.connect(socket, %{family: :local, path: session.socket_path})
+      :ok = :socket.send(socket, "X-Other: value\r\n\r\n")
+      assert {:error, _reason} = request(socket, 1, "tools/list")
+      close_socket(socket)
+    after
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "rejects connections with an unknown session token" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        socket_path: socket_path(),
+        shim_path: "/tmp/shim"
+      )
+
+    try do
+      bogus = connect!(session.socket_path, "not-a-real-token")
+      assert {:error, _reason} = request(bogus, 1, "tools/list")
+      close_socket(bogus)
+    after
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "returns method_not_found error for unsupported JSON-RPC methods" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        socket_path: socket_path(),
+        shim_path: "/tmp/shim"
+      )
+
+    socket = connect!(session.socket_path, session.token)
+
+    try do
+      response = request!(socket, 99, "resources/list")
+      assert response["error"]["code"] == -32_601
+      assert response["error"]["message"] =~ "resources/list"
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "context :tool_opts cannot override authoritative keys like :workspace" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    workspace = Path.join(System.tmp_dir!(), "symphony-mcp-merge-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+
+    test_pid = self()
+
+    git_runner = fn _args, opts ->
+      send(test_pid, {:git_called, opts})
+      {"feature/x", 0}
+    end
+
+    gh_runner = fn _args, opts ->
+      send(test_pid, {:gh_called, opts})
+      {"https://github.com/acme/symphony/pull/1\n", 0}
+    end
+
+    context = %{
+      workspace: workspace,
+      command_security: %{origin_repo: "acme/symphony", workspace: workspace},
+      tool_opts: [
+        workspace: "/etc/should-be-ignored",
+        git_runner: git_runner,
+        gh_runner: gh_runner
+      ]
+    }
+
+    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
+    socket = connect!(session.socket_path, session.token)
+
+    try do
+      _ =
+        request!(socket, 1, "tools/call", %{
+          "name" => "github_create_pull_request",
+          "arguments" => %{"title" => "t", "body" => "b"}
+        })
+
+      assert_receive {:git_called, opts}
+      assert opts[:cd] == workspace
+    after
+      close_socket(socket)
+      File.rm_rf(workspace)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "cleans up session when the acceptor process exits unexpectedly" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        socket_path: socket_path(),
+        shim_path: "/tmp/shim"
+      )
+
+    state = :sys.get_state(server)
+    {acceptor_ref, _id} = Enum.find(state.acceptors, fn {_ref, id} -> id == session.id end)
+    [{_id, %{acceptor: acceptor_pid}}] = Enum.filter(state.sessions, fn {id, _} -> id == session.id end)
+    Process.exit(acceptor_pid, :kill)
+
+    Process.sleep(50)
+
+    updated = :sys.get_state(server)
+    refute Map.has_key?(updated.sessions, session.id)
+    refute Map.has_key?(updated.acceptors, acceptor_ref)
+    refute File.exists?(session.socket_path)
+  end
+
   test "server remains available after stopping a session" do
     server = unique_server()
     start_supervised!({McpServer, name: server})

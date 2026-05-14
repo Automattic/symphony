@@ -15,6 +15,8 @@ defmodule SymphonyElixir.McpServer do
   @type session :: %{
           id: String.t(),
           socket_path: Path.t(),
+          socket_dir: Path.t(),
+          remote_socket_path: Path.t() | nil,
           token: String.t(),
           shim_path: Path.t()
         }
@@ -29,6 +31,12 @@ defmodule SymphonyElixir.McpServer do
     with {:ok, server} <- ensure_server(opts) do
       GenServer.call(server, {:start_session, context, opts})
     end
+  end
+
+  @doc false
+  @spec remote_socket_path(String.t()) :: Path.t()
+  def remote_socket_path(id) when is_binary(id) do
+    Path.join("/tmp", "symphony-mcp-#{id}.sock")
   end
 
   @spec stop_session(session() | nil) :: :ok
@@ -52,38 +60,47 @@ defmodule SymphonyElixir.McpServer do
 
   @impl true
   def init(_opts) do
-    {:ok, %{sessions: %{}, tokens: %{}}}
+    {:ok, %{sessions: %{}, tokens: %{}, acceptors: %{}}}
   end
 
   @impl true
   def handle_call({:start_session, context, opts}, _from, state) do
-    with {:ok, socket_path} <- session_socket_path(opts),
-         :ok <- remove_socket_file(socket_path),
-         {:ok, listen_socket} <- open_listen_socket(socket_path),
-         :ok <- File.chmod(socket_path, 0o600),
-         {:ok, shim_path} <- shim_path(opts) do
-      id = token()
-      session_token = token()
-      server = self()
-      acceptor = spawn(fn -> accept_loop(server, listen_socket) end)
+    id = token()
 
-      session = %{
-        context: context,
-        socket_path: socket_path,
-        listen_socket: listen_socket,
-        acceptor: acceptor,
-        connections: MapSet.new()
-      }
+    case open_and_secure_socket(opts, id) do
+      {:ok, socket_dir, socket_path, listen_socket} ->
+        session_token = token()
+        server = self()
+        {acceptor_pid, acceptor_ref} = spawn_acceptor(server, listen_socket)
+        remote_socket_path = compute_remote_socket_path(id, opts)
 
-      reply = %{id: id, socket_path: socket_path, token: session_token, shim_path: shim_path}
+        session = %{
+          context: context,
+          socket_dir: socket_dir,
+          socket_path: socket_path,
+          listen_socket: listen_socket,
+          acceptor: acceptor_pid,
+          acceptor_ref: acceptor_ref,
+          connections: MapSet.new()
+        }
 
-      {:reply, {:ok, reply},
-       %{
-         state
-         | sessions: Map.put(state.sessions, id, session),
-           tokens: Map.put(state.tokens, session_token, id)
-       }}
-    else
+        reply = %{
+          id: id,
+          socket_dir: socket_dir,
+          socket_path: socket_path,
+          remote_socket_path: remote_socket_path,
+          token: session_token,
+          shim_path: shim_path(opts)
+        }
+
+        {:reply, {:ok, reply},
+         %{
+           state
+           | sessions: Map.put(state.sessions, id, session),
+             tokens: Map.put(state.tokens, session_token, id),
+             acceptors: Map.put(state.acceptors, acceptor_ref, id)
+         }}
+
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
@@ -118,13 +135,22 @@ defmodule SymphonyElixir.McpServer do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    sessions =
-      Map.new(state.sessions, fn {id, session} ->
-        {id, %{session | connections: MapSet.delete(session.connections, pid)}}
-      end)
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    case Map.fetch(state.acceptors, ref) do
+      {:ok, session_id} ->
+        Logger.warning("MCP acceptor process exited session=#{session_id} reason=#{inspect(reason)}; cleaning up")
 
-    {:noreply, %{state | sessions: sessions}}
+        state = %{state | acceptors: Map.delete(state.acceptors, ref)}
+        {:noreply, cleanup_session(state, session_id)}
+
+      :error ->
+        sessions =
+          Map.new(state.sessions, fn {id, session} ->
+            {id, %{session | connections: MapSet.delete(session.connections, pid)}}
+          end)
+
+        {:noreply, %{state | sessions: sessions}}
+    end
   end
 
   @impl true
@@ -146,18 +172,22 @@ defmodule SymphonyElixir.McpServer do
     |> Process.whereis()
   end
 
-  defp session_socket_path(opts) do
+  defp session_socket_paths(opts, id) do
     case Keyword.get(opts, :socket_path) do
       path when is_binary(path) and path != "" ->
-        {:ok, path}
+        {:ok, Path.dirname(path), path}
 
       _ ->
-        run_id =
-          opts
-          |> Keyword.get(:run_id)
-          |> to_socket_segment()
+        segment = run_id_segment(opts) || id
+        dir = Path.join("/tmp", "symphony-mcp-#{segment}")
+        {:ok, dir, Path.join(dir, "sock")}
+    end
+  end
 
-        {:ok, Path.join("/tmp", "symphony-mcp-#{run_id}.sock")}
+  defp run_id_segment(opts) do
+    case Keyword.get(opts, :run_id) do
+      value when is_binary(value) and value != "" -> to_socket_segment(value)
+      _ -> nil
     end
   end
 
@@ -167,7 +197,38 @@ defmodule SymphonyElixir.McpServer do
     |> String.slice(0, 80)
   end
 
-  defp to_socket_segment(_value), do: token()
+  defp prepare_socket_dir(dir) when is_binary(dir) do
+    if managed_socket_dir?(dir) do
+      _ = File.rm_rf(dir)
+
+      with :ok <- File.mkdir_p(dir),
+           :ok <- File.chmod(dir, 0o700) do
+        :ok
+      else
+        {:error, reason} -> {:error, {:mcp_socket_dir_failed, dir, reason}}
+      end
+    else
+      case File.mkdir_p(dir) do
+        :ok -> :ok
+        {:error, reason} -> {:error, {:mcp_socket_dir_failed, dir, reason}}
+      end
+    end
+  end
+
+  defp open_and_secure_socket(opts, id) do
+    with {:ok, socket_dir, socket_path} <- session_socket_paths(opts, id),
+         :ok <- prepare_socket_dir(socket_dir),
+         {:ok, listen_socket} <- open_listen_socket(socket_path) do
+      case File.chmod(socket_path, 0o600) do
+        :ok ->
+          {:ok, socket_dir, socket_path, listen_socket}
+
+        {:error, reason} ->
+          tear_down_socket(socket_dir, socket_path, listen_socket)
+          {:error, {:mcp_socket_chmod_failed, reason}}
+      end
+    end
+  end
 
   defp open_listen_socket(path) do
     with {:ok, socket} <- :socket.open(:local, :stream),
@@ -179,6 +240,12 @@ defmodule SymphonyElixir.McpServer do
     end
   end
 
+  defp tear_down_socket(socket_dir, socket_path, listen_socket) do
+    close_socket(listen_socket)
+    _ = remove_socket_file(socket_path)
+    remove_socket_dir(socket_dir)
+  end
+
   defp remove_socket_file(path) do
     case File.rm(path) do
       :ok -> :ok
@@ -187,27 +254,64 @@ defmodule SymphonyElixir.McpServer do
     end
   end
 
+  defp remove_socket_dir(dir) when is_binary(dir) do
+    if managed_socket_dir?(dir) do
+      _ = File.rm_rf(dir)
+    end
+
+    :ok
+  end
+
+  defp remove_socket_dir(_dir), do: :ok
+
+  defp managed_socket_dir?(dir) do
+    String.starts_with?(dir, "/tmp/symphony-mcp-")
+  end
+
+  defp compute_remote_socket_path(id, opts) do
+    case Keyword.get(opts, :worker_host) do
+      worker when is_binary(worker) and worker != "" ->
+        case Keyword.get(opts, :remote_socket_path) do
+          path when is_binary(path) and path != "" -> path
+          _ -> remote_socket_path(id)
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp spawn_acceptor(server, listen_socket) do
+    {:ok, pid} = Task.start(fn -> accept_loop(server, listen_socket) end)
+    ref = Process.monitor(pid)
+    {pid, ref}
+  end
+
   defp shim_path(opts) do
     case Keyword.get(opts, :shim_path) do
-      path when is_binary(path) and path != "" -> {:ok, path}
-      _ -> {:ok, Application.app_dir(:symphony_elixir, "priv/bin/symphony-mcp-shim")}
+      path when is_binary(path) and path != "" -> path
+      _ -> Application.app_dir(:symphony_elixir, "priv/bin/symphony-mcp-shim")
     end
   end
 
   defp cleanup_session(state, id) do
     case Map.fetch(state.sessions, id) do
       {:ok, session} ->
+        Process.demonitor(session.acceptor_ref, [:flush])
         close_socket(session.listen_socket)
         Process.exit(session.acceptor, :shutdown)
         Enum.each(session.connections, &Process.exit(&1, :shutdown))
-        remove_socket_file(session.socket_path)
+        _ = remove_socket_file(session.socket_path)
+        remove_socket_dir(session.socket_dir)
 
         tokens =
           state.tokens
           |> Enum.reject(fn {_token, session_id} -> session_id == id end)
           |> Map.new()
 
-        %{state | sessions: Map.delete(state.sessions, id), tokens: tokens}
+        acceptors = Map.delete(state.acceptors, session.acceptor_ref)
+
+        %{state | sessions: Map.delete(state.sessions, id), tokens: tokens, acceptors: acceptors}
 
       :error ->
         state
@@ -411,14 +515,15 @@ defmodule SymphonyElixir.McpServer do
   end
 
   defp tool_opts(context) do
-    [
+    context
+    |> Map.get(:tool_opts, [])
+    |> Keyword.merge(
       issue: Map.get(context, :issue),
       issue_id: Map.get(context, :issue_id),
       workspace: Map.get(context, :workspace),
       command_security: Map.get(context, :command_security) || %{},
       comment_registry: Map.get(context, :comment_registry)
-    ]
-    |> Keyword.merge(Map.get(context, :tool_opts, []))
+    )
   end
 
   defp token do

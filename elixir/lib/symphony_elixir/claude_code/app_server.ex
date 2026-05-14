@@ -18,7 +18,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
           worker_host: String.t() | nil,
           settings_path: Path.t(),
           mcp_session: McpServer.session() | nil,
-          mcp_remote_socket_path: Path.t() | nil
+          mcp_remote_socket_path: Path.t() | nil,
+          mcp_remote_shim_path: Path.t() | nil
         }
 
   # --- AgentBehaviour callbacks ---
@@ -29,8 +30,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     settings = settings_from_opts(opts)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, settings),
-         {:ok, mcp_session, remote_socket_path} <- start_mcp_session(expanded_workspace, worker_host, opts) do
-      create_session(expanded_workspace, worker_host, settings, mcp_session, remote_socket_path)
+         {:ok, mcp_session, remote_socket_path, remote_shim_path} <-
+           start_mcp_session(expanded_workspace, worker_host, opts) do
+      create_session(
+        expanded_workspace,
+        worker_host,
+        settings,
+        mcp_session,
+        remote_socket_path,
+        remote_shim_path
+      )
     end
   end
 
@@ -60,7 +69,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   def stop_session(%{settings_path: settings_path, worker_host: worker_host} = session)
       when is_binary(settings_path) and is_binary(worker_host) do
-    remove_remote_settings(worker_host, settings_path, Map.get(session, :mcp_remote_socket_path))
+    remove_remote_settings(
+      worker_host,
+      settings_path,
+      Map.get(session, :mcp_remote_socket_path),
+      Map.get(session, :mcp_remote_shim_path)
+    )
+
     McpServer.stop_session(Map.get(session, :mcp_session))
   end
 
@@ -102,13 +117,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   @doc false
-  @spec build_sandbox_settings(Agent.NetworkAccess.t(), McpServer.session(), Path.t()) :: map()
-  def build_sandbox_settings(network_access, mcp_session, socket_path) do
+  @spec build_sandbox_settings(Agent.NetworkAccess.t(), McpServer.session(), Path.t(), Path.t()) :: map()
+  def build_sandbox_settings(network_access, mcp_session, socket_path, shim_path) do
     network_access
     |> build_sandbox_settings()
     |> Map.put("mcpServers", %{
       "symphony" => %{
-        "command" => mcp_session.shim_path,
+        "command" => shim_path,
         "args" => ["--socket", socket_path, "--session", mcp_session.token]
       }
     })
@@ -220,8 +235,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp create_session(workspace, worker_host, settings, mcp_session, remote_socket_path) do
-    case write_claude_settings(workspace, worker_host, settings, mcp_session, remote_socket_path) do
+  defp create_session(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
+    case write_claude_settings(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
       {:ok, settings_path} ->
         {:ok,
          %{
@@ -230,10 +245,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
            worker_host: worker_host,
            settings_path: settings_path,
            mcp_session: mcp_session,
-           mcp_remote_socket_path: remote_socket_path
+           mcp_remote_socket_path: remote_socket_path,
+           mcp_remote_shim_path: remote_shim_path
          }}
 
       {:error, reason} ->
+        cleanup_remote_shim(worker_host, remote_shim_path)
         McpServer.stop_session(mcp_session)
         {:error, reason}
     end
@@ -295,12 +312,24 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       [
         run_id: Keyword.get(opts, :run_id),
         server: Keyword.get(opts, :mcp_server, McpServer),
-        shim_path: Keyword.get(opts, :mcp_shim_path)
+        shim_path: Keyword.get(opts, :mcp_shim_path),
+        worker_host: worker_host
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-    with {:ok, mcp_session} <- McpServer.start_session(context, mcp_opts) do
-      {:ok, mcp_session, socket_path_for_worker(mcp_session, worker_host)}
+    case McpServer.start_session(context, mcp_opts) do
+      {:ok, mcp_session} ->
+        case install_remote_shim(mcp_session, worker_host) do
+          {:ok, remote_shim_path} ->
+            {:ok, mcp_session, Map.get(mcp_session, :remote_socket_path), remote_shim_path}
+
+          {:error, reason} ->
+            McpServer.stop_session(mcp_session)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -309,15 +338,60 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Keyword.take([:linear_client, :upload_client, :gh_runner, :git_runner])
   end
 
-  defp socket_path_for_worker(%{socket_path: socket_path}, nil), do: socket_path
+  defp install_remote_shim(_mcp_session, nil), do: {:ok, nil}
 
-  defp socket_path_for_worker(%{id: id}, worker_host) when is_binary(worker_host) do
-    Path.join("/tmp", "symphony-mcp-#{id}.sock")
+  defp install_remote_shim(%{id: id, shim_path: local_shim_path}, worker_host)
+       when is_binary(worker_host) do
+    remote_path = remote_shim_path(id)
+
+    case File.read(local_shim_path) do
+      {:ok, contents} ->
+        command = remote_install_shim_command(remote_path, contents)
+
+        case ssh_module().run(worker_host, command, stderr_to_stdout: true) do
+          {:ok, {_output, 0}} ->
+            {:ok, remote_path}
+
+          {:ok, {output, status}} ->
+            {:error, {:claude_mcp_shim_install_failed, worker_host, status, output}}
+
+          {:error, reason} ->
+            {:error, {:claude_mcp_shim_install_failed, worker_host, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:claude_mcp_shim_install_failed, :local_read, local_shim_path, reason}}
+    end
   end
 
-  defp write_claude_settings(workspace, worker_host, settings, mcp_session, socket_path) do
+  defp remote_shim_path(id) when is_binary(id) do
+    Path.join("/tmp", "symphony-mcp-shim-#{id}")
+  end
+
+  defp remote_install_shim_command(remote_path, contents) do
+    [
+      "mkdir -p #{shell_escape(Path.dirname(remote_path))}",
+      "printf %s #{shell_escape(contents)} > #{shell_escape(remote_path)}",
+      "chmod 0700 #{shell_escape(remote_path)}"
+    ]
+    |> Enum.join(" && ")
+  end
+
+  defp cleanup_remote_shim(nil, _path), do: :ok
+  defp cleanup_remote_shim(_worker_host, nil), do: :ok
+
+  defp cleanup_remote_shim(worker_host, path) when is_binary(worker_host) and is_binary(path) do
+    case ssh_module().run(worker_host, "rm -f #{shell_escape(path)}", stderr_to_stdout: true) do
+      {:ok, {_output, 0}} -> :ok
+      _ -> :ok
+    end
+  end
+
+  defp write_claude_settings(workspace, worker_host, settings, mcp_session, socket_path, remote_shim_path) do
     network_access = settings.agent.network_access
-    sandbox_json = build_sandbox_settings(network_access, mcp_session, socket_path)
+    effective_shim_path = effective_shim_path(mcp_session, remote_shim_path)
+    effective_socket_path = socket_path || mcp_session.socket_path
+    sandbox_json = build_sandbox_settings(network_access, mcp_session, effective_socket_path, effective_shim_path)
     claude_dir = Path.join(workspace, ".claude")
     settings_path = Path.join(claude_dir, "settings.json")
 
@@ -326,6 +400,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       {:ok, settings_path}
     end
   end
+
+  defp effective_shim_path(_mcp_session, remote_shim_path) when is_binary(remote_shim_path),
+    do: remote_shim_path
+
+  defp effective_shim_path(%{shim_path: shim_path}, _remote), do: shim_path
 
   defp encode_settings_json(sandbox_json) do
     encoder = Application.get_env(:symphony_elixir, :claude_settings_json_encoder, &Jason.encode/2)
@@ -476,23 +555,24 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.join(" && ")
   end
 
-  defp remote_remove_settings_command(settings_path, socket_path) do
+  defp remote_remove_settings_command(settings_path, socket_path, shim_path) do
     claude_dir = Path.dirname(settings_path)
 
     [
       "rm -f #{shell_escape(settings_path)}",
-      remote_socket_cleanup_command(socket_path),
+      remote_path_cleanup_command(socket_path),
+      remote_path_cleanup_command(shim_path),
       "rmdir #{shell_escape(claude_dir)} 2>/dev/null || true"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
   end
 
-  defp remote_socket_cleanup_command(path) when is_binary(path) and path != "" do
+  defp remote_path_cleanup_command(path) when is_binary(path) and path != "" do
     "rm -f #{shell_escape(path)}"
   end
 
-  defp remote_socket_cleanup_command(_path), do: nil
+  defp remote_path_cleanup_command(_path), do: nil
 
   defp remote_control_args(nil), do: []
   defp remote_control_args(name), do: ["--remote-control", name]
@@ -520,8 +600,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     :ok
   end
 
-  defp remove_remote_settings(worker_host, settings_path, socket_path) do
-    command = remote_remove_settings_command(settings_path, socket_path)
+  defp remove_remote_settings(worker_host, settings_path, socket_path, shim_path) do
+    command = remote_remove_settings_command(settings_path, socket_path, shim_path)
 
     case ssh_module().run(worker_host, command, stderr_to_stdout: true) do
       {:ok, {_output, 0}} ->

@@ -378,21 +378,31 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         refute File.exists?(workspace_settings_path)
 
         settings_path = session.settings_path
+        mcp_config_path = session.mcp_config_path
         refute String.starts_with?(settings_path, workspace)
+        refute String.starts_with?(mcp_config_path, workspace)
+        assert Path.dirname(mcp_config_path) == Path.dirname(settings_path)
         assert File.exists?(settings_path)
+        assert File.exists?(mcp_config_path)
         assert band(File.stat!(Path.dirname(settings_path)).mode, 0o777) == 0o700
         assert band(File.stat!(settings_path).mode, 0o777) == 0o600
+        assert band(File.stat!(mcp_config_path).mode, 0o777) == 0o600
 
         {:ok, contents} = Jason.decode(File.read!(settings_path))
         assert get_in(contents, ["sandbox", "enabled"]) == true
-        assert get_in(contents, ["mcpServers", "symphony", "command"]) =~ "symphony-mcp-shim"
+        refute Map.has_key?(contents, "mcpServers")
 
-        assert get_in(contents, ["mcpServers", "symphony", "args"]) == [
+        {:ok, mcp_config} = Jason.decode(File.read!(mcp_config_path))
+        assert get_in(mcp_config, ["mcpServers", "symphony", "command"]) =~ "symphony-mcp-shim"
+
+        assert get_in(mcp_config, ["mcpServers", "symphony", "args"]) == [
                  "--socket",
                  session.mcp_session.socket_path,
                  "--session",
                  session.mcp_session.token
                ]
+
+        assert get_in(mcp_config, ["mcpServers", "symphony", "alwaysLoad"]) == true
 
         assert get_in(contents, ["permissions", "deny"]) == [
                  "Bash(gh:*)",
@@ -404,6 +414,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert File.exists?(session.mcp_session.socket_path)
         assert :ok = AppServer.stop_session(session)
         refute File.exists?(settings_path)
+        refute File.exists?(mcp_config_path)
         refute File.exists?(Path.dirname(settings_path))
         refute File.exists?(session.mcp_session.socket_path)
       after
@@ -457,7 +468,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         assert {:ok, session} = AppServer.start_session(workspace)
         refute String.starts_with?(session.settings_path, workspace)
+        refute String.starts_with?(session.mcp_config_path, workspace)
         assert File.exists?(session.settings_path)
+        assert File.exists?(session.mcp_config_path)
         assert File.read!(claude_path) == "not a directory"
 
         assert :ok = AppServer.stop_session(session)
@@ -466,7 +479,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
-    test "leaves workspace settings untouched and writes token only to private settings" do
+    test "leaves workspace settings untouched and writes token only to private MCP config" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -489,7 +502,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         refute session.settings_path == settings_path
         assert File.read!(settings_path) == ~s({"permissions":{"deny":[]}})
         refute File.read!(settings_path) =~ session.mcp_session.token
-        assert File.read!(session.settings_path) =~ session.mcp_session.token
+        refute File.read!(session.settings_path) =~ session.mcp_session.token
+        assert File.read!(session.mcp_config_path) =~ session.mcp_session.token
 
         assert :ok = AppServer.stop_session(session)
       after
@@ -613,14 +627,20 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert session.worker_host == "worker-01"
         assert session.settings_path =~ "/tmp/symphony-claude-settings-"
         assert String.ends_with?(session.settings_path, "/settings.json")
+        assert session.mcp_config_path =~ "/tmp/symphony-claude-settings-"
+        assert String.ends_with?(session.mcp_config_path, "/mcp_config.json")
         refute File.exists?(session.settings_path)
+        refute File.exists?(session.mcp_config_path)
 
         traced_command = File.read!(trace_file)
         assert traced_command =~ "umask 077"
         assert traced_command =~ "chmod 0700"
         assert traced_command =~ "chmod 0600"
         assert traced_command =~ "> '\"'\"'/tmp/symphony-claude-settings-"
+        assert traced_command =~ "settings.json"
+        assert traced_command =~ "mcp_config.json"
         assert traced_command =~ "mcpServers"
+        assert traced_command =~ "alwaysLoad"
         assert traced_command =~ "symphony-mcp-shim"
         assert traced_command =~ "/tmp/symphony-mcp-"
       after
@@ -707,6 +727,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert settings_command =~ "/tmp/symphony-claude-settings-"
       assert settings_command =~ "chmod 0600"
       assert settings_command =~ "> '/tmp/symphony-claude-settings-"
+      assert settings_command =~ "settings.json"
+      assert settings_command =~ "mcp_config.json"
+      assert settings_command =~ "alwaysLoad"
       assert settings_command =~ session.mcp_remote_shim_path
       assert session.mcp_remote_shim_path =~ "/tmp/symphony-mcp-shim-"
     end
@@ -776,9 +799,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         assert {:ok, session} = AppServer.start_session(workspace)
         assert File.exists?(session.settings_path)
+        assert File.exists?(session.mcp_config_path)
 
         assert :ok = AppServer.stop_session(session)
         refute File.exists?(session.settings_path)
+        refute File.exists?(session.mcp_config_path)
       after
         File.rm_rf(test_root)
       end
@@ -794,12 +819,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  metadata: %{},
                  worker_host: "worker-01",
                  settings_path: "/remote/workspace/.claude/settings.json",
+                 mcp_config_path: "/remote/workspace/.claude/mcp_config.json",
                  mcp_remote_socket_path: "/tmp/symphony-mcp-remote.sock",
                  mcp_remote_shim_path: "/tmp/symphony-mcp-shim-remote"
                })
 
       assert_receive {:stub_ssh_run, "worker-01", command, [stderr_to_stdout: true]}
       assert command =~ "rm -f '/remote/workspace/.claude/settings.json'"
+      assert command =~ "rm -f '/remote/workspace/.claude/mcp_config.json'"
       assert command =~ "rm -f '/tmp/symphony-mcp-remote.sock'"
       assert command =~ "rm -f '/tmp/symphony-mcp-shim-remote'"
       assert command =~ "rmdir '/remote/workspace/.claude' 2>/dev/null || true"
@@ -818,12 +845,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                      workspace: "/remote/workspace",
                      metadata: %{},
                      worker_host: "worker-01",
-                     settings_path: "/remote/workspace/.claude/settings.json"
+                     settings_path: "/remote/workspace/.claude/settings.json",
+                     mcp_config_path: "/remote/workspace/.claude/mcp_config.json"
                    })
         end)
 
       assert_receive {:stub_ssh_run, "worker-01", command, [stderr_to_stdout: true]}
       assert command =~ ".claude/settings.json"
+      assert command =~ ".claude/mcp_config.json"
       assert log =~ "Claude settings cleanup failed"
       assert log =~ "status=23"
       assert log =~ "permission denied"
@@ -857,12 +886,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                    metadata: %{},
                    worker_host: "worker-01",
                    settings_path: "/remote/workspace/.claude/settings.json",
+                   mcp_config_path: "/remote/workspace/.claude/mcp_config.json",
                    mcp_remote_socket_path: "/tmp/symphony-mcp-remote.sock"
                  })
 
         traced_command = File.read!(trace_file)
         assert traced_command =~ "rm -f"
         assert traced_command =~ ".claude/settings.json"
+        assert traced_command =~ ".claude/mcp_config.json"
       after
         File.rm_rf(test_root)
       end
@@ -1160,14 +1191,22 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         assert result.input_tokens == 6
 
-        args = File.read!(Path.join(workspace, "argv.trace")) |> String.split("\n", trim: true)
+        args =
+          Path.join(workspace, "argv.trace")
+          |> File.read!()
+          |> String.split("\n", trim: false)
+          |> Enum.drop(-1)
+
         refute "--remote-control" in args
 
         assert args == [
                  "--setting-sources",
-                 "user",
+                 "",
                  "--settings",
                  session.settings_path,
+                 "--mcp-config",
+                 session.mcp_config_path,
+                 "--strict-mcp-config",
                  "--output-format",
                  "stream-json",
                  "--print",
@@ -1559,8 +1598,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ workspace
         assert traced_command =~ "fake-claude-remote"
         assert traced_command =~ "--setting-sources"
+        assert traced_command =~ "'\"'\"'--setting-sources'\"'\"' '\"'\"''\"'\"'"
+        refute traced_command =~ "--setting-sources 'user'"
         assert traced_command =~ "--settings"
         assert traced_command =~ session.settings_path
+        assert traced_command =~ "--mcp-config"
+        assert traced_command =~ session.mcp_config_path
+        assert traced_command =~ "--strict-mcp-config"
         assert traced_command =~ "--output-format"
         assert traced_command =~ "stream-json"
         assert traced_command =~ "--print"

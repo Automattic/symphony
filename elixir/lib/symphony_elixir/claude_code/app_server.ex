@@ -18,6 +18,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
           metadata: map(),
           worker_host: String.t() | nil,
           settings_path: Path.t(),
+          mcp_config_path: Path.t(),
           mcp_session: McpServer.session() | nil,
           mcp_remote_socket_path: Path.t() | nil,
           mcp_remote_shim_path: Path.t() | nil
@@ -62,16 +63,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   @spec stop_session(session()) :: :ok
-  def stop_session(%{settings_path: settings_path, worker_host: nil} = session) when is_binary(settings_path) do
-    remove_local_settings(settings_path)
+  def stop_session(%{worker_host: nil} = session) do
+    remove_local_runtime_files(runtime_file_paths(session))
     McpServer.stop_session(Map.get(session, :mcp_session))
   end
 
-  def stop_session(%{settings_path: settings_path, worker_host: worker_host} = session)
-      when is_binary(settings_path) and is_binary(worker_host) do
-    remove_remote_settings(
+  def stop_session(%{worker_host: worker_host} = session) when is_binary(worker_host) do
+    remove_remote_runtime_files(
       worker_host,
-      settings_path,
+      runtime_file_paths(session),
       Map.get(session, :mcp_remote_socket_path),
       Map.get(session, :mcp_remote_shim_path)
     )
@@ -116,17 +116,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  @doc false
-  @spec build_sandbox_settings(Agent.NetworkAccess.t(), [String.t()], McpServer.session(), Path.t(), Path.t()) :: map()
-  def build_sandbox_settings(network_access, allow_read_paths, mcp_session, socket_path, shim_path) do
+  defp build_claude_settings(network_access, allow_read_paths) do
     network_access
     |> build_sandbox_settings(allow_read_paths)
-    |> Map.put("mcpServers", %{
-      "symphony" => %{
-        "command" => shim_path,
-        "args" => ["--socket", socket_path, "--session", mcp_session.token]
-      }
-    })
     |> Map.put("permissions", %{
       "deny" => [
         "Bash(gh:*)",
@@ -135,6 +127,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         "Bash(git remote set-url:*)"
       ]
     })
+  end
+
+  defp build_mcp_config(mcp_session, socket_path, shim_path) do
+    %{
+      "mcpServers" => %{
+        "symphony" => %{
+          "command" => shim_path,
+          "args" => ["--socket", socket_path, "--session", mcp_session.token],
+          "alwaysLoad" => true
+        }
+      }
+    }
   end
 
   # --- Event parsing ---
@@ -294,14 +298,22 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp create_session(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
-    case write_claude_settings(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
-      {:ok, settings_path} ->
+    case write_claude_runtime_files(
+           workspace,
+           worker_host,
+           settings,
+           mcp_session,
+           remote_socket_path,
+           remote_shim_path
+         ) do
+      {:ok, runtime_files} ->
         {:ok,
          %{
            workspace: workspace,
            metadata: %{},
            worker_host: worker_host,
-           settings_path: settings_path,
+           settings_path: runtime_files.settings_path,
+           mcp_config_path: runtime_files.mcp_config_path,
            mcp_session: mcp_session,
            mcp_remote_socket_path: remote_socket_path,
            mcp_remote_shim_path: remote_shim_path
@@ -448,21 +460,27 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_claude_settings(_workspace, worker_host, settings, mcp_session, socket_path, remote_shim_path) do
+  defp write_claude_runtime_files(_workspace, worker_host, settings, mcp_session, socket_path, remote_shim_path) do
     network_access = settings.agent.network_access
     allow_read_paths = workspace_sandbox_allow_read_paths(settings)
     effective_shim_path = effective_shim_path(mcp_session, remote_shim_path)
     effective_socket_path = socket_path || mcp_session.socket_path
 
-    sandbox_json =
-      build_sandbox_settings(network_access, allow_read_paths, mcp_session, effective_socket_path, effective_shim_path)
+    settings_json = build_claude_settings(network_access, allow_read_paths)
+    mcp_config_json = build_mcp_config(mcp_session, effective_socket_path, effective_shim_path)
 
     settings_dir = claude_settings_dir(worker_host, mcp_session)
     settings_path = Path.join(settings_dir, "settings.json")
+    mcp_config_path = Path.join(settings_dir, "mcp_config.json")
 
-    with {:ok, json} <- encode_settings_json(sandbox_json),
-         :ok <- write_settings_file(settings_dir, settings_path, json, worker_host) do
-      {:ok, settings_path}
+    runtime_files = [
+      {settings_path, settings_json},
+      {mcp_config_path, mcp_config_json}
+    ]
+
+    with {:ok, encoded_runtime_files} <- encode_runtime_files(runtime_files),
+         :ok <- write_runtime_files(settings_dir, encoded_runtime_files, worker_host) do
+      {:ok, %{settings_path: settings_path, mcp_config_path: mcp_config_path}}
     end
   end
 
@@ -493,14 +511,28 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_settings_file(settings_dir, settings_path, json, nil) do
-    with :ok <- mkdir_claude_dir(settings_dir) do
-      write_local_settings_file(settings_path, json)
+  defp encode_runtime_files(runtime_files) do
+    runtime_files
+    |> Enum.reduce_while({:ok, []}, fn {path, contents}, {:ok, encoded} ->
+      case encode_settings_json(contents) do
+        {:ok, json} -> {:cont, {:ok, [{path, json} | encoded]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp write_settings_file(settings_dir, settings_path, json, worker_host) when is_binary(worker_host) do
-    command = remote_write_settings_command(settings_dir, settings_path, json)
+  defp write_runtime_files(settings_dir, encoded_runtime_files, nil) do
+    with :ok <- mkdir_claude_dir(settings_dir) do
+      write_local_runtime_files(encoded_runtime_files)
+    end
+  end
+
+  defp write_runtime_files(settings_dir, encoded_runtime_files, worker_host) when is_binary(worker_host) do
+    command = remote_write_runtime_files_command(settings_dir, encoded_runtime_files)
 
     case ssh_module().run(worker_host, command, stderr_to_stdout: true) do
       {:ok, {_output, 0}} ->
@@ -527,7 +559,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp write_local_settings_file(settings_path, json) do
+  defp write_local_runtime_files(encoded_runtime_files) do
+    Enum.reduce_while(encoded_runtime_files, :ok, fn {path, json}, :ok ->
+      case write_local_runtime_file(path, json) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp write_local_runtime_file(settings_path, json) do
     case File.open(settings_path, [:write, :exclusive], fn file -> IO.write(file, json) end) do
       {:ok, :ok} ->
         case File.chmod(settings_path, 0o600) do
@@ -570,7 +611,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
       ssh_module().start_port(
         worker_host,
-        remote_launch_command(workspace, command_words, prompt, session.settings_path),
+        remote_launch_command(workspace, command_words, prompt, session),
         line: @port_line_bytes,
         env: AgentEnv.build(),
         reverse_forwards: reverse_forwards
@@ -619,26 +660,37 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp remote_write_settings_command(settings_dir, settings_path, json) do
+  defp remote_write_runtime_files_command(settings_dir, encoded_runtime_files) do
+    write_commands =
+      Enum.flat_map(encoded_runtime_files, fn {path, json} ->
+        [
+          "printf %s #{shell_escape(json)} > #{shell_escape(path)}",
+          "chmod 0600 #{shell_escape(path)}"
+        ]
+      end)
+
     [
       "umask 077",
       "mkdir #{shell_escape(settings_dir)}",
-      "chmod 0700 #{shell_escape(settings_dir)}",
-      "printf %s #{shell_escape(json)} > #{shell_escape(settings_path)}",
-      "chmod 0600 #{shell_escape(settings_path)}"
+      "chmod 0700 #{shell_escape(settings_dir)}"
+      | write_commands
     ]
     |> Enum.join(" && ")
   end
 
-  defp remote_remove_settings_command(settings_path, socket_path, shim_path) do
-    claude_dir = Path.dirname(settings_path)
+  defp remote_remove_runtime_files_command(file_paths, socket_path, shim_path) do
+    runtime_dirs =
+      file_paths
+      |> Enum.map(&Path.dirname/1)
+      |> Enum.uniq()
 
-    [
-      "rm -f #{shell_escape(settings_path)}",
+    file_paths
+    |> Enum.map(fn path -> "rm -f #{shell_escape(path)}" end)
+    |> Kernel.++([
       remote_path_cleanup_command(socket_path),
-      remote_path_cleanup_command(shim_path),
-      "rmdir #{shell_escape(claude_dir)} 2>/dev/null || true"
-    ]
+      remote_path_cleanup_command(shim_path)
+    ])
+    |> Kernel.++(Enum.map(runtime_dirs, fn dir -> "rmdir #{shell_escape(dir)} 2>/dev/null || true" end))
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
   end
@@ -649,15 +701,24 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp remote_path_cleanup_command(_path), do: nil
 
-  defp claude_settings_args(%{settings_path: settings_path}) when is_binary(settings_path) do
-    ["--setting-sources", "user", "--settings", settings_path]
+  defp claude_settings_args(%{settings_path: settings_path, mcp_config_path: mcp_config_path})
+       when is_binary(settings_path) and is_binary(mcp_config_path) do
+    [
+      "--setting-sources",
+      "",
+      "--settings",
+      settings_path,
+      "--mcp-config",
+      mcp_config_path,
+      "--strict-mcp-config"
+    ]
   end
 
   defp claude_settings_args(_session), do: []
 
-  defp remote_launch_command(workspace, command_words, prompt, settings_path) do
+  defp remote_launch_command(workspace, command_words, prompt, session) do
     command =
-      (command_words ++ claude_settings_args(%{settings_path: settings_path}))
+      (command_words ++ claude_settings_args(session))
       |> Enum.map_join(" ", &shell_escape/1)
 
     [
@@ -667,29 +728,42 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.join(" && ")
   end
 
-  defp remove_local_settings(settings_path) do
-    case File.rm(settings_path) do
-      :ok -> :ok
-      {:error, :enoent} -> :ok
-      {:error, reason} -> Logger.warning("Claude settings cleanup failed path=#{settings_path} reason=#{inspect(reason)}")
-    end
+  defp runtime_file_paths(session) do
+    session
+    |> Map.take([:settings_path, :mcp_config_path])
+    |> Map.values()
+    |> Enum.filter(&is_binary/1)
+  end
 
-    _ = File.rmdir(Path.dirname(settings_path))
+  defp remove_local_runtime_files(file_paths) when is_list(file_paths) do
+    Enum.each(file_paths, fn path ->
+      case File.rm(path) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, reason} -> Logger.warning("Claude settings cleanup failed path=#{path} reason=#{inspect(reason)}")
+      end
+    end)
+
+    file_paths
+    |> Enum.map(&Path.dirname/1)
+    |> Enum.uniq()
+    |> Enum.each(fn dir -> _ = File.rmdir(dir) end)
+
     :ok
   end
 
-  defp remove_remote_settings(worker_host, settings_path, socket_path, shim_path) do
-    command = remote_remove_settings_command(settings_path, socket_path, shim_path)
+  defp remove_remote_runtime_files(worker_host, file_paths, socket_path, shim_path) do
+    command = remote_remove_runtime_files_command(file_paths, socket_path, shim_path)
 
     case ssh_module().run(worker_host, command, stderr_to_stdout: true) do
       {:ok, {_output, 0}} ->
         :ok
 
       {:ok, {output, status}} ->
-        Logger.warning("Claude settings cleanup failed worker_host=#{worker_host} path=#{settings_path} status=#{status} output=#{inspect(output)}")
+        Logger.warning("Claude settings cleanup failed worker_host=#{worker_host} paths=#{inspect(file_paths)} status=#{status} output=#{inspect(output)}")
 
       {:error, reason} ->
-        Logger.warning("Claude settings cleanup failed worker_host=#{worker_host} path=#{settings_path} reason=#{inspect(reason)}")
+        Logger.warning("Claude settings cleanup failed worker_host=#{worker_host} paths=#{inspect(file_paths)} reason=#{inspect(reason)}")
     end
 
     :ok

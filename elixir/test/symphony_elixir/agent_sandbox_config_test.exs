@@ -2,6 +2,8 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
   use ExUnit.Case, async: true
 
   alias SymphonyElixir.AgentSandboxConfig
+  alias SymphonyElixir.Config.{Schema, SystemSchema}
+  alias SymphonyElixir.Config.Schema.Workspace.Sandbox
 
   test "Claude filesystem settings expose the default deny lists" do
     assert AgentSandboxConfig.deny_read_paths() == [
@@ -10,8 +12,24 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "~/.aws",
              "~/.gnupg",
              "~/Library/Application Support",
-             "~/.docker"
+             "~/.docker",
+             "~/.netrc",
+             "~/.git-credentials",
+             "~/.npmrc",
+             "~/.cargo/credentials",
+             "~/.config/op",
+             "~/.config/gcloud",
+             "~/.azure",
+             "~/.kube",
+             "~/.bash_history",
+             "~/.zsh_history",
+             "~/.history",
+             "~/.python_history",
+             "~/.node_repl_history"
            ]
+
+    refute "~/.codex" in AgentSandboxConfig.deny_read_paths()
+    refute "~/.claude" in AgentSandboxConfig.deny_read_paths()
 
     assert AgentSandboxConfig.deny_write_paths() == [
              "./WORKFLOW.md",
@@ -38,7 +56,11 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("WORKFLOW.md"="read")
     assert filesystem =~ ~s(".git/hooks"="read")
     assert filesystem =~ ~s("~/.ssh"="none")
+    assert filesystem =~ ~s("~/.netrc"="none")
+    assert filesystem =~ ~s("~/.npmrc"="none")
     assert filesystem =~ ~s("~/Library/Application Support"="none")
+    refute filesystem =~ "~/.codex"
+    refute filesystem =~ "~/.claude"
 
     assert ~s(permissions.workspace_write.network={"enabled"=true,"mode"="limited"}) in overrides
     assert domains = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.network.domains="))
@@ -59,5 +81,60 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
 
     assert ~s(permissions.workspace_write.network={"enabled"=false}) in overrides
     assert "permissions.workspace_write.network.domains={}" in overrides
+  end
+
+  test "Codex filesystem config allows operator overrides for default read denies" do
+    overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [], ["~/.npmrc", "~/.cargo/credentials"])
+
+    assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+    assert filesystem =~ ~s("~/.npmrc"="read")
+    assert filesystem =~ ~s("~/.cargo/credentials"="read")
+    refute filesystem =~ ~s("~/.npmrc"="none")
+    refute filesystem =~ ~s("~/.cargo/credentials"="none")
+  end
+
+  test "Codex filesystem config normalizes malformed operator allow_read_paths" do
+    overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [], ["", " ~/.npmrc ", "~/.npmrc", :bad])
+
+    assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+    assert filesystem =~ ~s("~/.npmrc"="read")
+    refute filesystem =~ ~s("~/.npmrc"="none")
+
+    defaults = AgentSandboxConfig.codex_config_overrides("allowlist", [], :bad)
+    assert default_filesystem = Enum.find(defaults, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+    assert default_filesystem =~ ~s("~/.npmrc"="none")
+  end
+
+  test "operator workspace sandbox allow_read_paths flows into rendered Codex deny list" do
+    assert {:ok, system_config} =
+             SystemSchema.parse(%{
+               "repos" => [%{"name" => "default"}],
+               "workspace" => %{"sandbox" => %{"allow_read_paths" => ["~/.npmrc"]}},
+               "agent" => %{"kind" => "codex", "command" => "codex app-server"}
+             })
+
+    assert {:ok, settings} = system_config |> SystemSchema.to_config_map() |> Schema.parse()
+    assert settings.workspace.sandbox.allow_read_paths == ["~/.npmrc"]
+
+    overrides =
+      AgentSandboxConfig.codex_config_overrides(
+        settings.agent.network_access.mode,
+        Schema.codex_effective_network_allowed_domains(settings),
+        settings.workspace.sandbox.allow_read_paths
+      )
+
+    assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+    assert filesystem =~ ~s("~/.npmrc"="read")
+    refute filesystem =~ ~s("~/.npmrc"="none")
+    assert filesystem =~ ~s("~/.netrc"="none")
+  end
+
+  test "workspace sandbox allow_read_paths defaults to an empty list" do
+    sandbox =
+      %Sandbox{}
+      |> Sandbox.changeset(%{allow_read_paths: nil})
+      |> Ecto.Changeset.apply_changes()
+
+    assert sandbox.allow_read_paths == []
   end
 end

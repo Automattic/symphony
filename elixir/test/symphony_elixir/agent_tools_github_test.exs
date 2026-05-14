@@ -2,6 +2,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.AgentTools.GitHub
+  alias SymphonyElixir.AgentTools.SecretScanner
 
   test "public defaults fail closed when required scope is missing" do
     assert {:error, :missing_github_origin_repo} = GitHub.get_pull_request(%{})
@@ -27,6 +28,65 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
     assert {:error, :workspace_not_found} =
              GitHub.push_branch(%{command_security: %{origin_repo: "acme/symphony", workspace: missing_workspace}}, [])
+  end
+
+  test "pull request body tools reject high-confidence secret prefixes before calling GitHub" do
+    workspace = tmp_workspace!("github-agent-secret-scan")
+    audit_dir = Path.join(workspace, "audit")
+    context = scoped_context(workspace) |> Map.put(:issue, %{"id" => "issue-secret", "identifier" => "RSM-3189"})
+
+    try do
+      for token <- secret_fixtures() do
+        body = "leaked credential: " <> token
+
+        assert {:error, :secret_pattern_detected} =
+                 GitHub.create_pull_request(context, "Title", body, false, dir: audit_dir)
+      end
+
+      assert {:error, :secret_pattern_detected} =
+               GitHub.update_pull_request_body(context, "body " <> openai_fixture(), dir: audit_dir)
+
+      assert {:error, :secret_pattern_detected} =
+               GitHub.add_pr_comment(context, "body " <> openai_fixture(), dir: audit_dir)
+
+      assert [%{"event_type" => "refused_agent_action", "reason" => "secret_pattern_detected"} | _rest] =
+               audit_events(audit_dir)
+
+      refute inspect(audit_events(audit_dir)) =~ openai_fixture()
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "secret scanner handles clean, invalid, and audit-failure paths without content disclosure" do
+    workspace = tmp_workspace!("github-agent-secret-scanner")
+    audit_dir = Path.join(workspace, "audit")
+    blocked_audit_path = Path.join(workspace, "blocked-audit")
+    File.write!(blocked_audit_path, "not a directory")
+
+    try do
+      assert :ok = SecretScanner.reject_if_secret_pattern("ordinary comment", %{}, "tool", "body")
+      assert :ok = SecretScanner.reject_if_secret_pattern(:not_binary, %{}, "tool", "body", [])
+      refute SecretScanner.detect("ordinary comment")
+      refute SecretScanner.detect(<<255>>)
+
+      assert {:error, :secret_pattern_detected} =
+               SecretScanner.reject_if_secret_pattern(openai_fixture(), %{}, "tool", "body", dir: audit_dir)
+
+      assert [%{"event_type" => "refused_agent_action", "reason" => "secret_pattern_detected", "tool" => "tool"}] =
+               audit_events(audit_dir)
+
+      log =
+        capture_log(fn ->
+          assert {:error, :secret_pattern_detected} =
+                   SecretScanner.reject_if_secret_pattern(openai_fixture(), %{}, "tool", "body", dir: blocked_audit_path)
+        end)
+
+      assert log =~ "Audit log failed to record secret-pattern rejection"
+      refute log =~ openai_fixture()
+    after
+      File.rm_rf(workspace)
+    end
   end
 
   test "create_pull_request passes draft flag when requested" do
@@ -245,5 +305,34 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     workspace = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(workspace)
     workspace
+  end
+
+  defp secret_fixtures do
+    [
+      "sk-ant-" <> String.duplicate("a", 24),
+      openai_fixture(),
+      "ghp_" <> String.duplicate("A", 24),
+      "ghu_" <> String.duplicate("B", 24),
+      "gho_" <> String.duplicate("C", 24),
+      "ghs_" <> String.duplicate("D", 24),
+      "ghr_" <> String.duplicate("E", 24),
+      "AKIA" <> String.duplicate("A", 16),
+      "ASIA" <> String.duplicate("B", 16),
+      "AIza" <> String.duplicate("A", 35)
+    ]
+  end
+
+  defp openai_fixture, do: "sk-" <> String.duplicate("a", 24)
+
+  defp audit_events(dir) do
+    dir
+    |> Path.join("*.ndjson")
+    |> Path.wildcard()
+    |> Enum.flat_map(fn path ->
+      path
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&Jason.decode!/1)
+    end)
   end
 end

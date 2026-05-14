@@ -188,6 +188,39 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
+    defmodule Sandbox do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @primary_key false
+
+      embedded_schema do
+        field(:allow_read_paths, {:array, :string}, default: [])
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:allow_read_paths], empty_values: [])
+        |> normalize_string_list(:allow_read_paths)
+      end
+
+      defp normalize_string_list(changeset, field) do
+        update_change(changeset, field, fn
+          values when is_list(values) ->
+            values
+            |> Enum.map(&to_string/1)
+            |> Enum.map(&String.trim/1)
+            |> Enum.reject(&(&1 == ""))
+            |> Enum.uniq()
+
+          nil ->
+            []
+        end)
+      end
+    end
+
     defmodule Lifecycle do
       @moduledoc false
       use Ecto.Schema
@@ -262,6 +295,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:strategy, :string, default: "clone")
       field(:repo, :string)
       field(:fetch_before_dispatch, :boolean, default: true)
+      embeds_one(:sandbox, Sandbox, on_replace: :update, defaults_to_struct: true)
       embeds_one(:lifecycle, Lifecycle, on_replace: :update, defaults_to_struct: true)
     end
 
@@ -269,6 +303,7 @@ defmodule SymphonyElixir.Config.Schema do
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:root, :strategy, :repo, :fetch_before_dispatch], empty_values: [])
+      |> cast_embed(:sandbox, with: &Sandbox.changeset/2)
       |> cast_embed(:lifecycle, with: &Lifecycle.changeset/2)
       |> validate_inclusion(:strategy, ["clone", "worktree"])
     end

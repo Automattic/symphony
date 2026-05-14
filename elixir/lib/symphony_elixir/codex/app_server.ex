@@ -334,10 +334,18 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     overrides =
       network_access.mode
-      |> AgentSandboxConfig.codex_config_overrides(Schema.codex_effective_network_allowed_domains(settings))
+      |> AgentSandboxConfig.codex_config_overrides(
+        Schema.codex_effective_network_allowed_domains(settings),
+        workspace_sandbox_allow_read_paths(settings)
+      )
 
     inject_config_overrides(command, overrides)
   end
+
+  defp workspace_sandbox_allow_read_paths(%Schema{workspace: %{sandbox: %{allow_read_paths: paths}}}) when is_list(paths),
+    do: paths
+
+  defp workspace_sandbox_allow_read_paths(_settings), do: []
 
   defp inject_config_overrides(command, overrides) do
     case shell_words(command) do
@@ -1740,15 +1748,17 @@ defmodule SymphonyElixir.Codex.AppServer do
     end)
   end
 
-  defp secret_path(token) when is_binary(token) do
+  @doc false
+  @spec secret_path(term()) :: String.t() | nil
+  def secret_path(token) when is_binary(token) do
     normalized = token |> String.trim() |> String.trim_trailing(":")
     basename = Path.basename(normalized)
 
     cond do
-      String.starts_with?(normalized, ["~/.ssh/", "~/.aws/", "~/.config/gh/"]) ->
+      secret_home_path?(normalized) ->
         normalized
 
-      String.contains?(normalized, ["/.ssh/", "/.aws/", "/.config/gh/"]) ->
+      secret_absolute_path?(normalized) ->
         normalized
 
       String.starts_with?(basename, ".env") ->
@@ -1760,6 +1770,77 @@ defmodule SymphonyElixir.Codex.AppServer do
       true ->
         nil
     end
+  end
+
+  def secret_path(_token), do: nil
+
+  defp secret_home_path?(path) do
+    Enum.any?(secret_home_roots(), fn root ->
+      path == root or String.starts_with?(path, root <> "/")
+    end)
+  end
+
+  defp secret_absolute_path?(path) do
+    path_with_slash = path <> "/"
+
+    Enum.any?(secret_absolute_markers(), &String.contains?(path_with_slash, &1)) or
+      secret_absolute_file?(path)
+  end
+
+  defp secret_absolute_file?("/" <> _rest = path) do
+    basename = Path.basename(path)
+
+    basename in [
+      ".netrc",
+      ".git-credentials",
+      ".npmrc",
+      ".bash_history",
+      ".zsh_history",
+      ".history",
+      ".python_history",
+      ".node_repl_history"
+    ] or String.ends_with?(path, "/.cargo/credentials")
+  end
+
+  defp secret_absolute_file?(_path), do: false
+
+  defp secret_home_roots do
+    [
+      "~/.ssh",
+      "~/.aws",
+      "~/.gnupg",
+      "~/.docker",
+      "~/.config/gh",
+      "~/.config/op",
+      "~/.config/gcloud",
+      "~/.azure",
+      "~/.kube",
+      "~/Library/Application Support",
+      "~/.netrc",
+      "~/.git-credentials",
+      "~/.npmrc",
+      "~/.cargo/credentials",
+      "~/.bash_history",
+      "~/.zsh_history",
+      "~/.history",
+      "~/.python_history",
+      "~/.node_repl_history"
+    ]
+  end
+
+  defp secret_absolute_markers do
+    [
+      "/.ssh/",
+      "/.aws/",
+      "/.gnupg/",
+      "/.docker/",
+      "/.config/gh/",
+      "/.config/op/",
+      "/.config/gcloud/",
+      "/.azure/",
+      "/.kube/",
+      "/Library/Application Support/"
+    ]
   end
 
   defp option_value(token) when is_binary(token) do

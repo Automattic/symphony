@@ -9,18 +9,15 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   Currently covered credential / config stores (read-deny):
 
     * `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.docker`
-    * `~/.config/gh`
+    * `~/.config/gh`, `~/.config/op`, `~/.config/gcloud`, `~/.azure`, `~/.kube`
+    * `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.cargo/credentials`
     * `~/Library/Application Support` (macOS app data)
+    * shell and REPL history files
 
   Workflow guardrail files protected from writes (relative to workspace):
 
     * `WORKFLOW.md`, `symphony.yml`, `symphony.local.yml`
     * `.git/hooks`, `mise.toml`, `.tool-versions`
-
-  Known gaps not covered by the default deny list — add explicitly if your
-  environment uses them: `~/.netrc`, `~/.kube`, `~/.config/op`,
-  `~/.config/gcloud`, `~/.azure`, `~/.npmrc`, `~/.cargo/credentials`,
-  shell history files.
   """
 
   @codex_profile "workspace_write"
@@ -31,7 +28,20 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "~/.aws",
     "~/.gnupg",
     "~/Library/Application Support",
-    "~/.docker"
+    "~/.docker",
+    "~/.netrc",
+    "~/.git-credentials",
+    "~/.npmrc",
+    "~/.cargo/credentials",
+    "~/.config/op",
+    "~/.config/gcloud",
+    "~/.azure",
+    "~/.kube",
+    "~/.bash_history",
+    "~/.zsh_history",
+    "~/.history",
+    "~/.python_history",
+    "~/.node_repl_history"
   ]
 
   @deny_write_paths [
@@ -61,28 +71,46 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   end
 
   @doc false
-  @spec codex_config_overrides(String.t(), [String.t()]) :: [String.t()]
-  def codex_config_overrides(network_mode, allowed_domains) do
+  @spec codex_config_overrides(String.t(), [String.t()], [String.t()]) :: [String.t()]
+  def codex_config_overrides(network_mode, allowed_domains, allow_read_paths \\ []) do
     [
       ~s(default_permissions="#{@codex_profile}"),
-      "permissions.#{@codex_profile}.filesystem=#{codex_filesystem_policy()}",
+      "permissions.#{@codex_profile}.filesystem=#{codex_filesystem_policy(allow_read_paths)}",
       "permissions.#{@codex_profile}.network=#{codex_network_policy(network_mode)}",
       "permissions.#{@codex_profile}.network.domains=#{codex_network_domains(network_mode, allowed_domains)}"
     ]
   end
 
-  defp codex_filesystem_policy do
+  defp codex_filesystem_policy(allow_read_paths) do
+    allow_read_paths = normalize_allow_read_paths(allow_read_paths)
+
     project_entries =
       [{".", "write"}] ++
         Enum.map(@deny_write_paths, fn path ->
           {String.trim_leading(path, "./"), "read"}
         end)
 
-    @deny_read_paths
+    deny_read_paths =
+      Enum.reject(@deny_read_paths, fn path ->
+        path in allow_read_paths
+      end)
+
+    deny_read_paths
     |> Enum.map(&{&1, "none"})
     |> List.insert_at(0, {":project_roots", project_entries})
+    |> Kernel.++(Enum.map(allow_read_paths, &{&1, "read"}))
     |> toml_inline_table()
   end
+
+  defp normalize_allow_read_paths(paths) when is_list(paths) do
+    paths
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_allow_read_paths(_paths), do: []
 
   defp codex_network_policy("open"), do: toml_inline_table(enabled: true, mode: "full")
   defp codex_network_policy("block"), do: toml_inline_table(enabled: false)

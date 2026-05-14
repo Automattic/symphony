@@ -377,6 +377,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
   defp workspace_to_map(%Schema.Workspace{} = workspace) do
     workspace
     |> struct_to_map()
+    |> Map.update("sandbox", nil, &struct_to_map/1)
     |> Map.update("lifecycle", nil, &struct_to_map/1)
   end
 

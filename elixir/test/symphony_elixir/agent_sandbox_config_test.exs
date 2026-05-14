@@ -164,7 +164,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
 
     assert settings["network"]["allowedDomains"] == []
     assert settings["network"]["deniedDomains"] == []
-    assert settings["filesystem"]["allowWrite"] == [".", "/tmp", System.tmp_dir!(), "~/.codex"]
+    assert settings["filesystem"]["allowWrite"] == Enum.uniq([".", "/tmp", System.tmp_dir!(), "~/.codex"])
 
     assert settings["filesystem"]["denyWrite"] ==
              AgentSandboxConfig.deny_write_paths() ++

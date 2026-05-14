@@ -17,41 +17,6 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "secret_path catches credential stores and leaves runtime auth stores alone" do
-    denied_paths = [
-      "~/.netrc",
-      "~/.git-credentials",
-      "~/.npmrc",
-      "~/.cargo/credentials",
-      "~/.config/op/config",
-      "~/.config/gcloud/application_default_credentials.json",
-      "~/.azure/accessTokens.json",
-      "~/.kube/config",
-      "~/.bash_history",
-      "~/.zsh_history",
-      "~/.history",
-      "~/.python_history",
-      "~/.node_repl_history",
-      "/Users/test/.netrc",
-      "/Users/test/.git-credentials",
-      "/Users/test/.npmrc",
-      "/Users/test/.cargo/credentials",
-      "/Users/test/.config/op/config",
-      "/Users/test/.config/gcloud/configurations/config_default",
-      "/Users/test/.azure/accessTokens.json",
-      "/Users/test/.kube/config",
-      "/Users/test/.bash_history"
-    ]
-
-    for path <- denied_paths do
-      assert AppServer.secret_path(path) == path
-    end
-
-    refute AppServer.secret_path("~/.codex/auth.json")
-    refute AppServer.secret_path("~/.claude/.credentials.json")
-    refute AppServer.secret_path(".npmrc")
-  end
-
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(

@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.DependencyAudit
   alias SymphonyElixir.Notifications
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.SensitivePath
   alias SymphonyElixir.SSH
   alias SymphonyElixir.Tracker
 
@@ -1239,7 +1240,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     tokens = command_tokens(command)
 
     cond do
-      secret_path = denied_secret_path(tokens) ->
+      secret_path = SensitivePath.denied_secret_path(tokens) ->
         {:review, approval_review("sandbox_denied_path", "read", secret_path)}
 
       domain = denied_domain_in_values([command], approval_context) ->
@@ -1390,7 +1391,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp denied_write_path?(_path, _payload, _approval_context), do: false
 
   defp denied_read_path?(path, payload, approval_context) when is_binary(path) do
-    secret_path(path) != nil or
+    SensitivePath.secret_path(path) != nil or
       (not sandbox_read_allows_full_access?(approval_context) and
          denied_write_path?(path, payload, approval_context))
   end
@@ -1609,7 +1610,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp secret_path_refusal(tokens, command) do
-    if secret_path = denied_secret_path(tokens) do
+    if secret_path = SensitivePath.denied_secret_path(tokens) do
       {:refuse,
        refusal(
          "secret_file_read",
@@ -1738,116 +1739,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> String.split(~r/(;|&&|\|\|)/, include_captures: true, trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
-  end
-
-  defp denied_secret_path(tokens) do
-    Enum.find_value(tokens, fn token ->
-      token
-      |> option_value()
-      |> secret_path()
-    end)
-  end
-
-  @doc false
-  @spec secret_path(term()) :: String.t() | nil
-  def secret_path(token) when is_binary(token) do
-    normalized = token |> String.trim() |> String.trim_trailing(":")
-    basename = Path.basename(normalized)
-
-    cond do
-      secret_home_path?(normalized) ->
-        normalized
-
-      secret_absolute_path?(normalized) ->
-        normalized
-
-      String.starts_with?(basename, ".env") ->
-        normalized
-
-      String.ends_with?(String.downcase(basename), [".pem", ".key"]) ->
-        normalized
-
-      true ->
-        nil
-    end
-  end
-
-  def secret_path(_token), do: nil
-
-  defp secret_home_path?(path) do
-    Enum.any?(secret_home_roots(), fn root ->
-      path == root or String.starts_with?(path, root <> "/")
-    end)
-  end
-
-  defp secret_absolute_path?(path) do
-    path_with_slash = path <> "/"
-
-    Enum.any?(secret_absolute_markers(), &String.contains?(path_with_slash, &1)) or
-      secret_absolute_file?(path)
-  end
-
-  defp secret_absolute_file?("/" <> _rest = path) do
-    basename = Path.basename(path)
-
-    basename in [
-      ".netrc",
-      ".git-credentials",
-      ".npmrc",
-      ".bash_history",
-      ".zsh_history",
-      ".history",
-      ".python_history",
-      ".node_repl_history"
-    ] or String.ends_with?(path, "/.cargo/credentials")
-  end
-
-  defp secret_absolute_file?(_path), do: false
-
-  defp secret_home_roots do
-    [
-      "~/.ssh",
-      "~/.aws",
-      "~/.gnupg",
-      "~/.docker",
-      "~/.config/gh",
-      "~/.config/op",
-      "~/.config/gcloud",
-      "~/.azure",
-      "~/.kube",
-      "~/Library/Application Support",
-      "~/.netrc",
-      "~/.git-credentials",
-      "~/.npmrc",
-      "~/.cargo/credentials",
-      "~/.bash_history",
-      "~/.zsh_history",
-      "~/.history",
-      "~/.python_history",
-      "~/.node_repl_history"
-    ]
-  end
-
-  defp secret_absolute_markers do
-    [
-      "/.ssh/",
-      "/.aws/",
-      "/.gnupg/",
-      "/.docker/",
-      "/.config/gh/",
-      "/.config/op/",
-      "/.config/gcloud/",
-      "/.azure/",
-      "/.kube/",
-      "/Library/Application Support/"
-    ]
-  end
-
-  defp option_value(token) when is_binary(token) do
-    case String.split(token, "=", parts: 2) do
-      [_option, value] -> value
-      [value] -> value
-    end
   end
 
   defp gh_pr_create_repo(tokens) do

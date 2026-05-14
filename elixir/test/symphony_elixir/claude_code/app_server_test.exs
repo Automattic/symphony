@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.ClaudeCode.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.AgentSandboxConfig
   alias SymphonyElixir.ClaudeCode.AppServer
   alias SymphonyElixir.Config.Schema.Agent
 
@@ -34,14 +35,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert get_in(result, ["sandbox", "enabled"]) == true
       assert get_in(result, ["sandbox", "allowUnsandboxedCommands"]) == false
 
-      assert get_in(result, ["sandbox", "filesystem", "denyRead"]) == [
-               "~/.ssh",
-               "~/.config/gh",
-               "~/.aws",
-               "~/.gnupg",
-               "~/Library/Application Support",
-               "~/.docker"
-             ]
+      assert get_in(result, ["sandbox", "filesystem", "denyRead"]) == AgentSandboxConfig.deny_read_paths()
 
       assert get_in(result, ["sandbox", "filesystem", "denyWrite"]) == [
                "./WORKFLOW.md",

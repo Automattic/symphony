@@ -15,6 +15,41 @@ defmodule SymphonyElixir.SensitivePathTest do
     assert SensitivePath.denied_secret_path(["cat", "notes.txt"]) == nil
   end
 
+  test "detects expanded credential stores and leaves runtime auth stores alone" do
+    denied_paths = [
+      "~/.netrc",
+      "~/.git-credentials",
+      "~/.npmrc",
+      "~/.cargo/credentials",
+      "~/.config/op/config",
+      "~/.config/gcloud/application_default_credentials.json",
+      "~/.azure/accessTokens.json",
+      "~/.kube/config",
+      "~/.bash_history",
+      "~/.zsh_history",
+      "~/.history",
+      "~/.python_history",
+      "~/.node_repl_history",
+      "/Users/test/.netrc",
+      "/Users/test/.git-credentials",
+      "/Users/test/.npmrc",
+      "/Users/test/.cargo/credentials",
+      "/Users/test/.config/op/config",
+      "/Users/test/.config/gcloud/configurations/config_default",
+      "/Users/test/.azure/accessTokens.json",
+      "/Users/test/.kube/config",
+      "/Users/test/.bash_history"
+    ]
+
+    for path <- denied_paths do
+      assert SensitivePath.secret_path(path) == path
+    end
+
+    refute SensitivePath.secret_path("~/.codex/auth.json")
+    refute SensitivePath.secret_path("~/.claude/.credentials.json")
+    refute SensitivePath.secret_path(".npmrc")
+  end
+
   test "detects sensitive basenames without requiring a sensitive parent path" do
     assert SensitivePath.sensitive_basename?("/workspace/.env")
     assert SensitivePath.sensitive_basename?("/workspace/.env.production")

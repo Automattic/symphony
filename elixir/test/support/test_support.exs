@@ -449,6 +449,7 @@ defmodule SymphonyElixir.TestSupport do
           workspace_strategy: "clone",
           workspace_repo: nil,
           workspace_fetch_before_dispatch: true,
+          workspace_sandbox: nil,
           workspace_lifecycle: nil,
           worker_ssh_hosts: [],
           worker_max_concurrent_agents_per_host: nil,
@@ -516,6 +517,7 @@ defmodule SymphonyElixir.TestSupport do
     workspace_strategy = Keyword.get(config, :workspace_strategy)
     workspace_repo = Keyword.get(config, :workspace_repo)
     workspace_fetch_before_dispatch = Keyword.get(config, :workspace_fetch_before_dispatch)
+    workspace_sandbox = Keyword.get(config, :workspace_sandbox)
     workspace_lifecycle = Keyword.get(config, :workspace_lifecycle)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
     worker_max_concurrent_agents_per_host = Keyword.get(config, :worker_max_concurrent_agents_per_host)
@@ -586,6 +588,7 @@ defmodule SymphonyElixir.TestSupport do
         "  strategy: #{yaml_value(workspace_strategy)}",
         "  repo: #{yaml_value(workspace_repo)}",
         "  fetch_before_dispatch: #{yaml_value(workspace_fetch_before_dispatch)}",
+        workspace_sandbox && "  sandbox: #{yaml_value(workspace_sandbox)}",
         workspace_lifecycle && "  lifecycle: #{yaml_value(workspace_lifecycle)}",
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
         github && "github: #{yaml_value(github)}",

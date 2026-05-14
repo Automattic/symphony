@@ -183,6 +183,10 @@ tracker:
   assignee: null
 workspace:
   root: ~/code/workspaces
+  sandbox:
+    # Optional Codex read overrides for default-denied credential/config paths
+    # that a specific repo legitimately needs, such as private package registries.
+    allow_read_paths: []
 github:
   # Optional GitHub Enterprise hosts accepted for PR URLs and repo URLs.
   enterprise_hosts: []
@@ -314,6 +318,12 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.
   - `agent.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace for Codex.
   - `agent.network_access.mode` defaults to `allowlist`.
+- `workspace.sandbox.allow_read_paths` is an advanced Codex-only escape hatch for paths that are
+  denied by Symphony's default credential read-deny list but are required by the agent runtime for
+  legitimate repository work. Entries are exact sandbox paths such as `~/.npmrc` or
+  `~/.cargo/credentials`; configured entries are rendered as read-only Codex filesystem access
+  instead of `none`. Do not use it for the agent runtime credential stores under `~/.codex` or
+  `~/.claude`.
 - Supported `agent.approval_policy` values depend on the targeted Codex app-server version. In the
   current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and
   `auto_approve_all`, and object-form `reject` is also supported. `auto_approve_all` is the

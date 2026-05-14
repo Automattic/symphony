@@ -7,6 +7,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   through tool arguments.
   """
 
+  alias SymphonyElixir.AgentTools.SecretScanner
   alias SymphonyElixir.GitHub.PullRequest
 
   @pr_view_fields "number,state,title,body,url,headRefName,baseRefName"
@@ -28,6 +29,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   def create_pull_request(context, title, body, draft \\ false, opts \\ []) do
     with {:ok, title} <- require_string(title, :invalid_title),
          {:ok, body} <- require_string(body, :invalid_body),
+         :ok <- SecretScanner.reject_if_secret_pattern(body, context, "github_create_pull_request", "body", opts),
          {:ok, draft?} <- normalize_draft(draft),
          {:ok, origin_repo} <- origin_repo(context),
          {:ok, branch} <- current_branch(context, opts),
@@ -44,6 +46,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   @spec update_pull_request_body(context(), term(), keyword()) :: {:ok, map()} | {:error, term()}
   def update_pull_request_body(context, body, opts \\ []) do
     with {:ok, body} <- require_string(body, :invalid_body),
+         :ok <- SecretScanner.reject_if_secret_pattern(body, context, "github_update_pull_request_body", "body", opts),
          {:ok, pr_url} <- current_pull_request_url(context, opts),
          {:ok, _output} <- PullRequest.run_gh(["pr", "edit", pr_url, "--body", body], github_opts(context, opts)) do
       {:ok, %{"url" => pr_url}}
@@ -53,6 +56,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   @spec add_pr_comment(context(), term(), keyword()) :: {:ok, map()} | {:error, term()}
   def add_pr_comment(context, body, opts \\ []) do
     with {:ok, body} <- require_string(body, :invalid_body),
+         :ok <- SecretScanner.reject_if_secret_pattern(body, context, "github_add_pr_comment", "body", opts),
          {:ok, pr_url} <- current_pull_request_url(context, opts),
          {:ok, _output} <- PullRequest.run_gh(["pr", "comment", pr_url, "--body", body], github_opts(context, opts)) do
       {:ok, %{"url" => pr_url}}

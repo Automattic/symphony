@@ -336,10 +336,18 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     overrides =
       network_access.mode
-      |> AgentSandboxConfig.codex_config_overrides(Schema.codex_effective_network_allowed_domains(settings))
+      |> AgentSandboxConfig.codex_config_overrides(
+        Schema.codex_effective_network_allowed_domains(settings),
+        workspace_sandbox_allow_read_paths(settings)
+      )
 
     inject_config_overrides(command, overrides)
   end
+
+  defp workspace_sandbox_allow_read_paths(%Schema{workspace: %{sandbox: %{allow_read_paths: paths}}}) when is_list(paths),
+    do: paths
+
+  defp workspace_sandbox_allow_read_paths(_settings), do: []
 
   defp inject_config_overrides(command, overrides) do
     case shell_words(command) do

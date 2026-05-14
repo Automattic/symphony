@@ -3,8 +3,52 @@ defmodule SymphonyElixir.SensitivePath do
   Shared detection for obvious secret paths and filenames.
   """
 
-  @sensitive_path_prefixes ["~/.ssh/", "~/.aws/", "~/.config/gh/"]
-  @sensitive_path_segments ["/.ssh/", "/.aws/", "/.config/gh/"]
+  @sensitive_home_roots [
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+    "~/.docker",
+    "~/.config/gh",
+    "~/.config/op",
+    "~/.config/gcloud",
+    "~/.azure",
+    "~/.kube",
+    "~/Library/Application Support",
+    "~/.netrc",
+    "~/.git-credentials",
+    "~/.npmrc",
+    "~/.cargo/credentials",
+    "~/.bash_history",
+    "~/.zsh_history",
+    "~/.history",
+    "~/.python_history",
+    "~/.node_repl_history"
+  ]
+
+  @sensitive_path_segments [
+    "/.ssh/",
+    "/.aws/",
+    "/.gnupg/",
+    "/.docker/",
+    "/.config/gh/",
+    "/.config/op/",
+    "/.config/gcloud/",
+    "/.azure/",
+    "/.kube/",
+    "/Library/Application Support/"
+  ]
+
+  @sensitive_path_basenames [
+    ".netrc",
+    ".git-credentials",
+    ".npmrc",
+    ".bash_history",
+    ".zsh_history",
+    ".history",
+    ".python_history",
+    ".node_repl_history"
+  ]
+
   @sensitive_basename_prefixes [".env"]
   @sensitive_basename_suffixes [".pem", ".key"]
 
@@ -26,10 +70,10 @@ defmodule SymphonyElixir.SensitivePath do
     normalized = token |> String.trim() |> String.trim_trailing(":")
 
     cond do
-      String.starts_with?(normalized, @sensitive_path_prefixes) ->
+      sensitive_home_path?(normalized) ->
         normalized
 
-      String.contains?(normalized, @sensitive_path_segments) ->
+      sensitive_absolute_path?(normalized) ->
         normalized
 
       sensitive_basename?(normalized) ->
@@ -41,6 +85,27 @@ defmodule SymphonyElixir.SensitivePath do
   end
 
   def secret_path(_token), do: nil
+
+  defp sensitive_home_path?(path) do
+    Enum.any?(@sensitive_home_roots, fn root ->
+      path == root or String.starts_with?(path, root <> "/")
+    end)
+  end
+
+  defp sensitive_absolute_path?(path) do
+    path_with_slash = path <> "/"
+
+    Enum.any?(@sensitive_path_segments, &String.contains?(path_with_slash, &1)) or
+      sensitive_absolute_file?(path)
+  end
+
+  defp sensitive_absolute_file?("/" <> _rest = path) do
+    basename = Path.basename(path)
+
+    basename in @sensitive_path_basenames or String.ends_with?(path, "/.cargo/credentials")
+  end
+
+  defp sensitive_absolute_file?(_path), do: false
 
   @doc false
   @spec sensitive_basename?(Path.t()) :: boolean()

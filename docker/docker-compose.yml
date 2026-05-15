@@ -29,12 +29,22 @@ services:
       SYMPHONY_ALLOW_REMOTE_BIND: "1"
     volumes:
       - type: bind
-        source: ${SYMPHONY_CONFIG:?Set SYMPHONY_CONFIG to the host path for symphony.yml}
+        source: ${SYMPHONY_CONFIG:?Set SYMPHONY_CONFIG in your .env}
         target: /workspace/symphony.yml
         read_only: true
       - type: bind
-        source: ${SYMPHONY_REPOS_ROOT:?Set SYMPHONY_REPOS_ROOT to the host directory containing supervised repos}
+        source: ${SYMPHONY_REPOS_ROOT:?Set SYMPHONY_REPOS_ROOT in your .env}
         target: /workspace/repos
+      - type: bind
+        source: ${HOME}/.codex
+        target: /home/symphony/.codex
+      - type: bind
+        source: ${HOME}/.claude
+        target: /home/symphony/.claude
+      - type: bind
+        source: ${HOME}/.ssh
+        target: /home/symphony/.ssh
+        read_only: true
       - type: volume
         source: symphony-logs
         target: /workspace/logs
@@ -44,16 +54,8 @@ services:
       - type: volume
         source: symphony-workspaces
         target: /workspace/workspaces
-      - type: volume
-        source: symphony-codex-home
-        target: /home/symphony/.codex
-      - type: volume
-        source: symphony-claude-home
-        target: /home/symphony/.claude
 
 volumes:
-  symphony-claude-home:
-  symphony-codex-home:
   symphony-logs:
   symphony-state:
   symphony-workspaces:

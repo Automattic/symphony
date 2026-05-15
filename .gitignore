@@ -45,6 +45,7 @@ MnesiaCore.*
 
 # Local operator config.
 /symphony.local.yml
+/symphony.docker.yml
 
 # Local environment and auth artifacts.
 .env

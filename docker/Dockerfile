@@ -1,6 +1,8 @@
 FROM debian:trixie
 
 ARG MISE_VERSION=2026.5.6
+ARG CODEX_VERSION=0.130.0
+ARG CLAUDE_CODE_VERSION=2.1.142
 ARG SYMPHONY_UID=1000
 ARG SYMPHONY_GID=1000
 
@@ -16,8 +18,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash \
         autoconf \
+        bash \
         build-essential \
         ca-certificates \
         curl \
@@ -25,16 +27,25 @@ RUN apt-get update \
         libncurses-dev \
         libssl-dev \
         m4 \
+        nodejs \
+        npm \
         openssh-client \
         procps \
     && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g \
+        @openai/codex@${CODEX_VERSION} \
+        @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+    && npm cache clean --force
 
 RUN curl https://mise.run | MISE_VERSION="v${MISE_VERSION}" MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
 RUN groupadd --gid ${SYMPHONY_GID} symphony \
     && useradd --uid ${SYMPHONY_UID} --gid ${SYMPHONY_GID} --create-home --shell /bin/bash symphony \
-    && mkdir -p /opt/mise /app/symphony /app/docker /workspace /home/symphony/.codex /home/symphony/.claude \
-    && chown -R symphony:symphony /opt/mise /app /workspace /home/symphony/.codex /home/symphony/.claude
+    && mkdir -p /opt/mise /app/symphony /app/docker \
+        /workspace /workspace/logs /workspace/state /workspace/workspaces /workspace/repos \
+        /home/symphony/.codex /home/symphony/.claude \
+    && chown -R symphony:symphony /opt/mise /app /workspace /home/symphony
 
 USER symphony
 

@@ -20,13 +20,19 @@ defmodule SymphonyElixir.DispatchState do
 
   @type t :: %{active?: boolean(), blockers: [blocker]}
 
+  @api_key_feature_keys [:quality_gate, :self_review, :learnings]
+  @provider_env_vars %{
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY"
+  }
+
   @spec compute(map(), map(), map()) :: t()
   def compute(state, config, env) do
     blockers =
       []
       |> maybe_manual(state)
       |> maybe_budget(state, config)
-      |> maybe_missing_api_key(env)
+      |> maybe_missing_api_keys(config, env)
       |> Enum.reverse()
 
     %{active?: blockers == [], blockers: blockers}
@@ -69,10 +75,36 @@ defmodule SymphonyElixir.DispatchState do
 
   defp maybe_budget(blockers, _state, _config), do: blockers
 
-  defp maybe_missing_api_key(blockers, env) do
-    case Map.get(env, "ANTHROPIC_API_KEY") do
-      key when is_binary(key) and key != "" -> blockers
-      _ -> [%{kind: :missing_api_key, provider: :anthropic} | blockers]
-    end
+  defp maybe_missing_api_keys(blockers, config, env) do
+    config
+    |> required_api_key_providers()
+    |> Enum.reduce(blockers, fn provider, blockers ->
+      env_var = Map.fetch!(@provider_env_vars, provider)
+
+      case Map.get(env, env_var) do
+        key when is_binary(key) and key != "" -> blockers
+        _ -> [%{kind: :missing_api_key, provider: provider} | blockers]
+      end
+    end)
   end
+
+  defp required_api_key_providers(config) when is_map(config) do
+    @api_key_feature_keys
+    |> Enum.map(&Map.get(config, &1))
+    |> Enum.filter(&feature_enabled?/1)
+    |> Enum.map(&feature_provider/1)
+    |> Enum.flat_map(&normalize_provider/1)
+    |> Enum.uniq()
+  end
+
+  defp feature_enabled?(feature) when is_map(feature), do: Map.get(feature, :enabled) == true
+  defp feature_enabled?(_feature), do: false
+
+  defp feature_provider(feature) when is_map(feature), do: Map.get(feature, :provider)
+
+  defp normalize_provider(:anthropic), do: [:anthropic]
+  defp normalize_provider("anthropic"), do: [:anthropic]
+  defp normalize_provider(:openai), do: [:openai]
+  defp normalize_provider("openai"), do: [:openai]
+  defp normalize_provider(_provider), do: []
 end

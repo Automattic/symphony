@@ -38,7 +38,12 @@ defmodule SymphonyElixir.SensitivePath do
     "/.config/gcloud/",
     "/.azure/",
     "/.kube/",
-    "/Library/Application Support/"
+    "/Library/Application Support/",
+    "/etc/sudoers/",
+    "/etc/sudoers.d/",
+    "/private/etc/sudoers/",
+    "/private/etc/sudoers.d/",
+    "/var/root/"
   ]
 
   @sensitive_path_basenames [

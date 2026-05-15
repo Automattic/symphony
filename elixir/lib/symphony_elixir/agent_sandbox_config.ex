@@ -15,6 +15,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     * `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.cargo/credentials`
     * `~/.claude/.credentials.json` (Claude Code credentials)
     * `~/.claude/projects`, `~/.claude/file-history` (Claude Code session state)
+    * `/etc/sudoers`, `/private/etc/sudoers`, `/var/root` (macOS admin/root state)
     * `~/Library/Application Support` (macOS app data)
     * shell and REPL history files
 
@@ -32,6 +33,11 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "~/.claude/.credentials.json",
     "~/.claude/projects",
     "~/.claude/file-history",
+    "/etc/sudoers",
+    "/etc/sudoers.d",
+    "/private/etc/sudoers",
+    "/private/etc/sudoers.d",
+    "/var/root",
     "~/.aws",
     "~/.gnupg",
     "~/Library/Application Support",

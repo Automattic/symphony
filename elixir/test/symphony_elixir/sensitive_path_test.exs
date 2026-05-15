@@ -24,6 +24,12 @@ defmodule SymphonyElixir.SensitivePathTest do
       "~/.claude/.credentials.json",
       "~/.claude/projects/symphony-run.jsonl",
       "~/.claude/file-history/snapshot.json",
+      "/etc/sudoers",
+      "/etc/sudoers.d/custom",
+      "/private/etc/sudoers",
+      "/private/etc/sudoers.d/custom",
+      "/var/root/.zsh_history",
+      "/var/root/config",
       "~/.config/op/config",
       "~/.config/gcloud/application_default_credentials.json",
       "~/.azure/accessTokens.json",
@@ -50,6 +56,8 @@ defmodule SymphonyElixir.SensitivePathTest do
 
     refute SensitivePath.secret_path("~/.codex/auth.json")
     refute SensitivePath.secret_path(".npmrc")
+    refute SensitivePath.secret_path("/private/etc/hosts")
+    refute SensitivePath.secret_path("/var/log/system.log")
   end
 
   test "detects sensitive basenames without requiring a sensitive parent path" do

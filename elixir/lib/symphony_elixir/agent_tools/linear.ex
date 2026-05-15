@@ -10,6 +10,8 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.AgentTools.SecretScanner
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Config.Schema.Workspace.Attachments
   alias SymphonyElixir.Linear.{Client, Issue}
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.PromptSafety
@@ -488,7 +490,8 @@ defmodule SymphonyElixir.AgentTools.Linear do
   defp validate_file_upload_policy(path, size, true, opts) do
     max_bytes = Keyword.get(opts, :max_public_upload_bytes, @public_file_upload_max_bytes)
 
-    with :ok <- reject_sensitive_upload_filename(path, true) do
+    with :ok <- reject_sensitive_upload_filename(path, true),
+         :ok <- validate_public_upload_extension(path, opts) do
       if size > max_bytes do
         {:error, {:file_upload_too_large, %{actual_bytes: size, max_bytes: max_bytes, make_public: true}}}
       else
@@ -521,6 +524,27 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   defp sensitive_upload_error(true), do: :public_upload_denied_sensitive_filename
   defp sensitive_upload_error(false), do: :private_upload_denied_sensitive_filename
+
+  defp validate_public_upload_extension(path, opts) do
+    extension = path |> Path.extname() |> String.downcase()
+    allowed_extensions = public_upload_extensions(opts)
+
+    if extension != "" and extension in allowed_extensions do
+      :ok
+    else
+      {:error, {:public_extension_not_allowed, extension}}
+    end
+  end
+
+  defp public_upload_extensions(opts) do
+    case Keyword.get(opts, :settings) do
+      %Schema{workspace: %{attachments: %Attachments{public_upload_extensions: extensions}}} ->
+        extensions
+
+      _settings ->
+        Attachments.default_public_upload_extensions()
+    end
+  end
 
   defp put_upload(contents, %{"uploadUrl" => upload_url} = upload, opts) when is_binary(upload_url) do
     upload_client = Keyword.get(opts, :upload_client, &Req.put/2)

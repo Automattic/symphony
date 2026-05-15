@@ -210,7 +210,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  @dynamic_tool_forwarded_opts [:gh_runner, :git_runner]
+  @dynamic_tool_forwarded_opts [:gh_runner, :git_runner, :settings]
 
   defp dynamic_tool_executor(issue, workspace, command_security, dependency_gate, on_message, metadata, opts) do
     registry = Keyword.get(opts, :linear_comment_registry) || temporary_comment_registry()

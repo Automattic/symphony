@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Config.Schema
 
   test "tool_specs advertises scoped Linear tools and not raw GraphQL" do
     tool_names = Enum.map(DynamicTool.tool_specs(), & &1["name"])
@@ -378,6 +379,77 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end
   end
 
+  test "attach_file rejects public uploads for extensions outside the allowlist" do
+    workspace = tmp_workspace!("linear-attach-file-public-extension")
+
+    disallowed_files = [
+      {"notes.txt", ".txt"},
+      {"data.json", ".json"},
+      {"output", ""},
+      {"screenshot.png.txt", ".txt"}
+    ]
+
+    try do
+      Enum.each(disallowed_files, fn {filename, expected_extension} ->
+        path = Path.join(workspace, filename)
+        File.write!(path, "ordinary proof")
+
+        response =
+          DynamicTool.execute(
+            "linear_attach_file",
+            %{"local_path" => path, "make_public" => true},
+            issue: %Issue{id: "issue-current"},
+            workspace: workspace,
+            linear_client: fn _query, _variables, _opts ->
+              flunk("linear client should not be called for denied public extension")
+            end,
+            upload_client: fn _url, _opts ->
+              flunk("disallowed public extensions should not be uploaded")
+            end
+          )
+
+        assert response["success"] == false
+
+        assert %{
+                 "error" => %{
+                   "code" => "public_extension_not_allowed",
+                   "extension" => ^expected_extension
+                 }
+               } = Jason.decode!(response["output"])
+      end)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "attach_file applies configured public upload extension overrides" do
+    workspace = tmp_workspace!("linear-attach-file-public-extension-override")
+    path = Path.join(workspace, "diagnostic.log")
+    File.write!(path, "ordinary proof")
+    test_pid = self()
+
+    settings = %Schema{
+      workspace: %Schema.Workspace{
+        attachments: %Schema.Workspace.Attachments{public_upload_extensions: [".png", ".log"]}
+      }
+    }
+
+    try do
+      response =
+        DynamicTool.execute(
+          "linear_attach_file",
+          %{"local_path" => path, "make_public" => true},
+          successful_attach_file_opts(workspace, test_pid)
+          |> Keyword.put(:settings, settings)
+        )
+
+      assert response["success"] == true
+      assert_received {:file_upload_requested, %{filename: "diagnostic.log", makePublic: true}}
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
   test "attach_file private uploads are not constrained by the public size cap" do
     workspace = tmp_workspace!("linear-attach-file-private-size")
     path = Path.join(workspace, "artifact.txt")
@@ -474,7 +546,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   test "attach_file enforces the public upload size cap before requesting an upload" do
     workspace = tmp_workspace!("linear-attach-file-size")
-    path = Path.join(workspace, "large.txt")
+    path = Path.join(workspace, "large.png")
     File.write!(path, "123456")
 
     try do

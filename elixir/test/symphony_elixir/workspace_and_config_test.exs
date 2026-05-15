@@ -1900,6 +1900,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.workspace.strategy == "clone"
     assert config.workspace.repo == nil
     assert config.workspace.fetch_before_dispatch
+
+    assert config.workspace.attachments.public_upload_extensions == [
+             ".png",
+             ".jpg",
+             ".jpeg",
+             ".gif",
+             ".webp",
+             ".svg",
+             ".pdf"
+           ]
+
     assert config.worker.max_concurrent_agents_per_host == nil
     assert config.agent.max_concurrent_agents == 10
     assert config.agent.max_tokens_per_issue == nil
@@ -2396,6 +2407,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Secret.unwrap(config.tracker.api_key) == api_key
     assert config.workspace.root == Path.expand(workspace_root)
     assert config.agent.command == "#{codex_bin} app-server"
+  end
+
+  test "config parses workspace public upload extension overrides" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_attachments: %{public_upload_extensions: [".PNG", "log", " .pdf ", " "]}
+    )
+
+    assert Config.settings!().workspace.attachments.public_upload_extensions == [".png", ".log", ".pdf"]
+  end
+
+  test "config rejects invalid workspace public upload extension overrides" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_attachments: %{public_upload_extensions: [".png", ".", "bad/path"]}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "workspace.attachments.public_upload_extensions"
+    assert message =~ "must contain only file extensions like .png"
   end
 
   test "config no longer resolves legacy env: references" do

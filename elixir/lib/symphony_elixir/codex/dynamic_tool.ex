@@ -101,7 +101,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     },
     %{
       "name" => "linear_attach_file",
-      "description" => "Upload and attach a workspace-local file to the current Linear issue. Uploads are private by default; make_public true creates a world-readable Linear CDN URL.",
+      "description" =>
+        "Upload and attach a workspace-local file to the current Linear issue. Uploads are private by default; make_public true creates a world-readable Linear CDN URL and is restricted to configured image/PDF extensions by default.",
       "inputSchema" => %{
         "type" => "object",
         "additionalProperties" => false,
@@ -112,7 +113,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           "make_public" => %{
             "type" => "boolean",
             "default" => false,
-            "description" => "Set true only when the artifact is intentionally shareable; public uploads create world-readable Linear CDN URLs."
+            "description" =>
+              "Set true only when the artifact is intentionally shareable; public uploads create world-readable Linear CDN URLs and are restricted to configured image/PDF extensions by default."
           }
         }
       }
@@ -507,6 +509,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "code" => "private_upload_denied_sensitive_filename",
         "message" => "Refused private Linear upload for sensitive filename #{inspect(basename)}. Choose a non-sensitive artifact.",
         "filename" => basename
+      }
+    }
+  end
+
+  defp tool_error_payload({:public_extension_not_allowed, extension}) do
+    %{
+      "error" => %{
+        "code" => "public_extension_not_allowed",
+        "message" => "Refused public Linear upload for extension #{inspect(extension)}. Public uploads are restricted to configured image/PDF extensions by default.",
+        "extension" => extension
       }
     }
   end

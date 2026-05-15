@@ -200,10 +200,9 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     |> toml_inline_table()
   end
 
-  defp project_relative_sandbox_path?("./" <> _rest), do: true
-  defp project_relative_sandbox_path?("~/" <> _rest), do: false
-  defp project_relative_sandbox_path?("/" <> _rest), do: false
-  defp project_relative_sandbox_path?(_path), do: true
+  defp project_relative_sandbox_path?(path) do
+    not (String.starts_with?(path, "~/") or String.starts_with?(path, "/"))
+  end
 
   defp codex_runtime_read_override_path?(path) do
     Enum.any?(@codex_runtime_deny_read_paths, fn denied_path ->

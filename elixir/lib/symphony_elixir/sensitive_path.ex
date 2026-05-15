@@ -36,6 +36,7 @@ defmodule SymphonyElixir.SensitivePath do
   ]
 
   @sensitive_path_segments [
+    "/Volumes/",
     "/.ssh/",
     "/.aws/",
     "/.gnupg/",

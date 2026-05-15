@@ -52,12 +52,3 @@ Distribution, code signing, notarization, and a Homebrew tap are not wired yet.
 Elixir is built on Erlang/BEAM/OTP, which is a good fit for supervising long-running processes. It
 has an active ecosystem of tools and libraries, and it supports hot code reloading without stopping
 actively running subagents during development.
-
-## About This Fork
-
-This repository is a fork of OpenAI's
-[openai/symphony](https://github.com/openai/symphony), introduced in OpenAI's
-[open-source Codex orchestration Symphony post](https://openai.com/index/open-source-codex-orchestration-symphony/).
-This fork keeps Symphony as the Elixir/OTP service at the repository root and includes local
-operational changes. `SPEC.md` is retained as a behavior reference for this service, not as
-instructions for building a separate implementation from scratch.

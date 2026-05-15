@@ -174,9 +174,17 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
     project_entries =
       [{".", "write"}] ++
-        Enum.map(expand_home_paths(@deny_write_paths), fn path ->
-          {String.trim_leading(path, "./"), "read"}
-        end)
+        (@deny_write_paths
+         |> Enum.filter(&project_relative_sandbox_path?/1)
+         |> Enum.map(fn path ->
+           {String.trim_leading(path, "./"), "read"}
+         end))
+
+    external_write_protect_entries =
+      @deny_write_paths
+      |> Enum.reject(&project_relative_sandbox_path?/1)
+      |> expand_home_paths()
+      |> Enum.map(&{&1, "read"})
 
     deny_read_paths =
       @deny_read_paths
@@ -187,9 +195,15 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     deny_read_paths
     |> Enum.map(&{&1, "none"})
     |> List.insert_at(0, {":project_roots", project_entries})
+    |> Kernel.++(external_write_protect_entries)
     |> Kernel.++(Enum.map(operator_allow_read_paths, &{&1, "read"}))
     |> toml_inline_table()
   end
+
+  defp project_relative_sandbox_path?("./" <> _rest), do: true
+  defp project_relative_sandbox_path?("~/" <> _rest), do: false
+  defp project_relative_sandbox_path?("/" <> _rest), do: false
+  defp project_relative_sandbox_path?(_path), do: true
 
   defp codex_runtime_read_override_path?(path) do
     Enum.any?(@codex_runtime_deny_read_paths, fn denied_path ->

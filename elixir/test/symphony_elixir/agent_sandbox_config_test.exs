@@ -190,6 +190,17 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("#{expected_zshrc_absolute}"="read")
   end
 
+  test "Codex project-root filesystem entries stay relative for current CLI validation" do
+    overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [])
+    filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+
+    assert [_, project_entries] = Regex.run(~r/":project_roots"=\{([^}]*)\}/, filesystem)
+    assert project_entries =~ ~s("WORKFLOW.md"="read")
+    assert project_entries =~ ~s(".git"="read")
+    refute project_entries =~ Path.expand("~/.zshrc")
+    refute project_entries =~ "/Users/"
+  end
+
   test "Codex open mode keeps full network mode without domain narrowing" do
     overrides = AgentSandboxConfig.codex_config_overrides("open", ["github.com"])
 

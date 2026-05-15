@@ -24,6 +24,11 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "~/.claude/.credentials.json",
              "~/.claude/projects",
              "~/.claude/file-history",
+             "/etc/sudoers",
+             "/etc/sudoers.d",
+             "/private/etc/sudoers",
+             "/private/etc/sudoers.d",
+             "/var/root",
              "~/.aws",
              "~/.gnupg",
              "~/Library/Application Support",
@@ -116,6 +121,9 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("~/.claude/file-history"="none")
     assert filesystem =~ ~s("~/.netrc"="none")
     assert filesystem =~ ~s("~/.npmrc"="none")
+    assert filesystem =~ ~s("/etc/sudoers"="none")
+    assert filesystem =~ ~s("/private/etc/sudoers"="none")
+    assert filesystem =~ ~s("/var/root"="none")
     assert filesystem =~ ~s("~/Library/Application Support"="none")
     assert filesystem =~ ~s("~/Library/Keychains"="none")
     assert filesystem =~ ~s("~/Library/Preferences"="none")
@@ -168,6 +176,8 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "~/.claude/.credentials.json" in settings["filesystem"]["denyRead"]
     assert "~/.claude/projects" in settings["filesystem"]["denyRead"]
     assert "~/.claude/file-history" in settings["filesystem"]["denyRead"]
+    assert "/private/etc/sudoers" in settings["filesystem"]["denyRead"]
+    assert "/var/root" in settings["filesystem"]["denyRead"]
     assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
     assert "./.git" in settings["filesystem"]["denyWrite"]
 

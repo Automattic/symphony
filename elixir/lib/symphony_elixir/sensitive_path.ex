@@ -46,7 +46,12 @@ defmodule SymphonyElixir.SensitivePath do
     "/.azure/",
     "/.kube/",
     "/Library/Application Support/",
-    "/Library/Keychains/"
+    "/Library/Keychains/",
+    "/etc/sudoers/",
+    "/etc/sudoers.d/",
+    "/private/etc/sudoers/",
+    "/private/etc/sudoers.d/",
+    "/var/root/"
   ]
 
   @sensitive_path_basenames [

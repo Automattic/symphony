@@ -3227,6 +3227,9 @@ defmodule SymphonyElixir.CoreTest do
 
       assert argv_line = Enum.find(lines, fn line -> String.starts_with?(line, "ARGV:") end)
       assert String.contains?(argv_line, "app-server")
+      assert String.contains?(argv_line, "permissions.workspace_write.filesystem=")
+      assert String.contains?(argv_line, Jason.encode!(canonical_workspace))
+      assert String.contains?(argv_line, Jason.encode!(canonical_workspace_git))
       refute Enum.any?(lines, &String.contains?(&1, "--yolo"))
       assert cwd_line = Enum.find(lines, fn line -> String.starts_with?(line, "CWD:") end)
       assert String.ends_with?(cwd_line, Path.basename(workspace))
@@ -3247,7 +3250,7 @@ defmodule SymphonyElixir.CoreTest do
 
                    payload["method"] == "thread/start" &&
                      get_in(payload, ["params", "approvalPolicy"]) == expected_approval_policy &&
-                     get_in(payload, ["params", "sandbox"]) == "workspace-write" &&
+                     not Map.has_key?(payload["params"], "sandbox") &&
                      get_in(payload, ["params", "cwd"]) == canonical_workspace &&
                      get_in(payload, ["params", "config", "experimental_network", "enabled"]) == true &&
                      get_in(payload, [
@@ -3262,15 +3265,6 @@ defmodule SymphonyElixir.CoreTest do
                  false
                end
              end)
-
-      expected_turn_sandbox_policy = %{
-        "type" => "workspaceWrite",
-        "writableRoots" => [canonical_workspace, canonical_workspace_git],
-        "readOnlyAccess" => %{"type" => "fullAccess"},
-        "networkAccess" => true,
-        "excludeTmpdirEnvVar" => false,
-        "excludeSlashTmp" => false
-      }
 
       assert Enum.any?(lines, fn line ->
                if String.starts_with?(line, "JSON:") do
@@ -3289,7 +3283,7 @@ defmodule SymphonyElixir.CoreTest do
                    payload["method"] == "turn/start" &&
                      get_in(payload, ["params", "cwd"]) == canonical_workspace &&
                      get_in(payload, ["params", "approvalPolicy"]) == expected_approval_policy &&
-                     get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_sandbox_policy
+                     not Map.has_key?(payload["params"], "sandboxPolicy")
                  end)
                else
                  false
@@ -3394,6 +3388,7 @@ defmodule SymphonyElixir.CoreTest do
       #!/bin/sh
       trace_file="#{trace_file}"
       count=0
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       while IFS= read -r line; do
         count=$((count + 1))
@@ -3458,7 +3453,7 @@ defmodule SymphonyElixir.CoreTest do
                  |> then(fn payload ->
                    payload["method"] == "thread/start" &&
                      get_in(payload, ["params", "approvalPolicy"]) == "on-request" &&
-                     get_in(payload, ["params", "sandbox"]) == "workspace-write"
+                     not Map.has_key?(payload["params"], "sandbox")
                  end)
                else
                  false
@@ -3474,11 +3469,11 @@ defmodule SymphonyElixir.CoreTest do
       assert {:ok, canonical_workspace_cache} =
                SymphonyElixir.PathSafety.canonicalize(workspace_cache)
 
-      expected_turn_policy = %{
-        "type" => "workspaceWrite",
-        "writableRoots" => [canonical_workspace, canonical_workspace_git, canonical_workspace_cache],
-        "networkAccess" => true
-      }
+      assert argv_line = Enum.find(lines, fn line -> String.starts_with?(line, "ARGV:") end)
+      assert String.contains?(argv_line, "permissions.workspace_write.filesystem=")
+      assert String.contains?(argv_line, Jason.encode!(canonical_workspace))
+      assert String.contains?(argv_line, Jason.encode!(canonical_workspace_git))
+      assert String.contains?(argv_line, Jason.encode!(canonical_workspace_cache))
 
       assert Enum.any?(lines, fn line ->
                if String.starts_with?(line, "JSON:") do
@@ -3488,7 +3483,7 @@ defmodule SymphonyElixir.CoreTest do
                  |> then(fn payload ->
                    payload["method"] == "turn/start" &&
                      get_in(payload, ["params", "approvalPolicy"]) == "on-request" &&
-                     get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_policy
+                     not Map.has_key?(payload["params"], "sandboxPolicy")
                  end)
                else
                  false

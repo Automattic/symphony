@@ -126,7 +126,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server passes explicit turn sandbox policies through unchanged" do
+  test "app server omits native legacy turn sandbox policies from protocol payloads" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -175,8 +175,8 @@ defmodule SymphonyElixir.AppServerTest do
       issue = %Issue{
         id: "issue-supported-turn-policies",
         identifier: "MT-1001",
-        title: "Validate explicit turn sandbox policy passthrough",
-        description: "Ensure runtime startup forwards configured turn sandbox policies unchanged",
+        title: "Validate native turn sandbox policy omission",
+        description: "Ensure runtime startup relies on permission profiles instead of legacy turn sandbox policies",
         state: "In Progress",
         url: "https://example.org/issues/MT-1001",
         labels: ["backend"]
@@ -203,21 +203,6 @@ defmodule SymphonyElixir.AppServerTest do
         trace = File.read!(trace_file)
         lines = String.split(trace, "\n", trim: true)
 
-        {:ok, canonical_workspace} =
-          SymphonyElixir.PathSafety.canonicalize(Path.expand(workspace))
-
-        {:ok, canonical_workspace_git} =
-          SymphonyElixir.PathSafety.canonicalize(Path.join(workspace, ".git"))
-
-        expected_policy =
-          case configured_policy do
-            %{"type" => "workspaceWrite"} ->
-              Map.put(configured_policy, "writableRoots", [canonical_workspace, canonical_workspace_git, "relative/path"])
-
-            _ ->
-              configured_policy
-          end
-
         assert Enum.any?(lines, fn line ->
                  if String.starts_with?(line, "JSON:") do
                    line
@@ -225,7 +210,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
                    |> then(fn payload ->
                      payload["method"] == "turn/start" &&
-                       get_in(payload, ["params", "sandboxPolicy"]) == expected_policy
+                       not Map.has_key?(payload["params"], "sandboxPolicy")
                    end)
                  else
                    false
@@ -1135,7 +1120,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert Enum.any?(json_payloads, fn payload ->
                payload["method"] == "thread/start" &&
-                 get_in(payload, ["params", "sandbox"]) == "workspace-write"
+                 not Map.has_key?(payload["params"], "sandbox")
              end)
 
       assert Enum.any?(json_payloads, fn payload ->
@@ -3499,18 +3484,11 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv_line =~ "--config"
       assert argv_line =~ "default_permissions=\"workspace_write\""
       assert argv_line =~ "permissions.workspace_write.filesystem="
+      assert argv_line =~ Jason.encode!(remote_workspace)
+      assert argv_line =~ Jason.encode!("#{remote_workspace}/.git")
       assert argv_line =~ "permissions.workspace_write.network="
       assert argv_line =~ "permissions.workspace_write.network.domains="
       assert argv_line =~ "app-server"
-
-      expected_turn_policy = %{
-        "type" => "workspaceWrite",
-        "writableRoots" => [remote_workspace, "#{remote_workspace}/.git"],
-        "readOnlyAccess" => %{"type" => "fullAccess"},
-        "networkAccess" => true,
-        "excludeTmpdirEnvVar" => false,
-        "excludeSlashTmp" => false
-      }
 
       assert Enum.any?(lines, fn line ->
                if String.starts_with?(line, "JSON:") do
@@ -3519,6 +3497,7 @@ defmodule SymphonyElixir.AppServerTest do
                  |> Jason.decode!()
                  |> then(fn payload ->
                    payload["method"] == "thread/start" &&
+                     not Map.has_key?(payload["params"], "sandbox") &&
                      get_in(payload, ["params", "cwd"]) == remote_workspace &&
                      get_in(payload, ["params", "config", "experimental_network", "enabled"]) == true &&
                      get_in(payload, [
@@ -3542,7 +3521,7 @@ defmodule SymphonyElixir.AppServerTest do
                  |> then(fn payload ->
                    payload["method"] == "turn/start" &&
                      get_in(payload, ["params", "cwd"]) == remote_workspace &&
-                     get_in(payload, ["params", "sandboxPolicy"]) == expected_turn_policy
+                     not Map.has_key?(payload["params"], "sandboxPolicy")
                  end)
                else
                  false

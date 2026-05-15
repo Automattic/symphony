@@ -339,15 +339,36 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp command_with_sandbox_config(command, settings, workspace, opts \\ []) when is_binary(command) do
     network_access = settings.agent.network_access || %Schema.Agent.NetworkAccess{}
 
-    overrides =
-      network_access.mode
-      |> AgentSandboxConfig.codex_config_overrides(
-        Schema.codex_effective_network_allowed_domains(settings),
-        workspace_sandbox_allow_read_paths(settings)
-      )
+    with {:ok, allow_write_paths} <- codex_permission_profile_write_paths(settings, workspace, opts) do
+      overrides =
+        network_access.mode
+        |> AgentSandboxConfig.codex_config_overrides(
+          Schema.codex_effective_network_allowed_domains(settings),
+          workspace_sandbox_allow_read_paths(settings),
+          allow_write_paths
+        )
 
-    with {:ok, command} <- inject_config_overrides(command, overrides) do
-      maybe_wrap_sandbox_runtime(command, settings, workspace, opts)
+      inject_config_overrides(command, overrides)
+    end
+    |> case do
+      {:ok, command} ->
+        maybe_wrap_sandbox_runtime(command, settings, workspace, opts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp codex_permission_profile_write_paths(settings, workspace, opts) do
+    case Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
+      {:ok, %{"writableRoots" => roots}} when is_list(roots) ->
+        {:ok, roots}
+
+      {:ok, _policy} ->
+        {:ok, Schema.runtime_workspace_write_roots(settings, workspace, opts)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -608,7 +629,6 @@ defmodule SymphonyElixir.Codex.AppServer do
          workspace,
          %{
            approval_policy: approval_policy,
-           thread_sandbox: thread_sandbox,
            thread_config: thread_config
          },
          settings
@@ -616,7 +636,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     params =
       %{
         "approvalPolicy" => approval_policy,
-        "sandbox" => thread_sandbox,
         "cwd" => workspace,
         "dynamicTools" => DynamicTool.tool_specs()
       }
@@ -656,10 +675,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          turn_sandbox_policy,
          settings
        ) do
-    send_message(port, %{
-      "method" => "turn/start",
-      "id" => @turn_start_id,
-      "params" => %{
+    params =
+      %{
         "threadId" => thread_id,
         "input" => [
           %{
@@ -669,9 +686,13 @@ defmodule SymphonyElixir.Codex.AppServer do
         ],
         "cwd" => workspace,
         "title" => "#{issue.identifier}: #{issue.title}",
-        "approvalPolicy" => approval_policy,
-        "sandboxPolicy" => turn_sandbox_policy
+        "approvalPolicy" => approval_policy
       }
+
+    send_message(port, %{
+      "method" => "turn/start",
+      "id" => @turn_start_id,
+      "params" => maybe_put_external_sandbox_policy(params, settings, turn_sandbox_policy)
     })
 
     case await_response(port, @turn_start_id, settings) do
@@ -688,6 +709,20 @@ defmodule SymphonyElixir.Codex.AppServer do
       other ->
         other
     end
+  end
+
+  defp maybe_put_external_sandbox_policy(params, settings, turn_sandbox_policy) do
+    if external_sandbox_runtime?(settings) do
+      Map.put(params, "sandboxPolicy", turn_sandbox_policy)
+    else
+      params
+    end
+  end
+
+  defp external_sandbox_runtime?(settings) do
+    settings
+    |> sandbox_runtime()
+    |> then(&(&1.kind == "srt"))
   end
 
   defp await_turn_completion(

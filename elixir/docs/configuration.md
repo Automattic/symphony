@@ -336,9 +336,9 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   helper can render the same deny-list subtraction for Claude, but the current Claude adapter does
   not pass these entries into its temporary settings, so treat this as Codex-effective until that
   adapter gap is closed. Do not use it for the agent runtime credential stores under `~/.codex` or
-  `~/.claude`; Codex command sandboxing always keeps `~/.codex/auth.json`,
-  `~/.codex/config.toml`, and `~/.codex/AGENTS.md` denied from tool-command reads even if those
-  paths are listed here.
+  `~/.claude`; Symphony keeps `~/.codex/auth.json`, `~/.codex/config.toml`, and
+  `~/.codex/AGENTS.md` in the managed Codex profile's deny list even if those paths are listed
+  here, subject to the native Codex enforcement limitations below.
 - Supported `agent.approval_policy` values depend on the targeted Codex app-server version. In the
   current local Codex schema, string values include:
   - `untrusted`: Codex can work inside the configured sandbox, but asks before commands outside its
@@ -353,9 +353,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   rejects the configured approval prompt categories instead of letting the agent cross those
   boundaries. The Codex-facing string `never` is not supported in Symphony config; use
   `auto_approve_all` when unattended auto-approval is intended.
-- Codex native `workspace-write` sandboxing applies Symphony's sensitive read-deny list to tool
-  commands. That list includes common host credential stores such as `~/.ssh`, `~/.config/gh`,
-  `~/.aws`, `~/.netrc`, and selected Codex runtime files such as `~/.codex/auth.json`.
+- Codex native `workspace-write` sandboxing is the default compatibility path. Symphony still
+  injects a managed permission profile containing the sensitive read-deny list, but current Codex
+  app-server versions can either fail shell execution when only that profile is used or drop the
+  injected profile when legacy thread/turn sandbox fields are sent. Treat native Codex deny-list
+  enforcement as best-effort unless the targeted Codex runtime has been verified with a shell
+  execution probe. Use `agent.sandbox_runtime.kind: srt` when those deny rules must be enforced
+  while shell commands remain available.
 - Supported `agent.thread_sandbox` values for Codex: `read-only`, `workspace-write`,
   `danger-full-access`.
 - Supported `agent.network_access.mode` values:

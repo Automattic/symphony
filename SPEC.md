@@ -780,9 +780,14 @@ fields locally if they want stricter startup checks.
     SRT version provides a valid unrestricted-network representation.
   - Implementations MUST reject `kind: srt` for non-Codex adapters and MAY reject it for remote
     worker launch modes that cannot access the generated temporary settings file.
-  - Codex native command sandbox profiles SHOULD deny tool-command reads of host credential stores
-    and Codex runtime auth/config files while still allowing the parent Codex process to read the
-    runtime files required for authentication.
+  - With `kind: none`, implementations MAY continue using the targeted Codex app-server's native
+    thread and turn sandbox fields for compatibility. Known Codex app-server versions fail shell
+    execution when Symphony relies only on injected managed permission profiles, while native
+    thread/turn sandbox fields can cause Codex to drop or bypass those injected profile deny rules.
+    Treat native Codex profile deny-listing as best-effort unless the targeted runtime is verified
+    to preserve it while running shell commands.
+  - Use `kind: srt` when the implementation needs the shared sensitive filesystem deny list to be
+    enforced outside Codex while keeping shell command execution available.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)

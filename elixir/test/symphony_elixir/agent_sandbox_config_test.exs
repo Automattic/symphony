@@ -342,22 +342,6 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     refute filesystem =~ ~s("~/.claude/projects"="none")
   end
 
-  test "Codex filesystem config renders runtime writable roots in the permission profile" do
-    overrides =
-      AgentSandboxConfig.codex_config_overrides(
-        "allowlist",
-        [],
-        ["~/.npmrc"],
-        ["/repo/.git/worktrees/MT-1", "relative/cache", "", :bad]
-      )
-
-    assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
-    assert filesystem =~ ~s("/repo/.git/worktrees/MT-1"="write")
-    assert filesystem =~ ~s("relative/cache"="write")
-    assert filesystem =~ ~s("~/.npmrc"="read")
-    assert filesystem =~ ~s("~/.ssh"="none")
-  end
-
   test "Codex filesystem config does not allow operator overrides for runtime auth reads" do
     overrides =
       AgentSandboxConfig.codex_config_overrides("allowlist", [], [

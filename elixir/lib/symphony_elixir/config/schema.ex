@@ -188,70 +188,7 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
-    defmodule Attachments do
-      @moduledoc false
-      use Ecto.Schema
-      import Ecto.Changeset
-
-      @primary_key false
-      @default_public_upload_extensions [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf"]
-
-      @type t :: %__MODULE__{public_upload_extensions: [String.t()]}
-
-      @doc false
-      @spec default_public_upload_extensions() :: [String.t()]
-      def default_public_upload_extensions, do: @default_public_upload_extensions
-
-      embedded_schema do
-        field(:public_upload_extensions, {:array, :string}, default: @default_public_upload_extensions)
-      end
-
-      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
-      def changeset(schema, attrs) do
-        schema
-        |> cast(attrs, [:public_upload_extensions], empty_values: [])
-        |> normalize_public_upload_extensions()
-        |> validate_public_upload_extensions()
-      end
-
-      defp normalize_public_upload_extensions(changeset) do
-        update_change(changeset, :public_upload_extensions, fn
-          extensions when is_list(extensions) ->
-            extensions
-            |> Enum.map(&normalize_extension/1)
-            |> Enum.reject(&(&1 == ""))
-            |> Enum.uniq()
-        end)
-      end
-
-      defp normalize_extension(extension) when is_binary(extension) do
-        extension = extension |> String.trim() |> String.downcase()
-
-        cond do
-          extension == "" -> ""
-          String.starts_with?(extension, ".") -> extension
-          true -> "." <> extension
-        end
-      end
-
-      defp validate_public_upload_extensions(changeset) do
-        validate_change(changeset, :public_upload_extensions, fn :public_upload_extensions, extensions ->
-          invalid_extensions =
-            Enum.reject(extensions, fn
-              "." <> rest when rest != "" ->
-                not String.contains?(rest, ["/", "\\", <<0>>, "\n", "\r"])
-
-              _extension ->
-                false
-            end)
-
-          case invalid_extensions do
-            [] -> []
-            _ -> [public_upload_extensions: "must contain only file extensions like .png"]
-          end
-        end)
-      end
-    end
+    alias SymphonyElixir.Config.Schema
 
     defmodule Sandbox do
       @moduledoc false
@@ -349,6 +286,81 @@ defmodule SymphonyElixir.Config.Schema do
 
             true ->
               []
+          end
+        end)
+      end
+    end
+
+    defmodule Attachments do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @primary_key false
+      @default_allowed_hosts ["github.com"]
+      @default_public_upload_extensions [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf"]
+
+      @type t :: %__MODULE__{allowed_hosts: [String.t()], public_upload_extensions: [String.t()]}
+
+      @doc false
+      @spec default_public_upload_extensions() :: [String.t()]
+      def default_public_upload_extensions, do: @default_public_upload_extensions
+
+      embedded_schema do
+        field(:allowed_hosts, {:array, :string}, default: @default_allowed_hosts)
+        field(:public_upload_extensions, {:array, :string}, default: @default_public_upload_extensions)
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:allowed_hosts, :public_upload_extensions], empty_values: [])
+        |> update_change(:allowed_hosts, &allowed_hosts_or_default/1)
+        |> normalize_public_upload_extensions()
+        |> validate_public_upload_extensions()
+      end
+
+      defp allowed_hosts_or_default(hosts) do
+        case Schema.normalize_domain_list(hosts) do
+          [] -> @default_allowed_hosts
+          normalized -> normalized
+        end
+      end
+
+      defp normalize_public_upload_extensions(changeset) do
+        update_change(changeset, :public_upload_extensions, fn
+          extensions when is_list(extensions) ->
+            extensions
+            |> Enum.map(&normalize_extension/1)
+            |> Enum.reject(&(&1 == ""))
+            |> Enum.uniq()
+        end)
+      end
+
+      defp normalize_extension(extension) when is_binary(extension) do
+        extension = extension |> String.trim() |> String.downcase()
+
+        cond do
+          extension == "" -> ""
+          String.starts_with?(extension, ".") -> extension
+          true -> "." <> extension
+        end
+      end
+
+      defp validate_public_upload_extensions(changeset) do
+        validate_change(changeset, :public_upload_extensions, fn :public_upload_extensions, extensions ->
+          invalid_extensions =
+            Enum.reject(extensions, fn
+              "." <> rest when rest != "" ->
+                not String.contains?(rest, ["/", "\\", <<0>>, "\n", "\r"])
+
+              _extension ->
+                false
+            end)
+
+          case invalid_extensions do
+            [] -> []
+            _ -> [public_upload_extensions: "must contain only file extensions like .png"]
           end
         end)
       end

@@ -4,6 +4,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Agent, StringOrMap}
   alias SymphonyElixir.Config.Schema.Verification.DevServer, as: DevServerConfig
+  alias SymphonyElixir.Config.Schema.Workspace.Attachments
   alias SymphonyElixir.Config.Schema.Workspace.Lifecycle, as: WorkspaceLifecycle
   alias SymphonyElixir.GitHub.Hosts
   alias SymphonyElixir.Linear.Client
@@ -233,6 +234,28 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       |> Changeset.apply_changes()
 
     assert nil_trash_dir.trash_dir == ".trash"
+  end
+
+  test "workspace attachment allowed hosts default and normalize overrides" do
+    assert Config.settings!().workspace.attachments.allowed_hosts == ["github.com"]
+
+    assert {:ok, settings} =
+             Schema.parse(%{
+               "workspace" => %{
+                 "attachments" => %{
+                   "allowed_hosts" => [" GitHub.COM ", "", "gist.github.com", "GITHUB.com"]
+                 }
+               }
+             })
+
+    assert settings.workspace.attachments.allowed_hosts == ["github.com", "gist.github.com"]
+
+    attachments =
+      %Attachments{allowed_hosts: ["old.example"]}
+      |> Attachments.changeset(%{allowed_hosts: []})
+      |> Changeset.apply_changes()
+
+    assert attachments.allowed_hosts == ["github.com"]
   end
 
   test "dependency allow-list config defaults and normalizes entries" do

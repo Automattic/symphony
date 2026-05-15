@@ -16,13 +16,14 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     * `~/.claude/.credentials.json` (Claude Code credentials)
     * `~/.claude/projects`, `~/.claude/file-history` (Claude Code session state)
     * `/etc/sudoers`, `/private/etc/sudoers`, `/var/root` (macOS admin/root state)
-    * `~/Library/Application Support` (macOS app data)
+    * `~/Library/Application Support`, `~/Library/Keychains`, `~/Library/Preferences` (macOS app data)
     * shell and REPL history files
 
-  Workflow guardrail files protected from writes (relative to workspace):
+  Workflow guardrail files and user persistence paths protected from writes:
 
     * `WORKFLOW.md`, `symphony.yml`, `symphony.local.yml`
     * `.git`, `mise.toml`, `.tool-versions`
+    * shell startup files, `~/.gitconfig`, and macOS launch agent roots
   """
 
   @codex_profile "workspace_write"
@@ -41,6 +42,8 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "~/.aws",
     "~/.gnupg",
     "~/Library/Application Support",
+    "~/Library/Keychains",
+    "~/Library/Preferences",
     "~/.docker",
     "~/.netrc",
     "~/.git-credentials",
@@ -64,7 +67,16 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "./.claude/settings.json",
     "./.git",
     "./mise.toml",
-    "./.tool-versions"
+    "./.tool-versions",
+    "~/.zshrc",
+    "~/.zshenv",
+    "~/.zprofile",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.profile",
+    "~/.gitconfig",
+    "~/Library/LaunchAgents",
+    "~/Library/LaunchDaemons"
   ]
 
   @srt_codex_runtime_write_paths [

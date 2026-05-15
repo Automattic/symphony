@@ -5,6 +5,18 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
   alias SymphonyElixir.Config.{Schema, SystemSchema}
   alias SymphonyElixir.Config.Schema.Workspace.Sandbox
 
+  @persistence_deny_write_paths [
+    "~/.zshrc",
+    "~/.zshenv",
+    "~/.zprofile",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.profile",
+    "~/.gitconfig",
+    "~/Library/LaunchAgents",
+    "~/Library/LaunchDaemons"
+  ]
+
   test "Claude filesystem settings expose the default deny lists" do
     assert AgentSandboxConfig.deny_read_paths() == [
              "~/.ssh",
@@ -20,6 +32,8 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "~/.aws",
              "~/.gnupg",
              "~/Library/Application Support",
+             "~/Library/Keychains",
+             "~/Library/Preferences",
              "~/.docker",
              "~/.netrc",
              "~/.git-credentials",
@@ -46,8 +60,25 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "./.claude/settings.json",
              "./.git",
              "./mise.toml",
-             "./.tool-versions"
+             "./.tool-versions",
+             "~/.zshrc",
+             "~/.zshenv",
+             "~/.zprofile",
+             "~/.bashrc",
+             "~/.bash_profile",
+             "~/.profile",
+             "~/.gitconfig",
+             "~/Library/LaunchAgents",
+             "~/Library/LaunchDaemons"
            ]
+
+    for path <- @persistence_deny_write_paths do
+      assert path in AgentSandboxConfig.deny_write_paths()
+    end
+
+    assert "~/Library/Keychains" in AgentSandboxConfig.deny_read_paths()
+    assert "~/Library/Preferences" in AgentSandboxConfig.deny_read_paths()
+    refute "~/.config/gh" in AgentSandboxConfig.deny_write_paths()
 
     assert AgentSandboxConfig.claude_filesystem_settings() == %{
              "denyRead" => AgentSandboxConfig.deny_read_paths(),
@@ -94,6 +125,10 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("/private/etc/sudoers"="none")
     assert filesystem =~ ~s("/var/root"="none")
     assert filesystem =~ ~s("~/Library/Application Support"="none")
+    assert filesystem =~ ~s("~/Library/Keychains"="none")
+    assert filesystem =~ ~s("~/Library/Preferences"="none")
+    assert filesystem =~ ~s("~/.zshrc"="read")
+    assert filesystem =~ ~s("~/Library/LaunchAgents"="read")
     refute filesystem =~ "~/.codex"
 
     assert ~s(permissions.workspace_write.network={"enabled"=true,"mode"="limited"}) in overrides
@@ -145,6 +180,11 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "/var/root" in settings["filesystem"]["denyRead"]
     assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
     assert "./.git" in settings["filesystem"]["denyWrite"]
+
+    for path <- @persistence_deny_write_paths do
+      assert path in settings["filesystem"]["denyWrite"]
+    end
+
     assert "~/.codex/auth.json" in settings["filesystem"]["denyWrite"]
     assert "~/.codex/config.toml" in settings["filesystem"]["denyWrite"]
     assert "~/.codex/AGENTS.md" in settings["filesystem"]["denyWrite"]

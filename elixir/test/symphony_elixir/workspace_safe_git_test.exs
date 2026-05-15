@@ -73,6 +73,49 @@ defmodule SymphonyElixir.WorkspaceSafeGitTest do
     refute File.exists?(proof)
   end
 
+  test "safe_git does not execute repo-local core.hooksPath hooks", %{test_root: test_root} do
+    repo = Path.join(test_root, "repo")
+    hooks = Path.join(test_root, "evil-hooks")
+    proof = Path.join(test_root, "SYMPHONY_HOOK_PWNED")
+
+    File.mkdir_p!(repo)
+    File.mkdir_p!(hooks)
+
+    for hook <- ["post-checkout", "post-commit", "pre-commit"] do
+      hook_path = Path.join(hooks, hook)
+      File.write!(hook_path, "#!/bin/sh\ntouch \"#{proof}\"\n")
+      File.chmod!(hook_path, 0o755)
+    end
+
+    git!(repo, ["init", "-b", "main"])
+    git!(repo, ["config", "user.name", "Test User"])
+    git!(repo, ["config", "user.email", "test@example.com"])
+    File.write!(Path.join(repo, "README.md"), "safe git\n")
+    git!(repo, ["add", "README.md"])
+    git!(repo, ["commit", "-m", "initial"])
+    git!(repo, ["config", "core.hooksPath", hooks])
+
+    File.rm(proof)
+
+    assert {_output, 0} = Workspace.safe_git(["-C", repo, "checkout", "-b", "feature"])
+    refute File.exists?(proof)
+  end
+
+  test "safe_git refuses to execute ext:: remote helpers", %{test_root: test_root} do
+    repo = Path.join(test_root, "repo")
+    proof = Path.join(test_root, "SYMPHONY_EXT_PWNED")
+
+    File.mkdir_p!(repo)
+    git!(repo, ["init", "-b", "main"])
+
+    File.rm(proof)
+
+    hostile = "ext::sh -c 'touch \"#{proof}\" >&2; false'"
+    assert {_output, status} = Workspace.safe_git(["-C", repo, "ls-remote", hostile])
+    assert status != 0
+    refute File.exists?(proof)
+  end
+
   defp git!(repo, args) do
     case System.cmd("git", args, cd: repo, stderr_to_stdout: true) do
       {output, 0} -> output

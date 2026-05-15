@@ -1036,6 +1036,9 @@ defmodule SymphonyElixir.AppServerTest do
       git_dir = String.trim(git_dir_output)
       git_common_dir = String.trim(git_common_dir_output)
 
+      assert git_dir != git_common_dir,
+             "expected worktree git_dir and git_common_dir to differ; test setup may have regressed"
+
       File.write!(srt_binary, """
       #!/bin/sh
       trace_file="#{trace_file}"

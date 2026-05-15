@@ -199,11 +199,13 @@ mise exec -- mix symphony.stop RSM-123
 
 - [docs/configuration.md](docs/configuration.md): full configuration reference for `WORKFLOW.md`,
   CLI flags, defaults, and supported values.
+- [docs/security.md](docs/security.md): threat model, built-in protections, and operational best
+  practices.
+- [docs/development.md](docs/development.md): toolchain, testing, packaging, and fork notes for
+  contributors.
 - [docs/logging.md](docs/logging.md),
   [docs/quality_gate_security.md](docs/quality_gate_security.md), and
   [docs/token_accounting.md](docs/token_accounting.md): operational deep-dives.
-- [docs/development.md](docs/development.md): toolchain, testing, packaging, and fork notes for
-  contributors.
 - [WORKFLOW.md](WORKFLOW.md): the example in-repo workflow contract and agent prompt.
 
 ## About This Fork

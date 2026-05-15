@@ -586,6 +586,28 @@ Fields:
     while `workspace.root` free space is below that threshold or cannot be checked.
   - `orphan_action` defaults to `log`; supported values are `log`, `delete`, and `trash`.
   - `trash_dir` defaults to `.trash` and is interpreted under `workspace.root`.
+- `sandbox.allow_read_paths` (list of strings)
+  - Default: `[]`.
+  - Advanced escape hatch for exact sandbox path entries that should be subtracted from the shared
+    default read-deny list when the implementation renders agent sandbox settings.
+  - Empty, blank, duplicate, and non-string entries are normalized away by the Elixir implementation.
+  - This MUST NOT override the Codex runtime auth/config read denies for `~/.codex/auth.json`,
+    `~/.codex/config.toml`, and `~/.codex/AGENTS.md`.
+  - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex`,
+    `elixir/lib/symphony_elixir/agent_sandbox_config.ex`, and
+    `elixir/test/symphony_elixir/agent_sandbox_config_test.exs`.
+- `attachments.allowed_hosts` (list of hostnames)
+  - Default: `["github.com"]`.
+  - Used by scoped Linear attachment URL tools to allow exact HTTP(S) attachment hosts.
+  - Hosts are trimmed, lowercased, deduplicated, and reset to the default when the normalized list is
+    empty.
+- `attachments.public_upload_extensions` (list of file extensions)
+  - Default: `[".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf"]`.
+  - Used by scoped Linear file-upload tools when an explicit public upload is requested.
+  - Extensions are trimmed, lowercased, normalized to include a leading `.`, deduplicated, and
+    rejected if they contain path separators or control characters.
+  - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex` and
+    `elixir/test/symphony_elixir/workspace_and_config_test.exs`.
 
 #### 5.4.5 `verification` (object)
 
@@ -733,6 +755,13 @@ fields locally if they want stricter startup checks.
 - `approval_policy` (Codex `AskForApproval` value)
   - Default for Codex is an implementation-owned reject-map policy.
   - Default for Claude is `never`.
+  - Elixir Codex default:
+    `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`.
+  - Elixir accepts Codex string/object values supported by the targeted app-server, except
+    `agent.approval_policy="never"` is rejected for Codex. Use `auto_approve_all` for unattended
+    auto-approval.
+  - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex` and
+    `elixir/test/symphony_elixir/workspace_and_config_test.exs`.
 - `thread_sandbox` (Codex `SandboxMode` value)
   - Default: `workspace-write`.
 - `turn_sandbox_policy` (Codex `SandboxPolicy` value)
@@ -783,6 +812,10 @@ fields locally if they want stricter startup checks.
   - Codex native command sandbox profiles SHOULD deny tool-command reads of host credential stores
     and Codex runtime auth/config files while still allowing the parent Codex process to read the
     runtime files required for authentication.
+  - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex`,
+    `elixir/lib/symphony_elixir/agent_sandbox_config.ex`,
+    `elixir/test/symphony_elixir/workspace_and_config_test.exs`, and
+    `elixir/test/symphony_elixir/agent_sandbox_config_test.exs`.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
@@ -1074,6 +1107,11 @@ Validation checks:
   per-repo polling MAY also count repo-level `team`, `projects`, `labels`, or `assignee` selectors.
 - Blank `tracker.project_slug`, `tracker.team`, and `tracker.labels` entries do not count as
   configured Linear scoping filters.
+- `agent.approval_policy="never"` is invalid when `agent.kind == "codex"`; use
+  `auto_approve_all` for unattended auto-approval.
+- `agent.sandbox_runtime.kind == "srt"` is valid only when `agent.kind == "codex"` and
+  `agent.network_access.mode != "open"`.
+- `workspace.attachments.public_upload_extensions` entries must be plain file extensions.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
 
@@ -1562,6 +1600,37 @@ Invariant 3: Workspace key is sanitized.
 - Only `[A-Za-z0-9._-]` allowed in workspace directory names.
 - Replace all other characters with `_`.
 
+### 9.6 Agent Sandbox and Sensitive Path Safety
+
+Implementations that render filesystem policy for coding agents SHOULD use one shared policy source
+for all supported adapters so hardening does not drift by runtime.
+
+Current Elixir sandbox behavior:
+
+- Shared read denies cover mounted volumes and common credential/config stores, including
+  `/Volumes`, `~/.ssh`, `~/.config/gh`, `~/.claude/.credentials.json`, `~/.claude/projects`,
+  `~/.claude/file-history`, `/etc/sudoers`, `/private/etc/sudoers`, `/var/root`, `~/.aws`,
+  `~/.gnupg`, `~/Library/Application Support`, `~/Library/Keychains`,
+  `~/Library/Preferences`, `~/.docker`, `~/.netrc`, `~/.git-credentials`, `~/.npmrc`,
+  `~/.cargo/credentials`, `~/.config/op`, `~/.config/gcloud`, `~/.azure`, `~/.kube`, and shell or
+  REPL history files.
+- Shared write denies protect workflow and runtime guardrail files such as `WORKFLOW.md`,
+  `symphony.yml`, `symphony.local.yml`, `.claude/settings.json`, `.git`, `mise.toml`,
+  `.tool-versions`, shell startup files, `~/.gitconfig`, and macOS launch agent roots.
+- Codex native `workspace_write` config always appends command-sandbox read denies for
+  `~/.codex/auth.json`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md`; operator
+  `workspace.sandbox.allow_read_paths` entries cannot re-allow these runtime auth/config files.
+- SRT sandbox settings allow Codex to write its runtime state directory under `~/.codex`, but
+  deny-write the sensitive/static Codex files `auth.json`, `config.toml`, and `AGENTS.md`.
+- Sensitive-path detection for command/audit safeguards also treats mounted volumes, admin paths,
+  selected Codex runtime files, common credential basenames, `.env*`, `*.pem`, and `*.key` as
+  sensitive.
+
+Elixir evidence: `elixir/lib/symphony_elixir/agent_sandbox_config.ex`,
+`elixir/lib/symphony_elixir/sensitive_path.ex`,
+`elixir/test/symphony_elixir/agent_sandbox_config_test.exs`, and
+`elixir/test/symphony_elixir/sensitive_path_test.exs`.
+
 ## 10. Agent Runner Protocol (Coding Agent Integration)
 
 This section defines Symphony's language-neutral responsibilities when integrating the configured
@@ -1598,12 +1667,27 @@ Notes:
   `agent.sandbox_runtime.kind: srt`, the local command is wrapped as
   `<srt command> --settings <temporary-settings.json> <agent.command>`. Codex remote launch runs
   the configured command after `cd <workspace>` over SSH stdio.
+- Codex launch preserves the configured command while injecting `--config` overrides for
+  `default_permissions="workspace_write"` and the generated `permissions.workspace_write.*`
+  profile. Existing user-provided Codex args, such as model overrides before `app-server`, remain
+  present.
 - Claude local launch parses `agent.command` with shell-like word splitting and runs Claude with
   `--output-format stream-json --print`, feeding prompt input over stdin from a private temporary
   file. Claude remote launch streams the prompt over SSH stdin into a remote `0600` temporary file
   before running the equivalent escaped shell command.
+- Claude prompt text MUST NOT be embedded in local process argv or remote SSH argv. The Elixir
+  adapter writes a local prompt file with directory mode `0700` and file mode `0600`, redirects it
+  to stdin, and removes it after the turn; remote launch uses stdin to create a remote `0600`
+  prompt file and cleans it up with a trap.
 - Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
   using fields supported by the configured adapter.
+
+Elixir evidence: `elixir/lib/symphony_elixir/codex/app_server.ex`,
+`elixir/lib/symphony_elixir/claude_code/app_server.ex`,
+`elixir/test/symphony_elixir/app_server_test.exs`,
+`elixir/test/symphony_elixir/core_test.exs`,
+`elixir/test/symphony_elixir/claude_code/app_server_test.exs`, and
+`elixir/test/symphony_elixir/ssh_test.exs`.
 
 RECOMMENDED additional process settings:
 
@@ -1751,14 +1835,31 @@ Scoped Linear tool extension contract:
   `linear_get_parent_issue`, `linear_get_comments`, `linear_get_related_issues`,
   `linear_update_state`, `linear_add_comment`, `linear_update_comment`, `linear_delete_comment`,
   `linear_attach_url`, and `linear_attach_file`.
+- The standardized Linear tool surface does not include an assignee mutation tool. Implementations
+  MUST NOT advertise removed legacy names such as `linear_set_assignee`.
+- Linear read tools SHOULD wrap issue/comment fields in prompt-safety boundary tags before
+  returning them to the agent. Comment bodies SHOULD be scanned for high-confidence secret patterns
+  and redacted before wrapping.
 - `linear_attach_file` uploads MUST be private by default. A prompt-facing public upload option, if
   exposed, MUST be explicit and documented as producing a world-readable CDN URL.
+- Public `linear_attach_file` uploads MUST be restricted to configured safe extensions; the Elixir
+  default is `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, and `.pdf`.
+- `linear_attach_file` MUST only read regular files inside the current workspace, reject
+  secret-bearing file contents/titles before upload, and reject sensitive basenames such as `.env*`,
+  `*.pem`, and `*.key` even for private uploads.
+- `linear_attach_url` MUST restrict attachment URLs to configured exact HTTP(S) hosts; the Elixir
+  default host allowlist is `github.com`.
 - Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config.
 - Tool result semantics:
   - successful operation -> `success=true`
   - invalid input, missing auth, or transport failure -> `success=false` with an error payload
 - Return the operation response or error payload as structured tool output that the model can inspect
   in-session.
+
+Elixir evidence: `elixir/lib/symphony_elixir/agent_tools/linear.ex`,
+`elixir/lib/symphony_elixir/mcp_server.ex`,
+`elixir/test/symphony_elixir/agent_tools_linear_test.exs`, and
+`elixir/test/symphony_elixir/mcp_server_test.exs`.
 
 User-input-required policy:
 
@@ -2474,6 +2575,12 @@ Possible hardening measures include:
   than exposing general workspace-wide tracker access.
 - Reducing the set of client-side tools, credentials, filesystem paths, and network destinations
   available to the agent to the minimum needed for the workflow.
+- Keeping agent runtime credentials/configuration readable only by the runtime process when needed,
+  while denying command/tool reads of those same files through sandbox profiles.
+- Preventing prompts, tracker text, and comments from becoming process-list or audit-log leaks by
+  using stdin/private temporary files, redaction, truncation, and untrusted-input wrappers.
+- Restricting public artifact uploads and externally visible tracker attachments by host,
+  extension, path containment, and secret scanning before network transfer.
 
 The correct controls are deployment-specific, but implementations SHOULD document them clearly and
 treat harness hardening as part of the core safety model rather than an optional afterthought.
@@ -2887,6 +2994,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `~` path expansion works
 - `agent.kind` and `agent.command` are required
 - `agent.command` is preserved as a shell command string
+- Codex `agent.approval_policy="never"` is rejected; `auto_approve_all` is the unattended
+  auto-approval switch
+- `agent.sandbox_runtime.kind="srt"` is rejected for non-Codex agents and with open network mode
+- Workspace attachment public-upload extensions are normalized and validated as extensions
 - Per-state concurrency override map normalizes state names and rejects invalid values
 - Prompt template renders `issue`, `attempt`, `agent`, and `repo_key`
 - Prompt rendering fails on unknown variables (strict mode)
@@ -2905,6 +3016,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `before_remove` hook runs on cleanup and failures/timeouts are ignored
 - Workspace path sanitization and root containment invariants are enforced before agent launch
 - Agent launch uses the per-issue workspace path as cwd and rejects out-of-root paths
+- Shared sandbox read/write deny lists include mounted volumes, host credential stores, macOS
+  admin/persistence/keychain paths, and selected agent runtime auth/config files
+- Sensitive-path detection rejects obvious secret paths, mounted-volume paths, `.env*`, `*.pem`,
+  and `*.key`
 
 ### 17.3 Issue Tracker Client
 
@@ -2949,9 +3064,12 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Launch command uses workspace cwd and follows the `agent.kind` adapter launch semantics.
 - Codex launch invokes `bash -lc <agent.command>` locally, optionally wrapped by the configured
   `agent.sandbox_runtime`.
+- Codex launch preserves configured args while injecting the generated `workspace_write`
+  permission profile
 - Claude launch parses `agent.command`, appends stream-json print arguments, feeds prompt input over
   stdin from a private temporary file, and enforces `agent.command_timeout_ms` after streamed
   tool-use events.
+- Claude prompt text is not present in local process argv or remote SSH argv
 - Session startup follows the configured adapter protocol.
 - Client identity/capability payloads are valid when the configured adapter protocol requires them.
 - Policy-related startup payloads use the implementation's documented approval/sandbox settings
@@ -2972,9 +3090,13 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   the configured adapter protocol
 - If scoped Linear client-side tool extensions are implemented:
   - tool specs are advertised with protocol-safe names
+  - removed legacy tool names such as `linear_set_assignee` are not advertised
   - prompt-supplied issue ids are rejected because tools are scoped to the current issue
   - current-issue reads, state changes, comments, and attachments execute against configured Linear
     auth
+  - comment bodies returned to the agent are secret-redacted before prompt-safety wrapping
+  - public file uploads require an explicit option and a configured safe extension
+  - URL attachments are restricted to configured exact HTTP(S) hosts
   - invalid arguments, missing auth, and transport failures return structured failure payloads
   - unsupported tool names still fail without stalling the session
 

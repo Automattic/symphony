@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.AgentSandboxConfigTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias SymphonyElixir.AgentSandboxConfig
   alias SymphonyElixir.Config.{Schema, SystemSchema}
@@ -150,35 +150,46 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "/repo/.git/hooks" in settings["filesystem"]["denyWrite"]
   end
 
-  test "srt settings normalize malformed domain and sandbox path lists" do
+  test "srt settings normalize malformed domain and sandbox path inputs" do
     assert {:ok, settings} =
-             AgentSandboxConfig.srt_settings("allowlist", :bad, :bad, [],
-               allow_write_paths: :bad,
-               deny_write_paths: :bad
+             AgentSandboxConfig.srt_settings(
+               "allowlist",
+               :bad_allowed_domains,
+               :bad_denied_domains,
+               :bad_allow_read_paths,
+               allow_write_paths: :bad_allow_write_paths,
+               deny_write_paths: :bad_deny_write_paths
              )
 
     assert settings["network"]["allowedDomains"] == []
     assert settings["network"]["deniedDomains"] == []
+    assert settings["filesystem"]["allowRead"] == []
     assert "." in settings["filesystem"]["allowWrite"]
     assert "~/.codex" in settings["filesystem"]["allowWrite"]
-
-    assert settings["filesystem"]["denyWrite"] == [
-             "./WORKFLOW.md",
-             "./symphony.yml",
-             "./symphony.local.yml",
-             "./.claude/settings.json",
-             "./.git/hooks",
-             "./mise.toml",
-             "./.tool-versions",
-             "~/.codex/auth.json",
-             "~/.codex/config.toml",
-             "~/.codex/AGENTS.md"
-           ]
+    assert settings["filesystem"]["denyWrite"] == AgentSandboxConfig.deny_write_paths() ++ ["~/.codex/auth.json", "~/.codex/config.toml", "~/.codex/AGENTS.md"]
   end
 
   test "srt settings map open and block network modes" do
     assert {:error, :srt_open_network_unsupported} = AgentSandboxConfig.srt_settings("open", ["github.com"], [])
     assert {:ok, %{"network" => %{"allowedDomains" => []}}} = AgentSandboxConfig.srt_settings("block", ["github.com"], [])
+  end
+
+  test "srt settings normalize malformed domains and relative temp dirs" do
+    relative_tmp = "symphony-relative-tmp-#{System.unique_integer([:positive])}"
+    previous_tmpdir = System.get_env("TMPDIR")
+
+    on_exit(fn ->
+      restore_env("TMPDIR", previous_tmpdir)
+      File.rm_rf(relative_tmp)
+    end)
+
+    File.mkdir_p!(relative_tmp)
+    System.put_env("TMPDIR", relative_tmp)
+
+    assert {:ok, settings} = AgentSandboxConfig.srt_settings("allowlist", :bad, :bad)
+    assert settings["network"]["allowedDomains"] == []
+    assert settings["network"]["deniedDomains"] == []
+    assert "./#{relative_tmp}" in settings["filesystem"]["allowWrite"]
   end
 
   test "Codex filesystem config allows operator overrides for default read denies" do
@@ -239,4 +250,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
 
     assert sandbox.allow_read_paths == []
   end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
 end

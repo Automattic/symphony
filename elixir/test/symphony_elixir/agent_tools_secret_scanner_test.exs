@@ -59,6 +59,36 @@ defmodule SymphonyElixir.AgentTools.SecretScannerTest do
     assert :ok = SecretScanner.reject_if_secret_pattern(%{body: openai_fixture()}, %{}, "tool_name", "body", [])
   end
 
+  test "field-list rejection helper rejects the first secret-bearing field" do
+    workspace = tmp_workspace!("secret-scanner-field-list")
+    audit_dir = Path.join(workspace, "audit")
+
+    try do
+      assert :ok = SecretScanner.reject_fields_if_secret_pattern([body: "ordinary body"], %{}, "tool_name")
+
+      assert :ok =
+               SecretScanner.reject_fields_if_secret_pattern(
+                 [title: "ordinary title", metadata: %{body: openai_fixture()}, empty: nil],
+                 %{},
+                 "tool_name",
+                 dir: audit_dir
+               )
+
+      assert {:error, :secret_pattern_detected} =
+               SecretScanner.reject_fields_if_secret_pattern(
+                 [title: "token=" <> openai_fixture(), body: "token=" <> openai_fixture()],
+                 %{},
+                 "tool_name",
+                 dir: audit_dir
+               )
+
+      assert [%{"event_type" => "refused_agent_action", "field" => "title", "tool" => "tool_name"}] =
+               audit_events(audit_dir)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
   test "missing issue context still writes a refused-action audit event" do
     workspace = tmp_workspace!("secret-scanner-missing-issue")
     audit_dir = Path.join(workspace, "audit")

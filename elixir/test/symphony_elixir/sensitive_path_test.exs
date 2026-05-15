@@ -28,6 +28,13 @@ defmodule SymphonyElixir.SensitivePathTest do
       "~/.config/gcloud/application_default_credentials.json",
       "~/.azure/accessTokens.json",
       "~/.kube/config",
+      "~/Library/Keychains/login.keychain-db",
+      "~/.zshrc",
+      "~/.zshenv",
+      "~/.zprofile",
+      "~/.bashrc",
+      "~/.bash_profile",
+      "~/.profile",
       "~/.bash_history",
       "~/.zsh_history",
       "~/.history",
@@ -41,6 +48,13 @@ defmodule SymphonyElixir.SensitivePathTest do
       "/Users/test/.config/gcloud/configurations/config_default",
       "/Users/test/.azure/accessTokens.json",
       "/Users/test/.kube/config",
+      "/Users/test/Library/Keychains/login.keychain-db",
+      "/Users/test/.zshrc",
+      "/Users/test/.zshenv",
+      "/Users/test/.zprofile",
+      "/Users/test/.bashrc",
+      "/Users/test/.bash_profile",
+      "/Users/test/.profile",
       "/Users/test/.bash_history"
     ]
 

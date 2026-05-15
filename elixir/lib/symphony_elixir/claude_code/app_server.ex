@@ -53,11 +53,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     turn_timeout_ms = settings.agent.turn_timeout_ms
     command_timeout_ms = settings.agent.command_timeout_ms
 
-    with {:ok, port} <- start_port(workspace, command, prompt, worker_host, session) do
+    with {:ok, port, prompt_cleanup_paths} <- start_port(workspace, command, prompt, worker_host, session) do
       try do
         read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms)
       after
         safe_close_port(port)
+        remove_local_prompt_files(prompt_cleanup_paths)
       end
     end
   end
@@ -582,41 +583,79 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp start_port(workspace, command, prompt, nil, session) do
-    with {:ok, {executable, command_args}} <- local_command(workspace, command) do
+    with {:ok, {executable, command_args}} <- local_command(workspace, command),
+         {:ok, prompt_path} <- write_local_prompt_file(workspace, prompt) do
       args =
         command_args ++
-          claude_settings_args(session) ++ ["--output-format", "stream-json", "--print", prompt]
+          claude_settings_args(session) ++ ["--output-format", "stream-json", "--print"]
 
-      port =
-        Port.open(
-          {:spawn_executable, String.to_charlist(executable)},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            line: @port_line_bytes,
-            args: Enum.map(args, &String.to_charlist/1),
-            cd: String.to_charlist(workspace),
-            env: AgentEnv.build()
-          ]
-        )
+      case open_local_prompt_port(executable, args, prompt_path, workspace) do
+        {:ok, port} ->
+          {:ok, port, [prompt_path]}
 
-      {:ok, port}
+        {:error, reason} ->
+          remove_local_prompt_files([prompt_path])
+          {:error, reason}
+      end
     end
   end
 
   defp start_port(workspace, command, prompt, worker_host, session) do
-    with {:ok, command_words} <- command_words(command) do
+    with {:ok, command_words} <- command_words(command),
+         {:ok, prompt_path} <- write_local_prompt_file(workspace, prompt) do
       reverse_forwards = mcp_reverse_forwards(session)
 
-      ssh_module().start_port(
-        worker_host,
-        remote_launch_command(workspace, command_words, prompt, session),
-        line: @port_line_bytes,
-        env: AgentEnv.build(),
-        reverse_forwards: reverse_forwards
-      )
+      case ssh_module().start_port(
+             worker_host,
+             remote_launch_command(workspace, command_words, session),
+             line: @port_line_bytes,
+             env: AgentEnv.build(),
+             reverse_forwards: reverse_forwards,
+             stdin_path: prompt_path
+           ) do
+        {:ok, port} ->
+          {:ok, port, [prompt_path]}
+
+        {:error, reason} ->
+          remove_local_prompt_files([prompt_path])
+          {:error, reason}
+      end
     end
+  end
+
+  defp open_local_prompt_port(executable, args, prompt_path, workspace) do
+    case System.find_executable("sh") do
+      nil ->
+        {:error, :shell_not_found}
+
+      shell ->
+        shell_args =
+          [
+            "-c",
+            "prompt_file=$1; shift; exec \"$@\" < \"$prompt_file\"",
+            "symphony-claude-prompt",
+            prompt_path,
+            executable
+            | args
+          ]
+
+        {:ok,
+         Port.open(
+           {:spawn_executable, String.to_charlist(shell)},
+           [
+             :binary,
+             :exit_status,
+             :stderr_to_stdout,
+             line: @port_line_bytes,
+             args: Enum.map(shell_args, &String.to_charlist/1),
+             cd: String.to_charlist(workspace),
+             env: AgentEnv.build()
+           ]
+         )}
+    end
+  rescue
+    exception ->
+      {:error, {:agent_command_start_failed, Exception.message(exception)}}
   end
 
   defp local_command(workspace, command) do
@@ -716,16 +755,52 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp claude_settings_args(_session), do: []
 
-  defp remote_launch_command(workspace, command_words, prompt, session) do
+  defp remote_launch_command(workspace, command_words, session) do
     command =
       (command_words ++ claude_settings_args(session))
       |> Enum.map_join(" ", &shell_escape/1)
 
     [
+      "umask 077",
+      "prompt_dir=$(mktemp -d \"${TMPDIR:-/tmp}/symphony-claude-prompt.XXXXXX\")",
+      "prompt_file=\"$prompt_dir/prompt\"",
+      "cleanup_prompt() { status=$?; rm -f \"$prompt_file\"; rmdir \"$prompt_dir\" 2>/dev/null || true; exit \"$status\"; }",
+      "trap cleanup_prompt EXIT INT TERM",
+      "cat > \"$prompt_file\"",
+      "chmod 0600 \"$prompt_file\"",
       "cd #{shell_escape(workspace)}",
-      "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command} --output-format stream-json --print #{shell_escape(prompt)}"
+      "#{@agent_runtime_env}=#{@agent_runtime_env_value} #{command} --output-format stream-json --print < \"$prompt_file\""
     ]
     |> Enum.join(" && ")
+  end
+
+  defp write_local_prompt_file(workspace, prompt) when is_binary(prompt) do
+    with {:ok, temp_root} <- prompt_temp_root(workspace),
+         prompt_dir <- Path.join(temp_root, "symphony-claude-prompt-#{System.unique_integer([:positive, :monotonic])}"),
+         :ok <- File.mkdir(prompt_dir),
+         :ok <- File.chmod(prompt_dir, 0o700),
+         prompt_path <- Path.join(prompt_dir, "prompt"),
+         :ok <- File.write(prompt_path, prompt, [:write, :exclusive]),
+         :ok <- File.chmod(prompt_path, 0o600) do
+      {:ok, prompt_path}
+    else
+      {:error, reason} -> {:error, {:claude_prompt_write_failed, reason}}
+    end
+  end
+
+  defp prompt_temp_root(workspace) do
+    with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace),
+         {:ok, canonical_temp_root} <- PathSafety.canonicalize(System.tmp_dir!()) do
+      if inside_path?(canonical_temp_root, canonical_workspace) do
+        {:error, :prompt_temp_root_inside_workspace}
+      else
+        {:ok, canonical_temp_root}
+      end
+    end
+  end
+
+  defp inside_path?(path, parent) do
+    path == parent or String.starts_with?(path, parent <> "/")
   end
 
   defp runtime_file_paths(session) do
@@ -748,6 +823,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.map(&Path.dirname/1)
     |> Enum.uniq()
     |> Enum.each(fn dir -> _ = File.rmdir(dir) end)
+
+    :ok
+  end
+
+  defp remove_local_prompt_files(file_paths) when is_list(file_paths) do
+    Enum.each(file_paths, fn path ->
+      _ = File.rm(path)
+      _ = File.rmdir(Path.dirname(path))
+    end)
 
     :ok
   end

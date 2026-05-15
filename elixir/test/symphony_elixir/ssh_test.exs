@@ -132,6 +132,57 @@ defmodule SymphonyElixir.SSHTest do
     refute trace =~ " -F "
   end
 
+  test "start_port/3 can feed stdin from a file without putting it in ssh argv" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-stdin-port-test-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "ssh.trace")
+    stdin_trace_file = Path.join(test_root, "ssh.stdin")
+    stdin_path = Path.join(test_root, "prompt")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+    File.write!(stdin_path, "sensitive prompt body")
+
+    install_fake_ssh!(test_root, trace_file, """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    cat > "#{stdin_trace_file}"
+    printf 'ready\\n'
+    exit 0
+    """)
+
+    assert {:ok, port} = SSH.start_port("localhost", "printf ok", stdin_path: stdin_path)
+    assert is_port(port)
+    wait_for_trace!(stdin_trace_file)
+
+    trace = File.read!(trace_file)
+    assert trace =~ "-T localhost bash -lc"
+    refute trace =~ "sensitive prompt body"
+    assert File.read!(stdin_trace_file) == "sensitive prompt body"
+  end
+
+  test "start_port/3 returns an error when stdin redirection shell is unavailable" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-stdin-shell-test-#{System.unique_integer([:positive])}")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+    File.write!(Path.join(test_root, "ssh"), "#!/bin/sh\nexit 0\n")
+    File.chmod!(Path.join(test_root, "ssh"), 0o755)
+    System.put_env("PATH", test_root)
+
+    assert {:error, :shell_not_found} =
+             SSH.start_port("localhost", "printf ok", stdin_path: Path.join(test_root, "prompt"))
+  end
+
   test "start_port/3 supports line mode" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-line-port-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")

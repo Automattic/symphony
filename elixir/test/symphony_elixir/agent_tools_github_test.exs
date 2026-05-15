@@ -44,6 +44,14 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       end
 
       assert {:error, :secret_pattern_detected} =
+               GitHub.create_pull_request(context, "title " <> openai_fixture(), "clean body", false,
+                 dir: audit_dir,
+                 gh_runner: fn _args, _opts ->
+                   flunk("GitHub should not be called for secret-bearing PR titles")
+                 end
+               )
+
+      assert {:error, :secret_pattern_detected} =
                GitHub.update_pull_request_body(context, "body " <> openai_fixture(), dir: audit_dir)
 
       assert {:error, :secret_pattern_detected} =
@@ -52,6 +60,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       assert [%{"event_type" => "refused_agent_action", "reason" => "secret_pattern_detected"} | _rest] =
                audit_events(audit_dir)
 
+      assert "title" in Enum.map(audit_events(audit_dir), & &1["field"])
       refute inspect(audit_events(audit_dir)) =~ openai_fixture()
     after
       File.rm_rf(workspace)

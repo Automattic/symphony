@@ -1592,9 +1592,10 @@ Notes:
   `agent.sandbox_runtime.kind: srt`, the local command is wrapped as
   `<srt command> --settings <temporary-settings.json> <agent.command>`. Codex remote launch runs
   the configured command after `cd <workspace>` over SSH stdio.
-- Claude local launch parses `agent.command` with shell-like word splitting, starts the executable
-  directly, and appends `--output-format stream-json --print <prompt>`. Claude remote launch runs
-  the equivalent escaped shell command over SSH.
+- Claude local launch parses `agent.command` with shell-like word splitting and runs Claude with
+  `--output-format stream-json --print`, feeding prompt input over stdin from a private temporary
+  file. Claude remote launch streams the prompt over SSH stdin into a remote `0600` temporary file
+  before running the equivalent escaped shell command.
 - Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
   using fields supported by the configured adapter.
 
@@ -1637,9 +1638,10 @@ Current Elixir adapter behavior:
 
 - Codex starts one app-server thread per worker run and reuses that thread for continuation turns
   until the worker run ends.
-- Claude Code is launched as a CLI stream-json `--print` turn. The current adapter does not pass a
-  Symphony-managed resume/thread id between continuation turns, so continuation quality depends on
-  workspace state, the issue workpad, tracker state, and the continuation prompt.
+- Claude Code is launched as a CLI stream-json `--print` turn with prompt input on stdin. The current
+  adapter does not pass a Symphony-managed resume/thread id between continuation turns, so
+  continuation quality depends on workspace state, the issue workpad, tracker state, and the
+  continuation prompt.
 
 ### 10.3 Streaming Turn Processing
 
@@ -2941,8 +2943,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Launch command uses workspace cwd and follows the `agent.kind` adapter launch semantics.
 - Codex launch invokes `bash -lc <agent.command>` locally, optionally wrapped by the configured
   `agent.sandbox_runtime`.
-- Claude launch parses `agent.command`, appends stream-json print arguments, and enforces
-  `agent.command_timeout_ms` after streamed tool-use events.
+- Claude launch parses `agent.command`, appends stream-json print arguments, feeds prompt input over
+  stdin from a private temporary file, and enforces `agent.command_timeout_ms` after streamed
+  tool-use events.
 - Session startup follows the configured adapter protocol.
 - Client identity/capability payloads are valid when the configured adapter protocol requires them.
 - Policy-related startup payloads use the implementation's documented approval/sandbox settings

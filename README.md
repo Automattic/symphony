@@ -5,13 +5,7 @@ teams can manage the work, not the agents. It claims issues, creates per-issue w
 Codex or Claude against a repo-owned workflow prompt, recovers stalled runs, retries failures, and
 reports outcomes back to the tracker.
 
-[![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
-
-_In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work
-and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI
-status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents
-land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher
-level._
+[Demo video](.github/media/symphony-demo.mp4)
 
 > [!WARNING]
 > Symphony is an engineering preview for operator-controlled, trusted environments. It includes
@@ -20,7 +14,7 @@ level._
 
 ![Symphony dashboard screenshot](.github/media/elixir-screenshot.png)
 
-## How Symphony Works
+## How It Works
 
 ```text
 Linear issue -> Symphony -> workspace -> agent -> pull request -> Linear status
@@ -52,13 +46,16 @@ stops the active agent for that issue and cleans up matching workspaces.
 
 </details>
 
-## What Is Included
+## Features
 
 - **Multi-repo orchestration** so one Symphony process can supervise several repositories from a
   single `symphony.yml`, with per-repo Linear selectors and conflict detection for issues that
   match more than one repo.
 - **LiveView dashboard** for active runs, watched issues, the retry queue, quality-gate state,
   captured learnings, and per-issue transcripts.
+
+![Symphony Web dashboard screenshot](.github/media/elixir-screenshot-web.png)
+
 - **Operator controls** for pause, resume, and stop, persisted across restarts so dispatch state
   survives a deploy.
 - **Watchdog and retry recovery** for stalled or failed agent sessions.
@@ -75,7 +72,7 @@ stops the active agent for that issue and cleans up matching workspaces.
 - **Learnings capture** from merged PR reviews, fed back into future workflow prompts.
 - **Docker runner** for hosting Symphony with mounted repos, state, logs, and agent credentials.
 
-## Quick Start
+## Setup
 
 Symphony works best in codebases that have adopted
 [harness engineering](https://openai.com/index/harness-engineering/): scripts, tests, docs, and
@@ -172,21 +169,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 The quality gate is disabled by default. To opt in, set `quality_gate.enabled: true` and provide
 `ANTHROPIC_API_KEY` or configure another provider/model under `quality_gate`.
 
+For the full reference of supported keys, defaults, and CLI flags, see
+[docs/configuration.md](docs/configuration.md).
+
 ## Docker
 
 The Docker runtime mounts your operator config, repositories, credentials, and agent command into
 the Symphony service. See [docker/README.md](docker/README.md).
-
-## Packaging
-
-Packaged macOS binaries are built with Burrito and include the Erlang runtime:
-
-```bash
-make package
-```
-
-Release artifacts are written to `burrito_out/` such as `burrito_out/symphony-macos-arm64`.
-Distribution, code signing, notarization, and a Homebrew tap are not wired yet.
 
 ## Operator Controls
 
@@ -206,41 +195,16 @@ mise exec -- mix symphony.resume
 mise exec -- mix symphony.stop RSM-123
 ```
 
-## Testing
-
-```bash
-make all
-```
-
-In sandboxed Codex workspaces, prefer a writable Hex cache location for the full gate:
-
-```bash
-HEX_HOME=/private/tmp/symphony-hex-home make all
-```
-
-Run the real external end-to-end test only when you want Symphony to create disposable Linear
-resources and launch a real agent session:
-
-```bash
-export LINEAR_API_KEY=...
-make e2e
-```
-
 ## Documentation
 
-- [SPEC.md](SPEC.md): behavior reference for the current Symphony service.
 - [docs/configuration.md](docs/configuration.md): full configuration reference for `WORKFLOW.md`,
   CLI flags, defaults, and supported values.
-- [docs/logging.md](docs/logging.md), [docs/quality_gate_security.md](docs/quality_gate_security.md),
-  and [docs/token_accounting.md](docs/token_accounting.md): operational deep-dives.
+- [docs/logging.md](docs/logging.md),
+  [docs/quality_gate_security.md](docs/quality_gate_security.md), and
+  [docs/token_accounting.md](docs/token_accounting.md): operational deep-dives.
+- [docs/development.md](docs/development.md): toolchain, testing, packaging, and fork notes for
+  contributors.
 - [WORKFLOW.md](WORKFLOW.md): the example in-repo workflow contract and agent prompt.
-- [AGENTS.md](AGENTS.md): maintainer notes for agents working on Symphony.
-
-## Why Elixir?
-
-Elixir is built on Erlang/BEAM/OTP, which is a good fit for supervising long-running processes. It
-has an active ecosystem of tools and libraries, and it supports hot code reloading without stopping
-actively running subagents during development.
 
 ## License
 

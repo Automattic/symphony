@@ -97,7 +97,7 @@ ci:
 #     stop_signal: TERM
 #     stop_timeout_ms: 10000
 quality_gate:
-  enabled: true
+  enabled: false
   provider: anthropic # Optional: anthropic or openai.
   model: claude-haiku-4-5-20251001
   pass_threshold: 6
@@ -106,13 +106,13 @@ quality_gate:
   # min_score: 6 # Legacy alias used only when pass_threshold is unset.
   on_error: pass # Optional: pass dispatches if the scorer fails; skip retries later.
 learnings:
-  enabled: true
+  enabled: false
   provider: anthropic # Optional: anthropic or openai.
   model: claude-haiku-4-5-20251001
   max_total_per_repo: 500
   max_per_run: 3
 self_review:
-  enabled: true
+  enabled: false
   provider: anthropic # Optional: anthropic or openai.
   model: claude-sonnet-4-6
   diff_max_lines: 600

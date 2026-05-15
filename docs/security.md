@@ -124,7 +124,6 @@ read from environment variables. The quality gate explicitly ignores credentials
 
 ### Tracker hygiene
 
-- Use a dedicated Linear bot user with the minimum project/team scope Symphony needs.
 - Restrict who can edit issues that fall inside Symphony's poll filter. Anyone who can edit an
   issue can attempt prompt injection through its content.
 - If issue editing is open to a wider audience, consider `quality_gate.on_error: skip` and a

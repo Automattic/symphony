@@ -272,7 +272,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
          {:ok, normalized_limit} <- normalize_limit(limit),
          {:ok, body} <- graphql(@comments_query, %{id: issue_id, limit: normalized_limit}, opts),
          {:ok, nodes} <- fetch_path(body, ["data", "issue", "comments", "nodes"], []) do
-      {:ok, nodes |> Enum.reverse() |> Enum.map(&wrap_comment/1)}
+      {:ok, nodes |> Enum.reverse() |> Enum.map(&wrap_comment(&1, context, opts))}
     end
   end
 
@@ -625,10 +625,43 @@ defmodule SymphonyElixir.AgentTools.Linear do
   defp wrap_issue_summary(issue), do: issue
 
   defp wrap_comment(comment) when is_map(comment) do
-    wrap_string_field(comment, "body", &PromptSafety.linear_issue_comment_body/1)
+    comment
+    |> redact_string_field("body")
+    |> wrap_string_field("body", &PromptSafety.linear_issue_comment_body/1)
   end
 
   defp wrap_comment(comment), do: comment
+
+  defp wrap_comment(comment, context, opts) when is_map(comment) do
+    comment
+    |> redact_string_field("body", context, "linear_get_comments", opts)
+    |> wrap_string_field("body", &PromptSafety.linear_issue_comment_body/1)
+  end
+
+  defp wrap_comment(comment, _context, _opts), do: comment
+
+  defp redact_string_field(map, key) when is_map(map) and is_binary(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} when is_binary(value) ->
+        {redacted, _patterns} = SecretScanner.redact(value)
+        Map.put(map, key, redacted)
+
+      _missing_or_non_string ->
+        map
+    end
+  end
+
+  defp redact_string_field(map, key, context, tool, opts) when is_map(map) and is_binary(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} when is_binary(value) ->
+        {redacted, patterns} = SecretScanner.redact(value)
+        SecretScanner.audit_redaction(patterns, context, tool, key, opts)
+        Map.put(map, key, redacted)
+
+      _missing_or_non_string ->
+        map
+    end
+  end
 
   defp wrap_nested_comment_nodes(%{"comments" => %{"nodes" => nodes}} = issue) when is_list(nodes) do
     put_in(issue, ["comments", "nodes"], Enum.map(nodes, &wrap_comment/1))

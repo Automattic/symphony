@@ -21,6 +21,95 @@ defmodule SymphonyElixir.AgentTools.SecretScannerTest do
     assert SecretScanner.detect("sk-ant-" <> String.duplicate("a", 24)) == :anthropic_api_key
   end
 
+  test "detect recognizes expanded credential formats" do
+    cases = [
+      {:linear_api_key, "lin_api_" <> String.duplicate("a", 40)},
+      {:npm_token, "npm_" <> String.duplicate("b", 36)},
+      {:slack_token, "xoxb-" <> String.duplicate("1-", 12) <> String.duplicate("A", 24)},
+      {:slack_token, "xoxp-" <> String.duplicate("2-", 12) <> String.duplicate("B", 24)},
+      {:slack_token, "xapp-" <> String.duplicate("C", 24)},
+      {:gitlab_personal_access_token, "glpat-" <> String.duplicate("D", 20)},
+      {:gcp_service_account_key, gcp_service_account_fixture()},
+      {:private_key_block, private_key_fixture()},
+      {:stripe_secret_key, "sk_live_" <> String.duplicate("e", 24)},
+      {:stripe_secret_key, "rk_live_" <> String.duplicate("f", 24)},
+      {:twilio_account_sid, "AC" <> String.duplicate("0123456789abcdef", 2)},
+      {:twilio_api_key, "SK" <> String.duplicate("fedcba9876543210", 2)},
+      {:sendgrid_api_key, "SG." <> String.duplicate("G", 22) <> "." <> String.duplicate("H", 43)},
+      {:authorization_bearer_token, "Authorization: Bearer " <> String.duplicate("I", 40)}
+    ]
+
+    for {kind, payload} <- cases do
+      assert SecretScanner.detect("credential=#{payload}") == kind
+    end
+  end
+
+  test "expanded credential patterns reject similar-looking non-credentials" do
+    refute SecretScanner.detect("lin_api_documentation")
+    refute SecretScanner.detect("npm_documentation")
+    refute SecretScanner.detect("xoxb-documentation")
+    refute SecretScanner.detect("xapp-documentation")
+    refute SecretScanner.detect("glpat-documentation")
+    refute SecretScanner.detect(~s({"type":"service_account"}))
+    refute SecretScanner.detect("-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----")
+    refute SecretScanner.detect("sk_live_documentation")
+    refute SecretScanner.detect("rk_live_documentation")
+    refute SecretScanner.detect("AC" <> String.duplicate("0", 31))
+    refute SecretScanner.detect("SK" <> String.duplicate("0", 31))
+    refute SecretScanner.detect("SG.short.token")
+    refute SecretScanner.detect("Authorization: Bearer documentation")
+  end
+
+  test "redact replaces detected secrets with markers and reports matched kinds" do
+    linear_token = "lin_api_" <> String.duplicate("a", 40)
+    stripe_token = "sk_live_" <> String.duplicate("b", 24)
+
+    assert {redacted, [:linear_api_key, :stripe_secret_key]} =
+             SecretScanner.redact("linear=#{linear_token} stripe=#{stripe_token}")
+
+    assert redacted =~ "[REDACTED:linear_api_key]"
+    assert redacted =~ "[REDACTED:stripe_secret_key]"
+    refute redacted =~ linear_token
+    refute redacted =~ stripe_token
+  end
+
+  test "redact handles non-string and non-UTF-8 binary content" do
+    assert SecretScanner.redact(:not_a_string) == {:not_a_string, []}
+
+    benign_binary = <<0xFF, 0xFE, "ordinary binary payload", 0x00>>
+    refute String.valid?(benign_binary)
+    assert SecretScanner.redact(benign_binary) == {benign_binary, []}
+
+    secret_binary = <<0xFF, "lin_api_", String.duplicate("a", 40)::binary, 0xFE>>
+    refute String.valid?(secret_binary)
+    assert SecretScanner.redact(secret_binary) == {"[REDACTED:linear_api_key]", [:linear_api_key]}
+  end
+
+  test "audit_redaction records only redaction metadata" do
+    workspace = tmp_workspace!("secret-scanner-redaction-audit")
+    audit_dir = Path.join(workspace, "audit")
+
+    try do
+      assert :ok = SecretScanner.audit_redaction([], %{}, "tool_name", "body", dir: audit_dir)
+      assert [] = audit_events(audit_dir)
+
+      assert :ok =
+               SecretScanner.audit_redaction([:linear_api_key, :stripe_secret_key], %{}, "tool_name", "body", dir: audit_dir)
+
+      assert [
+               %{
+                 "event_type" => "agent_tool_secret_redaction",
+                 "field" => "body",
+                 "reason" => "secret_pattern_detected",
+                 "secret_patterns" => ["linear_api_key", "stripe_secret_key"],
+                 "tool" => "tool_name"
+               }
+             ] = audit_events(audit_dir)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
   test "non-UTF-8 binary content is scanned for high-confidence prefixes" do
     payload = <<0xFF, 0xFE, "leading bytes ", "sk-ant-", String.duplicate("a", 24)::binary, 0x00>>
     refute String.valid?(payload)
@@ -128,6 +217,18 @@ defmodule SymphonyElixir.AgentTools.SecretScannerTest do
   end
 
   defp openai_fixture, do: "sk-" <> String.duplicate("a", 48)
+
+  defp private_key_fixture do
+    """
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    #{String.duplicate("a", 64)}
+    -----END OPENSSH PRIVATE KEY-----
+    """
+  end
+
+  defp gcp_service_account_fixture do
+    ~s({"type":"service_account","project_id":"project","private_key":"-----BEGIN PRIVATE KEY-----\\n#{String.duplicate("a", 64)}\\n-----END PRIVATE KEY-----\\n","client_email":"agent@example.test"})
+  end
 
   defp audit_events(dir) do
     dir

@@ -72,6 +72,52 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
              ]
     end
 
+    test "redacts secret patterns from returned comment bodies before wrapping" do
+      workspace = tmp_workspace!("linear-agent-comment-read-redaction")
+      audit_dir = Path.join(workspace, "audit")
+      linear_token = "lin_api_" <> String.duplicate("a", 40)
+
+      try do
+        assert {:ok, [comment]} =
+                 Linear.get_comments(%{issue_id: "issue-current"}, 1,
+                   dir: audit_dir,
+                   linear_client: fn query, variables, _opts ->
+                     assert query =~ "SymphonyAgentIssueComments"
+                     assert variables == %{id: "issue-current", limit: 1}
+
+                     {:ok,
+                      %{
+                        "data" => %{
+                          "issue" => %{
+                            "comments" => %{
+                              "nodes" => [
+                                %{"id" => "secret-comment", "body" => "leaked credential: " <> linear_token}
+                              ]
+                            }
+                          }
+                        }
+                      }}
+                   end
+                 )
+
+        assert comment["body"] == PromptSafety.linear_issue_comment_body("leaked credential: [REDACTED:linear_api_key]")
+        refute comment["body"] =~ linear_token
+
+        assert [
+                 %{
+                   "event_type" => "agent_tool_secret_redaction",
+                   "field" => "body",
+                   "secret_patterns" => ["linear_api_key"],
+                   "tool" => "linear_get_comments"
+                 }
+               ] = audit_events(audit_dir)
+
+        refute inspect(audit_events(audit_dir)) =~ linear_token
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
     test "wraps subissue parent and related issue summaries" do
       linear_client = fn query, _variables, _opts ->
         cond do
@@ -296,6 +342,30 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
                    end,
                    upload_client: fn _url, _opts ->
                      flunk("secret-bearing files should not be uploaded")
+                   end
+                 )
+
+        assert [%{"field" => "file", "reason" => "secret_pattern_detected"}] = audit_events(audit_dir)
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
+    test "attach_file rejects private key blocks before upload" do
+      workspace = tmp_workspace!("linear-agent-file-private-key")
+      audit_dir = Path.join(workspace, "audit")
+      path = Path.join(workspace, "proof.txt")
+      File.write!(path, private_key_fixture())
+
+      try do
+        assert {:error, :secret_pattern_detected} =
+                 Linear.attach_file(secret_context(workspace), path, "Proof",
+                   dir: audit_dir,
+                   linear_client: fn _query, _variables, _opts ->
+                     flunk("Linear should not request an upload for private-key-bearing files")
+                   end,
+                   upload_client: fn _url, _opts ->
+                     flunk("private-key-bearing files should not be uploaded")
                    end
                  )
 
@@ -577,11 +647,20 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
       "ghr_" <> String.duplicate("E", 24),
       "AKIA" <> String.duplicate("A", 16),
       "ASIA" <> String.duplicate("B", 16),
-      "AIza" <> String.duplicate("A", 35)
+      "AIza" <> String.duplicate("A", 35),
+      "lin_api_" <> String.duplicate("a", 40)
     ]
   end
 
   defp openai_fixture, do: "sk-" <> String.duplicate("a", 48)
+
+  defp private_key_fixture do
+    """
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    #{String.duplicate("a", 64)}
+    -----END OPENSSH PRIVATE KEY-----
+    """
+  end
 
   defp audit_events(dir) do
     dir

@@ -11,7 +11,19 @@ defmodule SymphonyElixir.AgentTools.SecretScanner do
     {:openai_api_key, ~r/\bsk-[A-Za-z0-9]{48}\b/},
     {:github_token, ~r/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/},
     {:aws_access_key_id, ~r/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/},
-    {:google_api_key, ~r/\bAIza[A-Za-z0-9_-]{35}\b/}
+    {:google_api_key, ~r/\bAIza[A-Za-z0-9_-]{35}\b/},
+    {:linear_api_key, ~r/\blin_api_[A-Za-z0-9]{40,}\b/},
+    {:npm_token, ~r/\bnpm_[A-Za-z0-9]{36,}\b/},
+    {:slack_token, ~r/\bxox[bp]-[A-Za-z0-9-]{20,}\b/},
+    {:slack_token, ~r/\bxapp-[A-Za-z0-9-]{20,}\b/},
+    {:gitlab_personal_access_token, ~r/\bglpat-[A-Za-z0-9_-]{20,}\b/},
+    {:gcp_service_account_key, ~r/\{(?:[\s\S]*"type"\s*:\s*"service_account"[\s\S]*"private_key"\s*:|[\s\S]*"private_key"\s*:[\s\S]*"type"\s*:\s*"service_account")[\s\S]*\}/},
+    {:private_key_block, ~r/-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/},
+    {:stripe_secret_key, ~r/\b(?:sk_live|rk_live)_[A-Za-z0-9]{20,}\b/},
+    {:twilio_account_sid, ~r/\bAC[0-9a-fA-F]{32}\b/},
+    {:twilio_api_key, ~r/\bSK[0-9a-fA-F]{32}\b/},
+    {:sendgrid_api_key, ~r/\bSG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/},
+    {:authorization_bearer_token, ~r/\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+\/=-]{32,}\b/i}
   ]
 
   # Byte-level prefixes used when content is not valid UTF-8 (e.g. binary
@@ -26,7 +38,15 @@ defmodule SymphonyElixir.AgentTools.SecretScanner do
     {:github_token, "gho_"},
     {:github_token, "ghu_"},
     {:github_token, "ghs_"},
-    {:github_token, "ghr_"}
+    {:github_token, "ghr_"},
+    {:linear_api_key, "lin_api_"},
+    {:npm_token, "npm_"},
+    {:slack_token, "xoxb-"},
+    {:slack_token, "xoxp-"},
+    {:slack_token, "xapp-"},
+    {:gitlab_personal_access_token, "glpat-"},
+    {:stripe_secret_key, "sk_live_"},
+    {:stripe_secret_key, "rk_live_"}
   ]
 
   @spec reject_if_secret_pattern(term(), map(), String.t(), String.t()) :: :ok | {:error, :secret_pattern_detected}
@@ -67,10 +87,58 @@ defmodule SymphonyElixir.AgentTools.SecretScanner do
 
   def detect(_content), do: nil
 
+  @spec redact(term()) :: {term(), [atom()]}
+  def redact(content) when is_binary(content) do
+    if String.valid?(content) do
+      redact_valid_string(content)
+    else
+      case detect_binary(content) do
+        nil -> {content, []}
+        pattern -> {"[REDACTED:#{pattern}]", [pattern]}
+      end
+    end
+  end
+
+  def redact(content), do: {content, []}
+
+  @spec audit_redaction([atom()], map(), String.t(), String.t(), keyword()) :: :ok
+  def audit_redaction([], _context, _tool, _field, _opts), do: :ok
+
+  def audit_redaction(patterns, _context, tool, field, opts) when is_list(patterns) do
+    AuditLog.record(
+      %{
+        event_type: "agent_tool_secret_redaction",
+        action: "redacted",
+        reason: "secret_pattern_detected",
+        tool: tool,
+        field: field,
+        secret_patterns: Enum.map(patterns, &to_string/1)
+      },
+      opts
+    )
+
+    :ok
+  end
+
   defp detect_valid_string(content) do
     Enum.find_value(@patterns, fn {name, pattern} ->
       if Regex.match?(pattern, content), do: name
     end)
+  end
+
+  defp redact_valid_string(content) do
+    {redacted, kinds} =
+      Enum.reduce(@patterns, {content, []}, fn {name, pattern}, {text, kinds} ->
+        redacted = Regex.replace(pattern, text, "[REDACTED:#{name}]")
+
+        if redacted == text do
+          {text, kinds}
+        else
+          {redacted, [name | kinds]}
+        end
+      end)
+
+    {redacted, kinds |> Enum.reverse() |> Enum.uniq()}
   end
 
   defp detect_binary(content) do

@@ -12,6 +12,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   alias SymphonyElixir.AgentTools.SecretScanner
   alias SymphonyElixir.Linear.{Client, Issue}
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.PromptSafety
   alias SymphonyElixir.SensitivePath
 
   @comment_limit_default 50
@@ -254,7 +255,9 @@ defmodule SymphonyElixir.AgentTools.Linear do
   def get_current_issue(context, opts \\ []) do
     with {:ok, issue_id} <- current_issue_id(context),
          {:ok, body} <- graphql(@current_issue_query, %{id: issue_id}, opts) do
-      fetch_path(body, ["data", "issue"], :issue_not_found)
+      with {:ok, issue} <- fetch_path(body, ["data", "issue"], :issue_not_found) do
+        {:ok, wrap_issue(issue)}
+      end
     end
   end
 
@@ -262,7 +265,9 @@ defmodule SymphonyElixir.AgentTools.Linear do
   def get_subissues(context, opts \\ []) do
     with {:ok, issue_id} <- current_issue_id(context),
          {:ok, body} <- graphql(@subissues_query, %{id: issue_id, first: @related_issue_first}, opts) do
-      fetch_path(body, ["data", "issue", "children", "nodes"], [])
+      with {:ok, nodes} <- fetch_path(body, ["data", "issue", "children", "nodes"], []) do
+        {:ok, Enum.map(nodes, &wrap_issue_summary/1)}
+      end
     end
   end
 
@@ -270,7 +275,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   def get_parent_issue(context, opts \\ []) do
     with {:ok, issue_id} <- current_issue_id(context),
          {:ok, body} <- graphql(@parent_issue_query, %{id: issue_id}, opts) do
-      {:ok, get_in(body, ["data", "issue", "parent"])}
+      {:ok, wrap_issue_summary(get_in(body, ["data", "issue", "parent"]))}
     end
   end
 
@@ -280,7 +285,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
          {:ok, normalized_limit} <- normalize_limit(limit),
          {:ok, body} <- graphql(@comments_query, %{id: issue_id, limit: normalized_limit}, opts),
          {:ok, nodes} <- fetch_path(body, ["data", "issue", "comments", "nodes"], []) do
-      {:ok, Enum.reverse(nodes)}
+      {:ok, nodes |> Enum.reverse() |> Enum.map(&wrap_comment/1)}
     end
   end
 
@@ -289,7 +294,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
     with {:ok, issue_id} <- current_issue_id(context),
          {:ok, body} <- graphql(@related_issues_query, %{id: issue_id, first: @related_issue_first}, opts),
          {:ok, issue} <- fetch_path(body, ["data", "issue"], :issue_not_found) do
-      {:ok, related_issues(issue)}
+      {:ok, issue |> related_issues() |> Enum.map(&wrap_issue_summary/1)}
     end
   end
 
@@ -643,6 +648,42 @@ defmodule SymphonyElixir.AgentTools.Linear do
   end
 
   defp related_issue_from_relation(_relation, _direction), do: []
+
+  defp wrap_issue(issue) when is_map(issue) do
+    issue
+    |> wrap_string_field("title", &PromptSafety.linear_issue_title/1)
+    |> wrap_string_field("description", &PromptSafety.linear_issue_body/1)
+    |> wrap_nested_comment_nodes()
+  end
+
+  defp wrap_issue(issue), do: issue
+
+  defp wrap_issue_summary(issue) when is_map(issue) do
+    issue
+    |> wrap_string_field("title", &PromptSafety.linear_issue_title/1)
+    |> wrap_string_field("description", &PromptSafety.linear_issue_body/1)
+  end
+
+  defp wrap_issue_summary(issue), do: issue
+
+  defp wrap_comment(comment) when is_map(comment) do
+    wrap_string_field(comment, "body", &PromptSafety.linear_issue_comment_body/1)
+  end
+
+  defp wrap_comment(comment), do: comment
+
+  defp wrap_nested_comment_nodes(%{"comments" => %{"nodes" => nodes}} = issue) when is_list(nodes) do
+    put_in(issue, ["comments", "nodes"], Enum.map(nodes, &wrap_comment/1))
+  end
+
+  defp wrap_nested_comment_nodes(issue), do: issue
+
+  defp wrap_string_field(map, key, fun) when is_map(map) and is_binary(key) and is_function(fun, 1) do
+    case Map.fetch(map, key) do
+      {:ok, value} when is_binary(value) -> Map.put(map, key, fun.(value))
+      _ -> map
+    end
+  end
 
   defp block_relation?(type) when is_binary(type) do
     type

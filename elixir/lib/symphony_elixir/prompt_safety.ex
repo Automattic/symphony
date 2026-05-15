@@ -6,6 +6,7 @@ defmodule SymphonyElixir.PromptSafety do
   @title_limit 500
   @description_limit 10_000
   @comment_limit 5_000
+  @state_limit 100
   @acceptance_criteria_limit 10_000
   @ci_log_excerpt_limit 20_000
   @prompt_injection_warning_patterns [
@@ -26,6 +27,9 @@ defmodule SymphonyElixir.PromptSafety do
 
   @spec linear_issue_comment_body(String.t()) :: String.t()
   def linear_issue_comment_body(value), do: linear_block(value, "linear_issue_comment_body", @comment_limit)
+
+  @spec linear_issue_state(String.t()) :: String.t()
+  def linear_issue_state(value), do: linear_block(value, "linear_linked_issue_state", @state_limit)
 
   @spec linear_reviewer_comment_body(String.t()) :: String.t()
   def linear_reviewer_comment_body(value), do: linear_block(value, "linear_reviewer_comment_body", @comment_limit)

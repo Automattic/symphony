@@ -399,9 +399,10 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
   Codex starts one app-server thread per worker run and reuses that `threadId` for continuation
   turns. The current Claude adapter launches Claude Code as a CLI `--print --output-format
-  stream-json` turn and does not pass a Symphony-managed resume/thread id between continuation
-  turns, so Claude continuation depends on workspace, workpad, Linear state, and the continuation
-  prompt rather than model-thread history.
+  stream-json` turn with prompt input provided over stdin from a private temporary file, and it does
+  not pass a Symphony-managed resume/thread id between continuation turns. Claude continuation
+  depends on workspace, workpad, Linear state, and the continuation prompt rather than model-thread
+  history.
 - `agent.max_tokens_per_issue` and `agent.max_tokens_per_day` are token budget guardrails. Defaults
   are `500000` tokens per issue and `5000000` tokens per UTC day, so workflows have finite caps even
   when these keys are omitted. Raise either value by setting a larger positive integer, or set either

@@ -1743,8 +1743,8 @@ Scoped Linear tool extension contract:
   rejected.
 - Suggested baseline tools: `linear_get_current_issue`, `linear_get_subissues`,
   `linear_get_parent_issue`, `linear_get_comments`, `linear_get_related_issues`,
-  `linear_update_state`, `linear_set_assignee`, `linear_add_comment`, `linear_update_comment`,
-  `linear_delete_comment`, `linear_attach_url`, and `linear_attach_file`.
+  `linear_update_state`, `linear_add_comment`, `linear_update_comment`, `linear_delete_comment`,
+  `linear_attach_url`, and `linear_attach_file`.
 - `linear_attach_file` uploads MUST be private by default. A prompt-facing public upload option, if
   exposed, MUST be explicit and documented as producing a world-readable CDN URL.
 - Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config.

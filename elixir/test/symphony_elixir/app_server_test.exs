@@ -1583,6 +1583,7 @@ defmodule SymphonyElixir.AppServerTest do
                        "linear_update_state" in tool_names and
                        "github_create_pull_request" in tool_names and
                        "github_push_branch" in tool_names and
+                       "linear_set_assignee" not in tool_names and
                        "linear_graphql" not in tool_names
                    end)
                else

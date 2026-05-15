@@ -21,6 +21,9 @@ defmodule SymphonyElixir.SensitivePathTest do
       "~/.git-credentials",
       "~/.npmrc",
       "~/.cargo/credentials",
+      "~/.claude/.credentials.json",
+      "~/.claude/projects/symphony-run.jsonl",
+      "~/.claude/file-history/snapshot.json",
       "~/.config/op/config",
       "~/.config/gcloud/application_default_credentials.json",
       "~/.azure/accessTokens.json",
@@ -60,7 +63,6 @@ defmodule SymphonyElixir.SensitivePathTest do
     end
 
     refute SensitivePath.secret_path("~/.codex/auth.json")
-    refute SensitivePath.secret_path("~/.claude/.credentials.json")
     refute SensitivePath.secret_path(".npmrc")
   end
 

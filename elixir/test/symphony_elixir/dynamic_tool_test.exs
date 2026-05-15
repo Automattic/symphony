@@ -15,7 +15,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert "github_push_branch" in tool_names
     assert "github_get_pr_checks" in tool_names
     refute "linear_graphql" in tool_names
+    refute "linear_set_assignee" in tool_names
     refute "linear.get_current_issue" in tool_names
+    refute "linear.set_assignee" in tool_names
     refute "github.get_pull_request" in tool_names
 
     assert Enum.all?(tool_names, &Regex.match?(~r/^[a-zA-Z0-9_-]+$/, &1))
@@ -48,6 +50,24 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            } = Jason.decode!(response["output"])
 
     refute "linear_graphql" in supported_tools
+  end
+
+  test "removed linear_set_assignee tool and legacy alias return tool_not_found" do
+    for tool <- ["linear_set_assignee", "linear.set_assignee"] do
+      response = DynamicTool.execute(tool, %{"assignee" => "self"})
+
+      assert response["success"] == false
+
+      assert %{
+               "error" => %{
+                 "code" => "tool_not_found",
+                 "supportedTools" => supported_tools
+               }
+             } = Jason.decode!(response["output"])
+
+      refute "linear_set_assignee" in supported_tools
+      refute "linear.set_assignee" in supported_tools
+    end
   end
 
   test "update_state resolves against the current issue team and updates current issue only" do

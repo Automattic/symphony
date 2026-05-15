@@ -188,6 +188,8 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
+    alias SymphonyElixir.Config.Schema
+
     defmodule Sandbox do
       @moduledoc false
       use Ecto.Schema
@@ -289,6 +291,35 @@ defmodule SymphonyElixir.Config.Schema do
       end
     end
 
+    defmodule Attachments do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @primary_key false
+      @default_allowed_hosts ["github.com"]
+
+      @type t :: %__MODULE__{allowed_hosts: [String.t()]}
+
+      embedded_schema do
+        field(:allowed_hosts, {:array, :string}, default: @default_allowed_hosts)
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:allowed_hosts], empty_values: [])
+        |> update_change(:allowed_hosts, &allowed_hosts_or_default/1)
+      end
+
+      defp allowed_hosts_or_default(hosts) do
+        case Schema.normalize_domain_list(hosts) do
+          [] -> @default_allowed_hosts
+          normalized -> normalized
+        end
+      end
+    end
+
     @primary_key false
     embedded_schema do
       field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
@@ -297,6 +328,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:fetch_before_dispatch, :boolean, default: true)
       embeds_one(:sandbox, Sandbox, on_replace: :update, defaults_to_struct: true)
       embeds_one(:lifecycle, Lifecycle, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:attachments, Attachments, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -305,6 +337,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(attrs, [:root, :strategy, :repo, :fetch_before_dispatch], empty_values: [])
       |> cast_embed(:sandbox, with: &Sandbox.changeset/2)
       |> cast_embed(:lifecycle, with: &Lifecycle.changeset/2)
+      |> cast_embed(:attachments, with: &Attachments.changeset/2)
       |> validate_inclusion(:strategy, ["clone", "worktree"])
     end
   end

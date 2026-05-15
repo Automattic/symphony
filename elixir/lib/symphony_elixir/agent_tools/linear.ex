@@ -10,6 +10,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.AgentTools.SecretScanner
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Linear.{Client, Issue}
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.PromptSafety
@@ -21,6 +22,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @related_issue_first 50
   @public_file_upload_max_bytes 5 * 1024 * 1024
   @private_file_upload_max_bytes 50 * 1024 * 1024
+  @default_attachment_allowed_hosts ["github.com"]
 
   @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
@@ -149,19 +151,6 @@ defmodule SymphonyElixir.AgentTools.Linear do
         id
         identifier
         state { id name type }
-      }
-    }
-  }
-  """
-
-  @set_assignee_mutation """
-  mutation SymphonyAgentSetIssueAssignee($id: String!, $assigneeId: String) {
-    issueUpdate(id: $id, input: { assigneeId: $assigneeId }) {
-      success
-      issue {
-        id
-        identifier
-        assignee { id name }
       }
     }
   }
@@ -312,20 +301,6 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   def update_state(_context, _state_name_or_id, _opts), do: {:error, :invalid_state}
 
-  @spec set_assignee(context(), String.t()) :: {:ok, map()} | {:error, term()}
-  def set_assignee(context, assignee), do: set_assignee(context, assignee, [])
-
-  @spec set_assignee(context(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def set_assignee(context, assignee, opts) when is_binary(assignee) do
-    with {:ok, issue_id} <- current_issue_id(context),
-         {:ok, assignee_id} <- resolve_assignee(assignee, opts),
-         {:ok, response} <- graphql(@set_assignee_mutation, %{id: issue_id, assigneeId: assignee_id}, opts) do
-      check_mutation_success(response, "issueUpdate")
-    end
-  end
-
-  def set_assignee(_context, _assignee, _opts), do: {:error, :invalid_assignee}
-
   @spec add_comment(context(), String.t()) :: {:ok, map()} | {:error, term()}
   def add_comment(context, body), do: add_comment(context, body, [])
 
@@ -411,7 +386,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @spec attach_url(context(), String.t(), String.t() | nil, keyword()) :: {:ok, map()} | {:error, term()}
   def attach_url(context, url, title, opts) when is_binary(url) do
     with {:ok, issue_id} <- current_issue_id(context),
-         {:ok, normalized_url} <- validate_url(url),
+         {:ok, normalized_url} <- validate_url(url, opts),
          {:ok, normalized_title} <- normalize_title(title),
          :ok <-
            SecretScanner.reject_fields_if_secret_pattern(
@@ -491,28 +466,6 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   defp state_name_matches?(state, name) do
     String.downcase(to_string(state["name"])) == String.downcase(name)
-  end
-
-  defp resolve_assignee(assignee, opts) do
-    case String.trim(assignee) do
-      "self" ->
-        viewer_id(opts)
-
-      ":self" ->
-        resolve_assignee("self", opts)
-
-      "unassign" ->
-        {:ok, nil}
-
-      ":unassign" ->
-        {:ok, nil}
-
-      "" ->
-        {:error, :invalid_assignee}
-
-      user_id ->
-        {:ok, user_id}
-    end
   end
 
   defp request_file_upload(path, opts) do
@@ -651,12 +604,19 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   defp wrap_issue(issue) when is_map(issue) do
     issue
+    |> put_assignee_id()
     |> wrap_string_field("title", &PromptSafety.linear_issue_title/1)
     |> wrap_string_field("description", &PromptSafety.linear_issue_body/1)
     |> wrap_nested_comment_nodes()
   end
 
   defp wrap_issue(issue), do: issue
+
+  defp put_assignee_id(%{"assignee" => %{"id" => assignee_id}} = issue) when is_binary(assignee_id) do
+    Map.put_new(issue, "assignee_id", assignee_id)
+  end
+
+  defp put_assignee_id(issue), do: issue
 
   defp wrap_issue_summary(issue) when is_map(issue) do
     issue
@@ -709,16 +669,45 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   defp normalize_limit(_limit), do: {:error, :invalid_limit}
 
-  defp validate_url(url) do
+  defp validate_url(url, opts) do
     trimmed = String.trim(url)
     uri = URI.parse(trimmed)
 
     if uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.host != "" do
-      {:ok, trimmed}
+      host = String.downcase(uri.host)
+      allowed_hosts = attachment_allowed_hosts(opts)
+
+      if host in allowed_hosts do
+        {:ok, trimmed}
+      else
+        {:error, {:host_not_allowed, host}}
+      end
     else
       {:error, :invalid_url}
     end
   end
+
+  defp attachment_allowed_hosts(opts) do
+    opts
+    |> Keyword.get_lazy(:settings, &Config.settings!/0)
+    |> get_in([Access.key(:workspace), Access.key(:attachments), Access.key(:allowed_hosts)])
+    |> normalize_allowed_hosts()
+  end
+
+  defp normalize_allowed_hosts(hosts) when is_list(hosts) do
+    hosts
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.map(&String.downcase/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> case do
+      [] -> @default_attachment_allowed_hosts
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_allowed_hosts(_hosts), do: @default_attachment_allowed_hosts
 
   defp normalize_title(nil), do: {:ok, nil}
 

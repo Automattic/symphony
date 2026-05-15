@@ -84,11 +84,12 @@ Available scoped Linear tools:
 - `linear_get_comments(limit)`
 - `linear_get_related_issues()`
 - `linear_update_state(state_name_or_id)`
-- `linear_set_assignee(assignee)` where `assignee` is `self`, `unassign`, or a user id
 - `linear_add_comment(body)`
 - `linear_update_comment(comment_id, body)` for comments created earlier by this run
 - `linear_delete_comment(comment_id)` for comments created earlier by this run
-- `linear_attach_url(url, title)`
+- `linear_attach_url(url, title)` where `url` must use an allowed attachment host.
+  By default only exact `github.com` hosts are allowed; add explicit hosts with
+  `workspace.attachments.allowed_hosts` when needed.
 - `linear_attach_file(local_path, title, make_public)` where `local_path` must be inside the workspace. Uploads are private by default; pass `make_public: true` only for artifacts intentionally safe to expose through a world-readable Linear CDN URL, such as screenshots for a public-repo PR.
 
 Do not craft raw Linear GraphQL from prompts. If a required workflow needs a

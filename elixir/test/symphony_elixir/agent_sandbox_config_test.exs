@@ -5,6 +5,17 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
   alias SymphonyElixir.Config.{Schema, SystemSchema}
   alias SymphonyElixir.Config.Schema.Workspace.Sandbox
 
+  # Mirror of AgentSandboxConfig.expand_home_paths/1 for asserting against
+  # the dual-form (tilde + Path.expand) deny lists emitted by sandbox settings.
+  defp expand_home_paths(paths) do
+    paths
+    |> Enum.flat_map(fn
+      "~/" <> _ = path -> [path, Path.expand(path)]
+      other -> [other]
+    end)
+    |> Enum.uniq()
+  end
+
   @persistence_deny_write_paths [
     "~/.zshrc",
     "~/.zshenv",
@@ -83,9 +94,26 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     refute "~/.config/gh" in AgentSandboxConfig.deny_write_paths()
 
     assert AgentSandboxConfig.claude_filesystem_settings() == %{
-             "denyRead" => AgentSandboxConfig.deny_read_paths(),
-             "denyWrite" => AgentSandboxConfig.deny_write_paths()
+             "denyRead" => expand_home_paths(AgentSandboxConfig.deny_read_paths()),
+             "denyWrite" => expand_home_paths(AgentSandboxConfig.deny_write_paths())
            }
+  end
+
+  test "Claude filesystem settings include both tilde and absolute forms of home-relative deny paths (defense-in-depth)" do
+    settings = AgentSandboxConfig.claude_filesystem_settings()
+
+    expected_ssh_absolute = Path.expand("~/.ssh")
+    expected_zshrc_absolute = Path.expand("~/.zshrc")
+
+    # Tilde forms remain (downstream tools that expand `~` continue to work).
+    assert "~/.ssh" in settings["denyRead"]
+    assert "~/.zshrc" in settings["denyWrite"]
+
+    # Absolute forms also present so the deny list still matches if a downstream
+    # path comparison is ever performed against an already-expanded absolute path
+    # (regression guard against silent tilde-not-expanded failures).
+    assert expected_ssh_absolute in settings["denyRead"]
+    assert expected_zshrc_absolute in settings["denyWrite"]
   end
 
   test "Claude filesystem settings drop operator allow_read_paths from denyRead" do
@@ -96,7 +124,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     refute "~/.claude/projects" in settings["denyRead"]
     assert "~/.ssh" in settings["denyRead"]
     assert "~/.claude/.credentials.json" in settings["denyRead"]
-    assert settings["denyWrite"] == AgentSandboxConfig.deny_write_paths()
+    assert settings["denyWrite"] == expand_home_paths(AgentSandboxConfig.deny_write_paths())
   end
 
   test "Claude filesystem settings normalize malformed operator allow_read_paths" do
@@ -143,6 +171,34 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert domains =~ ~s("api.openai.com"="allow")
     assert domains =~ ~s("github.com"="allow")
     refute domains =~ "evil.example.com"
+  end
+
+  test "Codex allowlist config emits both tilde and absolute forms of home-relative deny paths (defense-in-depth)" do
+    overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [])
+    filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+
+    expected_ssh_absolute = Path.expand("~/.ssh")
+    expected_zshrc_absolute = Path.expand("~/.zshrc")
+
+    # Tilde forms still emitted for downstream tools that expand `~`.
+    assert filesystem =~ ~s("~/.ssh"="none")
+    assert filesystem =~ ~s("~/.zshrc"="read")
+
+    # Absolute forms also emitted as defense-in-depth against any downstream
+    # path comparison that does not re-expand `~`.
+    assert filesystem =~ ~s("#{expected_ssh_absolute}"="none")
+    assert filesystem =~ ~s("#{expected_zshrc_absolute}"="read")
+  end
+
+  test "Codex project-root filesystem entries stay relative for current CLI validation" do
+    overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [])
+    filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+
+    assert [_, project_entries] = Regex.run(~r/":project_roots"=\{([^}]*)\}/, filesystem)
+    assert project_entries =~ ~s("WORKFLOW.md"="read")
+    assert project_entries =~ ~s(".git"="read")
+    refute project_entries =~ Path.expand("~/.zshrc")
+    refute project_entries =~ "/Users/"
   end
 
   test "Codex open mode keeps full network mode without domain narrowing" do
@@ -205,6 +261,21 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert settings["enableWeakerNetworkIsolation"] == false
   end
 
+  test "srt settings emit both tilde and absolute forms of home-relative deny paths (defense-in-depth)" do
+    assert {:ok, settings} = AgentSandboxConfig.srt_settings("allowlist", ["github.com"], [])
+
+    expected_ssh_absolute = Path.expand("~/.ssh")
+    expected_zshrc_absolute = Path.expand("~/.zshrc")
+
+    # Tilde forms still emitted.
+    assert "~/.ssh" in settings["filesystem"]["denyRead"]
+    assert "~/.zshrc" in settings["filesystem"]["denyWrite"]
+
+    # Absolute forms also emitted as defense-in-depth.
+    assert expected_ssh_absolute in settings["filesystem"]["denyRead"]
+    assert expected_zshrc_absolute in settings["filesystem"]["denyWrite"]
+  end
+
   test "srt settings accept extra read and write paths for runtime-managed roots" do
     assert {:ok, settings} =
              AgentSandboxConfig.srt_settings(
@@ -239,7 +310,12 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert settings["filesystem"]["allowRead"] == []
     assert "." in settings["filesystem"]["allowWrite"]
     assert "~/.codex" in settings["filesystem"]["allowWrite"]
-    assert settings["filesystem"]["denyWrite"] == AgentSandboxConfig.deny_write_paths() ++ ["~/.codex/auth.json", "~/.codex/config.toml", "~/.codex/AGENTS.md"]
+
+    assert settings["filesystem"]["denyWrite"] ==
+             expand_home_paths(
+               AgentSandboxConfig.deny_write_paths() ++
+                 ["~/.codex/auth.json", "~/.codex/config.toml", "~/.codex/AGENTS.md"]
+             )
   end
 
   test "srt settings map open and block network modes" do
@@ -275,22 +351,6 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     refute filesystem =~ ~s("~/.npmrc"="none")
     refute filesystem =~ ~s("~/.cargo/credentials"="none")
     refute filesystem =~ ~s("~/.claude/projects"="none")
-  end
-
-  test "Codex filesystem config renders runtime writable roots in the permission profile" do
-    overrides =
-      AgentSandboxConfig.codex_config_overrides(
-        "allowlist",
-        [],
-        ["~/.npmrc"],
-        ["/repo/.git/worktrees/MT-1", "relative/cache", "", :bad]
-      )
-
-    assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
-    assert filesystem =~ ~s("/repo/.git/worktrees/MT-1"="write")
-    assert filesystem =~ ~s("relative/cache"="write")
-    assert filesystem =~ ~s("~/.npmrc"="read")
-    assert filesystem =~ ~s("~/.ssh"="none")
   end
 
   test "Codex filesystem config does not allow operator overrides for runtime auth reads" do

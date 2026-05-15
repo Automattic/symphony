@@ -809,9 +809,14 @@ fields locally if they want stricter startup checks.
     SRT version provides a valid unrestricted-network representation.
   - Implementations MUST reject `kind: srt` for non-Codex adapters and MAY reject it for remote
     worker launch modes that cannot access the generated temporary settings file.
-  - Codex native command sandbox profiles SHOULD deny tool-command reads of host credential stores
-    and Codex runtime auth/config files while still allowing the parent Codex process to read the
-    runtime files required for authentication.
+  - With `kind: none`, implementations MAY continue using the targeted Codex app-server's native
+    thread and turn sandbox fields for compatibility. Known Codex app-server versions fail shell
+    execution when Symphony relies only on injected managed permission profiles, while native
+    thread/turn sandbox fields can cause Codex to drop or bypass those injected profile deny rules.
+    Treat native Codex profile deny-listing as best-effort unless the targeted runtime is verified
+    to preserve it while running shell commands.
+  - Use `kind: srt` when the implementation needs the shared sensitive filesystem deny list to be
+    enforced outside Codex while keeping shell command execution available.
   - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex`,
     `elixir/lib/symphony_elixir/agent_sandbox_config.ex`,
     `elixir/test/symphony_elixir/workspace_and_config_test.exs`, and
@@ -1617,9 +1622,13 @@ Current Elixir sandbox behavior:
 - Shared write denies protect workflow and runtime guardrail files such as `WORKFLOW.md`,
   `symphony.yml`, `symphony.local.yml`, `.claude/settings.json`, `.git`, `mise.toml`,
   `.tool-versions`, shell startup files, `~/.gitconfig`, and macOS launch agent roots.
-- Codex native `workspace_write` config always appends command-sandbox read denies for
+- Rendered Claude, SRT, and Codex native sandbox settings include both tilde and expanded absolute
+  forms for home-relative deny paths as defense in depth.
+- Codex native `workspace_write` config renders command-sandbox read denies for
   `~/.codex/auth.json`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md`; operator
   `workspace.sandbox.allow_read_paths` entries cannot re-allow these runtime auth/config files.
+  With `agent.sandbox_runtime.kind: none`, enforcement of the native profile deny list is
+  best-effort as described in Section 5.4.9.
 - SRT sandbox settings allow Codex to write its runtime state directory under `~/.codex`, but
   deny-write the sensitive/static Codex files `auth.json`, `config.toml`, and `AGENTS.md`.
 - Sensitive-path detection for command/audit safeguards also treats mounted volumes, admin paths,

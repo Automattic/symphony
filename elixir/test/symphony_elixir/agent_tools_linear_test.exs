@@ -421,6 +421,134 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
       end
     end
 
+    test "attach_file accepts configured public image and PDF extensions" do
+      workspace = tmp_workspace!("linear-agent-file-public-allowed")
+      test_pid = self()
+
+      allowed_files = [
+        "screenshot.png",
+        "photo.jpg",
+        "scan.jpeg",
+        "animation.gif",
+        "capture.webp",
+        "diagram.svg",
+        "diagram.pdf",
+        "Capture.PNG"
+      ]
+
+      try do
+        Enum.each(allowed_files, fn filename ->
+          path = Path.join(workspace, filename)
+          File.write!(path, "ordinary proof")
+
+          assert {:ok, response} =
+                   Linear.attach_file(secret_context(workspace), path, "Proof",
+                     make_public: true,
+                     linear_client: successful_file_upload_linear_client(test_pid),
+                     upload_client: successful_upload_client(test_pid)
+                   )
+
+          assert get_in(response, ["data", "attachmentCreate", "attachment", "id"]) == "attachment-ok"
+          assert_receive {:linear_file_upload, %{filename: ^filename, makePublic: true}}
+        end)
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
+    test "attach_file rejects disallowed public upload extensions before upload" do
+      workspace = tmp_workspace!("linear-agent-file-public-disallowed")
+
+      disallowed_files = [
+        {"notes.txt", ".txt"},
+        {"data.json", ".json"},
+        {"output", ""},
+        {"screenshot.png.txt", ".txt"}
+      ]
+
+      try do
+        Enum.each(disallowed_files, fn {filename, expected_extension} ->
+          path = Path.join(workspace, filename)
+          File.write!(path, "ordinary proof")
+
+          assert {:error, {:public_extension_not_allowed, ^expected_extension}} =
+                   Linear.attach_file(secret_context(workspace), path, "Proof",
+                     make_public: true,
+                     linear_client: fn _query, _variables, _opts ->
+                       flunk("Linear should not request an upload for disallowed public extension")
+                     end,
+                     upload_client: fn _url, _opts ->
+                       flunk("disallowed public extensions should not be uploaded")
+                     end
+                   )
+        end)
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
+    test "attach_file uses workspace attachment extension override for public uploads" do
+      workspace = tmp_workspace!("linear-agent-file-public-override")
+      test_pid = self()
+
+      settings = %Schema{
+        workspace: %Schema.Workspace{
+          attachments: %Schema.Workspace.Attachments{public_upload_extensions: [".png", ".log"]}
+        }
+      }
+
+      log_path = Path.join(workspace, "diagnostic.log")
+      json_path = Path.join(workspace, "diagnostic.json")
+      File.write!(log_path, "ordinary proof")
+      File.write!(json_path, "ordinary proof")
+
+      try do
+        assert {:ok, _response} =
+                 Linear.attach_file(secret_context(workspace), log_path, "Proof",
+                   make_public: true,
+                   settings: settings,
+                   linear_client: successful_file_upload_linear_client(test_pid),
+                   upload_client: successful_upload_client(test_pid)
+                 )
+
+        assert_receive {:linear_file_upload, %{filename: "diagnostic.log", makePublic: true}}
+
+        assert {:error, {:public_extension_not_allowed, ".json"}} =
+                 Linear.attach_file(secret_context(workspace), json_path, "Proof",
+                   make_public: true,
+                   settings: settings,
+                   linear_client: fn _query, _variables, _opts ->
+                     flunk("Linear should not request an upload for public extension outside override")
+                   end,
+                   upload_client: fn _url, _opts ->
+                     flunk("public extension outside override should not be uploaded")
+                   end
+                 )
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
+    test "attach_file allows benign txt files for private uploads" do
+      workspace = tmp_workspace!("linear-agent-file-private-txt")
+      path = Path.join(workspace, "notes.txt")
+      File.write!(path, "ordinary proof")
+      test_pid = self()
+
+      try do
+        assert {:ok, _response} =
+                 Linear.attach_file(secret_context(workspace), path, "Proof",
+                   make_public: false,
+                   linear_client: successful_file_upload_linear_client(test_pid),
+                   upload_client: successful_upload_client(test_pid)
+                 )
+
+        assert_receive {:linear_file_upload, %{filename: "notes.txt", makePublic: false}}
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
     test "attach_file accepts normal files" do
       workspace = tmp_workspace!("linear-agent-file-normal")
       path = Path.join(workspace, "proof.txt")
@@ -477,6 +605,47 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
       after
         File.rm_rf(workspace)
       end
+    end
+  end
+
+  defp successful_file_upload_linear_client(test_pid) do
+    fn query, variables, _opts ->
+      cond do
+        query =~ "SymphonyAgentFileUpload" ->
+          send(test_pid, {:linear_file_upload, variables})
+
+          {:ok,
+           %{
+             "data" => %{
+               "fileUpload" => %{
+                 "success" => true,
+                 "uploadFile" => %{
+                   "uploadUrl" => "https://uploads.example.test/proof",
+                   "assetUrl" => "https://assets.example.test/#{variables.filename}",
+                   "headers" => []
+                 }
+               }
+             }
+           }}
+
+        query =~ "SymphonyAgentAttachFile" ->
+          {:ok,
+           %{
+             "data" => %{
+               "attachmentCreate" => %{
+                 "success" => true,
+                 "attachment" => %{"id" => "attachment-ok", "url" => variables.url}
+               }
+             }
+           }}
+      end
+    end
+  end
+
+  defp successful_upload_client(test_pid) do
+    fn url, opts ->
+      send(test_pid, {:upload_called, url, opts})
+      {:ok, %{status: 200}}
     end
   end
 

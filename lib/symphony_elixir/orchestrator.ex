@@ -4073,7 +4073,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_state_snapshot(%State{} = state) do
-    agent = Config.settings!().agent
+    settings = Config.settings!()
+    agent = settings.agent
 
     SymphonyElixir.DispatchState.compute(
       %{
@@ -4081,7 +4082,12 @@ defmodule SymphonyElixir.Orchestrator do
         budget_daily_used: state.budget_daily_used,
         budget_day_started_on: state.budget_day_started_on
       },
-      %{daily_limit: agent.max_tokens_per_day},
+      %{
+        daily_limit: agent.max_tokens_per_day,
+        quality_gate: settings.quality_gate,
+        self_review: settings.self_review,
+        learnings: settings.learnings
+      },
       System.get_env()
     )
   end

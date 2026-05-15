@@ -443,8 +443,21 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> Path.split()
     |> Enum.any?(&(&1 == ".git"))
     |> case do
-      true -> [Path.join(path, "hooks")]
-      false -> []
+      true ->
+        [
+          "config",
+          "config.worktree",
+          "hooks",
+          "info",
+          "objects",
+          "packed-refs",
+          Path.join(["worktrees", "*", "config"]),
+          Path.join(["worktrees", "*", "config.worktree"])
+        ]
+        |> Enum.map(&Path.join(path, &1))
+
+      false ->
+        []
     end
   end
 
@@ -532,7 +545,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp run_local_git(workspace, args) when is_binary(workspace) and is_list(args) do
     with git when is_binary(git) <- System.find_executable("git"),
-         {output, 0} <- System.cmd(git, ["-C", workspace] ++ args, stderr_to_stdout: true) do
+         {output, 0} <- SymphonyElixir.Workspace.safe_git(git, ["-C", workspace] ++ args) do
       output |> String.trim() |> blank_to_nil()
     else
       _result -> nil
@@ -2183,7 +2196,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     with workspace when is_binary(workspace) <- workspace,
          true <- File.dir?(workspace),
          git when is_binary(git) <- System.find_executable("git"),
-         {output, 0} <- System.cmd(git, ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true),
+         {output, 0} <- SymphonyElixir.Workspace.safe_git(git, ["-C", workspace, "remote", "get-url", "origin"]),
          origin_url when is_binary(origin_url) <- output |> String.trim() |> blank_to_nil() do
       {:ok, origin_url}
     else

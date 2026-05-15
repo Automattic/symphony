@@ -8,6 +8,19 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.GitHub.Repo, as: GitHubRepo
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @safe_git_config_overrides [
+    "core.sshCommand=ssh",
+    "core.fsmonitor=",
+    "core.hooksPath=",
+    "protocol.ext.allow=never",
+    "protocol.file.allow=user"
+  ]
+  @safe_git_env [
+    {"GIT_CONFIG_GLOBAL", "/dev/null"},
+    {"GIT_CONFIG_SYSTEM", "/dev/null"},
+    {"GIT_OPTIONAL_LOCKS", "0"}
+  ]
+  @safe_git_env_keys Enum.map(@safe_git_env, &elem(&1, 0))
 
   @type worker_host :: String.t() | nil
   @type lifecycle_action :: %{
@@ -31,6 +44,26 @@ defmodule SymphonyElixir.Workspace do
       end
 
     String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
+  end
+
+  @spec safe_git([String.t()]) :: {Collectable.t(), non_neg_integer()}
+  def safe_git(args) when is_list(args) do
+    safe_git("git", args, [])
+  end
+
+  @spec safe_git([String.t()], keyword()) :: {Collectable.t(), non_neg_integer()}
+  @spec safe_git(String.t(), [String.t()]) :: {Collectable.t(), non_neg_integer()}
+  def safe_git(args, opts) when is_list(args) and is_list(opts) do
+    safe_git("git", args, opts)
+  end
+
+  def safe_git(command, args) when is_binary(command) and is_list(args) do
+    safe_git(command, args, [])
+  end
+
+  @spec safe_git(String.t(), [String.t()], keyword()) :: {Collectable.t(), non_neg_integer()}
+  def safe_git(command, args, opts) when is_binary(command) and is_list(args) and is_list(opts) do
+    System.cmd(command, safe_git_args(args), safe_git_opts(opts))
   end
 
   @spec create_for_issue(map() | String.t() | nil, worker_host(), String.t() | nil) ::
@@ -1269,7 +1302,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp git_branch_exists?(repo, branch) do
-    case System.cmd("git", ["-C", repo, "rev-parse", "--verify", "refs/heads/#{branch}"], stderr_to_stdout: true) do
+    case safe_git(["-C", repo, "rev-parse", "--verify", "refs/heads/#{branch}"]) do
       {_output, 0} -> true
       {_output, _status} -> false
     end
@@ -1283,13 +1316,41 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp git_output(repo, args) when is_binary(repo) and is_list(args) do
-    case System.cmd("git", ["-C", repo | args], stderr_to_stdout: true) do
+    case safe_git(["-C", repo | args]) do
       {output, 0} ->
         {:ok, output}
 
       {output, status} ->
         {:error, {:git_failed, repo, args, status}, output}
     end
+  end
+
+  defp safe_git_args(args) do
+    Enum.flat_map(@safe_git_config_overrides, &["-c", &1]) ++ args
+  end
+
+  defp safe_git_opts(opts) do
+    opts
+    |> Keyword.put(:stderr_to_stdout, true)
+    |> put_safe_git_env()
+  end
+
+  defp put_safe_git_env(opts) do
+    existing_env =
+      case Keyword.get(opts, :env, []) do
+        env when is_list(env) -> env
+        _env -> []
+      end
+
+    env =
+      existing_env
+      |> Enum.reject(fn
+        {key, _value} -> key in @safe_git_env_keys
+        _entry -> false
+      end)
+      |> Kernel.++(@safe_git_env)
+
+    Keyword.put(opts, :env, env)
   end
 
   defp run_remote_command(worker_host, script, timeout_ms)

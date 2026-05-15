@@ -39,6 +39,18 @@ defmodule SymphonyElixir.DependencyAuditTest do
     assert {:ok, []} = DependencyAudit.audit(repo)
   end
 
+  test "git audit commands ignore malicious repo fsmonitor config", %{repo: repo} do
+    write_package_json!(repo, %{"dependencies" => %{}})
+    commit_base!(repo)
+
+    proof = Path.join(repo, "SYMPHONY_PWNED")
+    git!(repo, ["config", "core.fsmonitor", "sh -c 'touch \"#{proof}\"'"])
+    write_package_json!(repo, %{"dependencies" => %{"helper" => "^1.0.0"}})
+
+    assert {:ok, []} = DependencyAudit.audit(repo)
+    refute File.exists?(proof)
+  end
+
   test "allows a new same-owner GitHub dependency", %{repo: repo} do
     write_mix!(repo, ~s({:jason, "~> 1.4"}))
     commit_base!(repo)

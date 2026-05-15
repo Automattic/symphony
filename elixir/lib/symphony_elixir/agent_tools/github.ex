@@ -9,6 +9,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
 
   alias SymphonyElixir.AgentTools.SecretScanner
   alias SymphonyElixir.GitHub.PullRequest
+  alias SymphonyElixir.Workspace
 
   @pr_view_fields "number,state,title,body,url,headRefName,baseRefName"
 
@@ -251,7 +252,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   defp git_runner(opts) do
     case Keyword.get(opts, :git_runner) do
       runner when is_function(runner, 2) -> runner
-      _ -> &System.cmd("git", &1, &2)
+      _ -> &Workspace.safe_git/2
     end
   end
 end

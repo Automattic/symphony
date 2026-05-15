@@ -11,6 +11,7 @@ defmodule SymphonyElixir.DependencyAudit do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.DependencyAudit.{MixParser, NpmParser}
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.Workspace
 
   @default_base_ref "origin/main"
 
@@ -282,7 +283,7 @@ defmodule SymphonyElixir.DependencyAudit do
     end
   end
 
-  defp run_git(command, args, opts), do: System.cmd(command, args, opts ++ [stderr_to_stdout: true])
+  defp run_git(command, args, opts), do: Workspace.safe_git(command, args, opts)
 
   defp manifest_path?(path), do: Path.basename(path) in ["mix.exs", "package.json"]
 

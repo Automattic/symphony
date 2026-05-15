@@ -159,10 +159,3 @@ read from environment variables. The quality gate explicitly ignores credentials
   `mix symphony.stop ISSUE-ID` is the right tool for cutting an individual run.
 - Periodically verify the audit chain (`mix symphony.audit ...` or `AuditLog.verify_file/1`),
   especially after host migrations or restores.
-
-## Reporting a Vulnerability
-
-This fork does not currently publish a separate security contact. For now, please open a private
-GitHub issue or reach the maintainer directly rather than filing a public report. The upstream
-project is [openai/symphony](https://github.com/openai/symphony) if the issue applies there as
-well.

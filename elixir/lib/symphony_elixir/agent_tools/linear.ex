@@ -327,7 +327,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @spec add_comment(context(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def add_comment(context, body, opts) when is_binary(body) do
     with {:ok, issue_id} <- current_issue_id(context),
-         :ok <- SecretScanner.reject_if_secret_pattern(body, context, "linear_add_comment", "body", opts),
+         :ok <- SecretScanner.reject_fields_if_secret_pattern([body: body], context, "linear_add_comment", opts),
          {:ok, response} <- graphql(@add_comment_mutation, %{issueId: issue_id, body: body}, opts),
          {:ok, response} <- check_mutation_success(response, "commentCreate") do
       comment_id = get_in(response, ["data", "commentCreate", "comment", "id"])
@@ -344,6 +344,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   @spec update_comment(context(), String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def update_comment(context, comment_id, body, opts) when is_binary(comment_id) and is_binary(body) do
     with :ok <- verify_comment_owner(context, comment_id),
+         :ok <- SecretScanner.reject_fields_if_secret_pattern([body: body], context, "linear_update_comment", opts),
          {:ok, response} <- graphql(@update_comment_mutation, %{id: comment_id, body: body}, opts) do
       check_mutation_success(response, "commentUpdate")
     end
@@ -406,8 +407,14 @@ defmodule SymphonyElixir.AgentTools.Linear do
   def attach_url(context, url, title, opts) when is_binary(url) do
     with {:ok, issue_id} <- current_issue_id(context),
          {:ok, normalized_url} <- validate_url(url),
-         :ok <- SecretScanner.reject_if_secret_pattern(normalized_url, context, "linear_attach_url", "url", opts),
          {:ok, normalized_title} <- normalize_title(title),
+         :ok <-
+           SecretScanner.reject_fields_if_secret_pattern(
+             [url: normalized_url, title: normalized_title],
+             context,
+             "linear_attach_url",
+             opts
+           ),
          {:ok, response} <-
            graphql(@attach_url_mutation, %{issueId: issue_id, url: normalized_url, title: normalized_title}, opts) do
       check_mutation_success(response, "attachmentLinkURL")
@@ -426,7 +433,13 @@ defmodule SymphonyElixir.AgentTools.Linear do
          {:ok, path} <- validate_workspace_file(local_path, workspace),
          {:ok, normalized_title} <- normalize_title(title),
          {:ok, contents} <- file_read(path),
-         :ok <- SecretScanner.reject_if_secret_pattern(contents, context, "linear_attach_file", "file", opts),
+         :ok <-
+           SecretScanner.reject_fields_if_secret_pattern(
+             [title: normalized_title, file: contents],
+             context,
+             "linear_attach_file",
+             opts
+           ),
          {:ok, upload} <- request_file_upload(path, opts),
          :ok <- put_upload(contents, upload, opts),
          {:ok, asset_url} <- upload_asset_url(upload),

@@ -46,6 +46,49 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
       end
     end
 
+    test "update_comment rejects secret-bearing bodies before GraphQL and accepts clean updates" do
+      workspace = tmp_workspace!("linear-agent-update-comment-secret")
+      audit_dir = Path.join(workspace, "audit")
+      {:ok, registry} = Linear.CommentRegistry.start_link()
+      Linear.CommentRegistry.record(registry, "comment-owned")
+      context = secret_context(workspace) |> Map.put(:comment_registry, registry)
+
+      try do
+        assert {:error, :secret_pattern_detected} =
+                 Linear.update_comment(context, "comment-owned", "leaked credential: " <> openai_fixture(),
+                   dir: audit_dir,
+                   linear_client: fn _query, _variables, _opts ->
+                     flunk("Linear should not be called for secret-bearing comment updates")
+                   end
+                 )
+
+        assert {:ok, response} =
+                 Linear.update_comment(context, "comment-owned", "clean update",
+                   linear_client: fn query, variables, _opts ->
+                     assert query =~ "SymphonyAgentUpdateComment"
+                     assert variables == %{id: "comment-owned", body: "clean update"}
+
+                     {:ok,
+                      %{
+                        "data" => %{
+                          "commentUpdate" => %{
+                            "success" => true,
+                            "comment" => %{"id" => "comment-owned", "body" => "clean update"}
+                          }
+                        }
+                      }}
+                   end
+                 )
+
+        assert get_in(response, ["data", "commentUpdate", "comment", "body"]) == "clean update"
+
+        assert [%{"field" => "body", "tool" => "linear_update_comment", "reason" => "secret_pattern_detected"}] =
+                 audit_events(audit_dir)
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
     test "attach_url rejects high-confidence secret prefixes and accepts normal URL" do
       workspace = tmp_workspace!("linear-agent-url-secret")
       audit_dir = Path.join(workspace, "audit")
@@ -57,6 +100,14 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
                    dir: audit_dir,
                    linear_client: fn _query, _variables, _opts ->
                      flunk("Linear should not be called for secret-bearing URLs")
+                   end
+                 )
+
+        assert {:error, :secret_pattern_detected} =
+                 Linear.attach_url(context, "https://example.com/report", "leaked credential: " <> openai_fixture(),
+                   dir: audit_dir,
+                   linear_client: fn _query, _variables, _opts ->
+                     flunk("Linear should not be called for secret-bearing attachment titles")
                    end
                  )
 
@@ -79,7 +130,12 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
                  )
 
         assert get_in(response, ["data", "attachmentLinkURL", "attachment", "id"]) == "attachment-ok"
-        assert [%{"field" => "url", "reason" => "secret_pattern_detected"}] = audit_events(audit_dir)
+
+        assert ["title", "url"] =
+                 audit_dir
+                 |> audit_events()
+                 |> Enum.map(& &1["field"])
+                 |> Enum.sort()
       after
         File.rm_rf(workspace)
       end
@@ -104,6 +160,31 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
                  )
 
         assert [%{"field" => "file", "reason" => "secret_pattern_detected"}] = audit_events(audit_dir)
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
+    test "attach_file rejects secret-bearing titles before upload" do
+      workspace = tmp_workspace!("linear-agent-file-title-secret")
+      audit_dir = Path.join(workspace, "audit")
+      path = Path.join(workspace, "proof.txt")
+      File.write!(path, "ordinary proof")
+
+      try do
+        assert {:error, :secret_pattern_detected} =
+                 Linear.attach_file(secret_context(workspace), path, "leaked credential: " <> openai_fixture(),
+                   dir: audit_dir,
+                   linear_client: fn _query, _variables, _opts ->
+                     flunk("Linear should not request an upload for secret-bearing attachment titles")
+                   end,
+                   upload_client: fn _url, _opts ->
+                     flunk("secret-bearing attachment titles should not be uploaded")
+                   end
+                 )
+
+        assert [%{"field" => "title", "tool" => "linear_attach_file", "reason" => "secret_pattern_detected"}] =
+                 audit_events(audit_dir)
       after
         File.rm_rf(workspace)
       end

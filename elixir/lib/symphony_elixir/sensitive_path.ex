@@ -17,10 +17,17 @@ defmodule SymphonyElixir.SensitivePath do
     "~/.azure",
     "~/.kube",
     "~/Library/Application Support",
+    "~/Library/Keychains",
     "~/.netrc",
     "~/.git-credentials",
     "~/.npmrc",
     "~/.cargo/credentials",
+    "~/.zshrc",
+    "~/.zshenv",
+    "~/.zprofile",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.profile",
     "~/.bash_history",
     "~/.zsh_history",
     "~/.history",
@@ -38,7 +45,8 @@ defmodule SymphonyElixir.SensitivePath do
     "/.config/gcloud/",
     "/.azure/",
     "/.kube/",
-    "/Library/Application Support/"
+    "/Library/Application Support/",
+    "/Library/Keychains/"
   ]
 
   @sensitive_path_basenames [
@@ -46,6 +54,12 @@ defmodule SymphonyElixir.SensitivePath do
     ".git-credentials",
     ".npmrc",
     ".bash_history",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
     ".zsh_history",
     ".history",
     ".python_history",

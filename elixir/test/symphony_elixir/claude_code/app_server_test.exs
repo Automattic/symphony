@@ -38,15 +38,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       assert get_in(result, ["sandbox", "filesystem", "denyRead"]) == AgentSandboxConfig.deny_read_paths()
 
-      assert get_in(result, ["sandbox", "filesystem", "denyWrite"]) == [
-               "./WORKFLOW.md",
-               "./symphony.yml",
-               "./symphony.local.yml",
-               "./.claude/settings.json",
-               "./.git",
-               "./mise.toml",
-               "./.tool-versions"
-             ]
+      assert get_in(result, ["sandbox", "filesystem", "denyWrite"]) == AgentSandboxConfig.deny_write_paths()
 
       assert get_in(result, ["sandbox", "network", "allowManagedDomainsOnly"]) == true
 

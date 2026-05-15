@@ -36,9 +36,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert get_in(result, ["sandbox", "enabled"]) == true
       assert get_in(result, ["sandbox", "allowUnsandboxedCommands"]) == false
 
-      assert get_in(result, ["sandbox", "filesystem", "denyRead"]) == AgentSandboxConfig.deny_read_paths()
-
-      assert get_in(result, ["sandbox", "filesystem", "denyWrite"]) == AgentSandboxConfig.deny_write_paths()
+      # Asserts against the canonical Claude filesystem settings (which include
+      # both tilde and absolute forms of home-relative deny paths as
+      # defense-in-depth — see AgentSandboxConfig.expand_home_paths/1).
+      expected_filesystem = AgentSandboxConfig.claude_filesystem_settings()
+      assert get_in(result, ["sandbox", "filesystem", "denyRead"]) == expected_filesystem["denyRead"]
+      assert get_in(result, ["sandbox", "filesystem", "denyWrite"]) == expected_filesystem["denyWrite"]
 
       assert get_in(result, ["sandbox", "network", "allowManagedDomainsOnly"]) == true
 

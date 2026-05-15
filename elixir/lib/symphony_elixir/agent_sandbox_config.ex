@@ -116,8 +116,8 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     allow_read_paths = normalize_allow_read_paths(allow_read_paths)
 
     %{
-      "denyRead" => Enum.reject(@deny_read_paths, &(&1 in allow_read_paths)),
-      "denyWrite" => @deny_write_paths
+      "denyRead" => @deny_read_paths |> Enum.reject(&(&1 in allow_read_paths)) |> expand_home_paths(),
+      "denyWrite" => expand_home_paths(@deny_write_paths)
     }
   end
 
@@ -158,7 +158,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
          "allowLocalBinding" => false
        },
        "filesystem" => %{
-         "denyRead" => Enum.reject(@deny_read_paths, &(&1 in allow_read_paths)),
+         "denyRead" => @deny_read_paths |> Enum.reject(&(&1 in allow_read_paths)) |> expand_home_paths(),
          "allowRead" => allow_read_paths,
          "allowWrite" => srt_allow_write_paths(Keyword.get(opts, :allow_write_paths, [])),
          "denyWrite" => srt_deny_write_paths(Keyword.get(opts, :deny_write_paths, []))
@@ -175,7 +175,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
     project_entries =
       [{".", "write"}] ++
-        Enum.map(@deny_write_paths, fn path ->
+        Enum.map(expand_home_paths(@deny_write_paths), fn path ->
           {String.trim_leading(path, "./"), "read"}
         end)
 
@@ -183,6 +183,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
       @deny_read_paths
       |> Enum.reject(fn path -> path in operator_allow_read_paths end)
       |> Kernel.++(@codex_runtime_deny_read_paths)
+      |> expand_home_paths()
 
     deny_read_paths
     |> Enum.map(&{&1, "none"})
@@ -207,6 +208,20 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   end
 
   defp normalize_allow_read_paths(_paths), do: []
+
+  # Defense-in-depth: emit each home-relative deny entry in BOTH tilde form
+  # and its `Path.expand`-resolved absolute form, so the deny list still
+  # matches if a downstream sandbox layer ever compares against an already-
+  # expanded path without re-expanding `~` itself. Non-tilde entries
+  # (`./...`, `/...`) are left untouched.
+  defp expand_home_paths(paths) do
+    paths
+    |> Enum.flat_map(fn
+      "~/" <> _ = path -> [path, Path.expand(path)]
+      other -> [other]
+    end)
+    |> Enum.uniq()
+  end
 
   defp normalize_domains(domains) when is_list(domains) do
     domains
@@ -234,7 +249,9 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   end
 
   defp srt_deny_write_paths(extra_paths),
-    do: (@deny_write_paths ++ @srt_codex_runtime_deny_write_paths ++ normalize_sandbox_paths(extra_paths)) |> Enum.uniq()
+    do:
+      (@deny_write_paths ++ @srt_codex_runtime_deny_write_paths ++ normalize_sandbox_paths(extra_paths))
+      |> expand_home_paths()
 
   defp normalize_sandbox_paths(paths) when is_list(paths) do
     paths

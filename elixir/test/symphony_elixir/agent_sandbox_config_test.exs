@@ -160,7 +160,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
                :bad_allow_read_paths,
                allow_write_paths: :bad_allow_write_paths,
                deny_write_paths: :bad_deny_write_paths
-              )
+             )
 
     assert settings["network"]["allowedDomains"] == []
     assert settings["network"]["deniedDomains"] == []

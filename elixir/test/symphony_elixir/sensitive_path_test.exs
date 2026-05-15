@@ -15,7 +15,7 @@ defmodule SymphonyElixir.SensitivePathTest do
     assert SensitivePath.denied_secret_path(["cat", "notes.txt"]) == nil
   end
 
-  test "detects expanded credential stores and leaves runtime auth stores alone" do
+  test "detects expanded credential stores and targeted runtime auth files" do
     denied_paths = [
       "~/.netrc",
       "~/.git-credentials",
@@ -46,6 +46,9 @@ defmodule SymphonyElixir.SensitivePathTest do
       "~/.history",
       "~/.python_history",
       "~/.node_repl_history",
+      "~/.codex/auth.json",
+      "~/.codex/config.toml",
+      "~/.codex/AGENTS.md",
       "/Users/test/.netrc",
       "/Users/test/.git-credentials",
       "/Users/test/.npmrc",
@@ -61,14 +64,17 @@ defmodule SymphonyElixir.SensitivePathTest do
       "/Users/test/.bashrc",
       "/Users/test/.bash_profile",
       "/Users/test/.profile",
-      "/Users/test/.bash_history"
+      "/Users/test/.bash_history",
+      "/Users/test/.codex/auth.json",
+      "/Users/test/.codex/config.toml",
+      "/Users/test/.codex/AGENTS.md"
     ]
 
     for path <- denied_paths do
       assert SensitivePath.secret_path(path) == path
     end
 
-    refute SensitivePath.secret_path("~/.codex/auth.json")
+    refute SensitivePath.secret_path("~/.codex/sessions/session.jsonl")
     refute SensitivePath.secret_path(".npmrc")
     refute SensitivePath.secret_path("/private/etc/hosts")
     refute SensitivePath.secret_path("/var/log/system.log")

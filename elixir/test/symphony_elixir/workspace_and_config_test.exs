@@ -2306,21 +2306,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert runtime_settings.turn_sandbox_policy == %{"type" => "externalSandbox"}
   end
 
-  test "config warns that Codex approval policy never is deprecated" do
+  test "config rejects legacy Codex approval policy never" do
     write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: "never")
 
-    warning =
-      capture_log(fn ->
-        assert :ok = Config.validate!()
-      end)
-
-    assert warning =~ "agent.approval_policy: \"never\" is deprecated for Codex"
-    assert warning =~ "auto-approves all approval requests"
-    assert warning =~ "auto_approve_all"
-
-    assert {:ok, runtime_settings} = Config.codex_runtime_settings()
-    assert runtime_settings.approval_policy == "never"
-    assert runtime_settings.auto_approve_requests == true
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ ~s(agent.approval_policy="never" is no longer supported for Codex)
+    assert message =~ "auto_approve_all"
   end
 
   test "config defaults omitted Claude approval policy to never" do

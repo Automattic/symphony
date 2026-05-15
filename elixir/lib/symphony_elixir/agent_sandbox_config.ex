@@ -19,6 +19,10 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     * `~/Library/Application Support`, `~/Library/Keychains`, `~/Library/Preferences` (macOS app data)
     * shell and REPL history files
 
+  Codex command sandboxing additionally denies reads of selected runtime
+  files under `~/.codex` while leaving the parent Codex process able to
+  authenticate before the tool sandbox applies.
+
   Workflow guardrail files and user persistence paths protected from writes:
 
     * `WORKFLOW.md`, `symphony.yml`, `symphony.local.yml`
@@ -85,6 +89,14 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   ]
 
   @srt_codex_runtime_deny_write_paths [
+    "~/.codex/auth.json",
+    "~/.codex/config.toml",
+    "~/.codex/AGENTS.md"
+  ]
+
+  # Codex reads these before tool sandboxing applies. Shell/tool commands should
+  # not be able to read them through the workspace_write permission profile.
+  @codex_runtime_deny_read_paths [
     "~/.codex/auth.json",
     "~/.codex/config.toml",
     "~/.codex/AGENTS.md"
@@ -159,6 +171,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   defp codex_filesystem_policy(allow_read_paths, allow_write_paths) do
     allow_read_paths = normalize_allow_read_paths(allow_read_paths)
     allow_write_paths = normalize_sandbox_paths(allow_write_paths)
+    operator_allow_read_paths = Enum.reject(allow_read_paths, &codex_runtime_read_override_path?/1)
 
     project_entries =
       [{".", "write"}] ++
@@ -167,16 +180,22 @@ defmodule SymphonyElixir.AgentSandboxConfig do
         end)
 
     deny_read_paths =
-      Enum.reject(@deny_read_paths, fn path ->
-        path in allow_read_paths
-      end)
+      @deny_read_paths
+      |> Enum.reject(fn path -> path in operator_allow_read_paths end)
+      |> Kernel.++(@codex_runtime_deny_read_paths)
 
     deny_read_paths
     |> Enum.map(&{&1, "none"})
     |> List.insert_at(0, {":project_roots", project_entries})
     |> Kernel.++(Enum.map(allow_write_paths, &{&1, "write"}))
-    |> Kernel.++(Enum.map(allow_read_paths, &{&1, "read"}))
+    |> Kernel.++(Enum.map(operator_allow_read_paths, &{&1, "read"}))
     |> toml_inline_table()
+  end
+
+  defp codex_runtime_read_override_path?(path) do
+    Enum.any?(@codex_runtime_deny_read_paths, fn denied_path ->
+      path == denied_path or String.starts_with?(denied_path, path <> "/")
+    end)
   end
 
   defp normalize_allow_read_paths(paths) when is_list(paths) do

@@ -423,7 +423,7 @@ defmodule SymphonyElixir.LiveE2ETest do
         workspace_root: worker_setup.workspace_root,
         worker_ssh_hosts: worker_setup.ssh_worker_hosts,
         agent_command: worker_setup.agent_command,
-        agent_approval_policy: "never",
+        agent_approval_policy: "auto_approve_all",
         observability_enabled: false
       )
 
@@ -454,7 +454,7 @@ defmodule SymphonyElixir.LiveE2ETest do
         workspace_root: worker_setup.workspace_root,
         worker_ssh_hosts: worker_setup.ssh_worker_hosts,
         agent_command: worker_setup.agent_command,
-        agent_approval_policy: "never",
+        agent_approval_policy: "auto_approve_all",
         agent_turn_timeout_ms: 600_000,
         agent_stall_timeout_ms: 600_000,
         observability_enabled: false,

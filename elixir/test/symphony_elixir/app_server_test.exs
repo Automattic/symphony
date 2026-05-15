@@ -2121,7 +2121,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server grants requested permissions when approval policy is never" do
+  test "app server grants requested permissions when approval policy is auto approve all" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2172,7 +2172,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         agent_command: "#{codex_binary} app-server",
-        agent_approval_policy: "never"
+        agent_approval_policy: "auto_approve_all"
       )
 
       issue = %Issue{
@@ -2218,7 +2218,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server auto-approves MCP tool approval prompts when approval policy is never" do
+  test "app server auto-approves MCP tool approval prompts when approval policy is auto approve all" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2269,7 +2269,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         agent_command: "#{codex_binary} app-server",
-        agent_approval_policy: "never"
+        agent_approval_policy: "auto_approve_all"
       )
 
       issue = %Issue{
@@ -2306,7 +2306,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server auto-accepts URL MCP elicitations when approval policy is never" do
+  test "app server auto-accepts URL MCP elicitations when approval policy is auto approve all" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2357,7 +2357,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         agent_command: "#{codex_binary} app-server",
-        agent_approval_policy: "never"
+        agent_approval_policy: "auto_approve_all"
       )
 
       issue = %Issue{
@@ -2395,7 +2395,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server auto-accepts form MCP elicitations when approval policy is never" do
+  test "app server auto-accepts form MCP elicitations when approval policy is auto approve all" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2446,7 +2446,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         agent_command: "#{codex_binary} app-server",
-        agent_approval_policy: "never"
+        agent_approval_policy: "auto_approve_all"
       )
 
       issue = %Issue{
@@ -2534,7 +2534,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         agent_command: "#{codex_binary} app-server",
-        agent_approval_policy: "never"
+        agent_approval_policy: "auto_approve_all"
       )
 
       issue = %Issue{

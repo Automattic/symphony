@@ -1513,10 +1513,17 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp validate_finalized_settings(settings) do
-    with :ok <- validate_agent_sandbox_runtime(settings.agent) do
+    with :ok <- validate_agent_approval_policy(settings.agent),
+         :ok <- validate_agent_sandbox_runtime(settings.agent) do
       validate_finalized_notification_urls(settings.notifications)
     end
   end
+
+  defp validate_agent_approval_policy(%Agent{kind: "codex", approval_policy: "never"}) do
+    {:error, ~s(agent.approval_policy="never" is no longer supported for Codex; use "auto_approve_all" for unattended auto-approval.)}
+  end
+
+  defp validate_agent_approval_policy(_agent), do: :ok
 
   defp validate_agent_sandbox_runtime(%Agent{
          kind: "codex",

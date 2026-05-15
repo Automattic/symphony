@@ -132,7 +132,11 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("~/Library/Preferences"="none")
     assert filesystem =~ ~s("~/.zshrc"="read")
     assert filesystem =~ ~s("~/Library/LaunchAgents"="read")
-    refute filesystem =~ "~/.codex"
+    assert filesystem =~ ~s("~/.codex/auth.json"="none")
+    assert filesystem =~ ~s("~/.codex/config.toml"="none")
+    assert filesystem =~ ~s("~/.codex/AGENTS.md"="none")
+    refute filesystem =~ "~/.codex/sessions"
+    refute filesystem =~ ~s("~/.claude"=)
 
     assert ~s(permissions.workspace_write.network={"enabled"=true,"mode"="limited"}) in overrides
     assert domains = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.network.domains="))
@@ -182,6 +186,9 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "~/.claude/file-history" in settings["filesystem"]["denyRead"]
     assert "/private/etc/sudoers" in settings["filesystem"]["denyRead"]
     assert "/var/root" in settings["filesystem"]["denyRead"]
+    refute "~/.codex/auth.json" in settings["filesystem"]["denyRead"]
+    refute "~/.codex/config.toml" in settings["filesystem"]["denyRead"]
+    refute "~/.codex/AGENTS.md" in settings["filesystem"]["denyRead"]
     assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
     assert "./.git" in settings["filesystem"]["denyWrite"]
     refute "/Volumes" in settings["filesystem"]["denyWrite"]
@@ -284,6 +291,25 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("relative/cache"="write")
     assert filesystem =~ ~s("~/.npmrc"="read")
     assert filesystem =~ ~s("~/.ssh"="none")
+  end
+
+  test "Codex filesystem config does not allow operator overrides for runtime auth reads" do
+    overrides =
+      AgentSandboxConfig.codex_config_overrides("allowlist", [], [
+        "~/.codex",
+        "~/.codex/auth.json",
+        "~/.codex/config.toml",
+        "~/.codex/AGENTS.md"
+      ])
+
+    assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+    assert filesystem =~ ~s("~/.codex/auth.json"="none")
+    assert filesystem =~ ~s("~/.codex/config.toml"="none")
+    assert filesystem =~ ~s("~/.codex/AGENTS.md"="none")
+    refute filesystem =~ ~s("~/.codex"="read")
+    refute filesystem =~ ~s("~/.codex/auth.json"="read")
+    refute filesystem =~ ~s("~/.codex/config.toml"="read")
+    refute filesystem =~ ~s("~/.codex/AGENTS.md"="read")
   end
 
   test "Codex filesystem config normalizes malformed operator allow_read_paths" do

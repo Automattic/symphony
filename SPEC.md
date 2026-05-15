@@ -766,8 +766,11 @@ fields locally if they want stricter startup checks.
     - `srt`: wrap local Codex launch with Anthropic Sandbox Runtime (`srt`) using a temporary
       settings file generated from the effective network policy and shared filesystem deny lists.
   - `command`: shell-like command string used to invoke SRT, default `srt`.
-  - `enable_weaker_nested_sandbox`: boolean, default `false`, passed through to SRT settings.
   - `enable_weaker_network_isolation`: boolean, default `false`, passed through to SRT settings.
+  - Implementations MAY emit SRT compatibility settings required by the targeted runtime version,
+    such as enabling weaker nested sandbox compatibility for Linux/Docker paths.
+  - When SRT owns command sandboxing, implementations SHOULD use the targeted Codex
+    `externalSandbox` turn policy or equivalent to avoid nesting platform sandboxes.
   - SRT settings SHOULD allow the configured Codex runtime to write its own runtime state directory
     while deny-writing static or sensitive Codex config files such as auth, config, and global
     instructions.
@@ -777,6 +780,9 @@ fields locally if they want stricter startup checks.
     SRT version provides a valid unrestricted-network representation.
   - Implementations MUST reject `kind: srt` for non-Codex adapters and MAY reject it for remote
     worker launch modes that cannot access the generated temporary settings file.
+  - Codex native command sandbox profiles SHOULD deny tool-command reads of host credential stores
+    and Codex runtime auth/config files while still allowing the parent Codex process to read the
+    runtime files required for authentication.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)

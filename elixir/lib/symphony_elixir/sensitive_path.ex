@@ -32,7 +32,10 @@ defmodule SymphonyElixir.SensitivePath do
     "~/.zsh_history",
     "~/.history",
     "~/.python_history",
-    "~/.node_repl_history"
+    "~/.node_repl_history",
+    "~/.codex/auth.json",
+    "~/.codex/config.toml",
+    "~/.codex/AGENTS.md"
   ]
 
   @sensitive_path_segments [
@@ -52,7 +55,10 @@ defmodule SymphonyElixir.SensitivePath do
     "/etc/sudoers.d/",
     "/private/etc/sudoers/",
     "/private/etc/sudoers.d/",
-    "/var/root/"
+    "/var/root/",
+    "/.codex/auth.json/",
+    "/.codex/config.toml/",
+    "/.codex/AGENTS.md/"
   ]
 
   @sensitive_path_basenames [

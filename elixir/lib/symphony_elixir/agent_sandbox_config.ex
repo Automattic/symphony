@@ -29,6 +29,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   @codex_profile "workspace_write"
 
   @deny_read_paths [
+    "/Volumes",
     "~/.ssh",
     "~/.config/gh",
     "~/.claude/.credentials.json",

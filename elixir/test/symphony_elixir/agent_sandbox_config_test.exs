@@ -19,6 +19,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
 
   test "Claude filesystem settings expose the default deny lists" do
     assert AgentSandboxConfig.deny_read_paths() == [
+             "/Volumes",
              "~/.ssh",
              "~/.config/gh",
              "~/.claude/.credentials.json",
@@ -76,6 +77,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
       assert path in AgentSandboxConfig.deny_write_paths()
     end
 
+    assert "/Volumes" in AgentSandboxConfig.deny_read_paths()
     assert "~/Library/Keychains" in AgentSandboxConfig.deny_read_paths()
     assert "~/Library/Preferences" in AgentSandboxConfig.deny_read_paths()
     refute "~/.config/gh" in AgentSandboxConfig.deny_write_paths()
@@ -115,6 +117,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("WORKFLOW.md"="read")
     assert filesystem =~ ~s(".claude/settings.json"="read")
     assert filesystem =~ ~s(".git"="read")
+    assert filesystem =~ ~s("/Volumes"="none")
     assert filesystem =~ ~s("~/.ssh"="none")
     assert filesystem =~ ~s("~/.claude/.credentials.json"="none")
     assert filesystem =~ ~s("~/.claude/projects"="none")
@@ -171,6 +174,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "." in settings["filesystem"]["allowWrite"]
     assert System.tmp_dir!() in settings["filesystem"]["allowWrite"]
     assert "~/.codex" in settings["filesystem"]["allowWrite"]
+    assert "/Volumes" in settings["filesystem"]["denyRead"]
     refute "~/.npmrc" in settings["filesystem"]["denyRead"]
     assert "~/.ssh" in settings["filesystem"]["denyRead"]
     assert "~/.claude/.credentials.json" in settings["filesystem"]["denyRead"]
@@ -180,6 +184,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "/var/root" in settings["filesystem"]["denyRead"]
     assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
     assert "./.git" in settings["filesystem"]["denyWrite"]
+    refute "/Volumes" in settings["filesystem"]["denyWrite"]
 
     for path <- @persistence_deny_write_paths do
       assert path in settings["filesystem"]["denyWrite"]

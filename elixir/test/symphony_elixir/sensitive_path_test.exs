@@ -74,6 +74,14 @@ defmodule SymphonyElixir.SensitivePathTest do
     refute SensitivePath.secret_path("/var/log/system.log")
   end
 
+  test "detects mounted external volume paths without broadening unrelated paths" do
+    volumes_path = "/Volumes/Backup Drive/Users/alice/Documents/plain.txt"
+
+    assert SensitivePath.secret_path(volumes_path) == volumes_path
+    assert SensitivePath.denied_secret_path(["cat", volumes_path]) == volumes_path
+    refute SensitivePath.secret_path("/var/log/system.log")
+  end
+
   test "detects sensitive basenames without requiring a sensitive parent path" do
     assert SensitivePath.sensitive_basename?("/workspace/.env")
     assert SensitivePath.sensitive_basename?("/workspace/.env.production")

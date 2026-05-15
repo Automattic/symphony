@@ -84,7 +84,6 @@ Available scoped Linear tools:
 - `linear_get_comments(limit)`
 - `linear_get_related_issues()`
 - `linear_update_state(state_name_or_id)`
-- `linear_set_assignee(assignee)` where `assignee` is `self`, `unassign`, or a user id
 - `linear_add_comment(body)`
 - `linear_update_comment(comment_id, body)` for comments created earlier by this run
 - `linear_delete_comment(comment_id)` for comments created earlier by this run

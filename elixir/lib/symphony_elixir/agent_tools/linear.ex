@@ -154,19 +154,6 @@ defmodule SymphonyElixir.AgentTools.Linear do
   }
   """
 
-  @set_assignee_mutation """
-  mutation SymphonyAgentSetIssueAssignee($id: String!, $assigneeId: String) {
-    issueUpdate(id: $id, input: { assigneeId: $assigneeId }) {
-      success
-      issue {
-        id
-        identifier
-        assignee { id name }
-      }
-    }
-  }
-  """
-
   @add_comment_mutation """
   mutation SymphonyAgentAddComment($issueId: String!, $body: String!) {
     commentCreate(input: { issueId: $issueId, body: $body }) {
@@ -311,20 +298,6 @@ defmodule SymphonyElixir.AgentTools.Linear do
   end
 
   def update_state(_context, _state_name_or_id, _opts), do: {:error, :invalid_state}
-
-  @spec set_assignee(context(), String.t()) :: {:ok, map()} | {:error, term()}
-  def set_assignee(context, assignee), do: set_assignee(context, assignee, [])
-
-  @spec set_assignee(context(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def set_assignee(context, assignee, opts) when is_binary(assignee) do
-    with {:ok, issue_id} <- current_issue_id(context),
-         {:ok, assignee_id} <- resolve_assignee(assignee, opts),
-         {:ok, response} <- graphql(@set_assignee_mutation, %{id: issue_id, assigneeId: assignee_id}, opts) do
-      check_mutation_success(response, "issueUpdate")
-    end
-  end
-
-  def set_assignee(_context, _assignee, _opts), do: {:error, :invalid_assignee}
 
   @spec add_comment(context(), String.t()) :: {:ok, map()} | {:error, term()}
   def add_comment(context, body), do: add_comment(context, body, [])
@@ -493,28 +466,6 @@ defmodule SymphonyElixir.AgentTools.Linear do
     String.downcase(to_string(state["name"])) == String.downcase(name)
   end
 
-  defp resolve_assignee(assignee, opts) do
-    case String.trim(assignee) do
-      "self" ->
-        viewer_id(opts)
-
-      ":self" ->
-        resolve_assignee("self", opts)
-
-      "unassign" ->
-        {:ok, nil}
-
-      ":unassign" ->
-        {:ok, nil}
-
-      "" ->
-        {:error, :invalid_assignee}
-
-      user_id ->
-        {:ok, user_id}
-    end
-  end
-
   defp request_file_upload(path, opts) do
     make_public = Keyword.get(opts, :make_public, false) == true
 
@@ -651,12 +602,19 @@ defmodule SymphonyElixir.AgentTools.Linear do
 
   defp wrap_issue(issue) when is_map(issue) do
     issue
+    |> put_assignee_id()
     |> wrap_string_field("title", &PromptSafety.linear_issue_title/1)
     |> wrap_string_field("description", &PromptSafety.linear_issue_body/1)
     |> wrap_nested_comment_nodes()
   end
 
   defp wrap_issue(issue), do: issue
+
+  defp put_assignee_id(%{"assignee" => %{"id" => assignee_id}} = issue) when is_binary(assignee_id) do
+    Map.put_new(issue, "assignee_id", assignee_id)
+  end
+
+  defp put_assignee_id(issue), do: issue
 
   defp wrap_issue_summary(issue) when is_map(issue) do
     issue

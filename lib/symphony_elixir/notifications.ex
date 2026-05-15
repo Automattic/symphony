@@ -59,10 +59,6 @@ defmodule SymphonyElixir.Notifications do
 
   def emit_issue_event(event, _issue, attrs), do: emit_event(event, attrs)
 
-  @doc false
-  @spec topic_for_test() :: String.t()
-  def topic_for_test, do: @topic
-
   defp broadcast_event(%Event{} = event) do
     case Process.whereis(@pubsub) do
       pid when is_pid(pid) ->

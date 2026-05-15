@@ -862,11 +862,6 @@ defmodule SymphonyElixir.StatusDashboard do
   def format_running_summary_for_test(running_entry, terminal_columns \\ nil),
     do: format_running_summary(running_entry, running_event_width(terminal_columns))
 
-  @doc false
-  @spec format_watching_summary_for_test(map(), integer() | nil) :: String.t()
-  def format_watching_summary_for_test(watching_entry, terminal_columns \\ nil),
-    do: format_watching_summary(watching_entry, watching_url_width(terminal_columns))
-
   defp format_watching_rows(watching, watching_url_width) do
     url_header = if Enum.any?(watching, &watching_pull_request_url/1), do: "PR / LINEAR URL", else: "LINEAR URL"
 
@@ -998,10 +993,6 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_ago(_seconds), do: "n/a"
-
-  @doc false
-  @spec format_tps_for_test(number()) :: String.t()
-  def format_tps_for_test(value), do: format_tps(value)
 
   @doc false
   @spec tps_graph_for_test([{integer(), integer()}], integer(), integer()) :: String.t()

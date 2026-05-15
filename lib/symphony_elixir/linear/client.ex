@@ -289,10 +289,6 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   @doc false
-  @spec next_page_cursor_for_test(map()) :: {:ok, String.t()} | :done | {:error, term()}
-  def next_page_cursor_for_test(page_info) when is_map(page_info), do: next_page_cursor(page_info)
-
-  @doc false
   @spec merge_issue_pages_for_test([[Issue.t()]]) :: [Issue.t()]
   def merge_issue_pages_for_test(issue_pages) when is_list(issue_pages) do
     issue_pages
@@ -342,24 +338,6 @@ defmodule SymphonyElixir.Linear.Client do
       end
     end
   end
-
-  @doc false
-  @spec fetch_candidate_issues_for_repo_for_test(term(), (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
-          {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_candidate_issues_for_repo_for_test(repo, graphql_fun)
-      when is_function(graphql_fun, 2) do
-    with {:ok, context} <- repo_poll_context() do
-      do_fetch_repo_by_states(repo, context.tracker.active_states, context.tracker, graphql_fun: graphql_fun)
-    end
-  end
-
-  @doc false
-  @spec aggregate_repo_results_for_test([{String.t(), [Issue.t()]}]) :: %{
-          dispatchable: [Issue.t()],
-          conflicts: [Issue.t()]
-        }
-  def aggregate_repo_results_for_test(repo_results) when is_list(repo_results),
-    do: aggregate_repo_results(repo_results)
 
   @doc false
   @spec fetch_issue_states_by_ids_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::

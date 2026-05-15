@@ -1,8 +1,7 @@
-# Symphony Elixir Configuration Reference
+# Symphony Configuration Reference
 
-This is the full reference for the Elixir implementation's `symphony.yml` operator config,
-repo-local `WORKFLOW.md` front matter, startup flags, defaults, and supported values. For the
-shortest setup path, start with
+This is the full reference for Symphony's `symphony.yml` operator config, repo-local `WORKFLOW.md`
+front matter, startup flags, defaults, and supported values. For the shortest setup path, start with
 [`../README.md`](../README.md).
 
 ## Configuration files

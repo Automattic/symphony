@@ -1,17 +1,18 @@
-# Symphony Service Specification
+# Symphony Service Reference
 
-Status: Draft v1 (language-agnostic)
+Status: Reference v1 for the current Elixir/OTP service
 
-Purpose: Define a service that orchestrates coding agents to get project work done.
+Purpose: Document the behavior, configuration, and operational boundaries of the current Symphony
+service.
 
 ## Normative Language
 
 The key words `MUST`, `MUST NOT`, `REQUIRED`, `SHOULD`, `SHOULD NOT`, `RECOMMENDED`, `MAY`, and
 `OPTIONAL` in this document are to be interpreted as described in RFC 2119.
 
-`Implementation-defined` means the behavior is part of the implementation contract, but this
-specification does not prescribe one universal policy. Implementations MUST document the selected
-behavior.
+`Implementation-defined` is retained from the original specification language. In this repository,
+it records behavior selected by the current Symphony service rather than inviting separate runtime
+implementations.
 
 ## 1. Problem Statement
 
@@ -28,10 +29,9 @@ The service solves four operational problems:
   each repo's `WORKFLOW.md`.
 - It provides enough observability to operate and debug multiple concurrent agent runs.
 
-Implementations are expected to document their trust and safety posture explicitly. This
-specification does not require a single approval, sandbox, or operator-confirmation policy; some
-implementations target trusted environments with a high-trust configuration, while others require
-stricter approvals or sandboxing.
+This reference documents Symphony's trust and safety posture explicitly. The current service targets
+operator-controlled, trusted environments and relies on the configured coding agent plus host or
+container controls for the final approval and sandbox boundary.
 
 Important boundary:
 
@@ -593,9 +593,9 @@ Fields:
   - Empty, blank, duplicate, and non-string entries are normalized away by the Elixir implementation.
   - This MUST NOT override the Codex runtime auth/config read denies for `~/.codex/auth.json`,
     `~/.codex/config.toml`, and `~/.codex/AGENTS.md`.
-  - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex`,
-    `elixir/lib/symphony_elixir/agent_sandbox_config.ex`, and
-    `elixir/test/symphony_elixir/agent_sandbox_config_test.exs`.
+  - Elixir evidence: `lib/symphony_elixir/config/schema.ex`,
+    `lib/symphony_elixir/agent_sandbox_config.ex`, and
+    `test/symphony_elixir/agent_sandbox_config_test.exs`.
 - `attachments.allowed_hosts` (list of hostnames)
   - Default: `["github.com"]`.
   - Used by scoped Linear attachment URL tools to allow exact HTTP(S) attachment hosts.
@@ -606,8 +606,8 @@ Fields:
   - Used by scoped Linear file-upload tools when an explicit public upload is requested.
   - Extensions are trimmed, lowercased, normalized to include a leading `.`, deduplicated, and
     rejected if they contain path separators or control characters.
-  - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex` and
-    `elixir/test/symphony_elixir/workspace_and_config_test.exs`.
+  - Elixir evidence: `lib/symphony_elixir/config/schema.ex` and
+    `test/symphony_elixir/workspace_and_config_test.exs`.
 
 #### 5.4.5 `verification` (object)
 
@@ -760,8 +760,8 @@ fields locally if they want stricter startup checks.
   - Elixir accepts Codex string/object values supported by the targeted app-server, except
     `agent.approval_policy="never"` is rejected for Codex. Use `auto_approve_all` for unattended
     auto-approval.
-  - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex` and
-    `elixir/test/symphony_elixir/workspace_and_config_test.exs`.
+  - Elixir evidence: `lib/symphony_elixir/config/schema.ex` and
+    `test/symphony_elixir/workspace_and_config_test.exs`.
 - `thread_sandbox` (Codex `SandboxMode` value)
   - Default: `workspace-write`.
 - `turn_sandbox_policy` (Codex `SandboxPolicy` value)
@@ -817,10 +817,10 @@ fields locally if they want stricter startup checks.
     to preserve it while running shell commands.
   - Use `kind: srt` when the implementation needs the shared sensitive filesystem deny list to be
     enforced outside Codex while keeping shell command execution available.
-  - Elixir evidence: `elixir/lib/symphony_elixir/config/schema.ex`,
-    `elixir/lib/symphony_elixir/agent_sandbox_config.ex`,
-    `elixir/test/symphony_elixir/workspace_and_config_test.exs`, and
-    `elixir/test/symphony_elixir/agent_sandbox_config_test.exs`.
+  - Elixir evidence: `lib/symphony_elixir/config/schema.ex`,
+    `lib/symphony_elixir/agent_sandbox_config.ex`,
+    `test/symphony_elixir/workspace_and_config_test.exs`, and
+    `test/symphony_elixir/agent_sandbox_config_test.exs`.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
@@ -1635,10 +1635,10 @@ Current Elixir sandbox behavior:
   selected Codex runtime files, common credential basenames, `.env*`, `*.pem`, and `*.key` as
   sensitive.
 
-Elixir evidence: `elixir/lib/symphony_elixir/agent_sandbox_config.ex`,
-`elixir/lib/symphony_elixir/sensitive_path.ex`,
-`elixir/test/symphony_elixir/agent_sandbox_config_test.exs`, and
-`elixir/test/symphony_elixir/sensitive_path_test.exs`.
+Elixir evidence: `lib/symphony_elixir/agent_sandbox_config.ex`,
+`lib/symphony_elixir/sensitive_path.ex`,
+`test/symphony_elixir/agent_sandbox_config_test.exs`, and
+`test/symphony_elixir/sensitive_path_test.exs`.
 
 ## 10. Agent Runner Protocol (Coding Agent Integration)
 
@@ -1691,12 +1691,12 @@ Notes:
 - Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
   using fields supported by the configured adapter.
 
-Elixir evidence: `elixir/lib/symphony_elixir/codex/app_server.ex`,
-`elixir/lib/symphony_elixir/claude_code/app_server.ex`,
-`elixir/test/symphony_elixir/app_server_test.exs`,
-`elixir/test/symphony_elixir/core_test.exs`,
-`elixir/test/symphony_elixir/claude_code/app_server_test.exs`, and
-`elixir/test/symphony_elixir/ssh_test.exs`.
+Elixir evidence: `lib/symphony_elixir/codex/app_server.ex`,
+`lib/symphony_elixir/claude_code/app_server.ex`,
+`test/symphony_elixir/app_server_test.exs`,
+`test/symphony_elixir/core_test.exs`,
+`test/symphony_elixir/claude_code/app_server_test.exs`, and
+`test/symphony_elixir/ssh_test.exs`.
 
 RECOMMENDED additional process settings:
 
@@ -1865,10 +1865,10 @@ Scoped Linear tool extension contract:
 - Return the operation response or error payload as structured tool output that the model can inspect
   in-session.
 
-Elixir evidence: `elixir/lib/symphony_elixir/agent_tools/linear.ex`,
-`elixir/lib/symphony_elixir/mcp_server.ex`,
-`elixir/test/symphony_elixir/agent_tools_linear_test.exs`, and
-`elixir/test/symphony_elixir/mcp_server_test.exs`.
+Elixir evidence: `lib/symphony_elixir/agent_tools/linear.ex`,
+`lib/symphony_elixir/mcp_server.ex`,
+`test/symphony_elixir/agent_tools_linear_test.exs`, and
+`test/symphony_elixir/mcp_server_test.exs`.
 
 User-input-required policy:
 

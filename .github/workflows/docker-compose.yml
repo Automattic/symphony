@@ -6,9 +6,9 @@ on:
       - ".dockerignore"
       - ".github/workflows/docker-compose.yml"
       - "docker/**"
-      - "elixir/mise.toml"
-      - "elixir/mix.exs"
-      - "elixir/mix.lock"
+      - "mise.toml"
+      - "mix.exs"
+      - "mix.lock"
   push:
     branches:
       - main
@@ -16,16 +16,16 @@ on:
       - ".dockerignore"
       - ".github/workflows/docker-compose.yml"
       - "docker/**"
-      - "elixir/mise.toml"
-      - "elixir/mix.exs"
-      - "elixir/mix.lock"
+      - "mise.toml"
+      - "mix.exs"
+      - "mix.lock"
 
 jobs:
   validate-compose:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - run: SYMPHONY_CONFIG="$PWD/elixir/test/fixtures/runtime/symphony.yml" SYMPHONY_REPOS_ROOT="$PWD" docker compose -f docker/docker-compose.yml config
+      - run: SYMPHONY_CONFIG="$PWD/test/fixtures/runtime/symphony.yml" SYMPHONY_REPOS_ROOT="$PWD" docker compose -f docker/docker-compose.yml config
 
   build-image:
     runs-on: ubuntu-latest

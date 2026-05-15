@@ -42,7 +42,7 @@ defmodule SymphonyElixir.CLITest do
       })
 
     assert {:error, banner} = CLI.evaluate([], deps)
-    assert banner =~ "This Symphony implementation is a low key engineering preview."
+    assert banner =~ "Symphony is an engineering preview for operator-controlled, trusted environments."
     assert banner =~ "Codex and Claude will run without the usual guardrails."
     assert banner =~ "Agents can access provider runtime config files:"
     assert banner =~ "~/.codex/auth.json"

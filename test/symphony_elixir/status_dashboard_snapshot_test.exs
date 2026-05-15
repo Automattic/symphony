@@ -359,7 +359,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              %{
                kind: :workspace_dirty,
                repo: "/Users/chihsuan/Projects/symphony",
-               dirty_summary: "M elixir/WORKFLOW.md"
+               dirty_summary: "M WORKFLOW.md"
              }
            ]
          }
@@ -374,7 +374,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     assert rendered =~ "88,402,765 / 5,000,000"
     assert rendered =~ "resets 2026-05-09"
     refute rendered =~ "primary worktree dirty"
-    refute rendered =~ "M elixir/WORKFLOW.md"
+    refute rendered =~ "M WORKFLOW.md"
   end
 
   test "snapshot fixture: workspace dirty blocker alone does not pause dispatch" do
@@ -391,7 +391,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              %{
                kind: :workspace_dirty,
                repo: "/Users/chihsuan/Projects/symphony",
-               dirty_summary: "M elixir/WORKFLOW.md"
+               dirty_summary: "M WORKFLOW.md"
              }
            ]
          }

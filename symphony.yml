@@ -17,6 +17,7 @@ tracker:
     - Canceled
     - Duplicate
     - Done
+    - Won't Do
 repos:
   - name: symphony
     # default: true # Optional fallback repo when an issue does not match another repo route.

@@ -158,7 +158,7 @@ defmodule SymphonyElixir.CLI do
   @spec acknowledgement_banner() :: String.t()
   defp acknowledgement_banner do
     lines = [
-      "This Symphony implementation is a low key engineering preview.",
+      "Symphony is an engineering preview for operator-controlled, trusted environments.",
       "Codex and Claude will run without the usual guardrails.",
       "Agents can access provider runtime config files:",
       "  ~/.codex/auth.json",

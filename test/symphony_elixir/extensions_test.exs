@@ -1311,7 +1311,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           %{
             kind: :workspace_dirty,
             repo: "/Users/chihsuan/Projects/symphony",
-            dirty_summary: "M elixir/WORKFLOW.md"
+            dirty_summary: "M WORKFLOW.md"
           }
         ]
       })
@@ -1345,7 +1345,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           %{
             kind: :workspace_dirty,
             repo: "/Users/chihsuan/Projects/symphony",
-            dirty_summary: "M elixir/WORKFLOW.md"
+            dirty_summary: "M WORKFLOW.md"
           }
         ]
       })

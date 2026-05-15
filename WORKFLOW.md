@@ -2,10 +2,10 @@
 hooks:
   after_create: |
     if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+      mise trust && mise exec -- mix deps.get
     fi
   before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    mise exec -- mix workspace.before_remove
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

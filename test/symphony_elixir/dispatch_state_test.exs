@@ -49,7 +49,7 @@ defmodule SymphonyElixir.DispatchStateTest do
     test "workspace dirty state does not block dispatch" do
       state =
         base_state()
-        |> Map.put(:workspace_dirty, %{repo: "/path/repo", summary: "M elixir/WORKFLOW.md"})
+        |> Map.put(:workspace_dirty, %{repo: "/path/repo", summary: "M WORKFLOW.md"})
 
       result = DispatchState.compute(state, base_config(), full_env())
 

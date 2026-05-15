@@ -3673,14 +3673,20 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     set -u
     trace_file="${SYMP_TEST_SSH_TRACE:-/dev/null}"
     printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+    export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
     # SSH.run passes the remote `bash -lc <script>` as a single argv entry.
     # Execute that locally so workspace.ex containment checks run against a real
-    # filesystem instead of a canned string fixture.
+    # filesystem instead of a canned string fixture. Drop the login-shell flag
+    # because local shell profiles can install cd hooks that break these tests
+    # under `set -u`.
     args=("$@")
     script="${args[$((${#args[@]} - 1))]}"
 
     if [ -n "$script" ]; then
+      case "$script" in
+        "bash -lc "*) script="bash -c ${script#bash -lc }" ;;
+      esac
       /bin/bash -c "$script"
       exit $?
     fi

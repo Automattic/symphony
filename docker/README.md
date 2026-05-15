@@ -1,8 +1,8 @@
 # Run Symphony in Docker
 
-This directory contains a generic Docker runner for the existing Elixir Symphony implementation.
-It does not include a sample repository, seeded issues, or a fake agent. It runs Symphony against
-the operator config, repositories, credentials, and agent command that you provide.
+This directory contains a generic Docker runner for Symphony. It does not include a sample
+repository, seeded issues, or a fake agent. It runs Symphony against the operator config,
+repositories, credentials, and agent command that you provide.
 
 ## Requirements
 

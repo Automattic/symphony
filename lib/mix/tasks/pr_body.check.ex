@@ -13,8 +13,7 @@ defmodule Mix.Tasks.PrBody.Check do
   """
 
   @template_paths [
-    ".github/pull_request_template.md",
-    "../.github/pull_request_template.md"
+    ".github/pull_request_template.md"
   ]
 
   @impl Mix.Task

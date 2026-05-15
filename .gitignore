@@ -40,6 +40,12 @@ MnesiaCore.*
 .vscode/
 /bin/
 
+# Old pre-root-layout local build artifacts.
+/elixir/
+
+# Local operator config.
+/symphony.local.yml
+
 # Local environment and auth artifacts.
 .env
 .env.*

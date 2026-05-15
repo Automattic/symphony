@@ -33,14 +33,14 @@ RUN curl https://mise.run | MISE_VERSION="v${MISE_VERSION}" MISE_INSTALL_PATH=/u
 
 RUN groupadd --gid ${SYMPHONY_GID} symphony \
     && useradd --uid ${SYMPHONY_UID} --gid ${SYMPHONY_GID} --create-home --shell /bin/bash symphony \
-    && mkdir -p /opt/mise /app/elixir /app/docker /workspace /home/symphony/.codex /home/symphony/.claude \
+    && mkdir -p /opt/mise /app/symphony /app/docker /workspace /home/symphony/.codex /home/symphony/.claude \
     && chown -R symphony:symphony /opt/mise /app /workspace /home/symphony/.codex /home/symphony/.claude
 
 USER symphony
 
-WORKDIR /app/elixir
+WORKDIR /app/symphony
 
-COPY --chown=symphony:symphony elixir/mise.toml elixir/mix.exs elixir/mix.lock ./
+COPY --chown=symphony:symphony mise.toml mix.exs mix.lock ./
 
 RUN mise trust ./mise.toml \
     && mise install \
@@ -48,7 +48,7 @@ RUN mise trust ./mise.toml \
     && mise exec -- mix local.rebar --force \
     && mise exec -- mix deps.get --only prod
 
-COPY --chown=symphony:symphony elixir /app/elixir
+COPY --chown=symphony:symphony . /app/symphony
 COPY --chown=symphony:symphony docker/entrypoint.sh /app/docker/entrypoint.sh
 
 RUN mise exec -- mix escript.build \

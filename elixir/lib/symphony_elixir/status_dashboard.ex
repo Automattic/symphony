@@ -14,6 +14,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @throughput_window_ms 5_000
   @throughput_graph_window_ms 10 * 60 * 1000
   @throughput_graph_columns 24
+  @startup_snapshot_grace_ms 5_000
   @sparkline_blocks ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
   @running_id_width 8
   @running_stage_width 14
@@ -51,6 +52,7 @@ defmodule SymphonyElixir.StatusDashboard do
     :enabled_override,
     :render_interval_ms_override,
     :render_fun,
+    :started_at_ms,
     :token_samples,
     :last_tps_second,
     :last_tps_value,
@@ -70,6 +72,7 @@ defmodule SymphonyElixir.StatusDashboard do
           enabled_override: boolean() | nil,
           render_interval_ms_override: pos_integer() | nil,
           render_fun: (String.t() -> term()),
+          started_at_ms: integer(),
           token_samples: [{integer(), integer()}],
           last_tps_second: integer() | nil,
           last_tps_value: float() | nil,
@@ -111,6 +114,7 @@ defmodule SymphonyElixir.StatusDashboard do
     render_interval_ms = render_interval_ms_override || observability.render_interval_ms
     render_fun = Keyword.get(opts, :render_fun, &render_to_terminal/1)
     enabled = resolve_override(enabled_override, observability.dashboard_enabled and dashboard_enabled?())
+    started_at_ms = System.monotonic_time(:millisecond)
     schedule_tick(refresh_ms, enabled)
 
     {:ok,
@@ -122,6 +126,7 @@ defmodule SymphonyElixir.StatusDashboard do
        enabled_override: enabled_override,
        render_interval_ms_override: render_interval_ms_override,
        render_fun: render_fun,
+       started_at_ms: started_at_ms,
        token_samples: [],
        last_tps_second: nil,
        last_tps_value: nil,
@@ -212,7 +217,12 @@ defmodule SymphonyElixir.StatusDashboard do
     {raw_snapshot_data, token_samples} = snapshot_with_samples(state.token_samples, now_ms)
 
     snapshot_data =
-      snapshot_data_for_render(raw_snapshot_data, state.last_successful_snapshot_data)
+      snapshot_data_for_render(
+        raw_snapshot_data,
+        state.last_successful_snapshot_data,
+        state.started_at_ms,
+        now_ms
+      )
 
     state = Map.put(state, :token_samples, token_samples)
     state = maybe_store_successful_snapshot(state, raw_snapshot_data)
@@ -279,13 +289,24 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp maybe_store_successful_snapshot(state, _snapshot_data), do: state
 
-  defp snapshot_data_for_render({:ok, _snapshot} = snapshot_data, _last_successful_snapshot_data), do: snapshot_data
+  defp snapshot_data_for_render({:ok, _snapshot} = snapshot_data, _last_successful_snapshot_data, _started_at_ms, _now_ms),
+    do: snapshot_data
 
-  defp snapshot_data_for_render(:error, {:ok, snapshot}) when is_map(snapshot) do
+  defp snapshot_data_for_render(:error, {:ok, snapshot}, _started_at_ms, _now_ms) when is_map(snapshot) do
     {:ok, Map.put(snapshot, :snapshot_stale?, true)}
   end
 
-  defp snapshot_data_for_render(snapshot_data, _last_successful_snapshot_data), do: snapshot_data
+  defp snapshot_data_for_render(:error, _last_successful_snapshot_data, started_at_ms, now_ms) do
+    if startup_snapshot_pending?(started_at_ms, now_ms), do: :pending, else: :error
+  end
+
+  defp snapshot_data_for_render(snapshot_data, _last_successful_snapshot_data, _started_at_ms, _now_ms), do: snapshot_data
+
+  defp startup_snapshot_pending?(started_at_ms, now_ms) when is_integer(started_at_ms) and is_integer(now_ms) do
+    now_ms - started_at_ms < @startup_snapshot_grace_ms
+  end
+
+  defp startup_snapshot_pending?(_started_at_ms, _now_ms), do: false
 
   defp periodic_rerender_due?(%{last_rendered_at_ms: nil}, _now_ms), do: true
 
@@ -457,6 +478,20 @@ defmodule SymphonyElixir.StatusDashboard do
         [
           colorize("╭─ SYMPHONY STATUS", @ansi_bold),
           colorize("│ Orchestrator snapshot unavailable", @ansi_red),
+          colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
+          format_scope_link_lines(),
+          format_refresh_line(nil),
+          closing_border()
+        ]
+        |> List.flatten()
+        |> Enum.join("\n")
+
+      :pending ->
+        [
+          colorize("╭─ SYMPHONY STATUS", @ansi_bold),
+          colorize("│ Snapshot: ", @ansi_bold) <>
+            colorize("starting", @ansi_yellow) <>
+            colorize(" (waiting for orchestrator)", @ansi_gray),
           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
           format_scope_link_lines(),
           format_refresh_line(nil),

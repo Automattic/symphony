@@ -3178,6 +3178,70 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute plain =~ "Orchestrator snapshot unavailable"
   end
 
+  test "status dashboard renders startup pending before the first snapshot grace expires" do
+    dashboard_name = Module.concat(__MODULE__, :StartupPendingDashboard)
+    parent = self()
+
+    {:ok, dashboard_pid} =
+      StatusDashboard.start_link(
+        name: dashboard_name,
+        enabled: true,
+        refresh_ms: 60_000,
+        render_interval_ms: 1,
+        render_fun: fn content -> send(parent, {:startup_pending_dashboard_render, content}) end
+      )
+
+    on_exit(fn ->
+      if Process.alive?(dashboard_pid) do
+        stop_process(dashboard_pid)
+      end
+    end)
+
+    StatusDashboard.notify_update(dashboard_name)
+
+    assert_receive {:startup_pending_dashboard_render, rendered}, 500
+
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+
+    assert plain =~ "Snapshot: starting (waiting for orchestrator)"
+    assert plain =~ "Throughput: 0 tps"
+    assert plain =~ "Next refresh: n/a"
+    refute plain =~ "Orchestrator snapshot unavailable"
+  end
+
+  test "status dashboard renders unavailable after the first snapshot grace expires" do
+    dashboard_name = Module.concat(__MODULE__, :StartupUnavailableDashboard)
+    parent = self()
+
+    {:ok, dashboard_pid} =
+      StatusDashboard.start_link(
+        name: dashboard_name,
+        enabled: true,
+        refresh_ms: 60_000,
+        render_interval_ms: 1,
+        render_fun: fn content -> send(parent, {:startup_unavailable_dashboard_render, content}) end
+      )
+
+    on_exit(fn ->
+      if Process.alive?(dashboard_pid) do
+        stop_process(dashboard_pid)
+      end
+    end)
+
+    :sys.replace_state(dashboard_pid, fn state ->
+      %{state | started_at_ms: System.monotonic_time(:millisecond) - 60_000}
+    end)
+
+    StatusDashboard.notify_update(dashboard_name)
+
+    assert_receive {:startup_unavailable_dashboard_render, rendered}, 500
+
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+
+    assert plain =~ "Orchestrator snapshot unavailable"
+    refute plain =~ "Snapshot: starting"
+  end
+
   test "status dashboard still renders unavailable when no successful snapshot exists" do
     rendered = StatusDashboard.format_snapshot_content_for_test(:error, 0.0)
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")

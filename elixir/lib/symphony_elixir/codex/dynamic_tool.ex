@@ -50,18 +50,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
-      "name" => "linear_set_assignee",
-      "description" => "Set the current Linear issue assignee to self, unassign, or a user id.",
-      "inputSchema" => %{
-        "type" => "object",
-        "additionalProperties" => false,
-        "required" => ["assignee"],
-        "properties" => %{
-          "assignee" => %{"type" => "string"}
-        }
-      }
-    },
-    %{
       "name" => "linear_add_comment",
       "description" => "Add a comment to the current Linear issue.",
       "inputSchema" => %{
@@ -198,7 +186,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "linear_get_comments" => ["limit"],
     "linear_get_related_issues" => [],
     "linear_update_state" => ["state_name_or_id"],
-    "linear_set_assignee" => ["assignee"],
     "linear_add_comment" => ["body"],
     "linear_update_comment" => ["comment_id", "body"],
     "linear_delete_comment" => ["comment_id"],
@@ -218,7 +205,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "linear.get_comments" => "linear_get_comments",
     "linear.get_related_issues" => "linear_get_related_issues",
     "linear.update_state" => "linear_update_state",
-    "linear.set_assignee" => "linear_set_assignee",
     "linear.add_comment" => "linear_add_comment",
     "linear.update_comment" => "linear_update_comment",
     "linear.delete_comment" => "linear_delete_comment",
@@ -284,10 +270,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp execute_linear_tool("linear_update_state", context, args, opts) do
     Linear.update_state(context, Map.get(args, "state_name_or_id"), opts)
-  end
-
-  defp execute_linear_tool("linear_set_assignee", context, args, opts) do
-    Linear.set_assignee(context, Map.get(args, "assignee"), opts)
   end
 
   defp execute_linear_tool("linear_add_comment", context, args, opts) do

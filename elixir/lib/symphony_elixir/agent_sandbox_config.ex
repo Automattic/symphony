@@ -15,6 +15,8 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     * `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.cargo/credentials`
     * `~/.claude/.credentials.json` (Claude Code credentials)
     * `~/.claude/projects`, `~/.claude/file-history` (Claude Code session state)
+    * `~/.claude/CLAUDE.md`, `~/.claude/agents`, `~/.claude/commands`, `~/.claude/hooks`
+      (operator-authored Claude Code prompts / subagents / hooks)
     * `/etc/sudoers`, `/private/etc/sudoers`, `/var/root` (macOS admin/root state)
     * `~/Library/Application Support`, `~/Library/Keychains`, `~/Library/Preferences` (macOS app data)
     * shell and REPL history files
@@ -27,6 +29,10 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
     * `WORKFLOW.md`, `symphony.yml`, `symphony.local.yml`
     * `.git`, `mise.toml`, `.tool-versions`
+    * project-local `.claude/{settings.json,settings.local.json,CLAUDE.md,agents,commands,hooks}`
+      and user-scope `~/.claude/{CLAUDE.md,settings.json,settings.local.json,agents,commands,`
+      `hooks,plugins,skills}` plus `~/.mcp.json` (auto-loaded on next Claude Code session;
+      writes to these would silently persist prompt-injection across runs)
     * shell startup files, `~/.gitconfig`, and macOS launch agent roots
   """
 
@@ -39,6 +45,10 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "~/.claude/.credentials.json",
     "~/.claude/projects",
     "~/.claude/file-history",
+    "~/.claude/CLAUDE.md",
+    "~/.claude/agents",
+    "~/.claude/commands",
+    "~/.claude/hooks",
     "/etc/sudoers",
     "/etc/sudoers.d",
     "/private/etc/sudoers",
@@ -70,6 +80,11 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "./symphony.yml",
     "./symphony.local.yml",
     "./.claude/settings.json",
+    "./.claude/settings.local.json",
+    "./.claude/CLAUDE.md",
+    "./.claude/agents",
+    "./.claude/commands",
+    "./.claude/hooks",
     "./.git",
     "./mise.toml",
     "./.tool-versions",
@@ -81,7 +96,16 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "~/.profile",
     "~/.gitconfig",
     "~/Library/LaunchAgents",
-    "~/Library/LaunchDaemons"
+    "~/Library/LaunchDaemons",
+    "~/.claude/CLAUDE.md",
+    "~/.claude/settings.json",
+    "~/.claude/settings.local.json",
+    "~/.claude/agents",
+    "~/.claude/commands",
+    "~/.claude/hooks",
+    "~/.claude/plugins",
+    "~/.claude/skills",
+    "~/.mcp.json"
   ]
 
   @srt_codex_runtime_write_paths [
@@ -180,17 +204,23 @@ defmodule SymphonyElixir.AgentSandboxConfig do
            {String.trim_leading(path, "./"), "read"}
          end))
 
-    external_write_protect_entries =
-      @deny_write_paths
-      |> Enum.reject(&project_relative_sandbox_path?/1)
-      |> expand_home_paths()
-      |> Enum.map(&{&1, "read"})
-
     deny_read_paths =
       @deny_read_paths
       |> Enum.reject(fn path -> path in operator_allow_read_paths end)
       |> Kernel.++(@codex_runtime_deny_read_paths)
       |> expand_home_paths()
+
+    deny_read_set = MapSet.new(deny_read_paths)
+
+    # Paths that are read-denied already imply no write; emitting them again as
+    # "read" here would create a duplicate TOML key whose later value silently
+    # downgrades the protection to read-allowed.
+    external_write_protect_entries =
+      @deny_write_paths
+      |> Enum.reject(&project_relative_sandbox_path?/1)
+      |> expand_home_paths()
+      |> Enum.reject(&MapSet.member?(deny_read_set, &1))
+      |> Enum.map(&{&1, "read"})
 
     deny_read_paths
     |> Enum.map(&{&1, "none"})

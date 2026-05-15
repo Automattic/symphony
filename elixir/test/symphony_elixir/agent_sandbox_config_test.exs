@@ -36,6 +36,10 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "~/.claude/.credentials.json",
              "~/.claude/projects",
              "~/.claude/file-history",
+             "~/.claude/CLAUDE.md",
+             "~/.claude/agents",
+             "~/.claude/commands",
+             "~/.claude/hooks",
              "/etc/sudoers",
              "/etc/sudoers.d",
              "/private/etc/sudoers",
@@ -70,6 +74,11 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "./symphony.yml",
              "./symphony.local.yml",
              "./.claude/settings.json",
+             "./.claude/settings.local.json",
+             "./.claude/CLAUDE.md",
+             "./.claude/agents",
+             "./.claude/commands",
+             "./.claude/hooks",
              "./.git",
              "./mise.toml",
              "./.tool-versions",
@@ -81,7 +90,16 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "~/.profile",
              "~/.gitconfig",
              "~/Library/LaunchAgents",
-             "~/Library/LaunchDaemons"
+             "~/Library/LaunchDaemons",
+             "~/.claude/CLAUDE.md",
+             "~/.claude/settings.json",
+             "~/.claude/settings.local.json",
+             "~/.claude/agents",
+             "~/.claude/commands",
+             "~/.claude/hooks",
+             "~/.claude/plugins",
+             "~/.claude/skills",
+             "~/.mcp.json"
            ]
 
     for path <- @persistence_deny_write_paths do
@@ -97,6 +115,59 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
              "denyRead" => expand_home_paths(AgentSandboxConfig.deny_read_paths()),
              "denyWrite" => expand_home_paths(AgentSandboxConfig.deny_write_paths())
            }
+  end
+
+  test "Claude filesystem settings deny writes to Claude Code persistence files (auto-loaded across sessions)" do
+    settings = AgentSandboxConfig.claude_filesystem_settings()
+
+    # User-scope: a poisoned ~/.claude/CLAUDE.md / agents / commands / hooks would be
+    # silently re-loaded by every future Claude Code session on the host (cross-session,
+    # cross-issue persistence). Both tilde and Path.expand forms are emitted as
+    # defense-in-depth.
+    for path <- [
+          "~/.claude/CLAUDE.md",
+          "~/.claude/settings.json",
+          "~/.claude/settings.local.json",
+          "~/.claude/agents",
+          "~/.claude/commands",
+          "~/.claude/hooks",
+          "~/.claude/plugins",
+          "~/.claude/skills",
+          "~/.mcp.json"
+        ] do
+      assert path in settings["denyWrite"], "expected #{path} in claude denyWrite"
+      assert Path.expand(path) in settings["denyWrite"], "expected expanded #{path} in claude denyWrite"
+    end
+
+    # Workspace-local: project-scoped Claude memory/agents/hooks would persist across
+    # turns in the same worktree. Symmetric to the existing ./.claude/settings.json
+    # protection.
+    for path <- [
+          "./.claude/settings.local.json",
+          "./.claude/CLAUDE.md",
+          "./.claude/agents",
+          "./.claude/commands",
+          "./.claude/hooks"
+        ] do
+      assert path in settings["denyWrite"], "expected #{path} in claude denyWrite"
+    end
+  end
+
+  test "Claude filesystem settings deny reads of operator-authored Claude prompts" do
+    settings = AgentSandboxConfig.claude_filesystem_settings()
+
+    # Prevent prompt-injected agent from exfiltrating operator-authored memory /
+    # subagent / command / hook definitions. Parent ~/.claude/ stays readable so
+    # SDK directory listing still works (asserted elsewhere via refute).
+    for path <- [
+          "~/.claude/CLAUDE.md",
+          "~/.claude/agents",
+          "~/.claude/commands",
+          "~/.claude/hooks"
+        ] do
+      assert path in settings["denyRead"], "expected #{path} in claude denyRead"
+      assert Path.expand(path) in settings["denyRead"], "expected expanded #{path} in claude denyRead"
+    end
   end
 
   test "Claude filesystem settings include both tilde and absolute forms of home-relative deny paths (defense-in-depth)" do
@@ -171,6 +242,26 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert domains =~ ~s("api.openai.com"="allow")
     assert domains =~ ~s("github.com"="allow")
     refute domains =~ "evil.example.com"
+  end
+
+  test "Codex filesystem config emits read-denied paths once with `none`, not as duplicate `read` entries" do
+    overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [])
+    filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+
+    # Paths in BOTH @deny_read_paths and @deny_write_paths (e.g. ~/.claude/CLAUDE.md)
+    # must serialise to `"path"="none"` only — never also `"path"="read"`, which would
+    # be a duplicate TOML key whose later value silently downgrades the protection.
+    for path <- [
+          "~/.claude/CLAUDE.md",
+          "~/.claude/agents",
+          "~/.claude/commands",
+          "~/.claude/hooks",
+          Path.expand("~/.claude/CLAUDE.md"),
+          Path.expand("~/.claude/agents")
+        ] do
+      assert filesystem =~ ~s("#{path}"="none"), "expected #{path} to be none-denied"
+      refute filesystem =~ ~s("#{path}"="read"), "expected #{path} NOT to be re-emitted as read"
+    end
   end
 
   test "Codex allowlist config emits both tilde and absolute forms of home-relative deny paths (defense-in-depth)" do

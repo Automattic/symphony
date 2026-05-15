@@ -13,6 +13,8 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     * `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.docker`
     * `~/.config/gh`, `~/.config/op`, `~/.config/gcloud`, `~/.azure`, `~/.kube`
     * `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.cargo/credentials`
+    * `~/.claude/.credentials.json` (Claude Code credentials)
+    * `~/.claude/projects`, `~/.claude/file-history` (Claude Code session state)
     * `~/Library/Application Support` (macOS app data)
     * shell and REPL history files
 
@@ -27,6 +29,9 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   @deny_read_paths [
     "~/.ssh",
     "~/.config/gh",
+    "~/.claude/.credentials.json",
+    "~/.claude/projects",
+    "~/.claude/file-history",
     "~/.aws",
     "~/.gnupg",
     "~/Library/Application Support",

@@ -9,6 +9,9 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert AgentSandboxConfig.deny_read_paths() == [
              "~/.ssh",
              "~/.config/gh",
+             "~/.claude/.credentials.json",
+             "~/.claude/projects",
+             "~/.claude/file-history",
              "~/.aws",
              "~/.gnupg",
              "~/Library/Application Support",
@@ -48,11 +51,13 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
   end
 
   test "Claude filesystem settings drop operator allow_read_paths from denyRead" do
-    settings = AgentSandboxConfig.claude_filesystem_settings(["~/.npmrc", "~/.cargo/credentials"])
+    settings = AgentSandboxConfig.claude_filesystem_settings(["~/.npmrc", "~/.cargo/credentials", "~/.claude/projects"])
 
     refute "~/.npmrc" in settings["denyRead"]
     refute "~/.cargo/credentials" in settings["denyRead"]
+    refute "~/.claude/projects" in settings["denyRead"]
     assert "~/.ssh" in settings["denyRead"]
+    assert "~/.claude/.credentials.json" in settings["denyRead"]
     assert settings["denyWrite"] == AgentSandboxConfig.deny_write_paths()
   end
 
@@ -75,11 +80,13 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s(".claude/settings.json"="read")
     assert filesystem =~ ~s(".git"="read")
     assert filesystem =~ ~s("~/.ssh"="none")
+    assert filesystem =~ ~s("~/.claude/.credentials.json"="none")
+    assert filesystem =~ ~s("~/.claude/projects"="none")
+    assert filesystem =~ ~s("~/.claude/file-history"="none")
     assert filesystem =~ ~s("~/.netrc"="none")
     assert filesystem =~ ~s("~/.npmrc"="none")
     assert filesystem =~ ~s("~/Library/Application Support"="none")
     refute filesystem =~ "~/.codex"
-    refute filesystem =~ "~/.claude"
 
     assert ~s(permissions.workspace_write.network={"enabled"=true,"mode"="limited"}) in overrides
     assert domains = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.network.domains="))
@@ -123,6 +130,9 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "~/.codex" in settings["filesystem"]["allowWrite"]
     refute "~/.npmrc" in settings["filesystem"]["denyRead"]
     assert "~/.ssh" in settings["filesystem"]["denyRead"]
+    assert "~/.claude/.credentials.json" in settings["filesystem"]["denyRead"]
+    assert "~/.claude/projects" in settings["filesystem"]["denyRead"]
+    assert "~/.claude/file-history" in settings["filesystem"]["denyRead"]
     assert "./WORKFLOW.md" in settings["filesystem"]["denyWrite"]
     assert "./.git" in settings["filesystem"]["denyWrite"]
     assert "~/.codex/auth.json" in settings["filesystem"]["denyWrite"]
@@ -194,13 +204,15 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
   end
 
   test "Codex filesystem config allows operator overrides for default read denies" do
-    overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [], ["~/.npmrc", "~/.cargo/credentials"])
+    overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [], ["~/.npmrc", "~/.cargo/credentials", "~/.claude/projects"])
 
     assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
     assert filesystem =~ ~s("~/.npmrc"="read")
     assert filesystem =~ ~s("~/.cargo/credentials"="read")
+    assert filesystem =~ ~s("~/.claude/projects"="read")
     refute filesystem =~ ~s("~/.npmrc"="none")
     refute filesystem =~ ~s("~/.cargo/credentials"="none")
+    refute filesystem =~ ~s("~/.claude/projects"="none")
   end
 
   test "Codex filesystem config normalizes malformed operator allow_read_paths" do
@@ -219,12 +231,12 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert {:ok, system_config} =
              SystemSchema.parse(%{
                "repos" => [%{"name" => "default"}],
-               "workspace" => %{"sandbox" => %{"allow_read_paths" => ["~/.npmrc"]}},
+               "workspace" => %{"sandbox" => %{"allow_read_paths" => ["~/.npmrc", "~/.claude/projects"]}},
                "agent" => %{"kind" => "codex", "command" => "codex app-server"}
              })
 
     assert {:ok, settings} = system_config |> SystemSchema.to_config_map() |> Schema.parse()
-    assert settings.workspace.sandbox.allow_read_paths == ["~/.npmrc"]
+    assert settings.workspace.sandbox.allow_read_paths == ["~/.npmrc", "~/.claude/projects"]
 
     overrides =
       AgentSandboxConfig.codex_config_overrides(
@@ -235,12 +247,17 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
 
     assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
     assert filesystem =~ ~s("~/.npmrc"="read")
+    assert filesystem =~ ~s("~/.claude/projects"="read")
     refute filesystem =~ ~s("~/.npmrc"="none")
+    refute filesystem =~ ~s("~/.claude/projects"="none")
     assert filesystem =~ ~s("~/.netrc"="none")
+    assert filesystem =~ ~s("~/.claude/.credentials.json"="none")
 
     claude_settings = AgentSandboxConfig.claude_filesystem_settings(settings.workspace.sandbox.allow_read_paths)
     refute "~/.npmrc" in claude_settings["denyRead"]
+    refute "~/.claude/projects" in claude_settings["denyRead"]
     assert "~/.netrc" in claude_settings["denyRead"]
+    assert "~/.claude/.credentials.json" in claude_settings["denyRead"]
   end
 
   test "workspace sandbox allow_read_paths defaults to an empty list" do

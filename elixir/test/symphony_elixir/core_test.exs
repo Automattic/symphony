@@ -2218,7 +2218,8 @@ defmodule SymphonyElixir.CoreTest do
     assert enriched_prompt =~ "[Codex @ 2026-05-05T02:00:00Z]"
     assert enriched_prompt =~ "<linear_issue_comment_body>\n## Codex Workpad\nExisting plan\n</linear_issue_comment_body>"
     assert enriched_prompt =~ "Linked issues:"
-    assert enriched_prompt =~ "- related: MT-617 - Design decision (Todo)"
+    assert enriched_prompt =~ "- related: MT-617 - <linear_issue_title>\nDesign decision\n</linear_issue_title>"
+    assert enriched_prompt =~ "(<linear_linked_issue_state>\nTodo\n</linear_linked_issue_state>)"
   end
 
   test "prompt builder adds continuation guidance for retries" do

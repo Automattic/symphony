@@ -84,6 +84,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> update_string_field(:title, &PromptSafety.linear_issue_title/1)
     |> update_string_field(:description, &PromptSafety.linear_issue_body/1)
     |> update_list_field(:comments, &sanitize_issue_comments/1)
+    |> update_list_field(:linked_issues, &sanitize_linked_issues/1)
     |> put_repo_key(repo_key)
   end
 
@@ -96,6 +97,18 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp sanitize_issue_comment(comment), do: comment
+
+  defp sanitize_linked_issues(linked_issues) when is_list(linked_issues) do
+    Enum.map(linked_issues, &sanitize_linked_issue/1)
+  end
+
+  defp sanitize_linked_issue(linked_issue) when is_map(linked_issue) do
+    linked_issue
+    |> update_string_field(:title, &PromptSafety.linear_issue_title/1)
+    |> update_string_field(:state, &PromptSafety.linear_issue_state/1)
+  end
+
+  defp sanitize_linked_issue(linked_issue), do: linked_issue
 
   defp sanitize_reviewer_comments(comments) when is_list(comments) do
     Enum.map(comments, fn comment ->
@@ -117,7 +130,9 @@ defmodule SymphonyElixir.PromptBuilder do
     [
       {"issue.title", get_field(issue, :title)},
       {"issue.description", get_field(issue, :description)}
-    ] ++ issue_comment_warning_sources(get_field(issue, :comments))
+    ] ++
+      issue_comment_warning_sources(get_field(issue, :comments)) ++
+      linked_issue_warning_sources(get_field(issue, :linked_issues))
   end
 
   defp issue_comment_warning_sources(comments) when is_list(comments) do
@@ -127,6 +142,14 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp issue_comment_warning_sources(_comments), do: []
+
+  defp linked_issue_warning_sources(linked_issues) when is_list(linked_issues) do
+    linked_issues
+    |> Enum.with_index(1)
+    |> Enum.map(fn {linked_issue, index} -> {"issue.linked_issues[#{index}].title", get_field(linked_issue, :title)} end)
+  end
+
+  defp linked_issue_warning_sources(_linked_issues), do: []
 
   defp reviewer_comment_warning_sources(comments) when is_list(comments) do
     comments

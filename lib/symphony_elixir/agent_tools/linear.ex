@@ -222,7 +222,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   """
 
   @attachment_create_mutation """
-  mutation SymphonyAgentAttachFile($issueId: String!, $url: String!, $title: String) {
+  mutation SymphonyAgentAttachFile($issueId: String!, $url: String!, $title: String!) {
     attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) {
       success
       attachment {
@@ -423,7 +423,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
              opts
            ),
          {:ok, upload} <- request_file_upload(path, opts),
-         :ok <- put_upload(contents, upload, opts),
+         :ok <- put_upload(contents, upload, content_type(path), opts),
          {:ok, asset_url} <- upload_asset_url(upload),
          {:ok, response} <-
            graphql(
@@ -548,13 +548,14 @@ defmodule SymphonyElixir.AgentTools.Linear do
     end
   end
 
-  defp put_upload(contents, %{"uploadUrl" => upload_url} = upload, opts) when is_binary(upload_url) do
+  defp put_upload(contents, %{"uploadUrl" => upload_url} = upload, content_type, opts) when is_binary(upload_url) do
     upload_client = Keyword.get(opts, :upload_client, &Req.put/2)
 
     headers =
       upload
       |> Map.get("headers", [])
       |> Enum.map(fn %{"key" => key, "value" => value} -> {key, value} end)
+      |> ensure_content_type_header(content_type)
 
     case upload_client.(upload_url, headers: headers, body: contents) do
       {:ok, %{status: status}} when status in 200..299 -> :ok
@@ -563,7 +564,15 @@ defmodule SymphonyElixir.AgentTools.Linear do
     end
   end
 
-  defp put_upload(_contents, _upload, _opts), do: {:error, :upload_url_missing}
+  defp put_upload(_contents, _upload, _content_type, _opts), do: {:error, :upload_url_missing}
+
+  defp ensure_content_type_header(headers, content_type) do
+    if Enum.any?(headers, fn {key, _value} -> String.downcase(to_string(key)) == "content-type" end) do
+      headers
+    else
+      headers ++ [{"content-type", content_type}]
+    end
+  end
 
   defp file_stat(path) do
     case File.stat(path) do

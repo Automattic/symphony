@@ -350,8 +350,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         )
 
       assert response["success"] == true
-      assert_received {:file_upload_requested, %{filename: "screenshot.png", size: 3, makePublic: false}}
-      assert_received {:file_uploaded, "https://linear-upload.example", [headers: [{"x-upload", "1"}], body: "png"]}
+      assert_received {:file_upload_requested, %{filename: "screenshot.png", size: 3, contentType: "image/png", makePublic: false}}
+
+      assert_received {:file_uploaded, "https://linear-upload.example", [headers: [{"x-upload", "1"}, {"content-type", "image/png"}], body: "png"]}
+
       assert_received {:attachment_created, %{issueId: "issue-current", url: "https://linear-asset.example/screenshot.png", title: "Screenshot"}}
     after
       File.rm_rf(workspace)

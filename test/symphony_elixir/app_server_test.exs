@@ -3508,7 +3508,7 @@ defmodule SymphonyElixir.AppServerTest do
           ;;
         *"fake-remote-codex"*)
           ;;
-        *"symphony-mcp-shim"*|*"rm -f "*)
+        *"symphony-mcp-shim"*|*"rm -f "*|*"rm -rf "*"symphony-codex-home"*)
           exit 0
           ;;
       esac
@@ -3577,6 +3577,9 @@ defmodule SymphonyElixir.AppServerTest do
       assert trace =~ "permissions.workspace_write.network="
       assert trace =~ "permissions.workspace_write.network.domains="
       assert trace =~ "app-server"
+
+      assert trace =~ ~r/ARGV:.*rm -rf.*symphony-codex-home/,
+             "expected remote codex_home to be rm -rf'd on stop_session"
 
       expected_turn_policy = %{
         "type" => "workspaceWrite",
@@ -3665,7 +3668,7 @@ defmodule SymphonyElixir.AppServerTest do
           ;;
         *"fake-remote-codex"*)
           ;;
-        *"symphony-mcp-shim"*|*"rm -f "*)
+        *"symphony-mcp-shim"*|*"rm -f "*|*"rm -rf "*"symphony-codex-home"*)
           exit 0
           ;;
       esac

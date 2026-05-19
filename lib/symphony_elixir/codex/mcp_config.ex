@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.Codex.McpConfig do
   @moduledoc false
 
+  require Logger
+
   alias SymphonyElixir.AgentMcp
   alias SymphonyElixir.Config.Schema
 
@@ -114,11 +116,12 @@ defmodule SymphonyElixir.Codex.McpConfig do
 
   defp link_auth_json(home_path, host_codex_home) do
     target = Path.join(host_codex_home, "auth.json")
-    link = Path.join(home_path, "auth.json")
 
-    case File.ln_s(target, link) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:codex_auth_symlink_failed, link, target, reason}}
+    if File.exists?(target) do
+      File.ln_s(target, Path.join(home_path, "auth.json"))
+    else
+      Logger.warning("Codex host auth.json not found at #{target}; skipping symlink in generated CODEX_HOME")
+      :ok
     end
   end
 

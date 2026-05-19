@@ -156,18 +156,22 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     refute File.exists?(generated_home)
   end
 
-  test "write_home returns a structured error when auth symlink creation fails" do
-    test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-auth-error-#{System.unique_integer([:positive])}")
+  test "write_home skips auth.json symlink when host file is missing" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-auth-missing-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(test_root) end)
 
+    missing_host_home = Path.join(test_root, "host-codex-without-auth")
     generated_home = Path.join(test_root, "generated-codex-home")
-    too_long_host_home = Path.join(test_root, String.duplicate("a", 5_000))
+    File.mkdir_p!(missing_host_home)
 
-    assert {:error, {:codex_auth_symlink_failed, _link, _target, _reason}} =
+    assert {:ok, runtime_home} =
              McpConfig.write_home(settings!(%{inherit: "none"}), @mcp_session,
                home_path: generated_home,
-               host_codex_home: too_long_host_home
+               host_codex_home: missing_host_home
              )
+
+    refute File.exists?(Path.join(runtime_home.home_path, "auth.json"))
+    assert File.read!(runtime_home.config_path) =~ "[mcp_servers.symphony]"
   end
 
   test "build_config supports default host home lookup and fallback settings shape" do

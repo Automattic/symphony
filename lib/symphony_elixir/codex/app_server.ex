@@ -46,6 +46,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           launch_cleanup_paths: [Path.t()],
           mcp_session: McpServer.session() | nil,
           mcp_remote_shim_path: Path.t() | nil,
+          mcp_remote_codex_home: Path.t() | nil,
           settings: Schema.t()
         }
 
@@ -82,7 +83,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
     case start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
-      {:ok, port, launch_cleanup_paths} ->
+      {:ok, port, launch_cleanup_paths, remote_codex_home} ->
         initialize_started_port(
           port,
           workspace,
@@ -90,7 +91,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           settings,
           launch_cleanup_paths,
           mcp_session,
-          remote_shim_path
+          remote_shim_path,
+          remote_codex_home
         )
 
       {:error, reason} ->
@@ -100,7 +102,16 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp initialize_started_port(port, workspace, worker_host, settings, launch_cleanup_paths, mcp_session, remote_shim_path) do
+  defp initialize_started_port(
+         port,
+         workspace,
+         worker_host,
+         settings,
+         launch_cleanup_paths,
+         mcp_session,
+         remote_shim_path,
+         remote_codex_home
+       ) do
     metadata = port_metadata(port, worker_host)
 
     with {:ok, session_policies} <- session_policies(workspace, worker_host, settings),
@@ -120,6 +131,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          launch_cleanup_paths: launch_cleanup_paths,
          mcp_session: mcp_session,
          mcp_remote_shim_path: remote_shim_path,
+         mcp_remote_codex_home: remote_codex_home,
          settings: settings
        }}
     else
@@ -127,6 +139,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         stop_port(port)
         cleanup_launch_paths(launch_cleanup_paths)
         cleanup_remote_shim(worker_host, remote_shim_path)
+        cleanup_remote_codex_home(worker_host, remote_codex_home)
         McpServer.stop_session(mcp_session)
         {:error, reason}
     end
@@ -242,6 +255,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     stop_port(port)
     cleanup_launch_paths(Map.get(session, :launch_cleanup_paths, []))
     cleanup_remote_shim(Map.get(session, :worker_host), Map.get(session, :mcp_remote_shim_path))
+    cleanup_remote_codex_home(Map.get(session, :worker_host), Map.get(session, :mcp_remote_codex_home))
     McpServer.stop_session(Map.get(session, :mcp_session))
   end
 
@@ -362,7 +376,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           ]
         )
 
-      {:ok, port, codex_home.cleanup_paths ++ launch_cleanup_paths}
+      {:ok, port, codex_home.cleanup_paths ++ launch_cleanup_paths, nil}
     else
       {:error, {:local_codex_home_command_failed, reason, cleanup_paths}} ->
         cleanup_launch_paths(cleanup_paths)
@@ -385,8 +399,7 @@ defmodule SymphonyElixir.Codex.AppServer do
              env: AgentEnv.build(),
              reverse_forwards: mcp_reverse_forwards(mcp_session, remote_socket_path)
            ) do
-      _remote_codex_home = remote_codex_home
-      {:ok, port, []}
+      {:ok, port, [], remote_codex_home}
     end
   end
 
@@ -445,6 +458,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                  remote_shim_path,
                  host_codex_home: nil
                ) do
+          auth_link = shell_escape(Path.join(codex_home, "auth.json"))
+
           {:ok,
            [
              "rm -rf #{shell_escape(codex_home)}",
@@ -452,7 +467,7 @@ defmodule SymphonyElixir.Codex.AppServer do
              "chmod 0700 #{shell_escape(codex_home)}",
              "printf %s #{shell_escape(config_toml)} > #{shell_escape(Path.join(codex_home, "config.toml"))}",
              "chmod 0600 #{shell_escape(Path.join(codex_home, "config.toml"))}",
-             "ln -s \"$HOME/.codex/auth.json\" #{shell_escape(Path.join(codex_home, "auth.json"))}"
+             "if [ -e \"$HOME/.codex/auth.json\" ]; then ln -s \"$HOME/.codex/auth.json\" #{auth_link}; fi"
            ]
            |> Enum.join(" && ")}
         end
@@ -546,8 +561,38 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp cleanup_remote_shim(worker_host, path) when is_binary(worker_host) and is_binary(path) do
     case SSH.run(worker_host, "rm -f #{shell_escape(path)}", stderr_to_stdout: true) do
-      {:ok, {_output, 0}} -> :ok
-      _ -> :ok
+      {:ok, {_output, 0}} ->
+        :ok
+
+      {:ok, {output, status}} ->
+        Logger.warning("Codex MCP shim cleanup failed worker_host=#{worker_host} path=#{path} status=#{status} output=#{inspect(output)}")
+
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Codex MCP shim cleanup failed worker_host=#{worker_host} path=#{path} reason=#{inspect(reason)}")
+
+        :ok
+    end
+  end
+
+  defp cleanup_remote_codex_home(nil, _path), do: :ok
+  defp cleanup_remote_codex_home(_worker_host, nil), do: :ok
+
+  defp cleanup_remote_codex_home(worker_host, path) when is_binary(worker_host) and is_binary(path) do
+    case SSH.run(worker_host, "rm -rf #{shell_escape(path)}", stderr_to_stdout: true) do
+      {:ok, {_output, 0}} ->
+        :ok
+
+      {:ok, {output, status}} ->
+        Logger.warning("Codex MCP codex_home cleanup failed worker_host=#{worker_host} path=#{path} status=#{status} output=#{inspect(output)}")
+
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Codex MCP codex_home cleanup failed worker_host=#{worker_host} path=#{path} reason=#{inspect(reason)}")
+
+        :ok
     end
   end
 

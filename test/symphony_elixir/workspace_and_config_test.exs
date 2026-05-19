@@ -2800,11 +2800,36 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-    assert message =~ "agent.mcp.servers.browser.transport=\"sse\" is not supported for Codex"
+    assert message =~ "browser is invalid"
+    assert message =~ "Codex MCP servers must use transport"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_mcp: %{
-        allowed_servers: "context-a8c",
+        servers: %{
+          "browser-default-runtimes" => %{
+            transport: "sse",
+            url: "https://browser.example/sse"
+          }
+        }
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "browser-default-runtimes is invalid"
+    assert message =~ "Codex MCP servers must use transport"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{inherit: "none", allowed_servers: ["context-a8c"]}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "agent.mcp.allowed_servers"
+    assert message =~ "must be empty unless agent.mcp.inherit is allowlist"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{
+        inherit: "allowlist",
+        allowed_servers: ["context-a8c"],
         servers: %{
           "invalid-runtime" => %{
             command: "node",

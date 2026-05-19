@@ -551,6 +551,7 @@ defmodule SymphonyElixir.Config.Schema do
           |> normalize_optional_map(:headers)
           |> validate_runtime_values()
           |> validate_transport_requirements()
+          |> validate_transport_runtimes()
         end
 
         defp normalize_string_list(changeset, field) do
@@ -586,6 +587,21 @@ defmodule SymphonyElixir.Config.Schema do
             _transport -> changeset
           end
         end
+
+        defp validate_transport_runtimes(changeset) do
+          transport = get_field(changeset, :transport)
+          runtimes = get_field(changeset, :runtimes) || []
+
+          if transport in ["http", "sse"] and "codex" in runtimes do
+            add_error(
+              changeset,
+              :runtimes,
+              ~s(transport=#{inspect(transport)} is not supported for Codex; Codex MCP servers must use transport="stdio")
+            )
+          else
+            changeset
+          end
+        end
       end
 
       embedded_schema do
@@ -616,10 +632,18 @@ defmodule SymphonyElixir.Config.Schema do
       end
 
       defp validate_allowlist_servers(changeset) do
-        if get_field(changeset, :inherit) == "allowlist" and get_field(changeset, :allowed_servers) == [] do
-          add_error(changeset, :allowed_servers, "must not be empty when agent.mcp.inherit is allowlist")
-        else
-          changeset
+        inherit = get_field(changeset, :inherit)
+        allowed_servers = get_field(changeset, :allowed_servers) || []
+
+        cond do
+          inherit == "allowlist" and allowed_servers == [] ->
+            add_error(changeset, :allowed_servers, "must not be empty when agent.mcp.inherit is allowlist")
+
+          inherit in ["none", "all"] and allowed_servers != [] ->
+            add_error(changeset, :allowed_servers, "must be empty unless agent.mcp.inherit is allowlist")
+
+          true ->
+            changeset
         end
       end
 

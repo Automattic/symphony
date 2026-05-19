@@ -198,13 +198,46 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp do_ensure_application_started do
+    do_ensure_application_started(false)
+  end
+
+  defp do_ensure_application_started(recovered?) do
     case Application.ensure_all_started(:symphony_elixir) do
       {:ok, _started} -> :ok
       {:error, {:symphony_elixir, {:already_started, _pid}}} -> :ok
       {:error, {:already_started, _pid}} -> :ok
+      {:error, reason} when not recovered? -> maybe_recover_application_start!(reason)
       {:error, reason} -> raise "failed to start symphony_elixir test application: #{inspect(reason)}"
     end
   end
+
+  defp maybe_recover_application_start!(reason) do
+    case orphan_run_store_pid(reason) do
+      pid when is_pid(pid) ->
+        stop_process(pid)
+        stop_mnesia()
+        do_ensure_application_started(true)
+
+      nil ->
+        raise "failed to start symphony_elixir test application: #{inspect(reason)}"
+    end
+  end
+
+  defp orphan_run_store_pid({:symphony_elixir, {shutdown_reason, start_mfa}}) do
+    case {shutdown_reason, start_mfa} do
+      {
+        {:shutdown, {:failed_to_start_child, SymphonyElixir.RunStore, {:already_started, pid}}},
+        {SymphonyElixir.Application, :start, [:normal, []]}
+      }
+      when is_pid(pid) ->
+        pid
+
+      _other ->
+        nil
+    end
+  end
+
+  defp orphan_run_store_pid(_reason), do: nil
 
   defp recover_missing_application_supervisor! do
     _ = Application.stop(:symphony_elixir)

@@ -600,15 +600,41 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
                  )
 
         assert get_in(response, ["data", "attachmentCreate", "attachment", "id"]) == "attachment-ok"
+        assert_received {:linear_client_called, attach_query, %{title: "Proof"}}
+        assert attach_query =~ "mutation SymphonyAgentAttachFile($issueId: String!, $url: String!, $title: String!)"
         assert_receive {:upload_called, "https://uploads.example.test/proof", upload_opts}
         assert upload_opts[:body] == "ordinary proof"
+        assert upload_opts[:headers] == [{"content-type", "text/plain"}]
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
+    test "attach_file preserves Linear content-type upload headers" do
+      workspace = tmp_workspace!("linear-agent-file-upload-content-type")
+      path = Path.join(workspace, "proof.png")
+      File.write!(path, "png")
+      test_pid = self()
+
+      try do
+        assert {:ok, _response} =
+                 Linear.attach_file(secret_context(workspace), path, "Proof",
+                   linear_client:
+                     successful_file_upload_linear_client(test_pid, [
+                       %{"key" => "Content-Type", "value" => "image/png"}
+                     ]),
+                   upload_client: successful_upload_client(test_pid)
+                 )
+
+        assert_receive {:upload_called, "https://uploads.example.test/proof", upload_opts}
+        assert upload_opts[:headers] == [{"Content-Type", "image/png"}]
       after
         File.rm_rf(workspace)
       end
     end
   end
 
-  defp successful_file_upload_linear_client(test_pid) do
+  defp successful_file_upload_linear_client(test_pid, upload_headers \\ []) do
     fn query, variables, _opts ->
       cond do
         query =~ "SymphonyAgentFileUpload" ->
@@ -622,7 +648,7 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
                  "uploadFile" => %{
                    "uploadUrl" => "https://uploads.example.test/proof",
                    "assetUrl" => "https://assets.example.test/#{variables.filename}",
-                   "headers" => []
+                   "headers" => upload_headers
                  }
                }
              }

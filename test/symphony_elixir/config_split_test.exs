@@ -2,6 +2,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
   use ExUnit.Case
 
   alias SymphonyElixir.Config
+  alias SymphonyElixir.Config.Cache
   alias SymphonyElixir.Config.SystemSchema
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.PromptBuilder
@@ -11,6 +12,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     original_symphony_path = SymphonyElixir.Workflow.symphony_file_path()
     original_workflow_path = SymphonyElixir.Workflow.workflow_file_path()
     original_primary_repo = Application.get_env(:symphony_elixir, :primary_repo_name)
+    original_cache_reader = Application.get_env(:symphony_elixir, :config_cache_file_reader)
 
     root =
       Path.join(
@@ -20,15 +22,136 @@ defmodule SymphonyElixir.ConfigSplitTest do
 
     File.mkdir_p!(root)
     ensure_repo_registry_started!()
+    Cache.clear()
 
     on_exit(fn ->
+      Cache.clear()
       SymphonyElixir.Workflow.set_symphony_file_path(original_symphony_path)
       SymphonyElixir.Workflow.set_workflow_file_path(original_workflow_path)
       restore_app_env(:primary_repo_name, original_primary_repo)
+      restore_app_env(:config_cache_file_reader, original_cache_reader)
       File.rm_rf(root)
     end)
 
     {:ok, root: root}
+  end
+
+  test "settings caches symphony.yml reads after warmup", %{root: root} do
+    repo = write_repo!(root, "app", "Repo prompt\n")
+    write_symphony!(root, [repo])
+    symphony_path = Path.join(root, "symphony.yml")
+    SymphonyElixir.Workflow.set_symphony_file_path(symphony_path)
+
+    counter = :counters.new(1, [])
+
+    Application.put_env(:symphony_elixir, :config_cache_file_reader, fn path ->
+      if Path.expand(path) == Path.expand(symphony_path) do
+        :counters.add(counter, 1, 1)
+      end
+
+      File.read(path)
+    end)
+
+    assert {:ok, first} = Config.settings()
+
+    for _ <- 1..5 do
+      assert {:ok, ^first} = Config.settings()
+    end
+
+    assert :counters.get(counter, 1) == 1
+  end
+
+  test "settings reloads when symphony.yml changes", %{root: root} do
+    repo = write_repo!(root, "app", "Repo prompt\n")
+    write_symphony_text!(root, symphony_text([repo], poll_interval_ms: 11_111))
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    assert Config.settings!().polling.interval_ms == 11_111
+
+    write_symphony_text!(root, symphony_text([repo], poll_interval_ms: 222_222))
+
+    assert Config.settings!().polling.interval_ms == 222_222
+  end
+
+  test "symphony_file_path override isolates cached settings", %{root: root} do
+    repo = write_repo!(root, "app", "Repo prompt\n")
+    first_path = Path.join(root, "first-symphony.yml")
+    second_path = Path.join(root, "second-symphony.yml")
+
+    File.write!(first_path, symphony_text([repo], poll_interval_ms: 12_345))
+    File.write!(second_path, symphony_text([repo], poll_interval_ms: 54_321))
+
+    SymphonyElixir.Workflow.set_symphony_file_path(first_path)
+    assert Config.settings!().polling.interval_ms == 12_345
+
+    SymphonyElixir.Workflow.set_symphony_file_path(second_path)
+    assert Config.settings!().polling.interval_ms == 54_321
+  end
+
+  test "settings serves last good symphony config after parse error", %{root: root} do
+    repo = write_repo!(root, "app", "Repo prompt\n")
+    write_symphony_text!(root, symphony_text([repo], poll_interval_ms: 33_333))
+    symphony_path = Path.join(root, "symphony.yml")
+    SymphonyElixir.Workflow.set_symphony_file_path(symphony_path)
+
+    assert Config.settings!().polling.interval_ms == 33_333
+
+    File.write!(symphony_path, "tracker: [unterminated\n")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert Config.settings!().polling.interval_ms == 33_333
+      end)
+
+    assert log =~ "keeping last known good value"
+  end
+
+  test "missing symphony.yml keeps existing error shape", %{root: root} do
+    missing_path = Path.join(root, "missing-symphony.yml")
+    SymphonyElixir.Workflow.set_symphony_file_path(missing_path)
+
+    assert {:error, {:missing_symphony_file, ^missing_path, :enoent}} = Config.system()
+  end
+
+  test "repo workflow files are cached and reloaded by absolute path", %{root: root} do
+    web_repo = write_repo!(root, "web", "Web prompt\n")
+
+    api_repo =
+      write_repo!(root, "api", """
+      ---
+      hooks:
+        before_run: echo api
+      ---
+      API prompt
+      """)
+
+    write_symphony_text!(root, symphony_text([web_repo, api_repo], poll_interval_ms: 30_000))
+    SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
+
+    api_workflow_path = Path.join(api_repo.path, "WORKFLOW.md")
+    counter = :counters.new(1, [])
+
+    Application.put_env(:symphony_elixir, :config_cache_file_reader, fn path ->
+      if Path.expand(path) == Path.expand(api_workflow_path) do
+        :counters.add(counter, 1, 1)
+      end
+
+      File.read(path)
+    end)
+
+    assert Config.settings_for_repo!("api").hooks.before_run == "echo api"
+    assert Config.settings_for_repo!("api").hooks.before_run == "echo api"
+    assert :counters.get(counter, 1) == 1
+
+    File.write!(api_workflow_path, """
+    ---
+    hooks:
+      before_run: echo api changed
+    ---
+    API prompt changed
+    """)
+
+    assert Config.settings_for_repo!("api").hooks.before_run == "echo api changed"
   end
 
   test "symphony.yml is required before application children can be built", %{root: root} do
@@ -697,17 +820,6 @@ defmodule SymphonyElixir.ConfigSplitTest do
   end
 
   defp write_symphony!(root, repos) do
-    repos_yaml =
-      repos
-      |> Enum.map_join("", fn repo ->
-        """
-          - name: #{repo.name}
-            path: #{repo.path}
-            workflow: WORKFLOW.md
-            team: Test
-        """
-      end)
-
     File.write!(Path.join(root, "symphony.yml"), """
     tracker:
       kind: memory
@@ -715,12 +827,49 @@ defmodule SymphonyElixir.ConfigSplitTest do
       kind: codex
       command: codex app-server
     repos:
-    #{repos_yaml}
+    #{repos_yaml(repos)}
     """)
   end
 
   defp write_symphony_text!(root, content) do
     File.write!(Path.join(root, "symphony.yml"), content)
+  end
+
+  defp symphony_text(repos, opts) do
+    poll_interval_ms = Keyword.fetch!(opts, :poll_interval_ms)
+
+    """
+    tracker:
+      kind: memory
+    polling:
+      interval_ms: #{poll_interval_ms}
+    agent:
+      kind: codex
+      command: codex app-server
+    repos:
+    #{repos_yaml(repos)}
+    """
+  end
+
+  defp repos_yaml(repos) do
+    repos
+    |> Enum.with_index()
+    |> Enum.map_join("", fn {repo, index} ->
+      routing_yaml =
+        if index == 0 do
+          "    default: true\n"
+        else
+          "    labels:\n      - #{repo.name}\n"
+        end
+
+      """
+        - name: #{repo.name}
+          path: #{repo.path}
+          workflow: WORKFLOW.md
+          team: Test
+      #{routing_yaml}\
+      """
+    end)
   end
 
   defp system_config(overrides) do

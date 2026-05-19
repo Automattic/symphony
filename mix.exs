@@ -14,6 +14,7 @@ defmodule SymphonyElixir.MixProject do
         ],
         ignore_modules: [
           SymphonyElixir.Config,
+          SymphonyElixir.Config.Cache,
           SymphonyElixir.Config.RepoWorkflowSchema,
           SymphonyElixir.Config.Schema,
           SymphonyElixir.Config.SystemSchema,
@@ -111,6 +112,7 @@ defmodule SymphonyElixir.MixProject do
       {:phoenix_live_view, "~> 1.1.0"},
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
+      {:file_system, "~> 1.1"},
       {:yaml_elixir, "~> 2.12"},
       {:solid, "~> 1.2"},
       {:ecto, "~> 3.13"},

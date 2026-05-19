@@ -815,9 +815,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp write_local_prompt_file(workspace, prompt) when is_binary(prompt) do
     with {:ok, temp_root} <- prompt_temp_root(workspace),
-         prompt_dir <- Path.join(temp_root, "symphony-claude-prompt-#{System.unique_integer([:positive, :monotonic])}"),
-         :ok <- File.mkdir(prompt_dir),
-         :ok <- File.chmod(prompt_dir, 0o700),
+         {:ok, prompt_dir} <- create_prompt_dir(temp_root),
          prompt_path <- Path.join(prompt_dir, "prompt"),
          :ok <- File.write(prompt_path, prompt, [:write, :exclusive]),
          :ok <- File.chmod(prompt_path, 0o600) do
@@ -825,6 +823,44 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     else
       {:error, reason} -> {:error, {:claude_prompt_write_failed, reason}}
     end
+  end
+
+  defp create_prompt_dir(temp_root, attempts_remaining \\ 10)
+
+  defp create_prompt_dir(_temp_root, 0), do: {:error, :eexist}
+
+  defp create_prompt_dir(temp_root, attempts_remaining) do
+    prompt_dir =
+      Path.join(
+        temp_root,
+        "symphony-claude-prompt-#{System.unique_integer([:positive, :monotonic])}-#{random_suffix()}"
+      )
+
+    case File.mkdir(prompt_dir) do
+      :ok ->
+        case File.chmod(prompt_dir, 0o700) do
+          :ok ->
+            {:ok, prompt_dir}
+
+          {:error, reason} ->
+            # Without 0700 the dir is world-traversable under default umask;
+            # remove it so chmod failure doesn't leave a permissive directory.
+            _ = File.rmdir(prompt_dir)
+            {:error, {:chmod, reason}}
+        end
+
+      {:error, :eexist} ->
+        create_prompt_dir(temp_root, attempts_remaining - 1)
+
+      {:error, reason} ->
+        {:error, {:mkdir, reason}}
+    end
+  end
+
+  defp random_suffix do
+    4
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
   end
 
   defp prompt_temp_root(workspace) do

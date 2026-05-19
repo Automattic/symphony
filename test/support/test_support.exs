@@ -1,4 +1,6 @@
 defmodule SymphonyElixir.TestSupport do
+  alias SymphonyElixir.Config.Cache
+
   @workflow_prompt "You are an agent for this repository."
   @supervised_child_wait_ms 5_000
   @supervised_child_retry_ms 10
@@ -12,6 +14,7 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.CLI
       alias SymphonyElixir.Codex.AppServer
       alias SymphonyElixir.Config
+      alias SymphonyElixir.Config.Cache
       alias SymphonyElixir.HttpServer
       alias SymphonyElixir.Linear.Client
       alias SymphonyElixir.Linear.Issue
@@ -50,6 +53,8 @@ defmodule SymphonyElixir.TestSupport do
         workflow_file = Path.join(repo_root, "WORKFLOW.md")
         Workflow.set_symphony_file_path(Path.join(workflow_root, "symphony.yml"))
         Workflow.set_workflow_file_path(workflow_file)
+        Application.put_env(:symphony_elixir, :config_cache_watch, false)
+        Cache.clear()
         write_workflow_file!(workflow_file, tracker_api_token: nil)
         Workflow.set_workflow_file_path(workflow_file)
         ensure_symphony_started!()
@@ -75,6 +80,9 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :memory_tracker_fetch_candidate_sleep_ms)
           Application.delete_env(:symphony_elixir, :memory_tracker_fetch_states_sleep_ms)
           Application.delete_env(:symphony_elixir, :memory_tracker_create_comment_sleep_ms)
+          Application.delete_env(:symphony_elixir, :config_cache_file_reader)
+          Application.delete_env(:symphony_elixir, :config_cache_watch)
+          Cache.clear()
           File.rm_rf(workflow_root)
         end)
 
@@ -89,6 +97,7 @@ defmodule SymphonyElixir.TestSupport do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, repo_workflow_content(repo_config, prompt))
     File.write!(SymphonyElixir.Workflow.symphony_file_path(), symphony_content(system_config, path))
+    Cache.clear()
 
     if Process.whereis(SymphonyElixir.WorkflowStore) do
       try do
@@ -191,13 +200,46 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp do_ensure_application_started do
+    do_ensure_application_started(false)
+  end
+
+  defp do_ensure_application_started(recovered?) do
     case Application.ensure_all_started(:symphony_elixir) do
       {:ok, _started} -> :ok
       {:error, {:symphony_elixir, {:already_started, _pid}}} -> :ok
       {:error, {:already_started, _pid}} -> :ok
+      {:error, reason} when not recovered? -> maybe_recover_application_start!(reason)
       {:error, reason} -> raise "failed to start symphony_elixir test application: #{inspect(reason)}"
     end
   end
+
+  defp maybe_recover_application_start!(reason) do
+    case orphan_run_store_pid(reason) do
+      pid when is_pid(pid) ->
+        stop_process(pid)
+        stop_mnesia()
+        do_ensure_application_started(true)
+
+      nil ->
+        raise "failed to start symphony_elixir test application: #{inspect(reason)}"
+    end
+  end
+
+  defp orphan_run_store_pid({:symphony_elixir, {shutdown_reason, start_mfa}}) do
+    case {shutdown_reason, start_mfa} do
+      {
+        {:shutdown, {:failed_to_start_child, SymphonyElixir.RunStore, {:already_started, pid}}},
+        {SymphonyElixir.Application, :start, [:normal, []]}
+      }
+      when is_pid(pid) ->
+        pid
+
+      _other ->
+        nil
+    end
+  end
+
+  defp orphan_run_store_pid(_reason), do: nil
 
   defp recover_missing_application_supervisor! do
     _ = Application.stop(:symphony_elixir)

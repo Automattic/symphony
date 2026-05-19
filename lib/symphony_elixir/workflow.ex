@@ -127,7 +127,9 @@ defmodule SymphonyElixir.Workflow do
     end
   end
 
-  defp parse_repo_workflow(content) do
+  @doc false
+  @spec parse_repo_workflow(String.t()) :: {:ok, loaded_workflow()} | {:error, term()}
+  def parse_repo_workflow(content) when is_binary(content) do
     with {:ok, {front_matter, prompt}} <- parse_document(content),
          {:ok, repo_config} <- RepoWorkflowSchema.parse(front_matter) do
       {:ok,
@@ -148,7 +150,9 @@ defmodule SymphonyElixir.Workflow do
     end
   end
 
-  defp parse_symphony(content) do
+  @doc false
+  @spec parse_symphony(String.t()) :: {:ok, map()} | {:error, term()}
+  def parse_symphony(content) when is_binary(content) do
     if String.trim(content) == "" do
       {:ok, %{}}
     else

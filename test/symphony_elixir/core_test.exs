@@ -2873,9 +2873,7 @@ defmodule SymphonyElixir.CoreTest do
         self_review: %{
           enabled: true,
           provider: "anthropic",
-          model: "claude-haiku-4-5-20251001",
-          diff_max_lines: 600,
-          max_rounds: 1
+          model: "claude-haiku-4-5-20251001"
         },
         prompt: "Initial prompt {{ issue.identifier }}"
       )
@@ -3566,9 +3564,7 @@ defmodule SymphonyElixir.CoreTest do
       self_review: %{
         enabled: true,
         provider: "anthropic",
-        model: "claude-haiku-4-5-20251001",
-        diff_max_lines: 600,
-        max_rounds: 1
+        model: "claude-haiku-4-5-20251001"
       },
       prompt: Keyword.get(opts, :prompt, "Initial prompt {{ issue.identifier }}")
     )

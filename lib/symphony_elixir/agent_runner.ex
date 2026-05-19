@@ -26,6 +26,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   @dev_server_pid_key {__MODULE__, :verification_dev_server_pid}
   @dependency_review_state "In Review"
+  @self_review_max_rounds 1
 
   @type worker_host :: String.t() | nil
 
@@ -464,8 +465,8 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp self_review_next_turn(_run_context, _config, _turn_number, _max_turns), do: :normal_continuation
 
-  defp correction_round_available?(run_context, config) do
-    request_change_rounds(run_context) < config.max_rounds
+  defp correction_round_available?(run_context, _config) do
+    request_change_rounds(run_context) < @self_review_max_rounds
   end
 
   defp next_request_change_round(run_context), do: request_change_rounds(run_context) + 1

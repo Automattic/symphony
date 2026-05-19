@@ -182,9 +182,13 @@ defmodule SymphonyElixir.Config.Cache do
   defp normalize_missing_reason(reason, _missing_reason), do: reason
 
   defp watch(path) do
-    case Process.whereis(__MODULE__) do
-      pid when is_pid(pid) -> GenServer.cast(pid, {:watch, path})
-      _pid -> :ok
+    if Application.get_env(:symphony_elixir, :config_cache_watch, true) do
+      case Process.whereis(__MODULE__) do
+        pid when is_pid(pid) -> GenServer.cast(pid, {:watch, path})
+        _pid -> :ok
+      end
+    else
+      :ok
     end
   end
 

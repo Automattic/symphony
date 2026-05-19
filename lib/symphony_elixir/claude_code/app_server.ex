@@ -815,9 +815,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp write_local_prompt_file(workspace, prompt) when is_binary(prompt) do
     with {:ok, temp_root} <- prompt_temp_root(workspace),
-         prompt_dir <- Path.join(temp_root, "symphony-claude-prompt-#{System.unique_integer([:positive, :monotonic])}"),
-         :ok <- File.mkdir(prompt_dir),
-         :ok <- File.chmod(prompt_dir, 0o700),
+         {:ok, prompt_dir} <- create_prompt_dir(temp_root),
          prompt_path <- Path.join(prompt_dir, "prompt"),
          :ok <- File.write(prompt_path, prompt, [:write, :exclusive]),
          :ok <- File.chmod(prompt_path, 0o600) do
@@ -825,6 +823,38 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     else
       {:error, reason} -> {:error, {:claude_prompt_write_failed, reason}}
     end
+  end
+
+  defp create_prompt_dir(temp_root, attempts_remaining \\ 10)
+
+  defp create_prompt_dir(_temp_root, 0), do: {:error, :eexist}
+
+  defp create_prompt_dir(temp_root, attempts_remaining) do
+    prompt_dir =
+      Path.join(
+        temp_root,
+        "symphony-claude-prompt-#{System.unique_integer([:positive, :monotonic])}-#{random_suffix()}"
+      )
+
+    case File.mkdir(prompt_dir) do
+      :ok ->
+        case File.chmod(prompt_dir, 0o700) do
+          :ok -> {:ok, prompt_dir}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, :eexist} ->
+        create_prompt_dir(temp_root, attempts_remaining - 1)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp random_suffix do
+    4
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
   end
 
   defp prompt_temp_root(workspace) do
@@ -1050,48 +1080,54 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp event_contains_tool_use?(_), do: false
 
-  defp apply_event(event, on_message, acc) do
-    case event do
-      {:multi, events} when is_list(events) ->
-        Enum.reduce(events, acc, fn child, acc -> apply_event(child, on_message, acc) end)
+  defp apply_event({:multi, events}, on_message, acc) when is_list(events) do
+    Enum.reduce(events, acc, fn child, acc -> apply_event(child, on_message, acc) end)
+  end
 
-      {:session_started, session_id} ->
-        on_message.({:session_started, session_id})
-        %{acc | session_id: session_id}
+  defp apply_event({:session_started, session_id}, on_message, acc) do
+    on_message.({:session_started, session_id})
+    %{acc | session_id: session_id}
+  end
 
-      {:turn_completed, result} ->
-        on_message.({:turn_completed, result})
-        acc |> Map.merge(result) |> Map.put(:turn_completed, true)
+  defp apply_event({:turn_completed, result}, on_message, acc) do
+    on_message.({:turn_completed, result})
+    acc |> Map.merge(result) |> Map.put(:turn_completed, true)
+  end
 
-      {:turn_failed, reason} ->
-        on_message.({:turn_failed, reason})
-        %{acc | turn_failed: reason}
+  defp apply_event({:turn_failed, reason}, on_message, acc) do
+    on_message.({:turn_failed, reason})
+    %{acc | turn_failed: reason}
+  end
 
-      {:rate_limited, info, reason} ->
-        on_message.({:rate_limited, info})
-        on_message.({:turn_failed, reason})
-        %{acc | turn_failed: reason}
+  defp apply_event({:rate_limited, info, reason}, on_message, acc) do
+    on_message.({:rate_limited, info})
+    on_message.({:turn_failed, reason})
+    %{acc | turn_failed: reason}
+  end
 
-      {:tool_use, name} ->
-        on_message.({:tool_use, name})
-        acc
+  defp apply_event({:tool_use, name}, on_message, acc) do
+    on_message.({:tool_use, name})
+    acc
+  end
 
-      {:tool_result, text} ->
-        on_message.({:tool_result, text})
-        acc
+  defp apply_event({:tool_result, text}, on_message, acc) do
+    on_message.({:tool_result, text})
+    acc
+  end
 
-      {:notification, text} ->
-        on_message.({:notification, text})
-        acc
+  defp apply_event({:notification, text}, on_message, acc) do
+    on_message.({:notification, text})
+    acc
+  end
 
-      {:agent_text, text} ->
-        on_message.({:agent_text, text})
-        acc
+  defp apply_event({:agent_text, text}, on_message, acc) do
+    on_message.({:agent_text, text})
+    acc
+  end
 
-      {:malformed, raw} ->
-        Logger.debug("ClaudeCode unparseable line: #{inspect(raw)}")
-        acc
-    end
+  defp apply_event({:malformed, raw}, _on_message, acc) do
+    Logger.debug("ClaudeCode unparseable line: #{inspect(raw)}")
+    acc
   end
 
   defp safe_close_port(port) do

@@ -867,10 +867,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~r|/vendor/phoenix/phoenix\.js\?v=[a-f0-9]{16}|
     assert html =~ ~r|/vendor/phoenix_live_view/phoenix_live_view\.js\?v=[a-f0-9]{16}|
     assert html =~ ~s(phx-track-static)
-    assert html =~ "TranscriptFilter"
     assert html =~ "installRestartAwareReconnect"
     assert html =~ "liveSocket.getSocket().connect()"
-    assert html =~ "this.activeFilters = this.initialFilters()"
+    refute html =~ "TranscriptFilter"
+    refute html =~ "this.activeFilters = this.initialFilters()"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
 
@@ -1801,7 +1801,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript")
     assert html =~ "Live Transcript"
     assert html =~ "MT-HTTP"
-    assert html =~ ~s(phx-hook="TranscriptFilter")
     assert html =~ ~s(data-transcript-filter="all")
     assert html =~ ~s(data-transcript-filter="agent-text")
     assert html =~ ~s(data-transcript-filter="tool-call")
@@ -1813,10 +1812,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(data-filter-active="true")
     assert html =~ ~s(data-filter-agent-text="true")
     assert html =~ ~s(data-filter-error="true")
-    assert html =~ ~r/data-transcript-filter="all"[^>]*aria-pressed="false"/
-    assert html =~ ~r/data-transcript-filter="agent-text"[^>]*aria-pressed="true"/
-    assert html =~ ~r/data-transcript-filter="error"[^>]*aria-pressed="true"/
-    refute html =~ "phx-click"
+    assert_filter_pressed(html, "all", false)
+    assert_filter_pressed(html, "agent-text", true)
+    assert_filter_pressed(html, "error", true)
+    assert html =~ ~s(phx-click="toggle_filter")
     assert html =~ "buffered Claude hello again"
     assert html =~ "transcript-event-agent-text"
     assert html =~ "Tool call"
@@ -1868,6 +1867,140 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_eventually(fn ->
       render(view) =~ "command output streaming: 2 progress dots"
     end)
+  end
+
+  test "transcript liveview restores default filter state without query params" do
+    orchestrator_name = Module.concat(__MODULE__, :DefaultTranscriptFilterOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript")
+
+    assert_filter_pressed(html, "all", false)
+    assert_filter_pressed(html, "agent-text", true)
+    assert_filter_pressed(html, "tool-call", false)
+    assert_filter_pressed(html, "tool-result", false)
+    assert_filter_pressed(html, "session", false)
+    assert_filter_pressed(html, "error", true)
+    assert_filter_pressed(html, "event", false)
+    assert_filter_attribute(html, "agent-text")
+    assert_filter_attribute(html, "error")
+    refute_filter_attribute(html, "event")
+  end
+
+  test "transcript liveview restores explicit filters from query params" do
+    orchestrator_name = Module.concat(__MODULE__, :ExplicitTranscriptFilterOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript?filters=event,tool-call")
+
+    assert_filter_pressed(html, "all", false)
+    assert_filter_pressed(html, "agent-text", false)
+    assert_filter_pressed(html, "tool-call", true)
+    assert_filter_pressed(html, "tool-result", false)
+    assert_filter_pressed(html, "session", false)
+    assert_filter_pressed(html, "error", false)
+    assert_filter_pressed(html, "event", true)
+    assert_filter_attribute(html, "tool-call")
+    assert_filter_attribute(html, "event")
+    refute_filter_attribute(html, "agent-text")
+    refute_filter_attribute(html, "error")
+  end
+
+  test "transcript liveview clears filters for all or empty query values" do
+    orchestrator_name = Module.concat(__MODULE__, :ClearedTranscriptFilterOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    for suffix <- ["all", ""] do
+      {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript?filters=#{suffix}")
+
+      assert_filter_pressed(html, "all", true)
+      assert_filter_pressed(html, "agent-text", false)
+      assert_filter_pressed(html, "tool-call", false)
+      assert_filter_pressed(html, "tool-result", false)
+      assert_filter_pressed(html, "session", false)
+      assert_filter_pressed(html, "error", false)
+      assert_filter_pressed(html, "event", false)
+      refute html =~ ~s(data-filter-active="true")
+      refute_filter_attribute(html, "agent-text")
+      refute_filter_attribute(html, "error")
+      refute_filter_attribute(html, "event")
+    end
+  end
+
+  test "transcript liveview drops unknown filter query values" do
+    orchestrator_name = Module.concat(__MODULE__, :UnknownTranscriptFilterOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript?filters=garbage,error")
+
+    assert_filter_pressed(html, "all", false)
+    assert_filter_pressed(html, "agent-text", false)
+    assert_filter_pressed(html, "error", true)
+    assert_filter_pressed(html, "event", false)
+    assert_filter_attribute(html, "error")
+    refute_filter_attribute(html, "agent-text")
+    refute_filter_attribute(html, "event")
+  end
+
+  test "transcript liveview toggles filters and patches the URL" do
+    orchestrator_name = Module.concat(__MODULE__, :ToggleTranscriptFilterOrchestrator)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, _html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript")
+
+    view
+    |> element(~s(button[data-transcript-filter="event"]))
+    |> render_click()
+
+    assert_patch(view, "/repos/default/issues/MT-HTTP/transcript?filters=agent-text%2Cerror%2Cevent")
+
+    html = render(view)
+    assert_filter_pressed(html, "agent-text", true)
+    assert_filter_pressed(html, "error", true)
+    assert_filter_pressed(html, "event", true)
+    assert_filter_attribute(html, "agent-text")
+    assert_filter_attribute(html, "error")
+    assert_filter_attribute(html, "event")
   end
 
   test "transcript liveview replays watched issue buffered events" do
@@ -2127,6 +2260,16 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     ~r/<span(?=[^>]*class="[^"]*\brepo-chip-conflict\b[^"]*")(?=[^>]*title="#{escaped_repo}")(?=[^>]*aria-label="Repository #{escaped_repo}")/
   end
+
+  defp assert_filter_pressed(html, filter, pressed?) do
+    escaped_filter = Regex.escape(filter)
+
+    assert html =~ ~r/<button(?=[^>]*data-transcript-filter="#{escaped_filter}")(?=[^>]*aria-pressed="#{pressed?}")/
+  end
+
+  defp assert_filter_attribute(html, filter), do: assert(html =~ ~s(data-filter-#{filter}="true"))
+
+  defp refute_filter_attribute(html, filter), do: refute(html =~ ~s(data-filter-#{filter}="true"))
 
   defp static_snapshot do
     %{

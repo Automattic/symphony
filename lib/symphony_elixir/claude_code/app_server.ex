@@ -1111,28 +1111,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     %{acc | turn_failed: reason}
   end
 
-  defp apply_event({:tool_use, name}, on_message, acc) do
-    on_message.({:tool_use, name})
-    acc
-  end
-
-  defp apply_event({:tool_result, text}, on_message, acc) do
-    on_message.({:tool_result, text})
-    acc
-  end
-
-  defp apply_event({:notification, text}, on_message, acc) do
-    on_message.({:notification, text})
-    acc
-  end
-
-  defp apply_event({:agent_text, text}, on_message, acc) do
-    on_message.({:agent_text, text})
-    acc
-  end
-
   defp apply_event({:malformed, raw}, _on_message, acc) do
     Logger.debug("ClaudeCode unparseable line: #{inspect(raw)}")
+    acc
+  end
+
+  defp apply_event({kind, _payload} = event, on_message, acc)
+       when kind in [:tool_use, :tool_result, :notification, :agent_text] do
+    on_message.(event)
     acc
   end
 

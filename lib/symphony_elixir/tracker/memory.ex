@@ -1,6 +1,12 @@
 defmodule SymphonyElixir.Tracker.Memory do
   @moduledoc """
   In-memory tracker adapter used for tests and local development.
+
+  Each fetch/create function calls `maybe_sleep/1`, which is a test-only seam:
+  tests can set `Application.put_env(:symphony_elixir, <key>, ms)` to simulate
+  slow tracker I/O and exercise the orchestrator's async-task paths
+  (e.g. snapshot responsiveness while a Linear call is in flight). In
+  production this module is unused, and with no env set the sleep is a no-op.
   """
 
   @behaviour SymphonyElixir.Tracker

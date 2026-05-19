@@ -933,6 +933,13 @@ defmodule SymphonyElixir.Orchestrator do
     dispatch_revalidated_issue?(issue, terminal_state_set(), sticky_route?)
   end
 
+  # Test-only entrypoint that exercises the active-retry path synchronously.
+  # The production path goes through start_dispatch_readiness/3 (async Task),
+  # but unit tests for retry routing only need the dispatch decision and run
+  # against a bare State struct (no Orchestrator GenServer), so they invoke
+  # handle_active_retry_after_readiness/4 directly via the *_sync_for_test
+  # helpers below. Integration tests in OrchestratorStatusTest exercise the
+  # full async chain via wait_for_orchestrator_state/3.
   @doc false
   @spec handle_retry_issue_for_test(State.t(), String.t(), non_neg_integer(), map(), ([String.t()] -> term())) ::
           {:noreply, State.t()}
@@ -1360,15 +1367,43 @@ defmodule SymphonyElixir.Orchestrator do
   defp terminate_task(_pid), do: :ok
 
   defp start_quality_gate_or_dispatch(issues, %State{} = state, context) when is_list(issues) do
-    case Config.settings!().quality_gate do
-      %SymphonyElixir.Config.Schema.QualityGate{enabled: true} = gate_config ->
-        start_quality_gate_task(issues, state, context, gate_config)
+    if quality_gate_task_in_flight?(state) do
+      defer_quality_gate_request(state, context)
+    else
+      case Config.settings!().quality_gate do
+        %SymphonyElixir.Config.Schema.QualityGate{enabled: true} = gate_config ->
+          start_quality_gate_task(issues, state, context, gate_config)
 
-      _disabled ->
-        state
-        |> Map.put(:quality_gate_skipped_errors, %{})
-        |> start_dispatch_readiness(issues, context)
+        _disabled ->
+          state
+          |> Map.put(:quality_gate_skipped_errors, %{})
+          |> start_dispatch_readiness(issues, context)
+      end
     end
+  end
+
+  defp quality_gate_task_in_flight?(%State{quality_gate_tasks: tasks}) when is_map(tasks),
+    do: map_size(tasks) > 0
+
+  defp quality_gate_task_in_flight?(_state), do: false
+
+  defp defer_quality_gate_request(%State{} = state, :poll) do
+    Logger.debug("Deferring poll dispatch: quality gate task already in flight")
+    finish_poll_cycle(state, System.monotonic_time(:millisecond))
+  end
+
+  defp defer_quality_gate_request(%State{} = state, {:active_retry, issue, attempt, metadata}) do
+    Logger.debug("Deferring active retry dispatch: quality gate task already in flight for #{issue_context(issue)}")
+
+    schedule_issue_retry(
+      state,
+      issue.id,
+      attempt,
+      Map.merge(metadata, %{
+        identifier: issue.identifier,
+        error: "quality gate task already in flight; deferred"
+      })
+    )
   end
 
   defp start_quality_gate_task(issues, %State{} = state, context, gate_config) do
@@ -1466,13 +1501,19 @@ defmodule SymphonyElixir.Orchestrator do
     state
   end
 
+  # Task crash is not a quality gate rejection: keep the claim and schedule a
+  # retry, mirroring handle_dispatch_readiness_exit/3 so poll and retry cannot
+  # race to re-dispatch the same issue while the timer is still pending.
   defp handle_quality_gate_exit(%State{} = state, {:active_retry, issue, attempt, metadata}, reason) do
     Logger.warning("Skipping retry dispatch after quality gate task failure #{issue_context(issue)} reason=#{inspect(reason)}")
 
     state =
-      state
-      |> release_issue_claim(issue.id)
-      |> schedule_issue_retry(issue.id, attempt, Map.merge(metadata, %{identifier: issue.identifier, error: "quality gate task failed: #{inspect(reason)}"}))
+      schedule_issue_retry(
+        state,
+        issue.id,
+        attempt,
+        Map.merge(metadata, %{identifier: issue.identifier, error: "quality gate task failed: #{inspect(reason)}"})
+      )
 
     notify_dashboard()
     state
@@ -1696,6 +1737,38 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp start_dispatch_readiness(%State{} = state, issues, context) when is_list(issues) do
+    if dispatch_readiness_task_in_flight?(state) do
+      defer_dispatch_readiness_request(state, context)
+    else
+      do_start_dispatch_readiness(state, issues, context)
+    end
+  end
+
+  defp dispatch_readiness_task_in_flight?(%State{dispatch_readiness_tasks: tasks}) when is_map(tasks),
+    do: map_size(tasks) > 0
+
+  defp dispatch_readiness_task_in_flight?(_state), do: false
+
+  defp defer_dispatch_readiness_request(%State{} = state, :poll) do
+    Logger.debug("Deferring poll dispatch: dispatch readiness task already in flight")
+    finish_poll_cycle(state, System.monotonic_time(:millisecond))
+  end
+
+  defp defer_dispatch_readiness_request(%State{} = state, {:active_retry, issue, attempt, metadata}) do
+    Logger.debug("Deferring active retry dispatch: dispatch readiness task already in flight for #{issue_context(issue)}")
+
+    schedule_issue_retry(
+      state,
+      issue.id,
+      attempt,
+      Map.merge(metadata, %{
+        identifier: issue.identifier,
+        error: "dispatch readiness task already in flight; deferred"
+      })
+    )
+  end
+
+  defp do_start_dispatch_readiness(%State{} = state, issues, context) do
     now_ms = System.monotonic_time(:millisecond)
     state = reset_daily_budget_if_needed(state)
 
@@ -3107,20 +3180,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp start_stop_agent_session_task(running_entry) do
-    case Process.whereis(SymphonyElixir.TaskSupervisor) do
-      pid when is_pid(pid) ->
-        {:ok,
-         Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
-           stop_agent_session(running_entry)
-         end)}
-
-      _ ->
-        {:error, :task_supervisor_unavailable}
-    end
-  catch
-    :exit, reason -> {:error, {:task_supervisor_exit, reason}}
-  end
+  defp start_stop_agent_session_task(running_entry),
+    do: start_async_task(fn -> stop_agent_session(running_entry) end)
 
   defp normalize_stop_session_shutdown({:ok, result}, _timeout_ms), do: normalize_stop_session_result(result)
   defp normalize_stop_session_shutdown({:exit, reason}, _timeout_ms), do: {:error, {:exit, reason}}

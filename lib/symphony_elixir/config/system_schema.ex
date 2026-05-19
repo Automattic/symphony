@@ -405,6 +405,11 @@ defmodule SymphonyElixir.Config.SystemSchema do
   end
 
   defp struct_to_map(values) when is_list(values), do: Enum.map(values, &struct_to_map/1)
+
+  defp struct_to_map(values) when is_map(values) do
+    Map.new(values, fn {key, value} -> {to_string(key), struct_to_map(value)} end)
+  end
+
   defp struct_to_map(value), do: value
 
   defp normalize_keys(value) when is_map(value) do

@@ -395,6 +395,76 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - SRT wraps the whole Codex process tree, so it cannot distinguish Codex's own credential reads
     from commands launched beneath Codex. Treat this as an additional OS guardrail, not a complete
     credential isolation boundary.
+- `agent.mcp` controls which MCP servers the agent can reach. Symphony always exposes its built-in
+  `symphony` MCP server for tool execution; every other server is gated by this section.
+  - `agent.mcp.inherit` (default `none`) decides whether MCP servers declared in the operator's
+    host runtime config are pulled into the agent's isolated config:
+    - `none`: ignore the host runtime config entirely. The agent only sees servers declared under
+      `agent.mcp.servers` plus the implicit `symphony` server.
+    - `allowlist`: only inherit servers whose names appear in `agent.mcp.allowed_servers`. Requires
+      `allowed_servers` to be non-empty.
+    - `all`: inherit every host MCP server (except `symphony`, which Symphony always owns).
+      Supported for Codex; rejected for Claude because Symphony's Claude adapter does not safely
+      layer user/plugin MCP config in v1 — declare Claude MCP servers explicitly instead.
+  - `agent.mcp.allowed_servers` is only meaningful with `inherit: allowlist`. Setting it with
+    `inherit: none` or `inherit: all` is rejected by config validation to prevent silently
+    discarded allowlists.
+  - `agent.mcp.servers` is a map of server name → declaration. Reserved name: `symphony` (rejected
+    by validation). Each declaration accepts:
+    - `transport` (string, default `stdio`). Supported values: `stdio`, `http`, `sse`. Codex MCP
+      servers MUST use `stdio` — declaring `http` or `sse` with `codex` in `runtimes` is rejected
+      by config validation.
+    - `command`, `args`, `env` — required for `stdio`. `env` is a map of string keys/values.
+    - `url`, `headers` — required for `http` and `sse`.
+    - `runtimes` (default `["claude", "codex"]`) selects which agent runtimes the server is
+      published to. Declaring `runtimes: ["claude"]` on an `http`/`sse` server is the typical way
+      to expose HTTP MCP to Claude without breaking the Codex stdio invariant.
+  - For Codex, Symphony writes a fresh `CODEX_HOME` per session containing a generated
+    `config.toml` (symphony + inherited + declared servers) and a symlink to the operator's
+    `~/.codex/auth.json` when present (skipped with a warning if missing). The generated path is
+    added to the sandbox filesystem deny-read list so the agent cannot read its own
+    `auth.json`/`config.toml`/`AGENTS.md`. Remote workers also receive a per-session
+    `/tmp/symphony-codex-home-<id>` directory; Symphony tears both down at session stop.
+  - For remote Codex workers, `inherit: allowlist` and `inherit: all` are rejected because
+    Symphony only locally reads the orchestrator's host config. Declare the needed servers
+    explicitly under `agent.mcp.servers` when running against a remote worker.
+  - Values in `env` and `headers` that are exactly `$NAME` (where `NAME` matches
+    `[A-Za-z_][A-Za-z0-9_]*`) are resolved from the orchestrator's process environment at
+    config-load time: a set env var substitutes the value, an empty env var drops the entry,
+    and a missing env var keeps the literal `$NAME` so misconfigurations surface at the MCP
+    server's own startup. Embedded references (e.g. `"Bearer $TOKEN"`) are not expanded —
+    use a whole-value reference or pre-compose the literal value.
+  - Example: declaring a stdio filesystem server, an HTTP docs server with a secret header,
+    and a stdio GitHub server that pulls its token from the operator environment:
+
+    ```yaml
+    agent:
+      kind: claude
+      command: claude --model claude-opus-4-7 --dangerously-skip-permissions
+      mcp:
+        # inherit: none           # default; only declared servers + the implicit symphony
+        servers:
+          filesystem:
+            transport: stdio      # default; can be omitted
+            command: npx
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/Projects"]
+            runtimes: [claude]    # default ["claude","codex"]; narrow when the server is Claude-only
+
+          docs:
+            transport: http
+            url: https://docs.example/mcp
+            headers:
+              Authorization: $DOCS_MCP_BEARER     # resolved from orchestrator env at load time
+            runtimes: [claude]    # http/sse + codex is rejected by validation
+
+          github:
+            transport: stdio
+            command: npx
+            args: ["-y", "@modelcontextprotocol/server-github"]
+            env:
+              GITHUB_PERSONAL_ACCESS_TOKEN: $GITHUB_TOKEN
+            runtimes: [claude]
+    ```
 - `agent.command_timeout_ms` caps a single shell command even when it keeps streaming output.
   Default: `600000` (10 minutes). Set `0` to disable this command-level guard.
 - When `agent.turn_sandbox_policy` is set explicitly for Codex, Symphony forwards the configured

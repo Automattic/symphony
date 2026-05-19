@@ -59,6 +59,8 @@ defmodule SymphonyElixir.Orchestrator do
       :tick_token,
       :watchdog_timer_ref,
       :watchdog_token,
+      :startup_workspace_lifecycle_task_ref,
+      :repo_poll_task_ref,
       running: %{},
       completed: MapSet.new(),
       completed_run_metadata: %{},
@@ -82,7 +84,9 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_quota_logged: false,
       quality_gate_cache: %{},
       quality_gate_comment_keys: MapSet.new(),
-      quality_gate_skipped_errors: %{}
+      quality_gate_skipped_errors: %{},
+      quality_gate_tasks: %{},
+      dispatch_readiness_tasks: %{}
     ]
 
     @type t :: %__MODULE__{}
@@ -148,8 +152,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def handle_continue({:startup_workspace_lifecycle, now_ms}, state) do
-    run_terminal_workspace_cleanup(state.repo_key)
-    {:noreply, run_startup_workspace_lifecycle(state, now_ms)}
+    case start_startup_workspace_lifecycle_task(state.repo_key, now_ms) do
+      {:ok, task} ->
+        {:noreply, %{state | startup_workspace_lifecycle_task_ref: task.ref}}
+
+      {:error, reason} ->
+        Logger.warning("Skipping async startup workspace lifecycle; failed to start task: #{inspect(reason)}")
+        {:noreply, state}
+    end
   end
 
   defp log_quality_gate_config(%SymphonyElixir.Config.Schema.QualityGate{} = config) do
@@ -200,12 +210,16 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info(:run_poll_cycle, state) do
     now_ms = System.monotonic_time(:millisecond)
     state = refresh_runtime_config(state)
-    state = maybe_dispatch(state, now_ms)
-    state = schedule_tick(state, next_repo_poll_delay_ms(state, now_ms))
-    state = %{state | poll_check_in_progress: false}
 
-    notify_dashboard()
-    {:noreply, state}
+    case start_repo_poll_task(state, now_ms) do
+      {:ok, task, state} ->
+        {:noreply, %{state | repo_poll_task_ref: task.ref}}
+
+      {:skip, state} ->
+        state = finish_poll_cycle(state, now_ms)
+        notify_dashboard()
+        {:noreply, state}
+    end
   end
 
   def handle_info({:watchdog_tick, watchdog_token}, %{watchdog_token: watchdog_token} = state)
@@ -231,58 +245,113 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
+  def handle_info({ref, {:startup_workspace_lifecycle_result, result}}, %{startup_workspace_lifecycle_task_ref: ref} = state)
+      when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+
+    state =
+      state
+      |> Map.put(:startup_workspace_lifecycle_task_ref, nil)
+      |> apply_startup_workspace_lifecycle_result(result)
+
+    notify_dashboard()
+    {:noreply, state}
+  end
+
+  def handle_info({ref, {:repo_poll_result, result}}, %{repo_poll_task_ref: ref} = state)
+      when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+
+    state =
+      state
+      |> Map.put(:repo_poll_task_ref, nil)
+      |> apply_repo_poll_task_result(result)
+
+    notify_dashboard()
+    {:noreply, state}
+  end
+
+  def handle_info({ref, {:quality_gate_result, result}}, %State{quality_gate_tasks: tasks} = state)
+      when is_reference(ref) and is_map(tasks) do
+    case Map.pop(tasks, ref) do
+      {nil, _tasks} ->
+        {:noreply, state}
+
+      {context, tasks} ->
+        Process.demonitor(ref, [:flush])
+
+        state =
+          state
+          |> Map.put(:quality_gate_tasks, tasks)
+          |> handle_quality_gate_result(context, result)
+
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({ref, {:dispatch_readiness_result, result}}, %State{dispatch_readiness_tasks: tasks} = state)
+      when is_reference(ref) and is_map(tasks) do
+    case Map.pop(tasks, ref) do
+      {nil, _tasks} ->
+        {:noreply, state}
+
+      {context, tasks} ->
+        Process.demonitor(ref, [:flush])
+
+        state =
+          state
+          |> Map.put(:dispatch_readiness_tasks, tasks)
+          |> handle_dispatch_readiness_result(context, result)
+
+        {:noreply, state}
+    end
+  end
+
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
         %{running: running} = state
       ) do
-    case find_issue_id_for_ref(running, ref) do
-      nil ->
-        {:noreply, state}
+    cond do
+      state.startup_workspace_lifecycle_task_ref == ref ->
+        Logger.warning("Async startup workspace lifecycle task exited before replying: #{inspect(reason)}")
+        {:noreply, %{state | startup_workspace_lifecycle_task_ref: nil}}
 
-      issue_id ->
-        {running_entry, state} = pop_running_entry(state, issue_id)
-        Verification.release(Map.get(running_entry, :verification), "agent process exit")
-        state = record_session_completion_totals(state, running_entry)
-        session_id = running_entry_session_id(running_entry)
-
-        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
+      state.repo_poll_task_ref == ref ->
+        Logger.warning("Async repo poll task exited before replying: #{inspect(reason)}")
+        now_ms = System.monotonic_time(:millisecond)
 
         state =
-          case reason do
-            :normal ->
-              persist_run_completion(running_entry, "success", nil)
-              complete_pr_review_comment_cursor(issue_id)
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
-
-              state
-              |> complete_issue(issue_id, running_entry)
-              |> schedule_issue_retry(issue_id, 1, %{
-                repo_key: running_entry_repo_key(running_entry),
-                identifier: running_entry.identifier,
-                delay_type: :continuation,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
-
-            _ ->
-              error = "agent exited: #{inspect(reason)}"
-              persist_run_completion(running_entry, terminal_status_for_reason(reason), error)
-              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
-
-              next_attempt = next_retry_attempt_from_running(running_entry)
-              emit_run_failed(running_entry, error, next_attempt)
-
-              schedule_issue_retry(state, issue_id, next_attempt, %{
-                repo_key: running_entry_repo_key(running_entry),
-                identifier: running_entry.identifier,
-                error: error,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
-          end
+          state
+          |> Map.put(:repo_poll_task_ref, nil)
+          |> finish_poll_cycle(now_ms)
 
         notify_dashboard()
         {:noreply, state}
+
+      is_map(state.quality_gate_tasks) and Map.has_key?(state.quality_gate_tasks, ref) ->
+        {context, tasks} = Map.pop(state.quality_gate_tasks, ref)
+        Logger.warning("Async quality gate task exited before replying: #{inspect(reason)}")
+
+        state =
+          state
+          |> Map.put(:quality_gate_tasks, tasks)
+          |> handle_quality_gate_exit(context, reason)
+
+        {:noreply, state}
+
+      is_map(state.dispatch_readiness_tasks) and Map.has_key?(state.dispatch_readiness_tasks, ref) ->
+        {context, tasks} = Map.pop(state.dispatch_readiness_tasks, ref)
+        Logger.warning("Async dispatch readiness task exited before replying: #{inspect(reason)}")
+
+        state =
+          state
+          |> Map.put(:dispatch_readiness_tasks, tasks)
+          |> handle_dispatch_readiness_exit(context, reason)
+
+        {:noreply, state}
+
+      true ->
+        handle_agent_down(ref, reason, running, state)
     end
   end
 
@@ -360,31 +429,127 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
-  defp maybe_dispatch(%State{} = state, now_ms) do
-    state =
-      state
-      |> reconcile_running_issues()
-      |> reconcile_watching_issues()
+  defp handle_agent_down(ref, reason, running, state) do
+    case find_issue_id_for_ref(running, ref) do
+      nil ->
+        {:noreply, state}
 
-    case Config.validate!() do
-      :ok ->
-        case Config.repos() do
-          {:ok, repos} ->
-            dispatch_from_repo_poll(state, repos, now_ms)
+      issue_id ->
+        {running_entry, state} = pop_running_entry(state, issue_id)
+        Verification.release(Map.get(running_entry, :verification), "agent process exit")
+        state = record_session_completion_totals(state, running_entry)
+        session_id = running_entry_session_id(running_entry)
 
-          {:error, reason} ->
-            log_poll_error(reason)
-            record_tracker_poll_failure(state, reason)
-        end
+        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
 
-      {:error, reason} ->
-        log_poll_error(reason)
-        record_tracker_poll_failure(state, reason)
+        state =
+          case reason do
+            :normal ->
+              persist_run_completion(running_entry, "success", nil)
+              complete_pr_review_comment_cursor(issue_id)
+              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+              state
+              |> complete_issue(issue_id, running_entry)
+              |> schedule_issue_retry(issue_id, 1, %{
+                repo_key: running_entry_repo_key(running_entry),
+                identifier: running_entry.identifier,
+                delay_type: :continuation,
+                worker_host: Map.get(running_entry, :worker_host),
+                workspace_path: Map.get(running_entry, :workspace_path)
+              })
+
+            _ ->
+              error = "agent exited: #{inspect(reason)}"
+              persist_run_completion(running_entry, terminal_status_for_reason(reason), error)
+              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+
+              next_attempt = next_retry_attempt_from_running(running_entry)
+              emit_run_failed(running_entry, error, next_attempt)
+
+              schedule_issue_retry(state, issue_id, next_attempt, %{
+                repo_key: running_entry_repo_key(running_entry),
+                identifier: running_entry.identifier,
+                error: error,
+                worker_host: Map.get(running_entry, :worker_host),
+                workspace_path: Map.get(running_entry, :workspace_path)
+              })
+          end
+
+        notify_dashboard()
+        {:noreply, state}
     end
   end
 
-  defp dispatch_from_repo_poll(%State{} = state, repos, now_ms) when is_list(repos) do
-    case poll_candidate_issue_buckets(state, repos, &Tracker.fetch_candidate_issues_for_repo/1, now_ms) do
+  defp start_repo_poll_task(%State{repo_poll_task_ref: ref} = state, _now_ms) when is_reference(ref),
+    do: {:skip, state}
+
+  defp start_repo_poll_task(%State{} = state, now_ms) do
+    state = reconcile_stalled_running_issues(state)
+
+    with :ok <- Config.validate!(),
+         {:ok, repos} <- Config.repos() do
+      start_repo_poll_task_for_repos(state, repos, now_ms)
+    else
+      {:error, reason} ->
+        log_poll_error(reason)
+        {:skip, record_tracker_poll_failure(state, reason)}
+    end
+  end
+
+  defp start_repo_poll_task_for_repos(%State{} = state, repos, now_ms) do
+    state = sync_repo_poll_state(state, repos, now_ms)
+
+    due_repo = next_due_repo(state, repos, now_ms)
+    running_ids = Map.keys(state.running)
+    watching_ids = watching_issue_ids(state)
+
+    case start_async_task(fn ->
+           {:repo_poll_result,
+            %{
+              repos: repos,
+              now_ms: now_ms,
+              running_ids: running_ids,
+              running_result: fetch_issue_states_if_needed(running_ids),
+              watching_ids: watching_ids,
+              watching_result: fetch_issue_states_if_needed(watching_ids),
+              repo_result: fetch_due_repo_if_needed(due_repo)
+            }}
+         end) do
+      {:ok, task} ->
+        {:ok, task, state}
+
+      {:error, reason} ->
+        Logger.warning("Failed to start async repo poll task: #{inspect(reason)}")
+        {:skip, state}
+    end
+  end
+
+  defp fetch_issue_states_if_needed([]), do: {:ok, []}
+  defp fetch_issue_states_if_needed(issue_ids), do: Tracker.fetch_issue_states_by_ids(issue_ids)
+
+  defp fetch_due_repo_if_needed(nil), do: :not_due
+
+  defp fetch_due_repo_if_needed(repo) do
+    repo_name = repo_name(repo)
+    {repo_name, Tracker.fetch_candidate_issues_for_repo(repo)}
+  end
+
+  defp apply_repo_poll_task_result(%State{} = state, %{
+         repos: repos,
+         now_ms: now_ms,
+         running_ids: running_ids,
+         running_result: running_result,
+         watching_ids: watching_ids,
+         watching_result: watching_result,
+         repo_result: repo_result
+       }) do
+    state =
+      state
+      |> apply_running_issue_states_result(running_ids, running_result)
+      |> apply_watching_issue_states_result(watching_ids, watching_result)
+
+    case apply_repo_poll_result(state, repos, repo_result, now_ms) do
       {:ok, %{dispatchable: issues}, state} ->
         state =
           state
@@ -392,20 +557,25 @@ defmodule SymphonyElixir.Orchestrator do
           |> clear_running_quality_gate_cache_entries()
 
         if available_slots(state) > 0 do
-          {gated_issues, state} =
-            issues
-            |> reject_running_quality_gate_candidates(state)
-            |> apply_quality_gate(state)
-
-          choose_issues(gated_issues, state)
+          issues
+          |> reject_running_quality_gate_candidates(state)
+          |> start_quality_gate_or_dispatch(state, :poll)
         else
-          state
+          finish_poll_cycle(state, now_ms)
         end
 
       {:error, reason, state} ->
         log_poll_error(reason)
-        state
+        finish_poll_cycle(state, now_ms)
     end
+  end
+
+  defp apply_repo_poll_task_result(%State{} = state, _result), do: finish_poll_cycle(state, System.monotonic_time(:millisecond))
+
+  defp finish_poll_cycle(%State{} = state, now_ms) do
+    state
+    |> schedule_tick(next_repo_poll_delay_ms(state, now_ms))
+    |> Map.put(:poll_check_in_progress, false)
   end
 
   defp log_poll_error(:missing_linear_api_token), do: Logger.error("Linear API token missing in WORKFLOW.md")
@@ -515,8 +685,22 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp poll_due_repo(state, repos, repo, fetcher, now_ms) do
     repo_name = repo_name(repo)
+    apply_due_repo_fetch_result(state, repos, repo_name, fetcher.(repo), now_ms)
+  end
 
-    case fetcher.(repo) do
+  defp apply_repo_poll_result(state, repos, :not_due, _now_ms) do
+    buckets = candidate_buckets_from_cache(state, repos)
+    {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
+  end
+
+  defp apply_repo_poll_result(state, repos, {repo_name, result}, now_ms) when is_binary(repo_name) do
+    apply_due_repo_fetch_result(state, repos, repo_name, result, now_ms)
+  end
+
+  defp apply_repo_poll_result(state, _repos, result, _now_ms), do: {:error, {:invalid_repo_poll_result, result}, state}
+
+  defp apply_due_repo_fetch_result(state, repos, repo_name, result, now_ms) do
+    case result do
       {:ok, issues} when is_list(issues) ->
         state =
           state
@@ -696,29 +880,27 @@ defmodule SymphonyElixir.Orchestrator do
   defp issue_id(%Issue{id: id}) when is_binary(id) and id != "", do: id
   defp issue_id(_issue), do: nil
 
-  defp reconcile_running_issues(%State{} = state) do
-    state = reconcile_stalled_running_issues(state)
-    running_ids = Map.keys(state.running)
+  defp apply_running_issue_states_result(%State{} = state, [], _result), do: state
 
-    if running_ids == [] do
-      state
-    else
-      case Tracker.fetch_issue_states_by_ids(running_ids) do
-        {:ok, issues} ->
-          issues
-          |> reconcile_running_issue_states(
-            state,
-            active_state_set(),
-            terminal_state_set()
-          )
-          |> reconcile_missing_running_issue_ids(running_ids, issues)
+  defp apply_running_issue_states_result(%State{} = state, running_ids, {:ok, issues})
+       when is_list(running_ids) and is_list(issues) do
+    issues
+    |> reconcile_running_issue_states(
+      state,
+      active_state_set(),
+      terminal_state_set()
+    )
+    |> reconcile_missing_running_issue_ids(running_ids, issues)
+  end
 
-        {:error, reason} ->
-          Logger.debug("Failed to refresh running issue states: #{inspect(reason)}; keeping active workers")
+  defp apply_running_issue_states_result(%State{} = state, _running_ids, {:error, reason}) do
+    Logger.debug("Failed to refresh running issue states: #{inspect(reason)}; keeping active workers")
+    state
+  end
 
-          state
-      end
-    end
+  defp apply_running_issue_states_result(%State{} = state, _running_ids, result) do
+    Logger.debug("Ignoring invalid running issue state refresh result: #{inspect(result)}")
+    state
   end
 
   @doc false
@@ -751,12 +933,19 @@ defmodule SymphonyElixir.Orchestrator do
     dispatch_revalidated_issue?(issue, terminal_state_set(), sticky_route?)
   end
 
+  # Test-only entrypoint that exercises the active-retry path synchronously.
+  # The production path goes through start_dispatch_readiness/3 (async Task),
+  # but unit tests for retry routing only need the dispatch decision and run
+  # against a bare State struct (no Orchestrator GenServer), so they invoke
+  # handle_active_retry_after_readiness/4 directly via the *_sync_for_test
+  # helpers below. Integration tests in OrchestratorStatusTest exercise the
+  # full async chain via wait_for_orchestrator_state/3.
   @doc false
   @spec handle_retry_issue_for_test(State.t(), String.t(), non_neg_integer(), map(), ([String.t()] -> term())) ::
           {:noreply, State.t()}
   def handle_retry_issue_for_test(%State{} = state, issue_id, attempt, metadata, issue_fetcher)
       when is_binary(issue_id) and is_integer(attempt) and is_map(metadata) and is_function(issue_fetcher, 1) do
-    handle_retry_issue(state, issue_id, attempt, metadata, issue_fetcher)
+    handle_retry_issue_sync_for_test(state, issue_id, attempt, metadata, issue_fetcher)
   end
 
   @doc false
@@ -815,33 +1004,36 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
 
-  defp reconcile_watching_issues(%State{} = state) do
-    issue_ids =
-      state.completed_run_metadata
-      |> Map.keys()
-      |> MapSet.new()
-      |> MapSet.union(Map.keys(state.watching) |> MapSet.new())
-      |> MapSet.to_list()
-      |> Enum.reject(&Map.has_key?(state.retry_attempts, &1))
+  defp watching_issue_ids(%State{} = state) do
+    state.completed_run_metadata
+    |> Map.keys()
+    |> MapSet.new()
+    |> MapSet.union(Map.keys(state.watching) |> MapSet.new())
+    |> MapSet.to_list()
+    |> Enum.reject(&Map.has_key?(state.retry_attempts, &1))
+  end
 
-    if issue_ids == [] do
-      state
-    else
-      case Tracker.fetch_issue_states_by_ids(issue_ids) do
-        {:ok, issues} ->
-          issues
-          |> reconcile_watching_issue_states(
-            state,
-            active_state_set(),
-            terminal_state_set()
-          )
-          |> reconcile_missing_watching_issue_ids(issue_ids, issues)
+  defp apply_watching_issue_states_result(%State{} = state, [], _result), do: state
 
-        {:error, reason} ->
-          Logger.warning("Failed to refresh watching issue states: #{inspect(reason)}; keeping watched issues")
-          state
-      end
-    end
+  defp apply_watching_issue_states_result(%State{} = state, issue_ids, {:ok, issues})
+       when is_list(issue_ids) and is_list(issues) do
+    issues
+    |> reconcile_watching_issue_states(
+      state,
+      active_state_set(),
+      terminal_state_set()
+    )
+    |> reconcile_missing_watching_issue_ids(issue_ids, issues)
+  end
+
+  defp apply_watching_issue_states_result(%State{} = state, _issue_ids, {:error, reason}) do
+    Logger.warning("Failed to refresh watching issue states: #{inspect(reason)}; keeping watched issues")
+    state
+  end
+
+  defp apply_watching_issue_states_result(%State{} = state, _issue_ids, result) do
+    Logger.warning("Ignoring invalid watching issue state refresh result: #{inspect(result)}")
+    state
   end
 
   defp reconcile_watching_issue_states([], state, _active_states, _terminal_states), do: state
@@ -1174,43 +1366,157 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid), do: :ok
 
-  defp apply_quality_gate(issues, %State{} = state) do
-    config = Config.settings!().quality_gate
+  defp start_quality_gate_or_dispatch(issues, %State{} = state, context) when is_list(issues) do
+    if quality_gate_task_in_flight?(state) do
+      defer_quality_gate_request(state, context)
+    else
+      case Config.settings!().quality_gate do
+        %SymphonyElixir.Config.Schema.QualityGate{enabled: true} = gate_config ->
+          start_quality_gate_task(issues, state, context, gate_config)
 
-    case config do
-      %SymphonyElixir.Config.Schema.QualityGate{enabled: true} = gate_config ->
-        %{passed: passed, skipped: skipped, awaiting_clarification: awaiting_clarification, cache: cache} =
-          QualityGate.evaluate(issues, gate_config, state.quality_gate_cache)
-
-        comment_keys = retain_quality_gate_comment_keys(state.quality_gate_comment_keys, issues)
-
-        {cache, comment_keys, _awaiting_with_status} =
-          post_quality_gate_clarification_comments(awaiting_clarification, gate_config, cache, comment_keys)
-
-        {cache, comment_keys, skipped_with_status} =
-          post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys)
-
-        persist_quality_gate_cache(cache)
-        persist_quality_gate_comment_keys(comment_keys)
-
-        error_skips_index =
-          skipped_with_status
-          |> Enum.filter(&match?(%{kind: :error}, &1))
-          |> Enum.reduce(%{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
-
-        state = %{
+        _disabled ->
           state
-          | quality_gate_cache: cache,
-            quality_gate_comment_keys: comment_keys,
-            quality_gate_skipped_errors: error_skips_index
+          |> Map.put(:quality_gate_skipped_errors, %{})
+          |> start_dispatch_readiness(issues, context)
+      end
+    end
+  end
+
+  defp quality_gate_task_in_flight?(%State{quality_gate_tasks: tasks}) when is_map(tasks),
+    do: map_size(tasks) > 0
+
+  defp quality_gate_task_in_flight?(_state), do: false
+
+  defp defer_quality_gate_request(%State{} = state, :poll) do
+    Logger.debug("Deferring poll dispatch: quality gate task already in flight")
+    finish_poll_cycle(state, System.monotonic_time(:millisecond))
+  end
+
+  defp defer_quality_gate_request(%State{} = state, {:active_retry, issue, attempt, metadata}) do
+    Logger.debug("Deferring active retry dispatch: quality gate task already in flight for #{issue_context(issue)}")
+
+    schedule_issue_retry(
+      state,
+      issue.id,
+      attempt,
+      Map.merge(metadata, %{
+        identifier: issue.identifier,
+        error: "quality gate task already in flight; deferred"
+      })
+    )
+  end
+
+  defp start_quality_gate_task(issues, %State{} = state, context, gate_config) do
+    cache = state.quality_gate_cache
+    comment_keys = state.quality_gate_comment_keys
+
+    case start_async_task(fn ->
+           {:quality_gate_result, evaluate_quality_gate_with_comments(issues, gate_config, cache, comment_keys)}
+         end) do
+      {:ok, task} ->
+        %{
+          state
+          | quality_gate_tasks: Map.put(state.quality_gate_tasks || %{}, task.ref, context)
         }
 
-        {passed, state}
-
-      _disabled ->
-        state = %{state | quality_gate_skipped_errors: %{}}
-        {issues, state}
+      {:error, reason} ->
+        Logger.warning("Failed to start async quality gate task: #{inspect(reason)}")
+        handle_quality_gate_exit(state, context, reason)
     end
+  end
+
+  defp evaluate_quality_gate_with_comments(issues, gate_config, cache, comment_keys) do
+    %{passed: passed, skipped: skipped, awaiting_clarification: awaiting_clarification, cache: cache} =
+      QualityGate.evaluate(issues, gate_config, cache)
+
+    comment_keys = retain_quality_gate_comment_keys(comment_keys, issues)
+
+    {cache, comment_keys, _awaiting_with_status} =
+      post_quality_gate_clarification_comments(awaiting_clarification, gate_config, cache, comment_keys)
+
+    {cache, comment_keys, skipped_with_status} =
+      post_quality_gate_skip_comments(skipped, gate_config, cache, comment_keys)
+
+    error_skips_index =
+      skipped_with_status
+      |> Enum.filter(&match?(%{kind: :error}, &1))
+      |> Enum.reduce(%{}, fn entry, acc -> Map.put(acc, entry.issue_id, entry) end)
+
+    %{
+      passed: passed,
+      cache: cache,
+      comment_keys: comment_keys,
+      error_skips_index: error_skips_index
+    }
+  end
+
+  defp apply_quality_gate_evaluation_result(%State{} = state, %{
+         cache: cache,
+         comment_keys: comment_keys,
+         error_skips_index: error_skips_index
+       }) do
+    persist_quality_gate_cache(cache)
+    persist_quality_gate_comment_keys(comment_keys)
+
+    %{
+      state
+      | quality_gate_cache: cache,
+        quality_gate_comment_keys: comment_keys,
+        quality_gate_skipped_errors: error_skips_index
+    }
+  end
+
+  defp handle_quality_gate_result(%State{} = state, {:active_retry, issue, attempt, metadata}, %{passed: passed} = result)
+       when is_list(passed) do
+    state = apply_quality_gate_evaluation_result(state, result)
+
+    if Enum.any?(passed, fn
+         %Issue{id: id} -> id == issue.id
+         _ -> false
+       end) do
+      start_dispatch_readiness(state, passed, {:active_retry, issue, attempt, metadata})
+    else
+      Logger.info("Skipping retry dispatch after quality gate rejected #{issue_context(issue)}")
+      state = release_issue_claim(state, issue.id)
+      notify_dashboard()
+      state
+    end
+  end
+
+  defp handle_quality_gate_result(%State{} = state, context, %{passed: passed} = result) when is_list(passed) do
+    state
+    |> apply_quality_gate_evaluation_result(result)
+    |> start_dispatch_readiness(passed, context)
+  end
+
+  defp handle_quality_gate_result(%State{} = state, context, result) do
+    Logger.warning("Ignoring invalid async quality gate result: #{inspect(result)}")
+    handle_quality_gate_exit(state, context, {:invalid_result, result})
+  end
+
+  defp handle_quality_gate_exit(%State{} = state, :poll, reason) do
+    Logger.warning("Skipping dispatch after quality gate task failure: #{inspect(reason)}")
+    state = finish_poll_cycle(state, System.monotonic_time(:millisecond))
+    notify_dashboard()
+    state
+  end
+
+  # Task crash is not a quality gate rejection: keep the claim and schedule a
+  # retry, mirroring handle_dispatch_readiness_exit/3 so poll and retry cannot
+  # race to re-dispatch the same issue while the timer is still pending.
+  defp handle_quality_gate_exit(%State{} = state, {:active_retry, issue, attempt, metadata}, reason) do
+    Logger.warning("Skipping retry dispatch after quality gate task failure #{issue_context(issue)} reason=#{inspect(reason)}")
+
+    state =
+      schedule_issue_retry(
+        state,
+        issue.id,
+        attempt,
+        Map.merge(metadata, %{identifier: issue.identifier, error: "quality gate task failed: #{inspect(reason)}"})
+      )
+
+    notify_dashboard()
+    state
   end
 
   defp post_quality_gate_clarification_comments(awaiting, gate_config, cache, comment_keys) do
@@ -1430,24 +1736,138 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp choose_issues(issues, state) do
-    state = reset_daily_budget_if_needed(state)
-    state = maybe_run_workspace_age_gc(state)
-    state = check_workspace_quota(state)
-
-    cond do
-      operator_paused?(state) ->
-        log_operator_pause(state)
-
-      workspace_quota_paused?(state) ->
-        log_workspace_quota_pause(state)
-
-      daily_budget_paused?(state) ->
-        log_daily_budget_pause(state)
-
-      true ->
-        dispatch_chosen_issues(issues, state)
+  defp start_dispatch_readiness(%State{} = state, issues, context) when is_list(issues) do
+    if dispatch_readiness_task_in_flight?(state) do
+      defer_dispatch_readiness_request(state, context)
+    else
+      do_start_dispatch_readiness(state, issues, context)
     end
+  end
+
+  defp dispatch_readiness_task_in_flight?(%State{dispatch_readiness_tasks: tasks}) when is_map(tasks),
+    do: map_size(tasks) > 0
+
+  defp dispatch_readiness_task_in_flight?(_state), do: false
+
+  defp defer_dispatch_readiness_request(%State{} = state, :poll) do
+    Logger.debug("Deferring poll dispatch: dispatch readiness task already in flight")
+    finish_poll_cycle(state, System.monotonic_time(:millisecond))
+  end
+
+  defp defer_dispatch_readiness_request(%State{} = state, {:active_retry, issue, attempt, metadata}) do
+    Logger.debug("Deferring active retry dispatch: dispatch readiness task already in flight for #{issue_context(issue)}")
+
+    schedule_issue_retry(
+      state,
+      issue.id,
+      attempt,
+      Map.merge(metadata, %{
+        identifier: issue.identifier,
+        error: "dispatch readiness task already in flight; deferred"
+      })
+    )
+  end
+
+  defp do_start_dispatch_readiness(%State{} = state, issues, context) do
+    now_ms = System.monotonic_time(:millisecond)
+    state = reset_daily_budget_if_needed(state)
+
+    task_input = %{
+      repo_key: state.repo_key,
+      active_workspace_identifiers: active_workspace_identifiers(state),
+      run_age_gc?: workspace_age_gc_due?(state, now_ms),
+      now_ms: now_ms
+    }
+
+    case start_async_task(fn ->
+           {:dispatch_readiness_result, run_dispatch_readiness_checks(task_input)}
+         end) do
+      {:ok, task} ->
+        task_context = %{kind: context, issues: issues}
+        %{state | dispatch_readiness_tasks: Map.put(state.dispatch_readiness_tasks || %{}, task.ref, task_context)}
+
+      {:error, reason} ->
+        Logger.warning("Failed to start async dispatch readiness task: #{inspect(reason)}")
+        handle_dispatch_readiness_exit(state, %{kind: context, issues: issues}, reason)
+    end
+  end
+
+  defp run_dispatch_readiness_checks(%{
+         repo_key: repo_key,
+         active_workspace_identifiers: active_identifiers,
+         run_age_gc?: run_age_gc?,
+         now_ms: now_ms
+       }) do
+    %{
+      now_ms: now_ms,
+      age_gc_result:
+        if(run_age_gc?,
+          do: {:ran, workspace_age_gc_result(repo_key, active_identifiers)},
+          else: :skipped
+        ),
+      quota: workspace_quota_status_from_config()
+    }
+  end
+
+  defp handle_dispatch_readiness_result(%State{} = state, %{kind: context, issues: issues}, result) do
+    state =
+      state
+      |> apply_dispatch_readiness_result(result)
+      |> continue_after_dispatch_readiness(context, issues)
+
+    notify_dashboard()
+    state
+  end
+
+  defp handle_dispatch_readiness_exit(%State{} = state, %{kind: :poll}, reason) do
+    Logger.warning("Skipping dispatch after readiness task failure: #{inspect(reason)}")
+    state = finish_poll_cycle(state, System.monotonic_time(:millisecond))
+    notify_dashboard()
+    state
+  end
+
+  defp handle_dispatch_readiness_exit(%State{} = state, %{kind: {:active_retry, issue, attempt, metadata}}, reason) do
+    Logger.warning("Retry dispatch readiness failed for #{issue_context(issue)} reason=#{inspect(reason)}")
+
+    state =
+      schedule_issue_retry(state, issue.id, attempt, Map.merge(metadata, %{identifier: issue.identifier, error: "dispatch readiness failed: #{inspect(reason)}"}))
+
+    notify_dashboard()
+    state
+  end
+
+  defp apply_dispatch_readiness_result(%State{} = state, %{now_ms: now_ms, age_gc_result: age_gc_result, quota: quota}) do
+    state
+    |> apply_workspace_age_gc_result(age_gc_result, now_ms)
+    |> apply_workspace_quota_result(quota)
+  end
+
+  defp apply_dispatch_readiness_result(%State{} = state, result) do
+    Logger.warning("Ignoring invalid dispatch readiness result: #{inspect(result)}")
+    state
+  end
+
+  defp continue_after_dispatch_readiness(%State{} = state, :poll, issues) do
+    state =
+      cond do
+        operator_paused?(state) ->
+          log_operator_pause(state)
+
+        workspace_quota_paused?(state) ->
+          log_workspace_quota_pause(state)
+
+        daily_budget_paused?(state) ->
+          log_daily_budget_pause(state)
+
+        true ->
+          dispatch_chosen_issues(issues, state)
+      end
+
+    finish_poll_cycle(state, System.monotonic_time(:millisecond))
+  end
+
+  defp continue_after_dispatch_readiness(%State{} = state, {:active_retry, issue, attempt, metadata}, _issues) do
+    handle_active_retry_after_readiness(state, issue, attempt, metadata)
   end
 
   defp dispatch_chosen_issues(issues, state) do
@@ -1914,6 +2334,42 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp handle_retry_issue_sync_for_test(%State{} = state, issue_id, attempt, metadata, issue_fetcher)
+       when is_function(issue_fetcher, 1) do
+    case issue_fetcher.([issue_id]) do
+      {:ok, issues} ->
+        issues
+        |> find_issue_by_id(issue_id)
+        |> handle_retry_issue_lookup_sync_for_test(state, issue_id, attempt, metadata)
+
+      {:error, reason} ->
+        Logger.warning("Retry issue refresh failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue_id,
+           attempt + 1,
+           Map.merge(metadata, %{error: "retry issue refresh failed: #{inspect(reason)}"})
+         )}
+    end
+  end
+
+  defp handle_retry_issue_lookup_sync_for_test(%Issue{} = issue, state, issue_id, attempt, metadata) do
+    terminal_states = terminal_state_set()
+
+    if active_retry_issue?(issue, terminal_states) do
+      issue = freeze_issue_repo_key(issue, retry_repo_key(state, metadata, %{}))
+      {:noreply, handle_active_retry_after_readiness(state, issue, attempt, metadata)}
+    else
+      handle_retry_issue_lookup(issue, state, issue_id, attempt, metadata)
+    end
+  end
+
+  defp handle_retry_issue_lookup_sync_for_test(nil, state, issue_id, attempt, metadata) do
+    handle_retry_issue_lookup(nil, state, issue_id, attempt, metadata)
+  end
+
   defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
     terminal_states = terminal_state_set()
 
@@ -1992,17 +2448,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
   defp handle_quality_gated_active_retry(%State{} = state, %Issue{} = issue, attempt, metadata) do
-    {issues, state} = apply_quality_gate([issue], state)
-
-    if Enum.any?(issues, fn
-         %Issue{id: id} -> id == issue.id
-         _ -> false
-       end) do
-      handle_active_retry(state, issue, attempt, metadata)
-    else
-      Logger.info("Skipping retry dispatch after quality gate rejected #{issue_context(issue)}")
-      {:noreply, release_issue_claim(state, issue.id)}
-    end
+    state = start_quality_gate_or_dispatch([issue], state, {:active_retry, issue, attempt, metadata})
+    {:noreply, state}
   end
 
   defp run_terminal_workspace_cleanup(repo_key) do
@@ -2024,31 +2471,65 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp run_startup_workspace_lifecycle(%State{} = state, now_ms) do
-    state
-    |> run_startup_orphan_sweep()
-    |> run_workspace_age_gc()
-    |> Map.put(:workspace_lifecycle_last_check_at_ms, now_ms)
-    |> check_workspace_quota()
+  defp start_startup_workspace_lifecycle_task(repo_key, now_ms) do
+    start_async_task(fn ->
+      run_terminal_workspace_cleanup(repo_key)
+
+      {:startup_workspace_lifecycle_result,
+       %{
+         now_ms: now_ms,
+         orphan_sweep_result: startup_orphan_sweep_result(repo_key),
+         age_gc_result: workspace_age_gc_result(repo_key, []),
+         quota: workspace_quota_status_from_config()
+       }}
+    end)
   end
 
-  defp run_startup_orphan_sweep(%State{} = state) do
-    case startup_tracked_workspace_identifiers(state.repo_key) do
-      {:ok, tracked_identifiers} ->
-        case Workspace.sweep_orphan_workspaces(state.repo_key, tracked_identifiers) do
-          {:ok, actions} ->
-            log_workspace_lifecycle_summary("startup orphan sweep", actions)
-            state
+  defp apply_startup_workspace_lifecycle_result(%State{} = state, %{
+         now_ms: now_ms,
+         orphan_sweep_result: orphan_sweep_result,
+         age_gc_result: age_gc_result,
+         quota: quota
+       }) do
+    state
+    |> apply_startup_orphan_sweep_result(orphan_sweep_result)
+    |> apply_workspace_age_gc_result({:ran, age_gc_result}, now_ms)
+    |> Map.put(:workspace_lifecycle_last_check_at_ms, now_ms)
+    |> apply_workspace_quota_result(quota)
+  end
 
-          {:error, reason} ->
-            Logger.warning("Skipping startup orphan workspace sweep; failed to scan workspace root: #{inspect(reason)}")
-            state
-        end
+  defp apply_startup_workspace_lifecycle_result(%State{} = state, result) do
+    Logger.warning("Ignoring invalid startup workspace lifecycle result: #{inspect(result)}")
+    state
+  end
 
-      {:error, reason} ->
-        Logger.warning("Skipping startup orphan workspace sweep; failed to fetch tracked issue identifiers: #{inspect(reason)}")
-        state
+  defp startup_orphan_sweep_result(repo_key) do
+    with {:ok, tracked_identifiers} <- startup_tracked_workspace_identifiers(repo_key) do
+      case Workspace.sweep_orphan_workspaces(repo_key, tracked_identifiers) do
+        {:ok, actions} -> {:ok, actions}
+        {:error, reason} -> {:workspace_error, reason}
+      end
     end
+  end
+
+  defp apply_startup_orphan_sweep_result(%State{} = state, {:ok, actions}) do
+    log_workspace_lifecycle_summary("startup orphan sweep", actions)
+    state
+  end
+
+  defp apply_startup_orphan_sweep_result(%State{} = state, {:workspace_error, reason}) do
+    Logger.warning("Skipping startup orphan workspace sweep; failed to scan workspace root: #{inspect(reason)}")
+    state
+  end
+
+  defp apply_startup_orphan_sweep_result(%State{} = state, {:error, reason}) do
+    Logger.warning("Skipping startup orphan workspace sweep; failed to fetch tracked issue identifiers: #{inspect(reason)}")
+    state
+  end
+
+  defp apply_startup_orphan_sweep_result(%State{} = state, result) do
+    Logger.warning("Ignoring invalid startup orphan sweep result: #{inspect(result)}")
+    state
   end
 
   defp startup_tracked_workspace_identifiers(repo_key) do
@@ -2066,35 +2547,33 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp maybe_run_workspace_age_gc(%State{} = state) do
+  defp workspace_age_gc_due?(%State{} = state, now_ms) do
     lifecycle = Config.settings!().workspace.lifecycle
-    now_ms = System.monotonic_time(:millisecond)
 
-    cond do
-      lifecycle.age_gc_enabled != true ->
-        state
-
-      is_nil(state.workspace_lifecycle_last_check_at_ms) or
-          now_ms - state.workspace_lifecycle_last_check_at_ms >= lifecycle.gc_interval_ms ->
-        state
-        |> run_workspace_age_gc()
-        |> Map.put(:workspace_lifecycle_last_check_at_ms, now_ms)
-
-      true ->
-        state
-    end
+    lifecycle.age_gc_enabled == true and
+      (is_nil(state.workspace_lifecycle_last_check_at_ms) or
+         now_ms - state.workspace_lifecycle_last_check_at_ms >= lifecycle.gc_interval_ms)
   end
 
-  defp run_workspace_age_gc(%State{} = state) do
-    case Workspace.reclaim_stale_workspaces(state.repo_key, active_workspace_identifiers(state)) do
-      {:ok, actions} ->
-        log_workspace_lifecycle_summary("age GC", actions)
-        state
+  defp workspace_age_gc_result(repo_key, active_identifiers) do
+    Workspace.reclaim_stale_workspaces(repo_key, active_identifiers)
+  end
 
-      {:error, reason} ->
-        Logger.warning("Skipping workspace age GC; failed to scan workspace root: #{inspect(reason)}")
-        state
-    end
+  defp apply_workspace_age_gc_result(%State{} = state, :skipped, _now_ms), do: state
+
+  defp apply_workspace_age_gc_result(%State{} = state, {:ran, {:ok, actions}}, now_ms) do
+    log_workspace_lifecycle_summary("age GC", actions)
+    %{state | workspace_lifecycle_last_check_at_ms: now_ms}
+  end
+
+  defp apply_workspace_age_gc_result(%State{} = state, {:ran, {:error, reason}}, now_ms) do
+    Logger.warning("Skipping workspace age GC; failed to scan workspace root: #{inspect(reason)}")
+    %{state | workspace_lifecycle_last_check_at_ms: now_ms}
+  end
+
+  defp apply_workspace_age_gc_result(%State{} = state, result, _now_ms) do
+    Logger.warning("Ignoring invalid workspace age GC result: #{inspect(result)}")
+    state
   end
 
   defp log_workspace_lifecycle_summary(_label, []), do: :ok
@@ -2370,56 +2849,51 @@ defmodule SymphonyElixir.Orchestrator do
   defp done_state?(state_name) when is_binary(state_name), do: normalize_issue_state(state_name) == "done"
   defp done_state?(_state_name), do: false
 
-  defp handle_active_retry(state, issue, attempt, metadata) do
-    state = check_workspace_quota(state)
-
+  defp handle_active_retry_after_readiness(state, issue, attempt, metadata) do
     cond do
       operator_paused?(state) ->
         state = log_operator_pause(state)
 
-        {:noreply,
-         schedule_issue_retry(
-           state,
-           issue.id,
-           attempt,
-           Map.merge(metadata, %{
-             identifier: issue.identifier,
-             error: "dispatch paused by operator"
-           })
-         )}
+        schedule_issue_retry(
+          state,
+          issue.id,
+          attempt,
+          Map.merge(metadata, %{
+            identifier: issue.identifier,
+            error: "dispatch paused by operator"
+          })
+        )
 
       workspace_quota_paused?(state) ->
         state = log_workspace_quota_pause(state)
 
-        {:noreply,
-         schedule_issue_retry(
-           state,
-           issue.id,
-           attempt,
-           Map.merge(metadata, %{
-             identifier: issue.identifier,
-             error: workspace_quota_error(state)
-           })
-         )}
+        schedule_issue_retry(
+          state,
+          issue.id,
+          attempt,
+          Map.merge(metadata, %{
+            identifier: issue.identifier,
+            error: workspace_quota_error(state)
+          })
+        )
 
       active_retry_issue?(issue, terminal_state_set()) and
         dispatch_slots_available?(issue, state) and
           worker_slots_available?(state, metadata[:worker_host]) ->
-        {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+        dispatch_issue(state, issue, attempt, metadata[:worker_host])
 
       true ->
         Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
-        {:noreply,
-         schedule_issue_retry(
-           state,
-           issue.id,
-           attempt + 1,
-           Map.merge(metadata, %{
-             identifier: issue.identifier,
-             error: "no available orchestrator slots"
-           })
-         )}
+        schedule_issue_retry(
+          state,
+          issue.id,
+          attempt + 1,
+          Map.merge(metadata, %{
+            identifier: issue.identifier,
+            error: "no available orchestrator slots"
+          })
+        )
     end
   end
 
@@ -2706,20 +3180,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp start_stop_agent_session_task(running_entry) do
-    case Process.whereis(SymphonyElixir.TaskSupervisor) do
-      pid when is_pid(pid) ->
-        {:ok,
-         Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
-           stop_agent_session(running_entry)
-         end)}
-
-      _ ->
-        {:error, :task_supervisor_unavailable}
-    end
-  catch
-    :exit, reason -> {:error, {:task_supervisor_exit, reason}}
-  end
+  defp start_stop_agent_session_task(running_entry),
+    do: start_async_task(fn -> stop_agent_session(running_entry) end)
 
   defp normalize_stop_session_shutdown({:ok, result}, _timeout_ms), do: normalize_stop_session_result(result)
   defp normalize_stop_session_shutdown({:exit, reason}, _timeout_ms), do: {:error, {:exit, reason}}
@@ -3151,6 +3613,18 @@ defmodule SymphonyElixir.Orchestrator do
     case Process.whereis(SymphonyElixir.TaskSupervisor) do
       pid when is_pid(pid) ->
         Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fun)
+
+      _ ->
+        {:error, :task_supervisor_unavailable}
+    end
+  catch
+    :exit, reason -> {:error, {:task_supervisor_exit, reason}}
+  end
+
+  defp start_async_task(fun) when is_function(fun, 0) do
+    case Process.whereis(SymphonyElixir.TaskSupervisor) do
+      pid when is_pid(pid) ->
+        {:ok, Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fun)}
 
       _ ->
         {:error, :task_supervisor_unavailable}
@@ -4003,21 +4477,32 @@ defmodule SymphonyElixir.Orchestrator do
   defp operator_paused?(%State{pause: %{paused: true}}), do: true
   defp operator_paused?(_state), do: false
 
-  defp check_workspace_quota(%State{} = state) do
+  defp workspace_quota_status_from_config do
     min_free_bytes = Config.settings!().workspace.lifecycle.min_free_bytes
 
     if is_integer(min_free_bytes) and min_free_bytes > 0 do
-      quota = workspace_quota_status(min_free_bytes)
-      logged? = if quota.paused, do: state.workspace_quota_logged, else: false
-
-      %{state | workspace_lifecycle_quota: quota, workspace_quota_logged: logged?}
+      workspace_quota_status(min_free_bytes)
     else
-      %{
-        state
-        | workspace_lifecycle_quota: %{configured?: false, paused: false, reason: nil},
-          workspace_quota_logged: false
-      }
+      %{configured?: false, paused: false, reason: nil}
     end
+  end
+
+  defp apply_workspace_quota_result(%State{} = state, %{configured?: false} = quota) do
+    %{
+      state
+      | workspace_lifecycle_quota: quota,
+        workspace_quota_logged: false
+    }
+  end
+
+  defp apply_workspace_quota_result(%State{} = state, %{paused: paused?} = quota) do
+    logged? = if paused?, do: state.workspace_quota_logged, else: false
+    %{state | workspace_lifecycle_quota: quota, workspace_quota_logged: logged?}
+  end
+
+  defp apply_workspace_quota_result(%State{} = state, quota) do
+    Logger.warning("Ignoring invalid workspace quota result: #{inspect(quota)}")
+    state
   end
 
   defp workspace_quota_status(min_free_bytes) do

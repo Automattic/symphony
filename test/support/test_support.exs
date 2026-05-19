@@ -76,6 +76,9 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
           Application.delete_env(:symphony_elixir, :memory_tracker_update_issue_state_result)
+          Application.delete_env(:symphony_elixir, :memory_tracker_fetch_candidate_sleep_ms)
+          Application.delete_env(:symphony_elixir, :memory_tracker_fetch_states_sleep_ms)
+          Application.delete_env(:symphony_elixir, :memory_tracker_create_comment_sleep_ms)
           Application.delete_env(:symphony_elixir, :config_cache_file_reader)
           Cache.clear()
           File.rm_rf(workflow_root)
@@ -473,6 +476,7 @@ defmodule SymphonyElixir.TestSupport do
           agent_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           agent_thread_sandbox: "workspace-write",
           agent_turn_sandbox_policy: nil,
+          agent_mcp: nil,
           agent_network_access: nil,
           agent_sandbox_runtime: nil,
           agent_turn_timeout_ms: 3_600_000,
@@ -614,6 +618,7 @@ defmodule SymphonyElixir.TestSupport do
         "  approval_policy: #{yaml_value(agent_approval_policy)}",
         "  thread_sandbox: #{yaml_value(agent_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(agent_turn_sandbox_policy)}",
+        kv("mcp", Keyword.get(config, :agent_mcp)),
         agent_network_access && "  network_access: #{yaml_value(agent_network_access)}",
         agent_sandbox_runtime && "  sandbox_runtime: #{yaml_value(agent_sandbox_runtime)}",
         "  turn_timeout_ms: #{yaml_value(agent_turn_timeout_ms)}",

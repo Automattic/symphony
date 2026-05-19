@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AgentEnv, AgentSandboxConfig, Config, DependencyGate, McpServer, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, AgentMcp, AgentSandboxConfig, Config, DependencyGate, McpServer, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
   alias SymphonyElixir.GitHub.Hosts
@@ -130,15 +130,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     })
   end
 
-  defp build_mcp_config(mcp_session, socket_path, shim_path) do
+  defp build_mcp_config(mcp_session, socket_path, shim_path, settings) do
+    declared_servers =
+      settings
+      |> AgentMcp.declared_servers("claude")
+      |> Map.new(fn {name, server} -> {name, AgentMcp.claude_server_config(server)} end)
+
     %{
-      "mcpServers" => %{
-        "symphony" => %{
-          "command" => shim_path,
-          "args" => ["--socket", socket_path, "--session", mcp_session.token],
-          "alwaysLoad" => true
+      "mcpServers" =>
+        %{
+          "symphony" => AgentMcp.symphony_claude_config(mcp_session, socket_path, shim_path)
         }
-      }
+        |> Map.merge(declared_servers)
     }
   end
 
@@ -148,6 +151,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @spec parse_event(String.t()) ::
           {:session_started, String.t()}
           | {:tool_use, String.t()}
+          | {:agent_text, String.t()}
           | {:notification, String.t()}
           | {:turn_completed, map()}
           | {:turn_failed, String.t()}
@@ -163,8 +167,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp parse_decoded_event(%{"type" => "system", "session_id" => session_id}, _line),
     do: {:session_started, session_id}
 
-  defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line),
-    do: {:notification, summarize_assistant_message(message)}
+  defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line) do
+    case extract_assistant_text(message) do
+      nil -> {:notification, "assistant message"}
+      text -> {:agent_text, text}
+    end
+  end
 
   defp parse_decoded_event(%{"type" => "user", "message" => message}, _line),
     do: {:notification, summarize_user_message(message)}
@@ -215,6 +223,17 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       event: :notification,
       timestamp: DateTime.utc_now(),
       payload: message
+    }
+  end
+
+  def event_to_update({:agent_text, text}) when is_binary(text) do
+    %{
+      event: :agent_text,
+      timestamp: DateTime.utc_now(),
+      payload: %{
+        method: "agent_message_delta",
+        params: %{msg: %{content: text}}
+      }
     }
   end
 
@@ -468,7 +487,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     effective_socket_path = socket_path || mcp_session.socket_path
 
     settings_json = build_claude_settings(network_access, allow_read_paths)
-    mcp_config_json = build_mcp_config(mcp_session, effective_socket_path, effective_shim_path)
+    mcp_config_json = build_mcp_config(mcp_session, effective_socket_path, effective_shim_path, settings)
 
     settings_dir = claude_settings_dir(worker_host, mcp_session)
     settings_path = Path.join(settings_dir, "settings.json")
@@ -1033,6 +1052,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         on_message.({:notification, text})
         acc
 
+      {:agent_text, text} ->
+        on_message.({:agent_text, text})
+        acc
+
       {:malformed, raw} ->
         Logger.debug("ClaudeCode unparseable line: #{inspect(raw)}")
         acc
@@ -1054,19 +1077,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.uniq()
   end
 
-  defp summarize_assistant_message(%{"content" => content}) when is_list(content) do
-    content
-    |> Enum.find_value(fn
-      %{"type" => "text", "text" => text} -> text
+  defp extract_assistant_text(%{"content" => content}) when is_list(content) do
+    Enum.find_value(content, fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> text
       _ -> nil
     end)
-    |> case do
-      nil -> "assistant message"
-      text -> String.slice(text, 0, 120)
-    end
   end
 
-  defp summarize_assistant_message(_), do: "assistant message"
+  defp extract_assistant_text(_), do: nil
 
   defp summarize_user_message(%{"content" => content}) when is_list(content) do
     content

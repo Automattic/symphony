@@ -80,6 +80,14 @@ defmodule SymphonyElixir.AgentEnvTest do
       refute {~c"SYMPHONY_AGENT_RUNTIME", false} in result
       assert {~c"SYMPHONY_AGENT_RUNTIME", ~c"1"} in result
     end
+
+    test "allows explicit runtime overrides without whitelisting them globally" do
+      result = AgentEnv.build(%{"CODEX_HOME" => "/host/codex", "SECRET" => "strip"}, %{"CODEX_HOME" => "/tmp/symphony-codex-home"})
+
+      assert {~c"CODEX_HOME", ~c"/tmp/symphony-codex-home"} in result
+      refute {~c"CODEX_HOME", false} in result
+      assert {~c"SECRET", false} in result
+    end
   end
 
   describe "runtime marker accessors" do

@@ -264,6 +264,21 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     end
   end
 
+  test "Codex filesystem config read-denies generated CODEX_HOME auth and config paths" do
+    codex_home = Path.join(System.tmp_dir!(), "symphony-codex-home-test")
+
+    overrides =
+      AgentSandboxConfig.codex_config_overrides("allowlist", [], [], [
+        Path.join(codex_home, "auth.json"),
+        Path.join(codex_home, "config.toml")
+      ])
+
+    filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
+
+    assert filesystem =~ ~s("#{Path.join(codex_home, "auth.json")}"="none")
+    assert filesystem =~ ~s("#{Path.join(codex_home, "config.toml")}"="none")
+  end
+
   test "Codex allowlist config emits both tilde and absolute forms of home-relative deny paths (defense-in-depth)" do
     overrides = AgentSandboxConfig.codex_config_overrides("allowlist", [])
     filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))

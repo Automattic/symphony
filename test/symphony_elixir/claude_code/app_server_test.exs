@@ -197,11 +197,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:malformed, ^line} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event and returns notification" do
+    test "parses assistant event and returns agent_text" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"I will help you."}],"model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-1"})
 
-      assert {:notification, text} = AppServer.parse_event(line)
+      assert {:agent_text, text} = AppServer.parse_event(line)
       assert text =~ "I will help you."
     end
 
@@ -211,18 +211,33 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:tool_use, "bash"} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event with no text content items and returns generic notification" do
+    test "parses assistant event with no text content items and returns notification" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2"})
 
       assert {:notification, "assistant message"} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event with non-list content and returns generic notification" do
+    test "parses assistant event with non-list content and returns notification" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-3","type":"message","role":"assistant","content":"text response","model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":2}},"session_id":"sess-3"})
 
       assert {:notification, "assistant message"} = AppServer.parse_event(line)
+    end
+
+    test "preserves full assistant text without truncation" do
+      long_text = String.duplicate("a", 500)
+
+      line =
+        ~s({"type":"assistant","message":{"id":"msg-4","type":"message","role":"assistant","content":[{"type":"text","text":"#{long_text}"}],"model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-4"})
+
+      assert {:agent_text, ^long_text} = AppServer.parse_event(line)
+    end
+
+    test "returns malformed for assistant events without message" do
+      line = ~s({"type":"assistant","session_id":"sess-1"})
+
+      assert {:malformed, ^line} = AppServer.parse_event(line)
     end
 
     test "parses user/tool_result event with string content and returns notification" do
@@ -315,6 +330,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                timestamp: %DateTime{},
                payload: "hello"
              } = AppServer.event_to_update({:notification, "hello"})
+
+      assert %{
+               event: :agent_text,
+               timestamp: %DateTime{},
+               payload: %{method: "agent_message_delta", params: %{msg: %{content: "hi"}}}
+             } = AppServer.event_to_update({:agent_text, "hi"})
 
       assert %{
                event: :tool_use,
@@ -412,6 +433,80 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         refute File.exists?(mcp_config_path)
         refute File.exists?(Path.dirname(settings_path))
         refute File.exists?(session.mcp_session.socket_path)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "writes declared MCP servers for Claude and filters Codex-only declarations" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-mcp-config-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "TEST-MCP")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_mcp: %{
+            servers: %{
+              "stdio-server" => %{
+                transport: "stdio",
+                command: "node",
+                args: ["/srv/stdio.js"],
+                env: %{LOG_LEVEL: "info"},
+                runtimes: ["claude", "codex"]
+              },
+              "http-server" => %{
+                transport: "http",
+                url: "https://mcp.example/http",
+                headers: %{Authorization: "Bearer test"},
+                runtimes: ["claude"]
+              },
+              "sse-server" => %{
+                transport: "sse",
+                url: "https://mcp.example/sse",
+                runtimes: ["claude"]
+              },
+              "codex-only" => %{
+                transport: "stdio",
+                command: "codex-only",
+                runtimes: ["codex"]
+              }
+            }
+          }
+        )
+
+        assert {:ok, session} = AppServer.start_session(workspace)
+        {:ok, mcp_config} = Jason.decode(File.read!(session.mcp_config_path))
+        servers = mcp_config["mcpServers"]
+
+        assert Map.has_key?(servers, "symphony")
+
+        assert servers["stdio-server"] == %{
+                 "command" => "node",
+                 "args" => ["/srv/stdio.js"],
+                 "env" => %{"LOG_LEVEL" => "info"}
+               }
+
+        assert servers["http-server"] == %{
+                 "type" => "http",
+                 "url" => "https://mcp.example/http",
+                 "headers" => %{"Authorization" => "Bearer test"}
+               }
+
+        assert servers["sse-server"] == %{
+                 "type" => "sse",
+                 "url" => "https://mcp.example/sse"
+               }
+
+        refute Map.has_key?(servers, "codex-only")
+        assert :ok = AppServer.stop_session(session)
       after
         File.rm_rf(test_root)
       end
@@ -1007,7 +1102,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert result.input_tokens == 10
         assert result.output_tokens == 5
 
-        assert_received {:turn_msg, {:notification, _}}
+        assert_received {:turn_msg, {:agent_text, _}}
         assert_received {:turn_msg, {:turn_completed, _}}
       after
         File.rm_rf(test_root)

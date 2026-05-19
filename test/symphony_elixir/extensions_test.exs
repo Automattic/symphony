@@ -1717,10 +1717,19 @@ defmodule SymphonyElixir.ExtensionsTest do
     orchestrator_name = Module.concat(__MODULE__, :TranscriptOrchestrator)
 
     buffered_agent_event = %{
-      event: :notification,
+      event: :agent_text,
       payload: %{
-        "method" => "item/agentMessage/delta",
-        "params" => %{"delta" => "buffered hello"}
+        method: "agent_message_delta",
+        params: %{msg: %{content: "buffered Claude hello"}}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    buffered_agent_continuation_event = %{
+      event: :agent_text,
+      payload: %{
+        method: "agent_message_delta",
+        params: %{msg: %{content: " again"}}
       },
       timestamp: DateTime.utc_now()
     }
@@ -1770,12 +1779,13 @@ defmodule SymphonyElixir.ExtensionsTest do
           running
           |> Map.put(:transcript_buffer, [
             buffered_agent_event,
+            buffered_agent_continuation_event,
             buffered_tool_call_event,
             buffered_progress_event,
             buffered_progress_continuation_event,
             buffered_tool_result_event
           ])
-          |> Map.put(:transcript_buffer_size, 5)
+          |> Map.put(:transcript_buffer_size, 6)
         ]
       end)
 
@@ -1807,7 +1817,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~r/data-transcript-filter="agent-text"[^>]*aria-pressed="true"/
     assert html =~ ~r/data-transcript-filter="error"[^>]*aria-pressed="true"/
     refute html =~ "phx-click"
-    assert html =~ "buffered hello"
+    assert html =~ "buffered Claude hello again"
     assert html =~ "transcript-event-agent-text"
     assert html =~ "Tool call"
     assert html =~ "linear_graphql"

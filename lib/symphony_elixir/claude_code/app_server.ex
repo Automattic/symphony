@@ -1050,48 +1050,40 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp event_contains_tool_use?(_), do: false
 
-  defp apply_event(event, on_message, acc) do
-    case event do
-      {:multi, events} when is_list(events) ->
-        Enum.reduce(events, acc, fn child, acc -> apply_event(child, on_message, acc) end)
+  defp apply_event({:multi, events}, on_message, acc) when is_list(events) do
+    Enum.reduce(events, acc, fn child, acc -> apply_event(child, on_message, acc) end)
+  end
 
-      {:session_started, session_id} ->
-        on_message.({:session_started, session_id})
-        %{acc | session_id: session_id}
+  defp apply_event({:session_started, session_id}, on_message, acc) do
+    on_message.({:session_started, session_id})
+    %{acc | session_id: session_id}
+  end
 
-      {:turn_completed, result} ->
-        on_message.({:turn_completed, result})
-        acc |> Map.merge(result) |> Map.put(:turn_completed, true)
+  defp apply_event({:turn_completed, result}, on_message, acc) do
+    on_message.({:turn_completed, result})
+    acc |> Map.merge(result) |> Map.put(:turn_completed, true)
+  end
 
-      {:turn_failed, reason} ->
-        on_message.({:turn_failed, reason})
-        %{acc | turn_failed: reason}
+  defp apply_event({:turn_failed, reason}, on_message, acc) do
+    on_message.({:turn_failed, reason})
+    %{acc | turn_failed: reason}
+  end
 
-      {:rate_limited, info, reason} ->
-        on_message.({:rate_limited, info})
-        on_message.({:turn_failed, reason})
-        %{acc | turn_failed: reason}
+  defp apply_event({:rate_limited, info, reason}, on_message, acc) do
+    on_message.({:rate_limited, info})
+    on_message.({:turn_failed, reason})
+    %{acc | turn_failed: reason}
+  end
 
-      {:tool_use, name} ->
-        on_message.({:tool_use, name})
-        acc
+  defp apply_event({:malformed, raw}, _on_message, acc) do
+    Logger.debug("ClaudeCode unparseable line: #{inspect(raw)}")
+    acc
+  end
 
-      {:tool_result, text} ->
-        on_message.({:tool_result, text})
-        acc
-
-      {:notification, text} ->
-        on_message.({:notification, text})
-        acc
-
-      {:agent_text, text} ->
-        on_message.({:agent_text, text})
-        acc
-
-      {:malformed, raw} ->
-        Logger.debug("ClaudeCode unparseable line: #{inspect(raw)}")
-        acc
-    end
+  defp apply_event({kind, _payload} = event, on_message, acc)
+       when kind in [:tool_use, :tool_result, :notification, :agent_text] do
+    on_message.(event)
+    acc
   end
 
   defp safe_close_port(port) do

@@ -72,6 +72,7 @@ defmodule SymphonyElixir.Orchestrator do
       retry_attempts: %{},
       codex_totals: nil,
       rate_limits: nil,
+      tracker_health: %{tracker: :unknown, reason: nil, since: nil, consecutive_failures: 0},
       budget_day_started_on: nil,
       budget_daily_used: 0,
       budget_daily_paused_logged: false,
@@ -130,6 +131,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed_run_metadata: completed_run_metadata,
       codex_totals: codex_totals,
       rate_limits: nil,
+      tracker_health: empty_tracker_health(config.tracker.kind),
       pause: pause,
       budget_day_started_on: budget_day_started_on,
       budget_daily_used: budget_daily_used,
@@ -491,7 +493,7 @@ defmodule SymphonyElixir.Orchestrator do
     else
       {:error, reason} ->
         log_poll_error(reason)
-        {:skip, state}
+        {:skip, record_tracker_poll_failure(state, reason)}
     end
   end
 
@@ -597,6 +599,62 @@ defmodule SymphonyElixir.Orchestrator do
   defp log_poll_error({:workflow_parse_error, reason}), do: Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
   defp log_poll_error(reason), do: Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
 
+  defp record_tracker_poll_success(%State{} = state) do
+    %{state | tracker_health: empty_tracker_health(current_tracker_kind())}
+  end
+
+  defp record_tracker_poll_failure(%State{} = state, reason) do
+    health = state.tracker_health || %{}
+    existing_failures = tracker_failure_count(health)
+    consecutive_failures = existing_failures + 1
+
+    since =
+      case {existing_failures, Map.get(health, :since)} do
+        {failures, %DateTime{} = since} when is_integer(failures) and failures > 0 -> since
+        _ -> DateTime.utc_now()
+      end
+
+    %{
+      state
+      | tracker_health: %{
+          tracker: current_tracker_kind(),
+          reason: tracker_failure_reason(reason),
+          since: since,
+          consecutive_failures: consecutive_failures
+        }
+    }
+  end
+
+  defp empty_tracker_health(tracker) do
+    %{tracker: normalize_tracker_kind(tracker), reason: nil, since: nil, consecutive_failures: 0}
+  end
+
+  defp tracker_failure_count(health) when is_map(health) do
+    case Map.get(health, :consecutive_failures, 0) do
+      failures when is_integer(failures) and failures > 0 -> failures
+      _ -> 0
+    end
+  end
+
+  defp current_tracker_kind do
+    Config.settings!().tracker.kind
+    |> normalize_tracker_kind()
+  rescue
+    _ -> :unknown
+  end
+
+  defp normalize_tracker_kind(:linear), do: :linear
+  defp normalize_tracker_kind("linear"), do: :linear
+  defp normalize_tracker_kind(:memory), do: :memory
+  defp normalize_tracker_kind("memory"), do: :memory
+  defp normalize_tracker_kind(tracker) when is_atom(tracker), do: tracker
+  defp normalize_tracker_kind(_tracker), do: :unknown
+
+  defp tracker_failure_reason(:missing_linear_api_token), do: :missing_linear_api_token
+  defp tracker_failure_reason(:linear_api_request), do: :linear_api_request
+  defp tracker_failure_reason({:linear_api_request, _reason}), do: :linear_api_request
+  defp tracker_failure_reason(_reason), do: :unknown
+
   @doc false
   @spec poll_candidate_issue_buckets_for_test(
           State.t(),
@@ -648,12 +706,16 @@ defmodule SymphonyElixir.Orchestrator do
           state
           |> put_repo_poll_cache(repo_name, issues, now_ms)
           |> put_repo_next_due(repo_name, now_ms + state.poll_interval_ms)
+          |> record_tracker_poll_success()
 
         buckets = candidate_buckets_from_cache(state, repos)
         {:ok, buckets, put_conflict_bucket(state, buckets.conflicts)}
 
       {:error, reason} ->
-        state = put_repo_next_due(state, repo_name, now_ms + repo_poll_retry_delay_ms(state, repos))
+        state =
+          state
+          |> put_repo_next_due(repo_name, now_ms + repo_poll_retry_delay_ms(state, repos))
+          |> record_tracker_poll_failure(reason)
 
         cond do
           repo_poll_cache_warmed?(state, repo_name) ->
@@ -4505,7 +4567,8 @@ defmodule SymphonyElixir.Orchestrator do
       %{
         pause: state.pause || unpaused_state(),
         budget_daily_used: state.budget_daily_used,
-        budget_day_started_on: state.budget_day_started_on
+        budget_day_started_on: state.budget_day_started_on,
+        tracker_health: state.tracker_health
       },
       %{
         daily_limit: agent.max_tokens_per_day,

@@ -931,6 +931,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp blocker_label(%{kind: :missing_api_key, provider: provider}),
     do: "Missing #{provider |> to_string() |> String.upcase()} API key"
 
+  defp blocker_label(%{kind: :tracker_unavailable, tracker: tracker}),
+    do: "#{tracker |> tracker_name() |> String.capitalize()} tracker unavailable"
+
   defp blocker_detail(%{kind: :manual, reason: reason, since: since}) do
     [reason, since && "since #{since}"]
     |> Enum.reject(&is_nil/1)
@@ -943,6 +946,33 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp blocker_detail(%{kind: :missing_api_key}),
     do: "set the env var and restart symphony"
+
+  defp blocker_detail(%{
+         kind: :tracker_unavailable,
+         reason: reason,
+         since: since,
+         consecutive_failures: consecutive_failures
+       }) do
+    [
+      tracker_unavailable_reason(reason),
+      "#{format_compact_int(consecutive_failures)} consecutive failures",
+      since && "since #{since}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" — ")
+  end
+
+  defp tracker_name(:linear), do: "linear"
+  defp tracker_name("linear"), do: "linear"
+  defp tracker_name(:memory), do: "memory"
+  defp tracker_name("memory"), do: "memory"
+  defp tracker_name(tracker) when is_atom(tracker), do: Atom.to_string(tracker)
+  defp tracker_name(tracker) when is_binary(tracker), do: tracker
+  defp tracker_name(_tracker), do: "unknown"
+
+  defp tracker_unavailable_reason(:missing_linear_api_token), do: "invalid or missing API key"
+  defp tracker_unavailable_reason(:linear_api_request), do: "Linear API request failed"
+  defp tracker_unavailable_reason(_reason), do: "unknown tracker failure"
 
   defp format_compact_number(value, divisor, suffix) do
     value

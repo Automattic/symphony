@@ -5,13 +5,12 @@ defmodule SymphonyElixir.Config do
 
   require Logger
 
+  alias SymphonyElixir.Config.Cache
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.SystemSchema
-  alias SymphonyElixir.Repo.Supervisor, as: RepoSupervisor
   alias SymphonyElixir.Routing.Resolver, as: RoutingResolver
   alias SymphonyElixir.Secret
   alias SymphonyElixir.Workflow
-  alias SymphonyElixir.WorkflowStore
 
   @default_prompt_template """
   You are working on a Linear issue.
@@ -118,7 +117,7 @@ defmodule SymphonyElixir.Config do
 
   @spec system() :: {:ok, SystemSchema.t()} | {:error, term()}
   def system do
-    with {:ok, config} <- Workflow.load_symphony(),
+    with {:ok, config} <- unwrap_cache_result(Cache.get()),
          {:ok, system_config} <- SystemSchema.parse(config),
          :ok <- validate_routing_repos(system_config.repos) do
       {:ok, system_config}
@@ -581,19 +580,15 @@ defmodule SymphonyElixir.Config do
   end
 
   defp load_repo_workflow(%SystemSchema.Repo{name: repo_name} = repo, _source) when is_binary(repo_name) and repo_name != "" do
-    server = RepoSupervisor.workflow_store_name(repo_name)
-
-    case safe_whereis(server) do
-      pid when is_pid(pid) -> WorkflowStore.current(server)
-      _pid -> Workflow.load(SystemSchema.repo_workflow_path(repo))
-    end
+    repo
+    |> SystemSchema.repo_workflow_path()
+    |> Cache.get_workflow()
+    |> unwrap_cache_result()
   end
 
-  defp safe_whereis(server) do
-    GenServer.whereis(server)
-  rescue
-    ArgumentError -> nil
-  end
+  defp unwrap_cache_result({:ok, value}), do: {:ok, value}
+  defp unwrap_cache_result({:ok, value, stale: true}), do: {:ok, value}
+  defp unwrap_cache_result({:error, reason}), do: {:error, reason}
 
   defp merged_runtime_config(%SystemSchema{} = system_config, %SystemSchema.Repo{} = repo, %{config: repo_config})
        when is_map(repo_config) do

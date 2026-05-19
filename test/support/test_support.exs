@@ -1,4 +1,6 @@
 defmodule SymphonyElixir.TestSupport do
+  alias SymphonyElixir.Config.Cache
+
   @workflow_prompt "You are an agent for this repository."
   @supervised_child_wait_ms 5_000
   @supervised_child_retry_ms 10
@@ -12,6 +14,7 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.CLI
       alias SymphonyElixir.Codex.AppServer
       alias SymphonyElixir.Config
+      alias SymphonyElixir.Config.Cache
       alias SymphonyElixir.HttpServer
       alias SymphonyElixir.Linear.Client
       alias SymphonyElixir.Linear.Issue
@@ -50,6 +53,7 @@ defmodule SymphonyElixir.TestSupport do
         workflow_file = Path.join(repo_root, "WORKFLOW.md")
         Workflow.set_symphony_file_path(Path.join(workflow_root, "symphony.yml"))
         Workflow.set_workflow_file_path(workflow_file)
+        Cache.clear()
         write_workflow_file!(workflow_file, tracker_api_token: nil)
         Workflow.set_workflow_file_path(workflow_file)
         ensure_symphony_started!()
@@ -72,6 +76,8 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
           Application.delete_env(:symphony_elixir, :memory_tracker_update_issue_state_result)
+          Application.delete_env(:symphony_elixir, :config_cache_file_reader)
+          Cache.clear()
           File.rm_rf(workflow_root)
         end)
 
@@ -86,6 +92,7 @@ defmodule SymphonyElixir.TestSupport do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, repo_workflow_content(repo_config, prompt))
     File.write!(SymphonyElixir.Workflow.symphony_file_path(), symphony_content(system_config, path))
+    Cache.clear()
 
     if Process.whereis(SymphonyElixir.WorkflowStore) do
       try do

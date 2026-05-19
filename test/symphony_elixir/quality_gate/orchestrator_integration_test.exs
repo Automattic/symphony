@@ -401,6 +401,9 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     snapshot = wait_for_skipped(pid, "issue-err-1")
     assert [%{kind: :error, issue_id: "issue-err-1", error: :stub_boom}] = snapshot.skipped
 
+    Process.sleep(50)
+    drain_memory_tracker_comments("issue-err-1")
+
     send(pid, :run_poll_cycle)
     refute_receive {:memory_tracker_comment, "issue-err-1", _}, 200
 

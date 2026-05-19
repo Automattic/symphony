@@ -9,16 +9,26 @@ defmodule SymphonyElixir.Config.Cache do
   alias SymphonyElixir.Workflow
 
   @index_key {__MODULE__, :index}
+  @watched_dirs_key {__MODULE__, :watched_dirs}
   @stale_option [stale: true]
+  @telemetry_stale_event [:symphony, :config, :cache, :stale]
 
   defmodule Entry do
     @moduledoc false
 
-    defstruct [:kind, :path, :stamp, :value, :last_error, stale?: false]
+    defstruct [:kind, :path, :stamp, :value, :last_error, :updated_at, stale?: false]
   end
 
   @type cache_kind :: :symphony | :workflow
   @type cache_result(value) :: {:ok, value} | {:ok, value, stale: true} | {:error, term()}
+
+  @type status_entry :: %{
+          kind: cache_kind(),
+          path: Path.t(),
+          stale?: boolean(),
+          last_error: term() | nil,
+          updated_at: integer() | nil
+        }
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -33,25 +43,61 @@ defmodule SymphonyElixir.Config.Cache do
 
   @spec get_symphony(Path.t()) :: cache_result(map())
   def get_symphony(path) when is_binary(path) do
-    cached(:symphony, path, &load_symphony/1)
+    cached(:symphony, path)
   end
 
   @spec get_workflow(Path.t()) :: cache_result(Workflow.loaded_workflow())
   def get_workflow(path) when is_binary(path) do
-    cached(:workflow, path, &load_workflow/1)
+    cached(:workflow, path)
+  end
+
+  @doc """
+  Returns the current cached entries with their staleness state. Intended for
+  introspection (dashboards, `/health` endpoints, tests) — callers should not
+  reach into `Entry` directly.
+  """
+  @spec status() :: [status_entry()]
+  def status do
+    keys = :persistent_term.get(@index_key, MapSet.new())
+
+    Enum.flat_map(keys, fn key ->
+      case :persistent_term.get(key, nil) do
+        %Entry{} = entry ->
+          [
+            %{
+              kind: entry.kind,
+              path: entry.path,
+              stale?: entry.stale?,
+              last_error: entry.last_error,
+              updated_at: entry.updated_at
+            }
+          ]
+
+        _ ->
+          []
+      end
+    end)
   end
 
   @spec clear() :: :ok
   def clear do
-    keys = :persistent_term.get(@index_key, MapSet.new())
-    Enum.each(keys, &:persistent_term.erase/1)
-    :persistent_term.erase(@index_key)
-    :ok
+    case GenServer.whereis(__MODULE__) do
+      pid when is_pid(pid) -> GenServer.call(pid, :clear)
+      _ -> do_clear()
+    end
   end
 
   @impl true
   def init(_opts) do
+    Process.flag(:trap_exit, true)
     {:ok, %{watchers: %{}}}
+  end
+
+  @impl true
+  def handle_call(:clear, _from, state) do
+    Enum.each(state.watchers, fn {_dir, watcher} -> safe_stop_watcher(watcher) end)
+    do_clear()
+    {:reply, :ok, %{state | watchers: %{}}}
   end
 
   @impl true
@@ -70,19 +116,29 @@ defmodule SymphonyElixir.Config.Cache do
     {:noreply, state}
   end
 
-  def handle_info({:file_event, _watcher, :stop}, state), do: {:noreply, state}
+  def handle_info({:file_event, watcher, :stop}, state) do
+    {:noreply, drop_watcher(state, watcher, :stop)}
+  end
+
+  def handle_info({:EXIT, pid, reason}, state) do
+    {:noreply, drop_watcher(state, pid, {:exit, reason})}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp cached(kind, path, loader) do
+  defp cached(kind, path) do
     path = Path.expand(path)
     key = cache_key(kind, path)
-    watch(path)
+    ensure_watch(path)
 
     case :persistent_term.get(key, nil) do
-      %Entry{} = entry -> refresh_entry(entry, loader)
-      nil -> load_entry(kind, path, loader)
+      %Entry{} = entry -> refresh_entry(entry, loader_for(kind))
+      nil -> load_entry(kind, path, loader_for(kind))
     end
   end
+
+  defp loader_for(:symphony), do: &load_symphony/1
+  defp loader_for(:workflow), do: &load_workflow/1
 
   defp refresh_entry(%Entry{} = entry, loader) do
     case current_stamp(entry.path) do
@@ -100,7 +156,14 @@ defmodule SymphonyElixir.Config.Cache do
   defp load_entry(kind, path, loader, previous \\ nil, known_stamp \\ nil) do
     with {:ok, stamp} <- stamp_for(path, known_stamp),
          {:ok, value} <- loader.(path) do
-      entry = %Entry{kind: kind, path: path, stamp: stamp, value: value}
+      entry = %Entry{
+        kind: kind,
+        path: path,
+        stamp: stamp,
+        value: value,
+        updated_at: System.system_time(:millisecond)
+      }
+
       put_entry(entry)
       {:ok, value}
     else
@@ -116,9 +179,25 @@ defmodule SymphonyElixir.Config.Cache do
   defp stamp_for(path, _stamp), do: current_stamp(path)
 
   defp stale_entry(%Entry{} = entry, reason) do
-    stale = %{entry | stale?: true, last_error: reason}
+    stale = %{
+      entry
+      | stale?: true,
+        last_error: reason,
+        updated_at: System.system_time(:millisecond)
+    }
+
     put_entry(stale)
-    Logger.warning("Failed to reload config path=#{entry.path} reason=#{inspect(reason)}; keeping last known good value")
+
+    Logger.warning(
+      "Failed to reload config path=#{entry.path} reason=#{inspect(reason)}; keeping last known good value"
+    )
+
+    :telemetry.execute(
+      @telemetry_stale_event,
+      %{count: 1},
+      %{kind: entry.kind, path: entry.path, reason: reason}
+    )
+
     {:ok, stale.value, @stale_option}
   end
 
@@ -128,11 +207,11 @@ defmodule SymphonyElixir.Config.Cache do
   defp put_entry(%Entry{} = entry) do
     key = cache_key(entry.kind, entry.path)
     :persistent_term.put(key, entry)
-    index_key(key)
+    add_to_index(key)
     :ok
   end
 
-  defp index_key(key) do
+  defp add_to_index(key) do
     keys = :persistent_term.get(@index_key, MapSet.new())
     :persistent_term.put(@index_key, MapSet.put(keys, key))
   end
@@ -175,20 +254,37 @@ defmodule SymphonyElixir.Config.Cache do
     end
   end
 
-  defp normalize_missing_reason(:symphony, path, reason), do: normalize_missing_reason(reason, {:missing_symphony_file, path, reason})
-  defp normalize_missing_reason(:workflow, path, reason), do: normalize_missing_reason(reason, {:missing_workflow_file, path, reason})
+  defp normalize_missing_reason(:symphony, path, reason),
+    do: normalize_missing_reason(reason, {:missing_symphony_file, path, reason})
 
-  defp normalize_missing_reason(reason, missing_reason) when reason in [:enoent, :enotdir, :eacces], do: missing_reason
+  defp normalize_missing_reason(:workflow, path, reason),
+    do: normalize_missing_reason(reason, {:missing_workflow_file, path, reason})
+
+  defp normalize_missing_reason(reason, missing_reason) when reason in [:enoent, :enotdir, :eacces],
+    do: missing_reason
+
   defp normalize_missing_reason(reason, _missing_reason), do: reason
 
-  defp watch(path) do
-    if Application.get_env(:symphony_elixir, :config_cache_watch, true) do
-      case Process.whereis(__MODULE__) do
-        pid when is_pid(pid) -> GenServer.cast(pid, {:watch, path})
-        _pid -> :ok
-      end
-    else
-      :ok
+  defp ensure_watch(path) do
+    if watch_enabled?() and not already_watched?(path) do
+      cast_watch(path)
+    end
+
+    :ok
+  end
+
+  defp watch_enabled?, do: Application.get_env(:symphony_elixir, :config_cache_watch, true)
+
+  defp already_watched?(path) do
+    dir = Path.dirname(path)
+    set = :persistent_term.get(@watched_dirs_key, MapSet.new())
+    MapSet.member?(set, dir)
+  end
+
+  defp cast_watch(path) do
+    case GenServer.whereis(__MODULE__) do
+      pid when is_pid(pid) -> GenServer.cast(pid, {:watch, path})
+      _pid -> :ok
     end
   end
 
@@ -197,12 +293,16 @@ defmodule SymphonyElixir.Config.Cache do
 
     cond do
       Map.has_key?(state.watchers, dir) ->
+        # Make sure the persistent_term mirror reflects state in case clear/0
+        # ran without restarting the GenServer.
+        mark_dir_watched(dir)
         state
 
       Code.ensure_loaded?(FileSystem) and File.dir?(dir) ->
         case FileSystem.start_link(dirs: [dir]) do
           {:ok, watcher} ->
             :ok = FileSystem.subscribe(watcher)
+            mark_dir_watched(dir)
             %{state | watchers: Map.put(state.watchers, dir, watcher)}
 
           {:error, reason} ->
@@ -213,6 +313,53 @@ defmodule SymphonyElixir.Config.Cache do
       true ->
         state
     end
+  end
+
+  defp drop_watcher(state, watcher_pid, reason_tag) do
+    case Enum.find(state.watchers, fn {_dir, pid} -> pid == watcher_pid end) do
+      {dir, _pid} ->
+        Logger.warning(
+          "Config watcher #{inspect(reason_tag)} dir=#{dir}; auto-reload disabled for this dir until next access"
+        )
+
+        unmark_dir_watched(dir)
+        %{state | watchers: Map.delete(state.watchers, dir)}
+
+      nil ->
+        state
+    end
+  end
+
+  defp mark_dir_watched(dir) do
+    set = :persistent_term.get(@watched_dirs_key, MapSet.new())
+    :persistent_term.put(@watched_dirs_key, MapSet.put(set, dir))
+  end
+
+  defp unmark_dir_watched(dir) do
+    set = :persistent_term.get(@watched_dirs_key, MapSet.new())
+    :persistent_term.put(@watched_dirs_key, MapSet.delete(set, dir))
+  end
+
+  defp safe_stop_watcher(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: Process.exit(pid, :shutdown)
+    :ok
+  end
+
+  defp safe_stop_watcher(_), do: :ok
+
+  defp do_clear do
+    # Two-pass clear so a concurrent put_entry between snapshot and final erase
+    # doesn't leak an orphan entry that would survive future clears.
+    clear_index_keys()
+    clear_index_keys()
+    :persistent_term.erase(@watched_dirs_key)
+    :ok
+  end
+
+  defp clear_index_keys do
+    keys = :persistent_term.get(@index_key, MapSet.new())
+    Enum.each(keys, &:persistent_term.erase/1)
+    :persistent_term.erase(@index_key)
   end
 
   defp reload_event?(events) do

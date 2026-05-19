@@ -166,7 +166,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     assert body =~ "Questions:"
     assert body =~ "1. What should the agent verify before opening a PR?"
 
-    snapshot = GenServer.call(pid, :snapshot)
+    snapshot = wait_for_awaiting_clarification(pid, "issue-mid-1")
     assert snapshot.running == []
     assert snapshot.skipped == []
 
@@ -646,6 +646,9 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     assert body =~ "LLM call failed"
     _snapshot = wait_for_skipped(pid_a, "issue-err-restart")
 
+    Process.sleep(50)
+    drain_memory_tracker_comments("issue-err-restart")
+
     # Simulate restart: stop A, start B with the same persistence backing.
     GenServer.stop(pid_a)
 
@@ -660,6 +663,11 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
   defp wait_for_skipped(pid, issue_id, timeout_ms \\ 1_000) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_skipped(pid, issue_id, deadline_ms)
+  end
+
+  defp wait_for_awaiting_clarification(pid, issue_id, timeout_ms \\ 1_000) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_awaiting_clarification(pid, issue_id, deadline_ms)
   end
 
   defp wait_for_orchestrator_state(pid, predicate, timeout_ms \\ 1_000) when is_function(predicate, 1) do
@@ -688,6 +696,21 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     end
   end
 
+  defp do_wait_for_awaiting_clarification(pid, issue_id, deadline_ms) do
+    snapshot = GenServer.call(pid, :snapshot)
+
+    if Enum.any?(snapshot.awaiting_clarification, &match?(%{issue_id: ^issue_id}, &1)) do
+      snapshot
+    else
+      if System.monotonic_time(:millisecond) > deadline_ms do
+        flunk("Timed out waiting for awaiting clarification issue #{issue_id}; snapshot=#{inspect(snapshot)}")
+      else
+        Process.sleep(10)
+        do_wait_for_awaiting_clarification(pid, issue_id, deadline_ms)
+      end
+    end
+  end
+
   defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do
     state = :sys.get_state(pid)
 
@@ -700,6 +723,14 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
         Process.sleep(10)
         do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
       end
+    end
+  end
+
+  defp drain_memory_tracker_comments(issue_id) do
+    receive do
+      {:memory_tracker_comment, ^issue_id, _body} -> drain_memory_tracker_comments(issue_id)
+    after
+      0 -> :ok
     end
   end
 end

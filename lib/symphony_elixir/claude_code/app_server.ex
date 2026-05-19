@@ -164,8 +164,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp parse_decoded_event(%{"type" => "system", "session_id" => session_id}, _line),
     do: {:session_started, session_id}
 
-  defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line),
-    do: {:agent_text, summarize_assistant_message(message)}
+  defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line) do
+    case extract_assistant_text(message) do
+      nil -> {:notification, "assistant message"}
+      text -> {:agent_text, text}
+    end
+  end
 
   defp parse_decoded_event(%{"type" => "user", "message" => message}, _line),
     do: {:notification, summarize_user_message(message)}
@@ -1070,19 +1074,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.uniq()
   end
 
-  defp summarize_assistant_message(%{"content" => content}) when is_list(content) do
-    content
-    |> Enum.find_value(fn
-      %{"type" => "text", "text" => text} -> text
+  defp extract_assistant_text(%{"content" => content}) when is_list(content) do
+    Enum.find_value(content, fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> text
       _ -> nil
     end)
-    |> case do
-      nil -> "assistant message"
-      text -> String.slice(text, 0, 120)
-    end
   end
 
-  defp summarize_assistant_message(_), do: "assistant message"
+  defp extract_assistant_text(_), do: nil
 
   defp summarize_user_message(%{"content" => content}) when is_list(content) do
     content

@@ -11,11 +11,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.AuditLog
   alias SymphonyElixir.Codex.DynamicTool
+  alias SymphonyElixir.Codex.McpConfig
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.DependencyAudit
   alias SymphonyElixir.DependencyGate
   alias SymphonyElixir.GitHub.Hosts
+  alias SymphonyElixir.McpServer
   alias SymphonyElixir.Notifications
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SensitivePath
@@ -42,6 +44,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           worker_host: String.t() | nil,
           command_security: map(),
           launch_cleanup_paths: [Path.t()],
+          mcp_session: McpServer.session() | nil,
+          mcp_remote_shim_path: Path.t() | nil,
           settings: Schema.t()
         }
 
@@ -61,34 +65,70 @@ defmodule SymphonyElixir.Codex.AppServer do
     worker_host = Keyword.get(opts, :worker_host)
     settings = settings_from_opts(opts)
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, settings),
-         {:ok, port, launch_cleanup_paths} <- start_port(expanded_workspace, worker_host, settings) do
-      metadata = port_metadata(port, worker_host)
+    with :ok <- validate_remote_launch_preconditions(worker_host, settings),
+         {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, settings),
+         {:ok, mcp_session, remote_socket_path, remote_shim_path} <-
+           start_mcp_session(expanded_workspace, worker_host, opts) do
+      start_session_with_mcp(
+        expanded_workspace,
+        worker_host,
+        settings,
+        mcp_session,
+        remote_socket_path,
+        remote_shim_path
+      )
+    end
+  end
 
-      with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host, settings),
-           {:ok, thread_id} <-
-             do_start_session(port, expanded_workspace, session_policies, settings) do
-        {:ok,
-         %{
-           port: port,
-           metadata: metadata,
-           approval_policy: session_policies.approval_policy,
-           auto_approve_requests: session_policies.auto_approve_requests,
-           thread_sandbox: session_policies.thread_sandbox,
-           turn_sandbox_policy: session_policies.turn_sandbox_policy,
-           thread_id: thread_id,
-           workspace: expanded_workspace,
-           worker_host: worker_host,
-           command_security: command_security_context(expanded_workspace, worker_host),
-           launch_cleanup_paths: launch_cleanup_paths,
-           settings: settings
-         }}
-      else
-        {:error, reason} ->
-          stop_port(port)
-          cleanup_launch_paths(launch_cleanup_paths)
-          {:error, reason}
-      end
+  defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
+    case start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
+      {:ok, port, launch_cleanup_paths} ->
+        initialize_started_port(
+          port,
+          workspace,
+          worker_host,
+          settings,
+          launch_cleanup_paths,
+          mcp_session,
+          remote_shim_path
+        )
+
+      {:error, reason} ->
+        McpServer.stop_session(mcp_session)
+        cleanup_remote_shim(worker_host, remote_shim_path)
+        {:error, reason}
+    end
+  end
+
+  defp initialize_started_port(port, workspace, worker_host, settings, launch_cleanup_paths, mcp_session, remote_shim_path) do
+    metadata = port_metadata(port, worker_host)
+
+    with {:ok, session_policies} <- session_policies(workspace, worker_host, settings),
+         {:ok, thread_id} <- do_start_session(port, workspace, session_policies, settings) do
+      {:ok,
+       %{
+         port: port,
+         metadata: metadata,
+         approval_policy: session_policies.approval_policy,
+         auto_approve_requests: session_policies.auto_approve_requests,
+         thread_sandbox: session_policies.thread_sandbox,
+         turn_sandbox_policy: session_policies.turn_sandbox_policy,
+         thread_id: thread_id,
+         workspace: workspace,
+         worker_host: worker_host,
+         command_security: command_security_context(workspace, worker_host),
+         launch_cleanup_paths: launch_cleanup_paths,
+         mcp_session: mcp_session,
+         mcp_remote_shim_path: remote_shim_path,
+         settings: settings
+       }}
+    else
+      {:error, reason} ->
+        stop_port(port)
+        cleanup_launch_paths(launch_cleanup_paths)
+        cleanup_remote_shim(worker_host, remote_shim_path)
+        McpServer.stop_session(mcp_session)
+        {:error, reason}
     end
   end
 
@@ -201,6 +241,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   def stop_session(%{port: port} = session) when is_port(port) do
     stop_port(port)
     cleanup_launch_paths(Map.get(session, :launch_cleanup_paths, []))
+    cleanup_remote_shim(Map.get(session, :worker_host), Map.get(session, :mcp_remote_shim_path))
+    McpServer.stop_session(Map.get(session, :mcp_session))
   end
 
   defp settings_from_opts(opts) do
@@ -290,60 +332,242 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, nil, settings) do
-    executable = System.find_executable("bash")
+  defp validate_remote_launch_preconditions(worker_host, settings) when is_binary(worker_host) do
+    case sandbox_runtime(settings) do
+      %Schema.Agent.SandboxRuntime{kind: "srt"} ->
+        {:error, {:unsupported_agent_sandbox_runtime, "srt", :remote_worker}}
 
-    if is_nil(executable) do
-      {:error, :bash_not_found}
-    else
-      with {:ok, command, launch_cleanup_paths} <- command_with_sandbox_config(settings.agent.command, settings, workspace) do
-        port =
-          Port.open(
-            {:spawn_executable, String.to_charlist(executable)},
-            [
-              :binary,
-              :exit_status,
-              :stderr_to_stdout,
-              args: [~c"-lc", String.to_charlist(command)],
-              cd: String.to_charlist(workspace),
-              env: AgentEnv.build(),
-              line: @port_line_bytes
-            ]
-          )
-
-        {:ok, port, launch_cleanup_paths}
-      end
+      _runtime ->
+        :ok
     end
   end
 
-  defp start_port(workspace, worker_host, settings) when is_binary(worker_host) do
-    with {:ok, remote_command} <- remote_launch_command(workspace, settings),
-         {:ok, port} <- SSH.start_port(worker_host, remote_command, line: @port_line_bytes, env: AgentEnv.build()) do
+  defp validate_remote_launch_preconditions(_worker_host, _settings), do: :ok
+
+  defp start_port(workspace, nil, settings, mcp_session, _remote_socket_path, _remote_shim_path) do
+    with {:ok, executable} <- bash_executable(),
+         {:ok, codex_home} <- McpConfig.write_home(settings, mcp_session),
+         {:ok, command, launch_cleanup_paths} <- local_command_with_codex_home(settings, workspace, codex_home) do
+      port =
+        Port.open(
+          {:spawn_executable, String.to_charlist(executable)},
+          [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: [~c"-lc", String.to_charlist(command)],
+            cd: String.to_charlist(workspace),
+            env: AgentEnv.build_with(%{"CODEX_HOME" => codex_home.home_path}),
+            line: @port_line_bytes
+          ]
+        )
+
+      {:ok, port, codex_home.cleanup_paths ++ launch_cleanup_paths}
+    else
+      {:error, {:local_codex_home_command_failed, reason, cleanup_paths}} ->
+        cleanup_launch_paths(cleanup_paths)
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path)
+       when is_binary(worker_host) do
+    with {:ok, remote_command, remote_codex_home} <-
+           remote_launch_command(workspace, settings, mcp_session, remote_socket_path, remote_shim_path),
+         {:ok, port} <-
+           SSH.start_port(
+             worker_host,
+             remote_command,
+             line: @port_line_bytes,
+             env: AgentEnv.build(),
+             reverse_forwards: mcp_reverse_forwards(mcp_session, remote_socket_path)
+           ) do
+      _remote_codex_home = remote_codex_home
       {:ok, port, []}
     end
   end
 
-  defp remote_launch_command(workspace, settings) when is_binary(workspace) do
-    with {:ok, command, []} <- command_with_sandbox_config(settings.agent.command, settings, workspace, remote: true) do
-      script =
-        [
-          "cd #{shell_escape(workspace)}",
-          "#{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command}"
-        ]
-        |> Enum.join(" && ")
-
-      {:ok, script}
+  defp bash_executable do
+    case System.find_executable("bash") do
+      nil -> {:error, :bash_not_found}
+      executable -> {:ok, executable}
     end
   end
 
-  defp command_with_sandbox_config(command, settings, workspace, opts \\ []) when is_binary(command) do
+  defp local_command_with_codex_home(settings, workspace, codex_home) do
+    opts = [extra_deny_read_paths: codex_home_deny_read_paths(codex_home.home_path)]
+
+    case command_with_sandbox_config(settings.agent.command, settings, workspace, opts) do
+      {:ok, command, launch_cleanup_paths} ->
+        {:ok, command, launch_cleanup_paths}
+
+      {:error, reason} ->
+        {:error, {:local_codex_home_command_failed, reason, codex_home.cleanup_paths}}
+    end
+  end
+
+  defp remote_launch_command(workspace, settings, mcp_session, remote_socket_path, remote_shim_path) when is_binary(workspace) do
+    codex_home = Path.join("/tmp", "symphony-codex-home-#{mcp_session.id}")
+
+    with {:ok, command, []} <-
+           command_with_sandbox_config(settings.agent.command, settings, workspace,
+             remote: true,
+             extra_deny_read_paths: codex_home_deny_read_paths(codex_home)
+           ),
+         {:ok, setup_command} <-
+           remote_codex_home_setup_command(settings, mcp_session, remote_socket_path, remote_shim_path, codex_home) do
+      script =
+        [
+          setup_command,
+          "cd #{shell_escape(workspace)}",
+          "CODEX_HOME=#{shell_escape(codex_home)} #{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command}"
+        ]
+        |> Enum.join(" && ")
+
+      {:ok, script, codex_home}
+    end
+  end
+
+  defp remote_codex_home_setup_command(settings, mcp_session, remote_socket_path, remote_shim_path, codex_home) do
+    case get_in(settings, [Access.key(:agent), Access.key(:mcp), Access.key(:inherit)]) do
+      inherit when inherit in ["allowlist", "all"] ->
+        {:error, {:codex_mcp_inheritance_unsupported, :remote_worker}}
+
+      _inherit ->
+        with {:ok, config_toml} <-
+               McpConfig.build_config(
+                 settings,
+                 mcp_session,
+                 remote_socket_path,
+                 remote_shim_path,
+                 host_codex_home: nil
+               ) do
+          {:ok,
+           [
+             "rm -rf #{shell_escape(codex_home)}",
+             "mkdir -p #{shell_escape(codex_home)}",
+             "chmod 0700 #{shell_escape(codex_home)}",
+             "printf %s #{shell_escape(config_toml)} > #{shell_escape(Path.join(codex_home, "config.toml"))}",
+             "chmod 0600 #{shell_escape(Path.join(codex_home, "config.toml"))}",
+             "ln -s \"$HOME/.codex/auth.json\" #{shell_escape(Path.join(codex_home, "auth.json"))}"
+           ]
+           |> Enum.join(" && ")}
+        end
+    end
+  end
+
+  defp start_mcp_session(workspace, worker_host, opts) do
+    issue = Keyword.get(opts, :issue)
+
+    context = %{
+      issue: issue,
+      issue_id: Keyword.get(opts, :issue_id),
+      workspace: workspace,
+      command_security: command_security_context(workspace, worker_host),
+      comment_registry: Keyword.get(opts, :linear_comment_registry),
+      tool_opts: tool_opts(opts),
+      dependency_gate: DependencyGate.build(workspace, issue, Keyword.get(opts, :settings), opts)
+    }
+
+    mcp_opts =
+      [
+        run_id: Keyword.get(opts, :run_id),
+        server: Keyword.get(opts, :mcp_server, McpServer),
+        shim_path: Keyword.get(opts, :mcp_shim_path),
+        worker_host: worker_host
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+    case McpServer.start_session(context, mcp_opts) do
+      {:ok, mcp_session} ->
+        case install_remote_shim(mcp_session, worker_host) do
+          {:ok, remote_shim_path} ->
+            {:ok, mcp_session, Map.get(mcp_session, :remote_socket_path), remote_shim_path}
+
+          {:error, reason} ->
+            McpServer.stop_session(mcp_session)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp tool_opts(opts) do
+    opts
+    |> Keyword.take([:linear_client, :upload_client, :gh_runner, :git_runner, :settings])
+  end
+
+  defp install_remote_shim(_mcp_session, nil), do: {:ok, nil}
+
+  defp install_remote_shim(%{id: id, shim_path: local_shim_path}, worker_host)
+       when is_binary(worker_host) and is_binary(local_shim_path) do
+    remote_path = remote_shim_path(id)
+
+    case File.read(local_shim_path) do
+      {:ok, contents} ->
+        command = remote_install_shim_command(remote_path, contents)
+
+        case SSH.run(worker_host, command, stderr_to_stdout: true) do
+          {:ok, {_output, 0}} ->
+            {:ok, remote_path}
+
+          {:ok, {output, status}} ->
+            {:error, {:codex_mcp_shim_install_failed, worker_host, status, output}}
+
+          {:error, reason} ->
+            {:error, {:codex_mcp_shim_install_failed, worker_host, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:codex_mcp_shim_install_failed, :local_read, local_shim_path, reason}}
+    end
+  end
+
+  defp remote_shim_path(id) when is_binary(id) do
+    Path.join("/tmp", "symphony-mcp-shim-#{id}")
+  end
+
+  defp remote_install_shim_command(remote_path, contents) do
+    [
+      "mkdir -p #{shell_escape(Path.dirname(remote_path))}",
+      "printf %s #{shell_escape(contents)} > #{shell_escape(remote_path)}",
+      "chmod 0700 #{shell_escape(remote_path)}"
+    ]
+    |> Enum.join(" && ")
+  end
+
+  defp cleanup_remote_shim(nil, _path), do: :ok
+  defp cleanup_remote_shim(_worker_host, nil), do: :ok
+
+  defp cleanup_remote_shim(worker_host, path) when is_binary(worker_host) and is_binary(path) do
+    case SSH.run(worker_host, "rm -f #{shell_escape(path)}", stderr_to_stdout: true) do
+      {:ok, {_output, 0}} -> :ok
+      _ -> :ok
+    end
+  end
+
+  defp mcp_reverse_forwards(%{socket_path: local_socket}, remote_socket)
+       when is_binary(local_socket) and is_binary(remote_socket) do
+    [{remote_socket, local_socket}]
+  end
+
+  defp mcp_reverse_forwards(_mcp_session, _remote_socket), do: []
+
+  defp command_with_sandbox_config(command, settings, workspace, opts) when is_binary(command) do
     network_access = settings.agent.network_access || %Schema.Agent.NetworkAccess{}
+    extra_deny_read_paths = Keyword.get(opts, :extra_deny_read_paths, [])
 
     overrides =
       network_access.mode
       |> AgentSandboxConfig.codex_config_overrides(
         Schema.codex_effective_network_allowed_domains(settings),
-        workspace_sandbox_allow_read_paths(settings)
+        workspace_sandbox_allow_read_paths(settings),
+        extra_deny_read_paths
       )
 
     with {:ok, command} <- inject_config_overrides(command, overrides) do
@@ -427,6 +651,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     do: paths
 
   defp workspace_sandbox_allow_read_paths(_settings), do: []
+
+  defp codex_home_deny_read_paths(codex_home) when is_binary(codex_home) do
+    [
+      Path.join(codex_home, "auth.json"),
+      Path.join(codex_home, "config.toml"),
+      Path.join(codex_home, "AGENTS.md")
+    ]
+  end
 
   defp srt_workspace_write_paths(settings, workspace) when is_binary(workspace) do
     Schema.runtime_workspace_write_roots(settings, workspace)

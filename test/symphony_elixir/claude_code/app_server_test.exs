@@ -417,6 +417,80 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "writes declared MCP servers for Claude and filters Codex-only declarations" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-mcp-config-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "TEST-MCP")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_mcp: %{
+            servers: %{
+              "stdio-server" => %{
+                transport: "stdio",
+                command: "node",
+                args: ["/srv/stdio.js"],
+                env: %{LOG_LEVEL: "info"},
+                runtimes: ["claude", "codex"]
+              },
+              "http-server" => %{
+                transport: "http",
+                url: "https://mcp.example/http",
+                headers: %{Authorization: "Bearer test"},
+                runtimes: ["claude"]
+              },
+              "sse-server" => %{
+                transport: "sse",
+                url: "https://mcp.example/sse",
+                runtimes: ["claude"]
+              },
+              "codex-only" => %{
+                transport: "stdio",
+                command: "codex-only",
+                runtimes: ["codex"]
+              }
+            }
+          }
+        )
+
+        assert {:ok, session} = AppServer.start_session(workspace)
+        {:ok, mcp_config} = Jason.decode(File.read!(session.mcp_config_path))
+        servers = mcp_config["mcpServers"]
+
+        assert Map.has_key?(servers, "symphony")
+
+        assert servers["stdio-server"] == %{
+                 "command" => "node",
+                 "args" => ["/srv/stdio.js"],
+                 "env" => %{"LOG_LEVEL" => "info"}
+               }
+
+        assert servers["http-server"] == %{
+                 "type" => "http",
+                 "url" => "https://mcp.example/http",
+                 "headers" => %{"Authorization" => "Bearer test"}
+               }
+
+        assert servers["sse-server"] == %{
+                 "type" => "sse",
+                 "url" => "https://mcp.example/sse"
+               }
+
+        refute Map.has_key?(servers, "codex-only")
+        assert :ok = AppServer.stop_session(session)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "returns error for workspace outside workspace root" do
       test_root =
         Path.join(

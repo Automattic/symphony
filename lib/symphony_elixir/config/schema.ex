@@ -506,6 +506,172 @@ defmodule SymphonyElixir.Config.Schema do
       end
     end
 
+    defmodule Mcp do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @type t :: %__MODULE__{}
+
+      @primary_key false
+      @inherit_modes ["none", "allowlist", "all"]
+      @reserved_server_names ["symphony"]
+
+      defmodule Server do
+        @moduledoc false
+        use Ecto.Schema
+        import Ecto.Changeset
+
+        @type t :: %__MODULE__{}
+
+        @primary_key false
+        @transports ["stdio", "http", "sse"]
+        @runtimes ["claude", "codex"]
+
+        embedded_schema do
+          field(:name, :string)
+          field(:transport, :string, default: "stdio")
+          field(:command, :string)
+          field(:args, {:array, :string}, default: [])
+          field(:env, :map, default: %{})
+          field(:url, :string)
+          field(:headers, :map, default: %{})
+          field(:runtimes, {:array, :string}, default: @runtimes)
+        end
+
+        @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+        def changeset(schema, attrs) do
+          schema
+          |> cast(attrs, [:name, :transport, :command, :args, :env, :url, :headers, :runtimes], empty_values: [])
+          |> validate_required([:name, :transport])
+          |> validate_inclusion(:transport, @transports)
+          |> normalize_string_list(:args)
+          |> normalize_string_list(:runtimes)
+          |> normalize_optional_map(:env)
+          |> normalize_optional_map(:headers)
+          |> validate_runtime_values()
+          |> validate_transport_requirements()
+        end
+
+        defp normalize_string_list(changeset, field) do
+          update_change(changeset, field, fn values ->
+            values
+            |> Enum.filter(&is_binary/1)
+            |> Enum.map(&String.trim/1)
+            |> Enum.reject(&(&1 == ""))
+          end)
+        end
+
+        defp normalize_optional_map(changeset, field) do
+          update_change(changeset, field, fn value ->
+            Map.new(value, fn {key, map_value} -> {to_string(key), map_value} end)
+          end)
+        end
+
+        defp validate_runtime_values(changeset) do
+          validate_change(changeset, :runtimes, fn :runtimes, runtimes ->
+            invalid = Enum.reject(runtimes, &(&1 in @runtimes))
+
+            case invalid do
+              [] -> []
+              _invalid -> [runtimes: "contains unsupported runtime"]
+            end
+          end)
+        end
+
+        defp validate_transport_requirements(changeset) do
+          case get_field(changeset, :transport) do
+            "stdio" -> validate_required(changeset, [:command])
+            transport when transport in ["http", "sse"] -> validate_required(changeset, [:url])
+            _transport -> changeset
+          end
+        end
+      end
+
+      embedded_schema do
+        field(:inherit, :string, default: "none")
+        field(:allowed_servers, {:array, :string}, default: [])
+        field(:servers, :map, default: %{})
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:inherit, :allowed_servers, :servers], empty_values: [])
+        |> validate_required([:inherit])
+        |> validate_inclusion(:inherit, @inherit_modes)
+        |> normalize_string_list(:allowed_servers)
+        |> validate_allowlist_servers()
+        |> cast_servers()
+      end
+
+      defp normalize_string_list(changeset, field) do
+        update_change(changeset, field, fn values ->
+          values
+          |> Enum.filter(&is_binary/1)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+        end)
+      end
+
+      defp validate_allowlist_servers(changeset) do
+        if get_field(changeset, :inherit) == "allowlist" and get_field(changeset, :allowed_servers) == [] do
+          add_error(changeset, :allowed_servers, "must not be empty when agent.mcp.inherit is allowlist")
+        else
+          changeset
+        end
+      end
+
+      defp cast_servers(changeset) do
+        raw_servers = get_field(changeset, :servers) || %{}
+
+        with :ok <- validate_servers_map(raw_servers),
+             :ok <- validate_reserved_server_names(raw_servers) do
+          put_cast_servers(changeset, raw_servers)
+        else
+          {:error, message} -> add_error(changeset, :servers, message)
+        end
+      end
+
+      defp validate_servers_map(raw_servers) do
+        if is_map(raw_servers), do: :ok, else: {:error, "must be a map"}
+      end
+
+      defp validate_reserved_server_names(raw_servers) do
+        reserved? =
+          raw_servers
+          |> Map.keys()
+          |> Enum.map(&to_string/1)
+          |> Enum.any?(&(&1 in @reserved_server_names))
+
+        if reserved?, do: {:error, "must not declare reserved MCP server names"}, else: :ok
+      end
+
+      defp put_cast_servers(changeset, raw_servers) do
+        {updated_changeset, servers} =
+          Enum.reduce(raw_servers, {changeset, %{}}, fn {name, attrs}, acc ->
+            cast_server_entry(acc, name, attrs)
+          end)
+
+        put_change(updated_changeset, :servers, servers)
+      end
+
+      defp cast_server_entry({changeset, servers}, name, attrs) do
+        attrs = if is_map(attrs), do: attrs, else: %{}
+        name = to_string(name)
+
+        case Server.changeset(%Server{}, Map.put(attrs, "name", name)) |> apply_action(:insert) do
+          {:ok, server} ->
+            {changeset, Map.put(servers, name, server)}
+
+          {:error, server_changeset} ->
+            message = "#{name} is invalid: #{inspect(server_changeset.errors)}"
+            {add_error(changeset, :servers, message), servers}
+        end
+      end
+    end
+
     @primary_key false
     embedded_schema do
       field(:kind, :string)
@@ -521,6 +687,7 @@ defmodule SymphonyElixir.Config.Schema do
 
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
+      embeds_one(:mcp, Mcp, on_replace: :update, defaults_to_struct: true)
       embeds_one(:network_access, NetworkAccess, on_replace: :update, defaults_to_struct: true)
       embeds_one(:sandbox_runtime, SandboxRuntime, on_replace: :update, defaults_to_struct: true)
       field(:turn_timeout_ms, :integer, default: 3_600_000)
@@ -566,6 +733,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:command_timeout_ms, greater_than_or_equal_to: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> cast_embed(:mcp, with: &Mcp.changeset/2)
       |> cast_embed(:network_access, with: &NetworkAccess.changeset/2)
       |> cast_embed(:sandbox_runtime, with: &SandboxRuntime.changeset/2)
     end
@@ -1514,7 +1682,8 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp validate_finalized_settings(settings) do
     with :ok <- validate_agent_approval_policy(settings.agent),
-         :ok <- validate_agent_sandbox_runtime(settings.agent) do
+         :ok <- validate_agent_sandbox_runtime(settings.agent),
+         :ok <- validate_agent_mcp(settings.agent) do
       validate_finalized_notification_urls(settings.notifications)
     end
   end
@@ -1544,6 +1713,29 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp validate_agent_sandbox_runtime(_agent), do: :ok
+
+  defp validate_agent_mcp(%Agent{kind: "claude", mcp: %Agent.Mcp{inherit: "all"}}) do
+    {:error, ~s(agent.mcp.inherit="all" is not supported for agent.kind=claude; declare MCP servers explicitly.)}
+  end
+
+  defp validate_agent_mcp(%Agent{kind: "codex", mcp: %Agent.Mcp{servers: servers}}) when is_map(servers) do
+    case Enum.find(servers, fn {_name, server} -> codex_targeted_non_stdio_mcp_server?(server) end) do
+      {name, server} ->
+        {:error, "agent.mcp.servers.#{name}.transport=#{inspect(server.transport)} is not supported for Codex; Codex MCP servers must use transport=\"stdio\"."}
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp validate_agent_mcp(_agent), do: :ok
+
+  defp codex_targeted_non_stdio_mcp_server?(%Agent.Mcp.Server{transport: transport, runtimes: runtimes})
+       when transport in ["http", "sse"] and is_list(runtimes) do
+    "codex" in runtimes
+  end
+
+  defp codex_targeted_non_stdio_mcp_server?(_server), do: false
 
   defp normalize_notifications(%Notifications{} = notifications) do
     %{notifications | channels: Enum.map(notifications.channels || [], &normalize_notification_channel/1)}

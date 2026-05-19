@@ -126,6 +126,77 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server launches Codex with generated CODEX_HOME and denies generated auth/config paths" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-codex-home-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-CODEX-HOME")
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_home_trace = Path.join(test_root, "codex-home.trace")
+      argv_trace = Path.join(test_root, "argv.trace")
+      config_copy = Path.join(test_root, "config-copy.toml")
+      auth_link_trace = Path.join(test_root, "auth-link.trace")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      printf '%s' "$CODEX_HOME" > "#{codex_home_trace}"
+      printf '%s\\n' "$@" > "#{argv_trace}"
+      cat "$CODEX_HOME/config.toml" > "#{config_copy}"
+      if [ -L "$CODEX_HOME/auth.json" ]; then
+        printf 'symlink' > "#{auth_link_trace}"
+      fi
+
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-codex-home"}}}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace)
+
+      codex_home = File.read!(codex_home_trace)
+      assert String.starts_with?(codex_home, System.tmp_dir!())
+      assert File.read!(auth_link_trace) == "symlink"
+
+      config = File.read!(config_copy)
+      assert config =~ "[mcp_servers.symphony]"
+      assert config =~ "symphony-mcp-shim"
+      refute config =~ "[mcp_servers.context-a8c]"
+
+      argv = File.read!(argv_trace)
+      assert argv =~ "--config"
+      assert argv =~ Path.join(codex_home, "auth.json")
+      assert argv =~ Path.join(codex_home, "config.toml")
+
+      assert :ok = AppServer.stop_session(session)
+      refute File.exists?(codex_home)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(
@@ -3435,6 +3506,11 @@ defmodule SymphonyElixir.AppServerTest do
         *"remote"*"get-url"*"origin"*|*"branch"*"--show-current"*)
           exit 0
           ;;
+        *"fake-remote-codex"*)
+          ;;
+        *"symphony-mcp-shim"*|*"rm -f "*)
+          exit 0
+          ;;
       esac
 
       while IFS= read -r line; do
@@ -3490,18 +3566,17 @@ defmodule SymphonyElixir.AppServerTest do
       trace = File.read!(trace_file)
       lines = String.split(trace, "\n", trim: true)
 
-      assert argv_line = Enum.find(lines, &String.starts_with?(&1, "ARGV:"))
-      assert argv_line =~ "-T -p 2200 worker-01 bash -lc"
-      assert argv_line =~ "cd "
-      assert argv_line =~ remote_workspace
-      assert argv_line =~ "exec "
-      assert argv_line =~ "fake-remote-codex"
-      assert argv_line =~ "--config"
-      assert argv_line =~ "default_permissions=\"workspace_write\""
-      assert argv_line =~ "permissions.workspace_write.filesystem="
-      assert argv_line =~ "permissions.workspace_write.network="
-      assert argv_line =~ "permissions.workspace_write.network.domains="
-      assert argv_line =~ "app-server"
+      assert trace =~ "-T -p 2200 worker-01 bash -lc"
+      assert trace =~ "cd "
+      assert trace =~ remote_workspace
+      assert trace =~ "exec "
+      assert trace =~ "fake-remote-codex"
+      assert trace =~ "--config"
+      assert trace =~ "default_permissions=\"workspace_write\""
+      assert trace =~ "permissions.workspace_write.filesystem="
+      assert trace =~ "permissions.workspace_write.network="
+      assert trace =~ "permissions.workspace_write.network.domains="
+      assert trace =~ "app-server"
 
       expected_turn_policy = %{
         "type" => "workspaceWrite",
@@ -3586,6 +3661,11 @@ defmodule SymphonyElixir.AppServerTest do
         *"branch"*"--show-current"*)
           printf 'DISCOVERY:branch\\n' >> "$trace_file"
           printf '%s\\n' 'feature/remote-gh'
+          exit 0
+          ;;
+        *"fake-remote-codex"*)
+          ;;
+        *"symphony-mcp-shim"*|*"rm -f "*)
           exit 0
           ;;
       esac

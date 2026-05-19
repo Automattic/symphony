@@ -279,7 +279,9 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   end
 
   defp tool_result_event?(event_text, method, item_type) do
-    event_text in ["tool_call_completed"] or String.ends_with?(method, "tool_call_end") or
+    event_text in ["tool_call_completed", "tool_result"] or
+      String.ends_with?(method, "tool_call_end") or
+      String.contains?(method, "item/tool/result") or
       (method in ["item/completed"] and item_type in ["commandexecution", "filechange"]) or
       String.contains?(method, "exec_command_end") or String.contains?(method, "output_delta") or
       String.contains?(method, "outputdelta")
@@ -326,7 +328,22 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     agent_text(event) || humanized_summary(event)
   end
 
+  defp event_summary(event, "tool-result") do
+    case tool_result_text(event) do
+      nil -> humanized_summary(event)
+      text -> truncate(text, @summary_limit)
+    end
+  end
+
   defp event_summary(event, _kind), do: humanized_summary(event)
+
+  defp tool_result_text(event) do
+    map_path(event, [:payload, "params", "text"]) ||
+      map_path(event, [:payload, :params, :text]) ||
+      map_path(event, [:payload, "params", :text]) ||
+      map_path(event, [:payload, :params, "text"]) ||
+      map_path(event, ["payload", "params", "text"])
+  end
 
   defp humanized_summary(event) do
     event

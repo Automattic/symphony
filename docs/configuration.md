@@ -189,6 +189,8 @@ workspace:
 github:
   # Optional GitHub Enterprise hosts accepted for PR URLs and repo URLs.
   enterprise_hosts: []
+  # Maximum bytes returned by github_get_failed_run_log() before truncation.
+  failed_run_log_max_bytes: 65536
 verification:
   enabled: true
   port_allocation:
@@ -506,6 +508,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 - `github.enterprise_hosts` is an exact host allowlist for GitHub Enterprise PR and repository
   URLs. `github.com` and `www.github.com` are always accepted; other GitHub-like hostnames are
   ignored unless listed here.
+- `github.failed_run_log_max_bytes` caps the failed-step log excerpt returned by the scoped
+  `github_get_failed_run_log()` MCP tool. Default: `65536`.
 - `watchdog` is enabled by default and protects running agent sessions from silent no-progress
   stalls. It checks running agents every `watchdog.tick_interval_ms` (default: `60000`) and
   compares the current time with the latest transcript event timestamp. When no event has arrived

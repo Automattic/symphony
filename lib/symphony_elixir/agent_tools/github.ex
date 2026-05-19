@@ -8,10 +8,13 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   """
 
   alias SymphonyElixir.AgentTools.SecretScanner
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.GitHub.PullRequest
   alias SymphonyElixir.Workspace
 
   @pr_view_fields "number,state,title,body,url,headRefName,baseRefName"
+  @failed_conclusions MapSet.new(["ACTION_REQUIRED", "CANCELLED", "FAILURE", "STARTUP_FAILURE", "TIMED_OUT"])
 
   @type context :: %{
           optional(:issue) => map() | nil,
@@ -88,6 +91,54 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   def get_pr_checks(context, opts \\ []) do
     with {:ok, pr_url} <- current_pull_request_url(context, opts) do
       PullRequest.fetch_ci_status(pr_url, github_opts(context, opts))
+    end
+  end
+
+  @spec list_pr_comments(context(), keyword()) :: {:ok, map()} | {:error, term()}
+  def list_pr_comments(context, opts \\ []) do
+    with {:ok, pr_url} <- current_pull_request_url(context, opts),
+         {:ok, comments} <- PullRequest.fetch_pr_comments(pr_url, github_opts(context, opts)) do
+      {:ok, %{"pr_url" => pr_url, "comments" => comments}}
+    end
+  end
+
+  @spec list_pr_review_comments(context(), keyword()) :: {:ok, map()} | {:error, term()}
+  def list_pr_review_comments(context, opts \\ []) do
+    with {:ok, pr_url} <- current_pull_request_url(context, opts),
+         {:ok, comments} <- PullRequest.fetch_pr_review_comments(pr_url, github_opts(context, opts)) do
+      {:ok, %{"pr_url" => pr_url, "comments" => comments}}
+    end
+  end
+
+  @spec list_pr_reviews(context(), keyword()) :: {:ok, map()} | {:error, term()}
+  def list_pr_reviews(context, opts \\ []) do
+    with {:ok, pr_url} <- current_pull_request_url(context, opts),
+         {:ok, reviews} <- PullRequest.fetch_pr_reviews(pr_url, github_opts(context, opts)) do
+      {:ok, %{"pr_url" => pr_url, "reviews" => reviews}}
+    end
+  end
+
+  @spec get_failed_run_log(context(), keyword()) :: {:ok, map()} | {:error, term()}
+  def get_failed_run_log(context, opts \\ []) do
+    with {:ok, status} <- get_pr_checks(context, opts),
+         {:ok, check, run_id} <- status |> status_checks() |> latest_failed_check(),
+         {:ok, max_bytes} <- failed_run_log_max_bytes(opts),
+         {:ok, log} <- PullRequest.fetch_failed_log(run_id, github_opts(context, opts)),
+         true <- is_binary(log) do
+      {excerpt, truncated?} = clamp_log(log, max_bytes)
+
+      {:ok,
+       %{
+         "pr_url" => Map.get(status, :pr_url),
+         "check" => check,
+         "run_id" => run_id,
+         "log" => excerpt,
+         "truncated" => truncated?,
+         "max_bytes" => max_bytes
+       }}
+    else
+      false -> {:error, :invalid_failed_run_log}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -234,6 +285,73 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   defp github_opts(context, opts) do
     opts
     |> Keyword.put_new(:cwd, Map.get(context, :workspace))
+  end
+
+  defp status_checks(%{checks: checks}) when is_list(checks), do: Enum.filter(checks, &is_map/1)
+
+  defp latest_failed_check(checks) do
+    checks
+    |> Enum.filter(&failed_check?/1)
+    |> Enum.find_value(&failed_check_with_run_id/1)
+    |> case do
+      nil -> {:error, :no_failed_github_actions_run}
+      result -> result
+    end
+  end
+
+  defp failed_check?(check) when is_map(check) do
+    case Map.get(check, :conclusion) || Map.get(check, "conclusion") do
+      conclusion when is_binary(conclusion) ->
+        MapSet.member?(@failed_conclusions, normalize_status_value(conclusion))
+
+      _missing ->
+        false
+    end
+  end
+
+  defp failed_check_with_run_id(check) do
+    case Map.get(check, :run_id) || Map.get(check, "run_id") do
+      run_id when is_binary(run_id) and run_id != "" -> {:ok, check, run_id}
+      _missing -> nil
+    end
+  end
+
+  defp normalize_status_value(value) when is_binary(value), do: value |> String.trim() |> String.upcase()
+
+  defp failed_run_log_max_bytes(opts) do
+    case Keyword.get(opts, :failed_run_log_max_bytes) do
+      value when is_integer(value) and value > 0 ->
+        {:ok, value}
+
+      nil ->
+        {:ok, settings_failed_run_log_max_bytes(opts)}
+
+      _invalid ->
+        {:error, :invalid_failed_run_log_max_bytes}
+    end
+  end
+
+  defp settings_failed_run_log_max_bytes(opts) do
+    case Keyword.get(opts, :settings) do
+      %Schema{} = settings -> settings.github.failed_run_log_max_bytes
+      _settings -> Config.settings!().github.failed_run_log_max_bytes
+    end
+  end
+
+  defp clamp_log(log, max_bytes) when is_binary(log) and byte_size(log) > max_bytes do
+    {take_valid_prefix(log, max_bytes), true}
+  end
+
+  defp clamp_log(log, _max_bytes) when is_binary(log), do: {log, false}
+
+  defp take_valid_prefix(log, max_bytes) do
+    prefix = binary_part(log, 0, min(byte_size(log), max_bytes))
+
+    if String.valid?(prefix) do
+      prefix
+    else
+      take_valid_prefix(log, max_bytes - 1)
+    end
   end
 
   defp run_git(args, workspace, opts) do

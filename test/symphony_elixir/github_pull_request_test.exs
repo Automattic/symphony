@@ -156,6 +156,114 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert :ok = PullRequest.rerun_failed("987", gh_runner: runner)
   end
 
+  test "fetch_pr_comments reads paginated top-level PR comments" do
+    pr_url = "https://github.example.com/org/repo/pull/42"
+
+    runner = fn
+      ["api", "--hostname", "github.example.com", "--paginate", "--slurp", "repos/org/repo/issues/42/comments"], opts ->
+        assert opts[:stderr_to_stdout]
+
+        {Jason.encode!([
+           [
+             %{
+               "id" => 1,
+               "node_id" => "IC_1",
+               "user" => %{"login" => "reviewer"},
+               "author_association" => "MEMBER",
+               "body" => "Please update the docs.",
+               "html_url" => "#{pr_url}#issuecomment-1",
+               "created_at" => "2026-05-01T09:00:00Z",
+               "updated_at" => "2026-05-01T09:01:00Z"
+             }
+           ],
+           [
+             %{
+               "id" => 2,
+               "user" => %{"login" => "bot"},
+               "body" => "CI note.",
+               "html_url" => "#{pr_url}#issuecomment-2"
+             }
+           ]
+         ]), 0}
+    end
+
+    assert {:ok, comments} =
+             PullRequest.fetch_pr_comments(pr_url,
+               gh_runner: runner,
+               github_enterprise_hosts: ["github.example.com"]
+             )
+
+    assert Enum.map(comments, & &1.id) == ["1", "2"]
+    assert List.first(comments).kind == "comment"
+    assert List.first(comments).author == "reviewer"
+    assert List.first(comments).author_association == "MEMBER"
+  end
+
+  test "fetch_pr_review_comments preserves file position and review id" do
+    pr_url = "https://github.com/org/repo/pull/17"
+
+    runner = fn
+      ["api", "--paginate", "--slurp", "repos/org/repo/pulls/17/comments"], opts ->
+        assert opts[:stderr_to_stdout]
+
+        {Jason.encode!([
+           [
+             %{
+               "id" => 123,
+               "node_id" => "PRRC_123",
+               "user" => %{"login" => "reviewer"},
+               "body" => "Use the helper here.",
+               "html_url" => "#{pr_url}#discussion_r123",
+               "path" => "lib/example.ex",
+               "position" => 8,
+               "original_position" => 6,
+               "line" => 42,
+               "pull_request_review_id" => 987,
+               "commit_id" => "abc123",
+               "diff_hunk" => "@@ -1 +1 @@",
+               "created_at" => "2026-05-01T09:03:00Z",
+               "updated_at" => "2026-05-01T09:05:00Z"
+             }
+           ]
+         ]), 0}
+    end
+
+    assert {:ok, [comment]} = PullRequest.fetch_pr_review_comments(pr_url, gh_runner: runner)
+    assert comment.kind == "inline_comment"
+    assert comment.path == "lib/example.ex"
+    assert comment.position == 8
+    assert comment.original_position == 6
+    assert comment.review_id == "987"
+  end
+
+  test "fetch_pr_reviews reads paginated review summaries" do
+    pr_url = "https://github.com/org/repo/pull/17"
+
+    runner = fn
+      ["api", "--paginate", "--slurp", "repos/org/repo/pulls/17/reviews"], _opts ->
+        {Jason.encode!([
+           [
+             %{
+               "id" => 987,
+               "node_id" => "PRR_987",
+               "user" => %{"login" => "reviewer"},
+               "state" => "CHANGES_REQUESTED",
+               "body" => "One issue.",
+               "html_url" => "#{pr_url}#pullrequestreview-987",
+               "commit_id" => "abc123",
+               "submitted_at" => "2026-05-01T09:00:00Z"
+             }
+           ]
+         ]), 0}
+    end
+
+    assert {:ok, [review]} = PullRequest.fetch_pr_reviews(pr_url, gh_runner: runner)
+    assert review.id == "987"
+    assert review.author == "reviewer"
+    assert review.state == "CHANGES_REQUESTED"
+    assert review.submitted_at == ~U[2026-05-01 09:00:00Z]
+  end
+
   test "reply_to_comment posts inline replies and request_review re-requests reviewers" do
     pr_url = "https://github.example.com/org/repo/pull/42"
 

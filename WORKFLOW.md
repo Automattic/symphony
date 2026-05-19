@@ -114,11 +114,15 @@ Available scoped GitHub tools:
 - `github_add_pr_comment(body)` — add a top-level comment to the current PR.
 - `github_push_branch()` — push the current workspace branch to origin.
 - `github_get_pr_checks()` — read the status-check rollup for the current PR.
+- `github_list_pr_comments()` — read top-level comments on the current PR.
+- `github_list_pr_review_comments()` — read inline review comments on the current PR.
+- `github_list_pr_reviews()` — read review summaries and states for the current PR.
+- `github_get_failed_run_log()` — read a length-clamped failed-step log excerpt
+  for the latest failing GitHub Actions run on the current PR.
 
 If a required GitHub operation is outside this list (for example: listing PR or
-review comments, fetching failed CI run logs, listing PRs by branch, checking
-`gh` auth status), record the gap in the workpad instead of synthesising a
-`gh` call.
+listing PRs by branch or checking `gh` auth status), record the gap in the
+workpad instead of synthesising a `gh` call.
 
 ## Default posture
 
@@ -251,14 +255,9 @@ When a ticket has an attached PR, run this protocol before moving to `In Review`
 2. Gather feedback from all channels:
    - PR body and metadata via `github_get_pull_request()`.
    - CI status rollup via `github_get_pr_checks()`.
-   - Top-level PR comments, inline review comments, and review summaries: these
-     channels currently require `gh` shell-out (`gh pr view --comments`,
-     `gh api repos/<owner>/<repo>/pulls/<pr>/comments`,
-     `gh pr view --json reviews`) because Symphony's scoped tools do not yet
-     expose them. When `Bash(gh:*)` is denied in the active runtime, treat
-     these channels as unavailable: note the gap in the workpad and use the
-     blocked-access escape hatch if reviewer feedback cannot otherwise be
-     resolved.
+   - Top-level PR comments via `github_list_pr_comments()`.
+   - Inline review comments via `github_list_pr_review_comments()`.
+   - Review summaries and states via `github_list_pr_reviews()`.
 3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
    - code/test/docs updated to address it, or
    - explicit, justified pushback reply is posted on that thread.
@@ -271,10 +270,8 @@ When a ticket has an attached PR, run this protocol before moving to `In Review`
 Use this whenever pushed checks come back failing, at any push gate (including the §7 push gate and the §11 pre-`In Review` loop).
 
 1. Read the check summary via `github_get_pr_checks()` to identify which check
-   failed. Detailed run logs currently require `gh run view --log-failed`
-   because Symphony's scoped tools do not yet expose run-log fetching. When
-   `Bash(gh:*)` is denied in the active runtime, work from the check summary
-   alone and note the missing log access in the workpad.
+   failed, then read the failed-step log excerpt via
+   `github_get_failed_run_log()`.
 2. Categorize the failure as flaky/retryable infrastructure or a real code defect.
 3. For real failures, diagnose the root cause, fix it, rerun validation locally, then loop back through the validation, diff-review, commit, and push gates.
 4. Never use `--no-verify`, `--force`, or skipped hooks to bypass failures.

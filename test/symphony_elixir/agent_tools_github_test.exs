@@ -3,6 +3,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
   alias SymphonyElixir.AgentTools.GitHub
   alias SymphonyElixir.AgentTools.SecretScanner
+  alias SymphonyElixir.Config.Schema
 
   test "public defaults fail closed when required scope is missing" do
     assert {:error, :missing_github_origin_repo} = GitHub.get_pull_request(%{})
@@ -11,6 +12,10 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     assert {:error, :missing_github_origin_repo} = GitHub.update_pull_request_body(%{}, "Body")
     assert {:error, :missing_github_origin_repo} = GitHub.add_pr_comment(%{}, "Body")
     assert {:error, :missing_github_origin_repo} = GitHub.get_pr_checks(%{})
+    assert {:error, :missing_github_origin_repo} = GitHub.list_pr_comments(%{})
+    assert {:error, :missing_github_origin_repo} = GitHub.list_pr_review_comments(%{})
+    assert {:error, :missing_github_origin_repo} = GitHub.list_pr_reviews(%{})
+    assert {:error, :missing_github_origin_repo} = GitHub.get_failed_run_log(%{})
     assert {:error, :missing_workspace} = GitHub.push_branch(%{})
   end
 
@@ -125,10 +130,32 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         opts ->
           assert opts[:cd] == workspace
           {"https://github.com/acme/symphony/pull/3051\n", 0}
+
+        [
+          "pr",
+          "create",
+          "--repo",
+          "acme/symphony",
+          "--head",
+          "auto/RSM-3051",
+          "--title",
+          "Title",
+          "--body",
+          "Body with nil draft"
+        ],
+        opts ->
+          assert opts[:cd] == workspace
+          {"https://github.com/acme/symphony/pull/3051\n", 0}
       end
 
       assert {:ok, %{"draft" => true, "head" => "auto/RSM-3051"}} =
                GitHub.create_pull_request(scoped_context(workspace), "Title", "Body", true,
+                 git_runner: git_runner,
+                 gh_runner: gh_runner
+               )
+
+      assert {:ok, %{"draft" => false, "head" => "auto/RSM-3051"}} =
+               GitHub.create_pull_request(scoped_context(workspace), "Title", "Body with nil draft", nil,
                  git_runner: git_runner,
                  gh_runner: gh_runner
                )
@@ -428,6 +455,301 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     assert_received :checked_remote_pr
   end
 
+  test "read-only PR feedback tools resolve current branch PR and return paginated payloads" do
+    workspace = tmp_workspace!("github-agent-feedback-tools")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["api", "--paginate", "--slurp", "repos/acme/symphony/issues/3051/comments"], _opts ->
+          {Jason.encode!([[issue_comment(pr_url)]]), 0}
+
+        ["api", "--paginate", "--slurp", "repos/acme/symphony/pulls/3051/comments"], _opts ->
+          {Jason.encode!([[review_comment(pr_url)]]), 0}
+
+        ["api", "--paginate", "--slurp", "repos/acme/symphony/pulls/3051/reviews"], _opts ->
+          {Jason.encode!([[review_summary(pr_url)]]), 0}
+      end
+
+      opts = [git_runner: branch_runner(workspace), gh_runner: gh_runner]
+
+      assert {:ok, %{"pr_url" => ^pr_url, "comments" => [%{kind: "comment", body: "Top-level note."}]}} =
+               GitHub.list_pr_comments(scoped_context(workspace), opts)
+
+      assert {:ok,
+              %{
+                "pr_url" => ^pr_url,
+                "comments" => [%{kind: "inline_comment", path: "lib/example.ex", position: 8, review_id: "987"}]
+              }} = GitHub.list_pr_review_comments(scoped_context(workspace), opts)
+
+      assert {:ok, %{"pr_url" => ^pr_url, "reviews" => [%{state: "APPROVED", author: "reviewer"}]}} =
+               GitHub.list_pr_reviews(scoped_context(workspace), opts)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log selects a failed check and clamps log output" do
+    workspace = tmp_workspace!("github-agent-failed-run-log")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "url" => pr_url,
+             "headRefOid" => "abc123",
+             "statusCheckRollup" => [
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          {"0123456789abcdef", 0}
+      end
+
+      assert {:ok,
+              %{
+                "run_id" => "987",
+                "log" => "0123456789",
+                "truncated" => true,
+                "max_bytes" => 10
+              }} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner,
+                 failed_run_log_max_bytes: 10
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log uses configured max bytes and preserves valid UTF-8" do
+    workspace = tmp_workspace!("github-agent-failed-run-log-utf8")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{"name" => "queued", "status" => "QUEUED"},
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => " timed_out ",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          {"aéz", 0}
+      end
+
+      settings = %Schema{github: %Schema.GitHub{failed_run_log_max_bytes: 2}}
+
+      assert {:ok, %{"log" => "a", "truncated" => true, "max_bytes" => 2}} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner,
+                 settings: settings
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log returns untruncated logs with default config max bytes" do
+    workspace = tmp_workspace!("github-agent-failed-run-log-default-config")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{
+                 "name" => "failed external check",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://ci.example.com/build/987"
+               },
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          {"short log", 0}
+      end
+
+      assert {:ok, %{"log" => "short log", "truncated" => false, "max_bytes" => 65_536}} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log rejects invalid max bytes before fetching logs" do
+    workspace = tmp_workspace!("github-agent-failed-run-log-invalid-max")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          flunk("failed logs should not be fetched with an invalid clamp")
+      end
+
+      assert {:error, :invalid_failed_run_log_max_bytes} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner,
+                 failed_run_log_max_bytes: 0
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log rejects non-binary log payloads" do
+    workspace = tmp_workspace!("github-agent-failed-run-log-invalid-payload")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          {:ok, :not_binary}
+      end
+
+      assert {:error, :invalid_failed_run_log} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner,
+                 failed_run_log_max_bytes: 65_536
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log errors cleanly when no failed run is present" do
+    workspace = tmp_workspace!("github-agent-no-failed-run")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "SUCCESS",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+      end
+
+      assert {:error, :no_failed_github_actions_run} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
   test "push_branch is explicitly unsupported for ssh workers" do
     remote_workspace = "/remote/workspaces/MT-3187"
 
@@ -484,9 +806,52 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
       assert {:error, :missing_pull_request_url} =
                GitHub.get_pr_checks(scoped_context(workspace), opts)
+
+      assert {:error, :missing_pull_request_url} =
+               GitHub.list_pr_comments(scoped_context(workspace), opts)
+
+      assert {:error, :missing_pull_request_url} =
+               GitHub.list_pr_review_comments(scoped_context(workspace), opts)
+
+      assert {:error, :missing_pull_request_url} =
+               GitHub.list_pr_reviews(scoped_context(workspace), opts)
+
+      assert {:error, :missing_pull_request_url} =
+               GitHub.get_failed_run_log(scoped_context(workspace), opts)
     after
       File.rm_rf(workspace)
     end
+  end
+
+  defp issue_comment(pr_url) do
+    %{
+      "id" => 11,
+      "user" => %{"login" => "maintainer"},
+      "body" => "Top-level note.",
+      "html_url" => "#{pr_url}#issuecomment-11"
+    }
+  end
+
+  defp review_comment(pr_url) do
+    %{
+      "id" => 22,
+      "user" => %{"login" => "reviewer"},
+      "body" => "Inline note.",
+      "html_url" => "#{pr_url}#discussion_r22",
+      "path" => "lib/example.ex",
+      "position" => 8,
+      "pull_request_review_id" => 987
+    }
+  end
+
+  defp review_summary(pr_url) do
+    %{
+      "id" => 987,
+      "user" => %{"login" => "reviewer"},
+      "body" => "Looks good.",
+      "html_url" => "#{pr_url}#pullrequestreview-987",
+      "state" => "APPROVED"
+    }
   end
 
   defp scoped_context(workspace) do

@@ -58,6 +58,7 @@ defmodule SymphonyElixir.McpServerTest do
       assert "linear_get_comments" in tool_names
       assert "linear_add_comment" in tool_names
       assert "github_create_pull_request" in tool_names
+      assert "github_get_failed_run_log" in tool_names
       refute "linear.add_comment" in tool_names
       refute "linear_set_assignee" in tool_names
       refute "mcp__claude_ai_Linear__create_comment" in tool_names

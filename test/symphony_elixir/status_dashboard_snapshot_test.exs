@@ -377,6 +377,45 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     refute rendered =~ "M WORKFLOW.md"
   end
 
+  test "snapshot fixture: dispatch paused by tracker unavailable reasons" do
+    for {reason, expected} <- [
+          {:missing_linear_api_token, "invalid or missing API key"},
+          {:linear_api_request, "Linear API request failed"},
+          {:unknown, "unknown tracker failure"}
+        ] do
+      snapshot_data =
+        {:ok,
+         %{
+           running: [],
+           retrying: [],
+           codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+           rate_limits: nil,
+           dispatch_state: %{
+             active?: false,
+             blockers: [
+               %{
+                 kind: :tracker_unavailable,
+                 tracker: :linear,
+                 reason: reason,
+                 since: ~U[2026-05-08 13:48:09Z],
+                 consecutive_failures: 3
+               }
+             ]
+           }
+         }}
+
+      rendered = render_snapshot(snapshot_data, 0.0)
+
+      assert rendered =~ "linear tracker unavailable"
+      assert rendered =~ expected
+      assert rendered =~ "3 consecutive failures since 13:48:09"
+
+      if reason != :unknown do
+        refute rendered =~ Atom.to_string(reason)
+      end
+    end
+  end
+
   test "snapshot fixture: workspace dirty blocker alone does not pause dispatch" do
     snapshot_data =
       {:ok,

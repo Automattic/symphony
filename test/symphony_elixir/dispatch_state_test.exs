@@ -164,6 +164,102 @@ defmodule SymphonyElixir.DispatchStateTest do
       assert result.blockers == []
     end
 
+    test "tracker health stays active below unavailable threshold" do
+      state =
+        base_state()
+        |> Map.put(:tracker_health, %{
+          tracker: :linear,
+          reason: :missing_linear_api_token,
+          since: ~U[2026-05-08 10:00:00Z],
+          consecutive_failures: 2
+        })
+
+      result = DispatchState.compute(state, base_config(), full_env())
+
+      assert result.active? == true
+      assert result.blockers == []
+    end
+
+    test "tracker health emits unavailable blocker at threshold" do
+      since = ~U[2026-05-08 10:00:00Z]
+
+      state =
+        base_state()
+        |> Map.put(:tracker_health, %{
+          tracker: :linear,
+          reason: :missing_linear_api_token,
+          since: since,
+          consecutive_failures: 3
+        })
+
+      result = DispatchState.compute(state, base_config(), full_env())
+
+      assert result.active? == false
+
+      assert [
+               %{
+                 kind: :tracker_unavailable,
+                 tracker: :linear,
+                 reason: :missing_linear_api_token,
+                 since: ^since,
+                 consecutive_failures: 3
+               }
+             ] = result.blockers
+    end
+
+    test "tracker unavailable reason maps known request failures and unknown values" do
+      state =
+        base_state()
+        |> Map.put(:tracker_health, %{
+          tracker: "linear",
+          reason: {:linear_api_request, :timeout},
+          since: ~U[2026-05-08 10:00:00Z],
+          consecutive_failures: 3
+        })
+
+      assert [%{reason: :linear_api_request}] =
+               DispatchState.compute(state, base_config(), full_env()).blockers
+
+      state = put_in(state, [:tracker_health, :reason], :rate_limited)
+
+      assert [%{reason: :unknown}] =
+               DispatchState.compute(state, base_config(), full_env()).blockers
+    end
+
+    test "tracker unavailable supports custom thresholds and tracker normalization" do
+      base_health = %{
+        reason: :missing_linear_api_token,
+        since: ~U[2026-05-08 10:00:00Z],
+        consecutive_failures: 2
+      }
+
+      config = base_config(%{tracker_unavailable_threshold: 2})
+
+      assert [%{tracker: :memory}] =
+               base_state()
+               |> Map.put(:tracker_health, Map.put(base_health, :tracker, :memory))
+               |> DispatchState.compute(config, full_env())
+               |> Map.fetch!(:blockers)
+
+      assert [%{tracker: :memory}] =
+               base_state()
+               |> Map.put(:tracker_health, Map.put(base_health, :tracker, "memory"))
+               |> DispatchState.compute(config, full_env())
+               |> Map.fetch!(:blockers)
+
+      assert [%{tracker: :github}] =
+               base_state()
+               |> Map.put(:tracker_health, Map.put(base_health, :tracker, :github))
+               |> DispatchState.compute(config, full_env())
+               |> Map.fetch!(:blockers)
+
+      assert [%{tracker: :unknown}] =
+               base_state()
+               |> Map.put(:tracker_health, Map.put(base_health, :tracker, 123))
+               |> DispatchState.compute(config, full_env())
+               |> Map.fetch!(:blockers)
+    end
+
     test "all blockers stack" do
       state =
         base_state()
@@ -171,8 +267,19 @@ defmodule SymphonyElixir.DispatchStateTest do
         |> Map.put(:budget_daily_used, 10_000_000)
         |> Map.put(:budget_day_started_on, ~D[2026-05-08])
         |> Map.put(:workspace_dirty, %{repo: "/r", summary: "M f"})
+        |> Map.put(:tracker_health, %{
+          tracker: :linear,
+          reason: :linear_api_request,
+          since: ~U[2026-05-08 10:05:00Z],
+          consecutive_failures: 3
+        })
 
-      config = base_config(%{quality_gate: feature_config(true, :anthropic)})
+      config =
+        base_config(%{
+          quality_gate: feature_config(true, :anthropic),
+          tracker_kind: "linear",
+          tracker_api_key_present?: false
+        })
 
       result = DispatchState.compute(state, config, %{"ANTHROPIC_API_KEY" => ""})
 
@@ -180,6 +287,7 @@ defmodule SymphonyElixir.DispatchStateTest do
       assert :manual in kinds
       assert :budget in kinds
       assert :missing_api_key in kinds
+      assert :tracker_unavailable in kinds
       assert result.active? == false
     end
   end

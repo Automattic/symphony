@@ -497,6 +497,16 @@ defmodule SymphonyElixirWeb.Presenter do
     %{kind: :missing_api_key, provider: Map.get(b, :provider)}
   end
 
+  defp normalize_blocker(%{kind: :tracker_unavailable} = b) do
+    %{
+      kind: :tracker_unavailable,
+      tracker: Map.get(b, :tracker),
+      reason: Map.get(b, :reason),
+      since: iso8601(Map.get(b, :since)),
+      consecutive_failures: Map.get(b, :consecutive_failures, 0)
+    }
+  end
+
   defp normalize_blocker(_), do: nil
 
   defp quality_gate_identifier(entry) do

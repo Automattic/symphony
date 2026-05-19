@@ -807,7 +807,39 @@ defmodule SymphonyElixir.StatusDashboard do
     "missing #{provider} API key"
   end
 
+  defp format_blocker_line(%{
+         kind: :tracker_unavailable,
+         tracker: tracker,
+         reason: reason,
+         since: since,
+         consecutive_failures: consecutive_failures
+       }) do
+    "#{format_tracker_name(tracker)} tracker unavailable: #{format_tracker_unavailable_reason(reason)} " <>
+      "(#{format_count(consecutive_failures)} consecutive failures since #{format_time_of_day(since)})"
+  end
+
   defp format_blocker_line(%{kind: kind}), do: "blocked: #{kind}"
+
+  defp format_tracker_name(:linear), do: "linear"
+  defp format_tracker_name("linear"), do: "linear"
+  defp format_tracker_name(:memory), do: "memory"
+  defp format_tracker_name("memory"), do: "memory"
+  defp format_tracker_name(tracker) when is_atom(tracker), do: Atom.to_string(tracker)
+  defp format_tracker_name(tracker) when is_binary(tracker), do: tracker
+  defp format_tracker_name(_tracker), do: "unknown"
+
+  defp format_tracker_unavailable_reason(:missing_linear_api_token), do: "invalid or missing API key"
+  defp format_tracker_unavailable_reason(:linear_api_request), do: "Linear API request failed"
+  defp format_tracker_unavailable_reason(_reason), do: "unknown tracker failure"
+
+  defp format_time_of_day(%DateTime{} = since) do
+    since
+    |> DateTime.to_time()
+    |> Time.truncate(:second)
+    |> Time.to_string()
+  end
+
+  defp format_time_of_day(_since), do: "unknown time"
 
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do

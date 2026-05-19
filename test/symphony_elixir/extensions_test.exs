@@ -1312,6 +1312,13 @@ defmodule SymphonyElixir.ExtensionsTest do
             kind: :workspace_dirty,
             repo: "/Users/chihsuan/Projects/symphony",
             dirty_summary: "M WORKFLOW.md"
+          },
+          %{
+            kind: :tracker_unavailable,
+            tracker: :linear,
+            reason: :linear_api_request,
+            since: ~U[2026-05-08 13:48:09Z],
+            consecutive_failures: 3
           }
         ]
       })
@@ -1331,6 +1338,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "88.4M / 5M"
     assert html =~ "resets 2026-05-09"
     assert html =~ "ops-control-blocker-budget"
+    assert html =~ "Linear tracker unavailable"
+    assert html =~ "Linear API request failed"
+    assert html =~ "3 consecutive failures"
+    assert html =~ "2026-05-08T13:48:09Z"
+    assert html =~ "ops-control-blocker-tracker_unavailable"
     refute html =~ "Primary worktree has uncommitted changes"
     refute html =~ "ops-control-blocker-workspace_dirty"
   end

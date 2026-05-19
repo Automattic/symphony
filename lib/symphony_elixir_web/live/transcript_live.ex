@@ -12,6 +12,8 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   @raw_limit 2_400
   @summary_limit 600
+  @filter_kinds ["agent-text", "tool-call", "tool-result", "session", "error", "event"]
+  @default_active_filters MapSet.new(["agent-text", "error"])
   @error_messages %{
     issue_not_found: "No running issue matched this identifier.",
     snapshot_unavailable: "The orchestrator snapshot is unavailable."
@@ -29,6 +31,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
           socket
           |> assign(:error, nil)
+          |> assign(:active_filters, active_filters(params))
           |> assign(:issue, payload)
           |> assign(:repo_key, payload.repo_key)
           |> assign(:issue_id, payload.issue_id)
@@ -42,6 +45,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
         {:error, reason} ->
           socket
           |> assign(:error, error_message(reason))
+          |> assign(:active_filters, active_filters(params))
           |> assign(:issue, nil)
           |> assign(:repo_key, repo_key)
           |> assign(:issue_id, nil)
@@ -58,6 +62,21 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     end
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply, assign(socket, :active_filters, active_filters(params))}
+  end
+
+  @impl true
+  def handle_event("toggle_filter", %{"filter" => filter}, socket) do
+    active_filters = toggle_filter(socket.assigns.active_filters, filter)
+
+    {:noreply,
+     socket
+     |> assign(:active_filters, active_filters)
+     |> push_patch(to: transcript_filter_path(socket, active_filters))}
   end
 
   @impl true
@@ -160,7 +179,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
           </article>
         </section>
 
-        <section id="transcript-card" class="section-card transcript-card" phx-hook="TranscriptFilter">
+        <section id="transcript-card" class="section-card transcript-card">
           <div class="section-header">
             <div>
               <h2 class="section-title">Events</h2>
@@ -168,13 +187,27 @@ defmodule SymphonyElixirWeb.TranscriptLive do
             </div>
 
             <div class="transcript-filter-group" role="group" aria-label="Event type filters">
-              <button type="button" class="transcript-filter-button" data-transcript-filter="all" aria-pressed="false">All</button>
-              <button type="button" class="transcript-filter-button" data-transcript-filter="agent-text" aria-pressed="true">Agent</button>
-              <button type="button" class="transcript-filter-button" data-transcript-filter="tool-call" aria-pressed="false">Tool call</button>
-              <button type="button" class="transcript-filter-button" data-transcript-filter="tool-result" aria-pressed="false">Tool result</button>
-              <button type="button" class="transcript-filter-button" data-transcript-filter="session" aria-pressed="false">Session</button>
-              <button type="button" class="transcript-filter-button" data-transcript-filter="error" aria-pressed="true">Error</button>
-              <button type="button" class="transcript-filter-button" data-transcript-filter="event" aria-pressed="false">Event</button>
+              <button
+                type="button"
+                class="transcript-filter-button"
+                data-transcript-filter="all"
+                aria-pressed={filter_pressed?(@active_filters, "all")}
+                phx-click="toggle_filter"
+                phx-value-filter="all"
+              >
+                All
+              </button>
+              <button
+                :for={filter <- filter_kinds()}
+                type="button"
+                class="transcript-filter-button"
+                data-transcript-filter={filter}
+                aria-pressed={filter_pressed?(@active_filters, filter)}
+                phx-click="toggle_filter"
+                phx-value-filter={filter}
+              >
+                <%= event_label(filter) %>
+              </button>
             </div>
           </div>
 
@@ -187,9 +220,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
             class="transcript-list"
             phx-update="stream"
             data-transcript-events=""
-            data-filter-active="true"
-            data-filter-agent-text="true"
-            data-filter-error="true"
+            {filter_attributes(@active_filters)}
           >
             <article
               :for={{dom_id, entry} <- @streams.events}
@@ -271,6 +302,63 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   defp event_label("session"), do: "Session"
   defp event_label("error"), do: "Error"
   defp event_label(_kind), do: "Event"
+
+  defp active_filters(%{"filters" => value}), do: parse_filters(value)
+  defp active_filters(_params), do: @default_active_filters
+
+  defp parse_filters(value) when value in ["", "all"], do: MapSet.new()
+
+  defp parse_filters(value) when is_binary(value) do
+    value
+    |> String.split(",", trim: true)
+    |> Enum.filter(&(&1 in @filter_kinds))
+    |> MapSet.new()
+  end
+
+  defp parse_filters(_value), do: @default_active_filters
+
+  defp toggle_filter(_active_filters, "all"), do: MapSet.new()
+
+  defp toggle_filter(active_filters, filter) when filter in @filter_kinds do
+    if MapSet.member?(active_filters, filter) do
+      MapSet.delete(active_filters, filter)
+    else
+      MapSet.put(active_filters, filter)
+    end
+  end
+
+  defp toggle_filter(active_filters, _filter), do: active_filters
+
+  defp filter_pressed?(active_filters, "all"), do: pressed_value(MapSet.size(active_filters) == 0)
+  defp filter_pressed?(active_filters, filter), do: pressed_value(MapSet.member?(active_filters, filter))
+
+  defp pressed_value(true), do: "true"
+  defp pressed_value(false), do: "false"
+
+  defp filter_kinds, do: @filter_kinds
+
+  defp filter_attributes(active_filters) do
+    if MapSet.size(active_filters) == 0 do
+      %{}
+    else
+      active_filters
+      |> ordered_filters()
+      |> Enum.reduce(%{"data-filter-active" => "true"}, fn filter, attrs ->
+        Map.put(attrs, "data-filter-#{filter}", "true")
+      end)
+    end
+  end
+
+  defp transcript_filter_path(socket, active_filters) do
+    filters = active_filters |> ordered_filters() |> Enum.join(",")
+    query = URI.encode_query(%{"filters" => filters})
+    repo_key = URI.encode_www_form(socket.assigns.repo_key)
+    issue_identifier = URI.encode_www_form(socket.assigns.issue_identifier)
+
+    "/repos/#{repo_key}/issues/#{issue_identifier}/transcript?#{query}"
+  end
+
+  defp ordered_filters(active_filters), do: Enum.filter(@filter_kinds, &MapSet.member?(active_filters, &1))
 
   defp error_event?(event_text, method) do
     String.contains?(event_text, "error") or String.contains?(event_text, "failed") or

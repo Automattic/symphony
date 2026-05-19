@@ -565,9 +565,26 @@ defmodule SymphonyElixir.Config.Schema do
 
         defp normalize_optional_map(changeset, field) do
           update_change(changeset, field, fn value ->
-            Map.new(value, fn {key, map_value} -> {to_string(key), map_value} end)
+            value
+            |> Enum.map(fn {key, map_value} -> {to_string(key), resolve_env_reference(map_value)} end)
+            |> Enum.reject(fn {_key, map_value} -> is_nil(map_value) end)
+            |> Map.new()
           end)
         end
+
+        defp resolve_env_reference("$" <> env_name = value) do
+          if String.match?(env_name, ~r/^[A-Za-z_][A-Za-z0-9_]*$/) do
+            case System.get_env(env_name) do
+              nil -> value
+              "" -> nil
+              env_value -> env_value
+            end
+          else
+            value
+          end
+        end
+
+        defp resolve_env_reference(value), do: value
 
         defp validate_runtime_values(changeset) do
           validate_change(changeset, :runtimes, fn :runtimes, runtimes ->

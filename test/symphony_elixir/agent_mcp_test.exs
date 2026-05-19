@@ -52,6 +52,81 @@ defmodule SymphonyElixir.AgentMcpTest do
     assert AgentMcp.claude_server_config(%Server{transport: "stdio", command: nil}) == %{}
   end
 
+  describe "env and headers $VAR expansion" do
+    setup do
+      System.put_env("SYMPHONY_TEST_MCP_TOKEN", "tok-123")
+      System.put_env("SYMPHONY_TEST_MCP_EMPTY", "")
+      System.delete_env("SYMPHONY_TEST_MCP_MISSING")
+
+      on_exit(fn ->
+        System.delete_env("SYMPHONY_TEST_MCP_TOKEN")
+        System.delete_env("SYMPHONY_TEST_MCP_EMPTY")
+      end)
+
+      :ok
+    end
+
+    test "resolves $VAR references in stdio env and drops empty/keeps missing literally" do
+      {:ok, settings} =
+        Schema.parse(%{
+          agent: %{
+            kind: "claude",
+            command: "claude",
+            mcp: %{
+              servers: %{
+                "github" => %{
+                  transport: "stdio",
+                  command: "node",
+                  env: %{
+                    "GITHUB_TOKEN" => "$SYMPHONY_TEST_MCP_TOKEN",
+                    "LITERAL" => "static",
+                    "EMPTY_VAR" => "$SYMPHONY_TEST_MCP_EMPTY",
+                    "MISSING_VAR" => "$SYMPHONY_TEST_MCP_MISSING",
+                    "NOT_A_REF" => "$has space"
+                  },
+                  runtimes: ["claude"]
+                }
+              }
+            }
+          }
+        })
+
+      env = settings.agent.mcp.servers["github"].env
+      assert env["GITHUB_TOKEN"] == "tok-123"
+      assert env["LITERAL"] == "static"
+      refute Map.has_key?(env, "EMPTY_VAR")
+      assert env["MISSING_VAR"] == "$SYMPHONY_TEST_MCP_MISSING"
+      assert env["NOT_A_REF"] == "$has space"
+    end
+
+    test "resolves $VAR references in http headers map" do
+      {:ok, settings} =
+        Schema.parse(%{
+          agent: %{
+            kind: "claude",
+            command: "claude",
+            mcp: %{
+              servers: %{
+                "docs" => %{
+                  transport: "http",
+                  url: "https://docs.example/mcp",
+                  headers: %{
+                    "Authorization" => "Bearer $SYMPHONY_TEST_MCP_TOKEN",
+                    "X-Token" => "$SYMPHONY_TEST_MCP_TOKEN"
+                  },
+                  runtimes: ["claude"]
+                }
+              }
+            }
+          }
+        })
+
+      headers = settings.agent.mcp.servers["docs"].headers
+      assert headers["Authorization"] == "Bearer $SYMPHONY_TEST_MCP_TOKEN"
+      assert headers["X-Token"] == "tok-123"
+    end
+  end
+
   test "declared_servers filters by runtime from parsed settings" do
     {:ok, settings} =
       Schema.parse(%{

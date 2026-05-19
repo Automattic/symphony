@@ -428,6 +428,43 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - For remote Codex workers, `inherit: allowlist` and `inherit: all` are rejected because
     Symphony only locally reads the orchestrator's host config. Declare the needed servers
     explicitly under `agent.mcp.servers` when running against a remote worker.
+  - Values in `env` and `headers` that are exactly `$NAME` (where `NAME` matches
+    `[A-Za-z_][A-Za-z0-9_]*`) are resolved from the orchestrator's process environment at
+    config-load time: a set env var substitutes the value, an empty env var drops the entry,
+    and a missing env var keeps the literal `$NAME` so misconfigurations surface at the MCP
+    server's own startup. Embedded references (e.g. `"Bearer $TOKEN"`) are not expanded —
+    use a whole-value reference or pre-compose the literal value.
+  - Example: declaring a stdio filesystem server, an HTTP docs server with a secret header,
+    and a stdio GitHub server that pulls its token from the operator environment:
+
+    ```yaml
+    agent:
+      kind: claude
+      command: claude --model claude-opus-4-7 --dangerously-skip-permissions
+      mcp:
+        # inherit: none           # default; only declared servers + the implicit symphony
+        servers:
+          filesystem:
+            transport: stdio      # default; can be omitted
+            command: npx
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/Projects"]
+            runtimes: [claude]    # default ["claude","codex"]; narrow when the server is Claude-only
+
+          docs:
+            transport: http
+            url: https://docs.example/mcp
+            headers:
+              Authorization: $DOCS_MCP_BEARER     # resolved from orchestrator env at load time
+            runtimes: [claude]    # http/sse + codex is rejected by validation
+
+          github:
+            transport: stdio
+            command: npx
+            args: ["-y", "@modelcontextprotocol/server-github"]
+            env:
+              GITHUB_PERSONAL_ACCESS_TOKEN: $GITHUB_TOKEN
+            runtimes: [claude]
+    ```
 - `agent.command_timeout_ms` caps a single shell command even when it keeps streaming output.
   Default: `600000` (10 minutes). Set `0` to disable this command-level guard.
 - When `agent.turn_sandbox_policy` is set explicitly for Codex, Symphony forwards the configured

@@ -539,7 +539,7 @@ defmodule SymphonyElixir.AgentTools.Linear do
   end
 
   defp public_upload_extensions(opts) do
-    case Keyword.get(opts, :settings) do
+    case Keyword.get_lazy(opts, :settings, &Config.settings!/0) do
       %Schema{workspace: %{attachments: %Attachments{public_upload_extensions: extensions}}} ->
         extensions
 

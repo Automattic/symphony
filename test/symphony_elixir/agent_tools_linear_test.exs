@@ -2,6 +2,7 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.AgentTools.Linear
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.PromptSafety
 
@@ -487,9 +488,65 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
       end
     end
 
+    test "attach_file falls back to default public upload extensions for invalid settings opts" do
+      workspace = tmp_workspace!("linear-agent-file-public-default-fallback")
+      test_pid = self()
+
+      path = Path.join(workspace, "diagnostic.pdf")
+      File.write!(path, "ordinary proof")
+
+      try do
+        assert {:ok, _response} =
+                 Linear.attach_file(secret_context(workspace), path, "Proof",
+                   make_public: true,
+                   settings: nil,
+                   linear_client: successful_file_upload_linear_client(test_pid),
+                   upload_client: successful_upload_client(test_pid)
+                 )
+
+        assert_receive {:linear_file_upload, %{filename: "diagnostic.pdf", makePublic: true}}
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
+    test "attach_file applies configured public upload extensions when settings opts are omitted" do
+      workspace = tmp_workspace!("linear-agent-file-public-config-fallback")
+
+      write_workflow_file!(SymphonyElixir.Workflow.workflow_file_path(),
+        workspace_attachments: %{public_upload_extensions: [".png"]}
+      )
+
+      assert Config.settings!().workspace.attachments.public_upload_extensions == [".png"]
+
+      path = Path.join(workspace, "diagnostic.pdf")
+      File.write!(path, "ordinary proof")
+
+      try do
+        assert {:error, {:public_extension_not_allowed, ".pdf"}} =
+                 Linear.attach_file(secret_context(workspace), path, "Proof",
+                   make_public: true,
+                   linear_client: fn _query, _variables, _opts ->
+                     flunk("Linear should not request an upload for public extension outside configured allowlist")
+                   end,
+                   upload_client: fn _url, _opts ->
+                     flunk("public extension outside configured allowlist should not be uploaded")
+                   end
+                 )
+      after
+        File.rm_rf(workspace)
+      end
+    end
+
     test "attach_file uses workspace attachment extension override for public uploads" do
       workspace = tmp_workspace!("linear-agent-file-public-override")
       test_pid = self()
+
+      write_workflow_file!(SymphonyElixir.Workflow.workflow_file_path(),
+        workspace_attachments: %{public_upload_extensions: [".png"]}
+      )
+
+      assert Config.settings!().workspace.attachments.public_upload_extensions == [".png"]
 
       settings = %Schema{
         workspace: %Schema.Workspace{

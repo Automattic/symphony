@@ -188,9 +188,7 @@ defmodule SymphonyElixir.Config.Cache do
 
     put_entry(stale)
 
-    Logger.warning(
-      "Failed to reload config path=#{entry.path} reason=#{inspect(reason)}; keeping last known good value"
-    )
+    Logger.warning("Failed to reload config path=#{entry.path} reason=#{inspect(reason)}; keeping last known good value")
 
     :telemetry.execute(
       @telemetry_stale_event,
@@ -318,9 +316,7 @@ defmodule SymphonyElixir.Config.Cache do
   defp drop_watcher(state, watcher_pid, reason_tag) do
     case Enum.find(state.watchers, fn {_dir, pid} -> pid == watcher_pid end) do
       {dir, _pid} ->
-        Logger.warning(
-          "Config watcher #{inspect(reason_tag)} dir=#{dir}; auto-reload disabled for this dir until next access"
-        )
+        Logger.warning("Config watcher #{inspect(reason_tag)} dir=#{dir}; auto-reload disabled for this dir until next access")
 
         unmark_dir_watched(dir)
         %{state | watchers: Map.delete(state.watchers, dir)}

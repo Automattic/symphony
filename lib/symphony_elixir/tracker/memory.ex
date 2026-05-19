@@ -10,16 +10,20 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
+    maybe_sleep(:memory_tracker_fetch_candidate_sleep_ms)
     {:ok, issue_entries()}
   end
 
   @spec fetch_candidate_issues_for_repo(term()) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues_for_repo(repo) do
+    maybe_sleep(:memory_tracker_fetch_candidate_sleep_ms)
     {:ok, Enum.filter(issue_entries(), &Resolver.matches?(&1, repo))}
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) do
+    maybe_sleep(:memory_tracker_fetch_states_sleep_ms)
+
     normalized_states =
       state_names
       |> Enum.map(&normalize_state/1)
@@ -33,6 +37,7 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids) do
+    maybe_sleep(:memory_tracker_fetch_states_sleep_ms)
     wanted_ids = MapSet.new(issue_ids)
 
     {:ok,
@@ -46,6 +51,7 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) do
+    maybe_sleep(:memory_tracker_create_comment_sleep_ms)
     send_event({:memory_tracker_comment, issue_id, body})
     :ok
   end
@@ -73,6 +79,13 @@ defmodule SymphonyElixir.Tracker.Memory do
   defp send_event(message) do
     case Application.get_env(:symphony_elixir, :memory_tracker_recipient) do
       pid when is_pid(pid) -> send(pid, message)
+      _ -> :ok
+    end
+  end
+
+  defp maybe_sleep(key) do
+    case Application.get_env(:symphony_elixir, key, 0) do
+      ms when is_integer(ms) and ms > 0 -> Process.sleep(ms)
       _ -> :ok
     end
   end

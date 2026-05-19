@@ -468,7 +468,12 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     assert_receive {:memory_tracker_comment, "issue-retry-skip-1", body}, 500
     assert body =~ "score 3"
 
-    state = :sys.get_state(pid)
+    state =
+      wait_for_orchestrator_state(pid, fn state ->
+        state.running == %{} and state.retry_attempts == %{} and
+          not MapSet.member?(state.claimed, issue.id)
+      end)
+
     assert state.running == %{}
     assert state.retry_attempts == %{}
     refute MapSet.member?(state.claimed, issue.id)
@@ -639,6 +644,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     send(pid_a, :run_poll_cycle)
     assert_receive {:memory_tracker_comment, "issue-err-restart", body}, 500
     assert body =~ "LLM call failed"
+    _snapshot = wait_for_skipped(pid_a, "issue-err-restart")
 
     # Simulate restart: stop A, start B with the same persistence backing.
     GenServer.stop(pid_a)
@@ -654,6 +660,11 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
   defp wait_for_skipped(pid, issue_id, timeout_ms \\ 1_000) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_skipped(pid, issue_id, deadline_ms)
+  end
+
+  defp wait_for_orchestrator_state(pid, predicate, timeout_ms \\ 1_000) when is_function(predicate, 1) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
   end
 
   defp force_repo_poll_due(pid) do
@@ -673,6 +684,21 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
       else
         Process.sleep(10)
         do_wait_for_skipped(pid, issue_id, deadline_ms)
+      end
+    end
+  end
+
+  defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do
+    state = :sys.get_state(pid)
+
+    if predicate.(state) do
+      state
+    else
+      if System.monotonic_time(:millisecond) > deadline_ms do
+        flunk("Timed out waiting for orchestrator state: #{inspect(state)}")
+      else
+        Process.sleep(10)
+        do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
       end
     end
   end

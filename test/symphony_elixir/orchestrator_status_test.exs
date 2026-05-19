@@ -2,6 +2,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.ClaudeCode.AppServer
+  alias SymphonyElixir.Tracker.Memory, as: MemoryTracker
   alias SymphonyElixirWeb.ObservabilityPubSub
 
   defmodule StopSessionAgent do
@@ -35,6 +36,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
+  defmodule SlowQualityGateProvider do
+    @behaviour SymphonyElixir.QualityGate.Provider
+
+    @impl true
+    def score(_issue, _settings) do
+      case Application.get_env(:symphony_elixir, :slow_quality_gate_recipient) do
+        pid when is_pid(pid) -> send(pid, :slow_quality_gate_started)
+        _ -> :ok
+      end
+
+      Process.sleep(Application.get_env(:symphony_elixir, :slow_quality_gate_sleep_ms, 0))
+      {:ok, %{score: 9, reason: "ready"}}
+    end
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -53,6 +69,167 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert Orchestrator.snapshot(server_name, 10) == :timeout
 
     send(pid, :stop)
+  end
+
+  test "snapshot stays responsive while repo poll I/O is in flight" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_fetch_candidate_sleep_ms, 1)
+    assert {:ok, []} = MemoryTracker.fetch_candidate_issues()
+    Application.delete_env(:symphony_elixir, :memory_tracker_fetch_candidate_sleep_ms)
+
+    orchestrator_name = Module.concat(__MODULE__, :SlowRepoPollOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :memory_tracker_fetch_candidate_sleep_ms)
+
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    wait_for_snapshot(pid, &(&1.polling.checking? == false), 1_000)
+    Application.put_env(:symphony_elixir, :memory_tracker_fetch_candidate_sleep_ms, 2_000)
+    send(pid, :run_poll_cycle)
+    wait_for_orchestrator_state(pid, &is_reference(&1.repo_poll_task_ref), 500)
+
+    started_at = System.monotonic_time(:millisecond)
+    assert %{} = Orchestrator.snapshot(pid, 1_000)
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert elapsed_ms < 100
+
+    concurrent_started_at = System.monotonic_time(:millisecond)
+
+    snapshots =
+      1..5
+      |> Enum.map(fn _ -> Task.async(fn -> Orchestrator.snapshot(pid, 1_000) end) end)
+      |> Enum.map(&Task.await(&1, 1_000))
+
+    concurrent_elapsed_ms = System.monotonic_time(:millisecond) - concurrent_started_at
+
+    assert Enum.all?(snapshots, &is_map/1)
+    assert concurrent_elapsed_ms < 100
+  end
+
+  test "codex updates and snapshots stay responsive during quality gate evaluation" do
+    System.put_env("ANTHROPIC_API_KEY", "test-anthropic-key")
+    Application.put_env(:symphony_elixir, :quality_gate_anthropic_module, SlowQualityGateProvider)
+    Application.put_env(:symphony_elixir, :slow_quality_gate_recipient, self())
+    Application.put_env(:symphony_elixir, :slow_quality_gate_sleep_ms, 3_000)
+
+    on_exit(fn ->
+      System.delete_env("ANTHROPIC_API_KEY")
+      Application.delete_env(:symphony_elixir, :quality_gate_anthropic_module)
+      Application.delete_env(:symphony_elixir, :slow_quality_gate_recipient)
+      Application.delete_env(:symphony_elixir, :slow_quality_gate_sleep_ms)
+    end)
+
+    gated_issue = %Issue{
+      id: "issue-slow-quality-gate",
+      identifier: "MT-SLOW-QG",
+      title: "Slow quality gate",
+      description: "Wait for scoring",
+      state: "Todo",
+      team: %{key: "Test"},
+      url: "https://example.org/issues/MT-SLOW-QG"
+    }
+
+    running_issue = %Issue{
+      id: "issue-live-during-quality-gate",
+      identifier: "MT-LIVE-QG",
+      title: "Live during quality gate",
+      description: "Keep accepting codex updates",
+      state: "In Progress",
+      team: %{key: "Test"},
+      url: "https://example.org/issues/MT-LIVE-QG"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [gated_issue, running_issue])
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      max_concurrent_agents: 2,
+      quality_gate: %{
+        enabled: true,
+        provider: "anthropic",
+        model: "claude-haiku-4-5-20251001",
+        min_score: 6,
+        on_error: "pass"
+      }
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :SlowQualityGateOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    started_at = DateTime.utc_now()
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Process.exit(worker_pid, :shutdown)
+      end
+    end)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: running_issue.identifier,
+      issue: running_issue,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | running: %{running_issue.id => running_entry},
+          claimed: MapSet.put(state.claimed, running_issue.id),
+          repo_poll_cache: %{},
+          repo_poll_due_at_ms: %{}
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+    assert_receive :slow_quality_gate_started, 1_000
+
+    now = DateTime.utc_now()
+    update = %{event: :session_started, session_id: "thread-during-quality-gate", timestamp: now}
+
+    update_started_at = System.monotonic_time(:millisecond)
+    send(pid, {:codex_worker_update, running_issue.id, update})
+
+    snapshot =
+      wait_for_snapshot(
+        pid,
+        fn
+          %{running: [%{session_id: "thread-during-quality-gate"}]} -> true
+          _ -> false
+        end,
+        100
+      )
+
+    elapsed_ms = System.monotonic_time(:millisecond) - update_started_at
+
+    assert elapsed_ms < 100
+    assert [%{issue_id: "issue-live-during-quality-gate"}] = snapshot.running
+    assert %{} = Orchestrator.snapshot(pid, 100)
   end
 
   test "orchestrator snapshot reflects last codex update and session id" do
@@ -1313,7 +1490,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
         assert %{running: [], budget: budget} =
                  wait_for_snapshot(pid, fn snapshot ->
-                   snapshot.running == [] and snapshot.budget.daily_paused == true
+                   snapshot.running == [] and snapshot.budget.daily_paused == true and
+                     snapshot.polling.checking? == false
                  end)
 
         assert budget.daily_used == 10
@@ -1404,7 +1582,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
         try do
-          assert %{running: []} = GenServer.call(pid, :snapshot)
+          assert %{running: []} =
+                   wait_for_snapshot(
+                     pid,
+                     fn _snapshot ->
+                       not File.exists?(orphan_workspace)
+                     end,
+                     500
+                   )
+
+          wait_for_orchestrator_state(pid, &is_nil(&1.startup_workspace_lifecycle_task_ref), 500)
         after
           if Process.alive?(pid), do: GenServer.stop(pid)
         end
@@ -1454,7 +1641,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
         try do
-          assert %{running: []} = GenServer.call(pid, :snapshot)
+          assert %{running: []} =
+                   wait_for_snapshot(
+                     pid,
+                     fn _snapshot ->
+                       not File.exists?(stale_workspace)
+                     end,
+                     500
+                   )
+
+          wait_for_orchestrator_state(pid, &is_nil(&1.startup_workspace_lifecycle_task_ref), 500)
         after
           if Process.alive?(pid), do: GenServer.stop(pid)
         end
@@ -1545,7 +1741,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
         assert %{running: [], pause: %{paused: true, reason: "deploy window", paused_at: %DateTime{}}} =
                  wait_for_snapshot(pid, fn snapshot ->
-                   snapshot.running == [] and snapshot.pause.paused == true
+                   snapshot.running == [] and snapshot.pause.paused == true and
+                     snapshot.polling.checking? == false
                  end)
       end)
 
@@ -4133,6 +4330,26 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   defp get_orchestrator_state(pid), do: :sys.get_state(pid, 15_000)
+
+  defp wait_for_orchestrator_state(pid, predicate, timeout_ms) when is_function(predicate, 1) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
+  end
+
+  defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do
+    state = get_orchestrator_state(pid)
+
+    if predicate.(state) do
+      state
+    else
+      if System.monotonic_time(:millisecond) >= deadline_ms do
+        flunk("timed out waiting for orchestrator state: #{inspect(state)}")
+      else
+        Process.sleep(5)
+        do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
+      end
+    end
+  end
 
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms

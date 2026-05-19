@@ -28,7 +28,7 @@ defmodule SymphonyElixir.AgentMcp do
       "args" => server.args || [],
       "env" => server.env || %{}
     }
-    |> drop_empty_values()
+    |> normalize_claude_server_config()
   end
 
   def claude_server_config(%Schema.Agent.Mcp.Server{transport: transport} = server) when transport in ["http", "sse"] do
@@ -37,7 +37,40 @@ defmodule SymphonyElixir.AgentMcp do
       "url" => server.url,
       "headers" => server.headers || %{}
     }
-    |> drop_empty_values()
+    |> normalize_claude_server_config()
+  end
+
+  @spec normalize_claude_server_config(map()) :: map()
+  def normalize_claude_server_config(%{} = server) do
+    transport =
+      server
+      |> map_value("type")
+      |> normalize_transport()
+
+    case transport do
+      "stdio" ->
+        %{
+          "command" => map_value(server, "command"),
+          "args" => map_value(server, "args") || [],
+          "env" => map_value(server, "env") || %{}
+        }
+        |> stringify_nested_map_keys()
+        |> drop_empty_values()
+
+      transport when transport in ["http", "sse"] ->
+        %{
+          "type" => transport,
+          "url" => map_value(server, "url"),
+          "headers" => map_value(server, "headers") || %{}
+        }
+        |> stringify_nested_map_keys()
+        |> drop_empty_values()
+
+      _transport ->
+        server
+        |> stringify_nested_map_keys()
+        |> drop_empty_values()
+    end
   end
 
   @spec codex_server_toml_block(String.t(), Schema.Agent.Mcp.Server.t()) :: String.t()
@@ -93,6 +126,20 @@ defmodule SymphonyElixir.AgentMcp do
       {key, value}, acc -> Map.put(acc, key, value)
     end)
   end
+
+  defp map_value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key)
+  end
+
+  defp normalize_transport(nil), do: "stdio"
+  defp normalize_transport(transport) when is_binary(transport), do: transport
+  defp normalize_transport(transport), do: to_string(transport)
+
+  defp stringify_nested_map_keys(%{} = map) do
+    Map.new(map, fn {key, value} -> {to_string(key), stringify_nested_map_keys(value)} end)
+  end
+
+  defp stringify_nested_map_keys(value), do: value
 
   defp toml_value(value) when is_binary(value), do: Jason.encode!(value)
   defp toml_value(value) when is_boolean(value), do: to_string(value)

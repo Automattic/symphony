@@ -546,6 +546,170 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "inherits allowlisted Claude MCP servers from user Claude config" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-mcp-inherit-#{System.unique_integer([:positive])}"
+        )
+
+      previous_home = System.get_env("HOME")
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "TEST-MCP-INHERIT")
+        fake_home = Path.join(test_root, "home")
+        File.mkdir_p!(workspace)
+        File.mkdir_p!(fake_home)
+        System.put_env("HOME", fake_home)
+
+        File.write!(
+          Path.join(fake_home, ".claude.json"),
+          Jason.encode!(%{
+            "mcpServers" => %{
+              "filesystem" => %{"command" => "node", "args" => ["/srv/filesystem.js"]},
+              "github" => %{"type" => "http", "url" => "https://mcp.example/github"},
+              "slack" => %{"command" => "slack-mcp"}
+            }
+          })
+        )
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_mcp: %{
+            inherit: "allowlist",
+            allowed_servers: ["filesystem", "github", "missing"]
+          }
+        )
+
+        assert {:ok, session} = AppServer.start_session(workspace)
+        {:ok, mcp_config} = Jason.decode(File.read!(session.mcp_config_path))
+        servers = mcp_config["mcpServers"]
+
+        assert Map.has_key?(servers, "symphony")
+        assert servers["filesystem"] == %{"command" => "node", "args" => ["/srv/filesystem.js"]}
+        assert servers["github"] == %{"type" => "http", "url" => "https://mcp.example/github"}
+        refute Map.has_key?(servers, "slack")
+        refute Map.has_key?(servers, "missing")
+
+        assert :ok = AppServer.stop_session(session)
+      after
+        restore_env("HOME", previous_home)
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "declared Claude MCP server overrides inherited server with the same name" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-mcp-override-#{System.unique_integer([:positive])}"
+        )
+
+      previous_home = System.get_env("HOME")
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "TEST-MCP-OVERRIDE")
+        fake_home = Path.join(test_root, "home")
+        File.mkdir_p!(workspace)
+        File.mkdir_p!(fake_home)
+        System.put_env("HOME", fake_home)
+
+        File.write!(
+          Path.join(fake_home, ".claude.json"),
+          Jason.encode!(%{
+            "mcpServers" => %{
+              "filesystem" => %{"command" => "host-node", "args" => ["/host/filesystem.js"]}
+            }
+          })
+        )
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_mcp: %{
+            inherit: "allowlist",
+            allowed_servers: ["filesystem"],
+            servers: %{
+              "filesystem" => %{
+                transport: "stdio",
+                command: "declared-node",
+                args: ["/declared/filesystem.js"],
+                runtimes: ["claude"]
+              }
+            }
+          }
+        )
+
+        assert {:ok, session} = AppServer.start_session(workspace)
+        {:ok, mcp_config} = Jason.decode(File.read!(session.mcp_config_path))
+
+        assert get_in(mcp_config, ["mcpServers", "filesystem"]) == %{
+                 "command" => "declared-node",
+                 "args" => ["/declared/filesystem.js"]
+               }
+
+        assert :ok = AppServer.stop_session(session)
+      after
+        restore_env("HOME", previous_home)
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns structured errors when inherited Claude config is malformed" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-mcp-error-#{System.unique_integer([:positive])}"
+        )
+
+      previous_home = System.get_env("HOME")
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "TEST-MCP-ERROR")
+        fake_home = Path.join(test_root, "home")
+        claude_json_path = Path.join(fake_home, ".claude.json")
+        File.mkdir_p!(workspace)
+        File.mkdir_p!(fake_home)
+        System.put_env("HOME", fake_home)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_mcp: %{
+            inherit: "allowlist",
+            allowed_servers: ["filesystem"]
+          }
+        )
+
+        cases = [
+          {"{", :decode_failed},
+          {Jason.encode!(%{}), :missing_mcp_servers},
+          {Jason.encode!(%{"mcpServers" => []}), :invalid_mcp_servers}
+        ]
+
+        for {contents, expected} <- cases do
+          File.write!(claude_json_path, contents)
+
+          case expected do
+            :decode_failed ->
+              assert {:error, {:claude_mcp_inheritance_decode_failed, ^claude_json_path, %Jason.DecodeError{}}} =
+                       AppServer.start_session(workspace)
+
+            reason ->
+              assert {:error, {:claude_mcp_inheritance_invalid_config, ^claude_json_path, ^reason}} =
+                       AppServer.start_session(workspace)
+          end
+        end
+      after
+        restore_env("HOME", previous_home)
+        File.rm_rf(test_root)
+      end
+    end
+
     test "returns error for workspace outside workspace root" do
       test_root =
         Path.join(

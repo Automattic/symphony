@@ -12,6 +12,8 @@ defmodule SymphonyElixir.SelfReview.Context do
   @max_adjacent_windows 24
   @max_call_sites_per_symbol 5
   @max_symbols 12
+  @per_file_min 12
+  @per_file_max 160
   @lock_files ~w[
     Cargo.lock
     Gemfile.lock
@@ -27,7 +29,7 @@ defmodule SymphonyElixir.SelfReview.Context do
 
   @spec build(Issue.t(), Path.t(), Schema.SelfReview.t(), String.t(), keyword(), git_fun()) ::
           {:ok, map()} | {:error, term()}
-  def build(%Issue{} = issue, workspace, %Schema.SelfReview{} = config, git_range, opts, git_fun)
+  def build(%Issue{} = issue, workspace, %Schema.SelfReview{} = _config, git_range, opts, git_fun)
       when is_binary(workspace) and is_binary(git_range) and is_function(git_fun, 1) do
     with {:ok, diff} <- git_fun.(["diff", git_range]),
          {:ok, name_status} <- git_fun.(["diff", "--name-status", git_range]),
@@ -70,7 +72,7 @@ defmodule SymphonyElixir.SelfReview.Context do
         ci_failure: ci_failure
       }
 
-      rendered = render(context_pack, config.diff_max_lines)
+      rendered = render(context_pack)
       coverage = coverage_metadata(context_pack, rendered)
       warnings = linear_input_warnings(issue, raw_acceptance_criteria, workpad, reviewer_comments, ci_failure)
 
@@ -199,9 +201,9 @@ defmodule SymphonyElixir.SelfReview.Context do
     end
   end
 
-  defp render(context_pack, diff_max_lines) do
+  defp render(context_pack) do
     files = context_pack.changed_files
-    file_budget = per_file_budget(diff_max_lines, length(files))
+    file_budget = per_file_budget(length(files))
 
     rendered_files =
       Enum.map(files, fn file ->
@@ -226,14 +228,14 @@ defmodule SymphonyElixir.SelfReview.Context do
     %{text: text, files: rendered_files}
   end
 
-  defp per_file_budget(_diff_max_lines, 0), do: 0
+  defp per_file_budget(0), do: 0
 
-  defp per_file_budget(diff_max_lines, file_count) do
-    diff_max_lines
-    |> max(file_count * 12)
-    |> div(max(file_count, 1))
-    |> max(12)
-    |> min(160)
+  defp per_file_budget(file_count) when file_count > 0 do
+    @per_file_max
+    |> max(file_count * @per_file_min)
+    |> div(file_count)
+    |> max(@per_file_min)
+    |> min(@per_file_max)
   end
 
   defp file_diff_text(%{classification: classification}, _budget) when classification in [:generated, :lock, :binary] do

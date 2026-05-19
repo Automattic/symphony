@@ -260,8 +260,6 @@ self_review:
   enabled: false                # opt in to a pre-push LLM self-review
   provider: anthropic           # or: openai
   model: claude-haiku-4-5-20251001
-  diff_max_lines: 600
-  max_rounds: 1                 # v1 only supports one correction round
 dependencies:
   allow_registries: []
   allow_git_sources: []
@@ -623,20 +621,17 @@ self_review:
   enabled: true
   provider: anthropic
   model: claude-haiku-4-5-20251001
-  diff_max_lines: 600
-  max_rounds: 1
 ```
 
 - The self-review prompt only permits blocking findings in `acceptance_criteria`, `commit_message`,
   or `scope_creep`.
 - Style, design, speculative risk, and subjective test-coverage opinions are discarded and cannot
   block a push.
-- Diffs over `diff_max_lines` are balanced per file instead of prefix-truncated. Every changed file
-  is represented by path, status, stats, classification, and hunk headers. Small source files can be
-  included as full diffs; large source files and generated, lock, or binary files are summarized with
-  explicit coverage metadata. Each file's rendered diff is also clamped to a fixed `[12, 160]`-line
-  window regardless of `diff_max_lines`, so raising `diff_max_lines` lets more files fit but does not
-  enlarge any single file's slice past 160 lines.
+- Diffs are balanced per file instead of prefix-truncated. Every changed file is represented by path,
+  status, stats, classification, and hunk headers. Small source files can be included as full diffs;
+  large source files and generated, lock, or binary files are summarized with explicit coverage
+  metadata. Each file's rendered diff is clamped to a fixed `[12, 160]`-line window; legacy
+  `self_review.diff_max_lines` and `self_review.max_rounds` config entries are ignored.
 - The context pack includes bounded nearby line windows around changed hunks when file contents are
   readable, same-name test files when tracked, and best-effort `rg` call-site matches for changed
   public function names defined in Elixir (`def`/`defmacro`) or JavaScript/TypeScript (`function`,

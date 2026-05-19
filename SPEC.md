@@ -942,11 +942,8 @@ Fields:
   - Default: `anthropic`.
 - `model` (string)
   - Default: `claude-haiku-4-5-20251001`.
-- `diff_max_lines` (positive integer)
-  - Default: `600`.
-- `max_rounds` (integer)
-  - Default: `1`.
-  - Current implementation only accepts `1`.
+
+Compatibility note: legacy `self_review.diff_max_lines` and `self_review.max_rounds` config entries are ignored.
 
 #### 5.4.18 `notifications` (object)
 
@@ -1230,8 +1227,6 @@ not require recognizing or validating extension fields unless that extension is 
 - `self_review.enabled`: boolean, default `false`
 - `self_review.provider`: `anthropic` or `openai`, default `anthropic`
 - `self_review.model`: string, default `claude-haiku-4-5-20251001`
-- `self_review.diff_max_lines`: integer, default `600`
-- `self_review.max_rounds`: integer, default `1`
 - `notifications.enabled`: boolean, default `false`
 - `notifications.redact_titles`: boolean, default `false`
 - `notifications.channels`: list of Slack/webhook channel configs, default `[]`

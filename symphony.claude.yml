@@ -115,8 +115,6 @@ self_review:
   enabled: false
   provider: anthropic # Optional: anthropic or openai.
   model: claude-sonnet-4-6
-  diff_max_lines: 600
-  max_rounds: 1 # v1 supports one correction round.
 # dependencies:
 #   allow_registries: [] # Extra package registries trusted by dependency audit.
 #   allow_git_sources: [] # Extra git dependency sources trusted by dependency audit.

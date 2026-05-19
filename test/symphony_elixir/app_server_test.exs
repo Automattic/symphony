@@ -136,13 +136,20 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-CODEX-HOME")
+      fake_home = Path.join(test_root, "home")
+      host_codex_home = Path.join(fake_home, ".codex")
       codex_binary = Path.join(test_root, "fake-codex")
       codex_home_trace = Path.join(test_root, "codex-home.trace")
       argv_trace = Path.join(test_root, "argv.trace")
       config_copy = Path.join(test_root, "config-copy.toml")
       auth_link_trace = Path.join(test_root, "auth-link.trace")
+      previous_home = System.get_env("HOME")
 
       File.mkdir_p!(workspace)
+      File.mkdir_p!(host_codex_home)
+      File.write!(Path.join(host_codex_home, "auth.json"), "test auth placeholder")
+      System.put_env("HOME", fake_home)
+      on_exit(fn -> restore_env("HOME", previous_home) end)
 
       File.write!(codex_binary, """
       #!/bin/sh

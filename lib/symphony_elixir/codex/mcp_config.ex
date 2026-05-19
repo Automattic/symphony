@@ -111,7 +111,8 @@ defmodule SymphonyElixir.Codex.McpConfig do
   defp agent_mcp(_settings), do: %Schema.Agent.Mcp{}
 
   defp host_codex_home do
-    Path.join(System.user_home!(), ".codex")
+    home = System.get_env("HOME") || System.user_home!()
+    Path.join(home, ".codex")
   end
 
   defp link_auth_json(home_path, host_codex_home) do

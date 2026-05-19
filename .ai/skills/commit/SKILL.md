@@ -12,12 +12,13 @@ description:
 
 - Produce a commit that reflects the actual code changes and the session
   context.
-- Follow common git conventions (type prefix, short subject, wrapped body).
+- Follow Conventional Commits (type prefix, short subject, wrapped body).
 - Include both summary and rationale in the body.
+- Read like a human teammate wrote the message; no AI/agent self-references.
 
 ## Inputs
 
-- Codex session history for intent and rationale.
+- Session history for intent and rationale.
 - `git status`, `git diff`, and `git diff --staged` for actual changes.
 - Repo-specific commit conventions if documented.
 
@@ -32,16 +33,17 @@ description:
    (build artifacts, logs, temp files), flag it to the user before committing.
 5. If staging is incomplete or includes unrelated files, fix the index or ask
    for confirmation.
-6. Choose a conventional type and optional scope that match the change (e.g.,
-   `feat(scope): ...`, `fix(scope): ...`, `refactor(scope): ...`).
-7. Write a subject line in imperative mood, <= 72 characters, no trailing
+6. Choose a Conventional Commits type and optional scope that match the change
+   (e.g., `feat(scope): ...`, `fix(scope): ...`, `refactor(scope): ...`,
+   `docs(scope): ...`, `chore(scope): ...`, `test(scope): ...`).
+7. Write a subject line in imperative mood, under 100 characters, no trailing
    period.
 8. Write a body that includes:
    - Summary of key changes (what changed).
    - Rationale and trade-offs (why it changed).
    - Tests or validation run (or explicit note if not run).
-9. Append a `Co-authored-by` trailer for Codex using `Codex <codex@openai.com>`
-   unless the user explicitly requests a different identity.
+9. Do not add `Co-Authored-By` trailers, and do not mention the AI agent,
+   model, assistant, or session anywhere in the subject or body.
 10. Wrap body lines at 72 characters.
 11. Create the commit message with a here-doc or temp file and use
     `git commit -F <file>` so newlines are literal (avoid `-m` with `\n`).
@@ -70,6 +72,4 @@ Rationale:
 
 Tests:
 - <command or "not run (reason)">
-
-Co-authored-by: Codex <codex@openai.com>
 ```

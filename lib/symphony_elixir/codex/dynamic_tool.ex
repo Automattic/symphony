@@ -171,6 +171,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "name" => "github_get_pr_checks",
       "description" => "Read status checks for the pull request for the current workspace branch.",
       "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
+    },
+    %{
+      "name" => "github_list_pr_comments",
+      "description" => "Read top-level comments for the pull request for the current workspace branch.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
+    },
+    %{
+      "name" => "github_list_pr_review_comments",
+      "description" => "Read inline review comments for the pull request for the current workspace branch.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
+    },
+    %{
+      "name" => "github_list_pr_reviews",
+      "description" => "Read review summaries for the pull request for the current workspace branch.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
+    },
+    %{
+      "name" => "github_get_failed_run_log",
+      "description" => "Read the length-clamped failed-step log excerpt for the latest failing GitHub Actions run on the current pull request.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
     }
   ]
 
@@ -198,7 +218,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "github_update_pull_request_body" => ["body"],
     "github_add_pr_comment" => ["body"],
     "github_push_branch" => [],
-    "github_get_pr_checks" => []
+    "github_get_pr_checks" => [],
+    "github_list_pr_comments" => [],
+    "github_list_pr_review_comments" => [],
+    "github_list_pr_reviews" => [],
+    "github_get_failed_run_log" => []
   }
   @legacy_tool_aliases %{
     "linear.get_current_issue" => "linear_get_current_issue",
@@ -217,7 +241,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "github.update_pull_request_body" => "github_update_pull_request_body",
     "github.add_pr_comment" => "github_add_pr_comment",
     "github.push_branch" => "github_push_branch",
-    "github.get_pr_checks" => "github_get_pr_checks"
+    "github.get_pr_checks" => "github_get_pr_checks",
+    "github.list_pr_comments" => "github_list_pr_comments",
+    "github.list_pr_review_comments" => "github_list_pr_review_comments",
+    "github.list_pr_reviews" => "github_list_pr_reviews",
+    "github.get_failed_run_log" => "github_get_failed_run_log"
   }
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
@@ -311,6 +339,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp execute_github_tool("github_push_branch", context, _args, opts), do: GitHub.push_branch(context, opts)
   defp execute_github_tool("github_get_pr_checks", context, _args, opts), do: GitHub.get_pr_checks(context, opts)
+  defp execute_github_tool("github_list_pr_comments", context, _args, opts), do: GitHub.list_pr_comments(context, opts)
+
+  defp execute_github_tool("github_list_pr_review_comments", context, _args, opts) do
+    GitHub.list_pr_review_comments(context, opts)
+  end
+
+  defp execute_github_tool("github_list_pr_reviews", context, _args, opts), do: GitHub.list_pr_reviews(context, opts)
+  defp execute_github_tool("github_get_failed_run_log", context, _args, opts), do: GitHub.get_failed_run_log(context, opts)
 
   defp normalize_tool_name(tool) when is_binary(tool), do: Map.get(@legacy_tool_aliases, tool, tool)
   defp normalize_tool_name(tool), do: tool
@@ -576,6 +612,24 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "error" => %{
         "code" => "unsupported_for_ssh_worker",
         "message" => "github_push_branch is not supported for SSH worker sessions. Symphony brokers GitHub PR API operations only; git push must use a separate secure push path."
+      }
+    }
+  end
+
+  defp tool_error_payload(:no_failed_github_actions_run) do
+    %{
+      "error" => %{
+        "code" => "no_failed_github_actions_run",
+        "message" => "No failed GitHub Actions run with a log was found for the current pull request."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_failed_run_log_max_bytes) do
+    %{
+      "error" => %{
+        "code" => "invalid_failed_run_log_max_bytes",
+        "message" => "github.failed_run_log_max_bytes must be a positive integer."
       }
     }
   end

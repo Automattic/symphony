@@ -15,6 +15,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert "github_create_pull_request" in tool_names
     assert "github_push_branch" in tool_names
     assert "github_get_pr_checks" in tool_names
+    assert "github_list_pr_comments" in tool_names
+    assert "github_list_pr_review_comments" in tool_names
+    assert "github_list_pr_reviews" in tool_names
+    assert "github_get_failed_run_log" in tool_names
     refute "linear_graphql" in tool_names
     refute "linear_set_assignee" in tool_names
     refute "linear.get_current_issue" in tool_names
@@ -648,7 +652,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           {"github_create_pull_request", %{"title" => "Add tools", "body" => "Body", "head" => "owned"}},
           {"github_get_pull_request", %{"branch" => "owned"}},
           {"github_add_pr_comment", %{"body" => "Looks good", "remote" => "evil"}},
-          {"github_get_pr_checks", %{"base" => "owned"}}
+          {"github_get_pr_checks", %{"base" => "owned"}},
+          {"github_list_pr_comments", %{"repo" => "attacker/repo"}},
+          {"github_list_pr_review_comments", %{"repository" => "attacker/repo"}},
+          {"github_list_pr_reviews", %{"current_branch" => "owned"}},
+          {"github_get_failed_run_log", %{"ref" => "owned"}}
         ] do
       response =
         DynamicTool.execute(
@@ -1014,6 +1022,186 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     end
   end
 
+  test "github feedback read tools resolve the current branch PR server-side" do
+    workspace = tmp_workspace!("github-feedback-read-tools")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
+          assert opts[:cd] == workspace
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["api", "--paginate", "--slurp", "repos/acme/symphony/issues/3051/comments"], opts ->
+          assert opts[:cd] == workspace
+          {Jason.encode!([[github_issue_comment(pr_url)]]), 0}
+
+        ["api", "--paginate", "--slurp", "repos/acme/symphony/pulls/3051/comments"], opts ->
+          assert opts[:cd] == workspace
+          {Jason.encode!([[github_review_comment(pr_url)]]), 0}
+
+        ["api", "--paginate", "--slurp", "repos/acme/symphony/pulls/3051/reviews"], opts ->
+          assert opts[:cd] == workspace
+          {Jason.encode!([[github_review_summary(pr_url)]]), 0}
+      end
+
+      comments =
+        DynamicTool.execute(
+          "github_list_pr_comments",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      review_comments =
+        DynamicTool.execute(
+          "github_list_pr_review_comments",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      reviews =
+        DynamicTool.execute(
+          "github_list_pr_reviews",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert comments["success"] == true
+      assert %{"comments" => [%{"body" => "Top-level note."}]} = Jason.decode!(comments["output"])
+
+      assert review_comments["success"] == true
+
+      assert %{"comments" => [%{"path" => "lib/example.ex", "position" => 8, "review_id" => "987"}]} =
+               Jason.decode!(review_comments["output"])
+
+      assert reviews["success"] == true
+      assert %{"reviews" => [%{"state" => "APPROVED", "author" => "reviewer"}]} = Jason.decode!(reviews["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.get_failed_run_log returns a configured length-clamped excerpt" do
+    workspace = tmp_workspace!("github-failed-run-log")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "url" => pr_url,
+             "headRefOid" => "abc123",
+             "statusCheckRollup" => [
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          {"0123456789abcdef", 0}
+      end
+
+      settings = %Schema{github: %Schema.GitHub{failed_run_log_max_bytes: 10}}
+
+      response =
+        DynamicTool.execute(
+          "github_get_failed_run_log",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner, settings: settings)
+        )
+
+      assert response["success"] == true
+
+      assert %{"run_id" => "987", "log" => "0123456789", "truncated" => true, "max_bytes" => 10} =
+               Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.get_failed_run_log surfaces no failed run cleanly" do
+    workspace = tmp_workspace!("github-no-failed-run-log")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "SUCCESS",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_get_failed_run_log",
+          %{},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == false
+      assert %{"error" => %{"code" => "no_failed_github_actions_run"}} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
   defp tmp_workspace!(name) do
     workspace = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(workspace)
@@ -1072,5 +1260,36 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       origin_url: "git@github.com:acme/symphony.git",
       workspace: workspace
     })
+  end
+
+  defp github_issue_comment(pr_url) do
+    %{
+      "id" => 11,
+      "user" => %{"login" => "maintainer"},
+      "body" => "Top-level note.",
+      "html_url" => "#{pr_url}#issuecomment-11"
+    }
+  end
+
+  defp github_review_comment(pr_url) do
+    %{
+      "id" => 22,
+      "user" => %{"login" => "reviewer"},
+      "body" => "Inline note.",
+      "html_url" => "#{pr_url}#discussion_r22",
+      "path" => "lib/example.ex",
+      "position" => 8,
+      "pull_request_review_id" => 987
+    }
+  end
+
+  defp github_review_summary(pr_url) do
+    %{
+      "id" => 987,
+      "user" => %{"login" => "reviewer"},
+      "body" => "Looks good.",
+      "html_url" => "#{pr_url}#pullrequestreview-987",
+      "state" => "APPROVED"
+    }
   end
 end

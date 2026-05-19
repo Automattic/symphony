@@ -47,6 +47,17 @@ defmodule SymphonyElixir.GitHub.PullRequest do
           checks: [ci_check()]
         }
 
+  @type review :: %{
+          optional(:id) => String.t() | nil,
+          optional(:node_id) => String.t() | nil,
+          optional(:author) => String.t() | nil,
+          optional(:body) => String.t() | nil,
+          optional(:url) => String.t() | nil,
+          optional(:state) => String.t() | nil,
+          optional(:commit_id) => String.t() | nil,
+          optional(:submitted_at) => DateTime.t() | nil
+        }
+
   @spec fetch_activity(term(), keyword()) :: {:ok, activity()} | {:error, term()}
   def fetch_activity(pr_url, opts \\ []) do
     if is_binary(pr_url) and is_list(opts) do
@@ -73,6 +84,51 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   end
 
   def fetch_failed_log(_run_id, _opts), do: {:error, :invalid_run_id}
+
+  def fetch_pr_comments(pr_url, opts \\ [])
+
+  @spec fetch_pr_comments(term(), keyword()) :: {:ok, [comment()]} | {:error, term()}
+  def fetch_pr_comments(pr_url, opts) when is_binary(pr_url) and is_list(opts) do
+    with {:ok, host, owner, repo, number} <- parse_github_pr_url(pr_url, opts),
+         {:ok, comments} <- fetch_paginated_api(host, "repos/#{owner}/#{repo}/issues/#{number}/comments", opts, :invalid_pr_comments_payload) do
+      {:ok, Enum.map(comments, &normalize_pr_comment/1)}
+    else
+      :error -> {:error, :invalid_pr_url}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def fetch_pr_comments(_pr_url, _opts), do: {:error, :invalid_pr_url}
+
+  def fetch_pr_review_comments(pr_url, opts \\ [])
+
+  @spec fetch_pr_review_comments(term(), keyword()) :: {:ok, [comment()]} | {:error, term()}
+  def fetch_pr_review_comments(pr_url, opts) when is_binary(pr_url) and is_list(opts) do
+    with {:ok, host, owner, repo, number} <- parse_github_pr_url(pr_url, opts),
+         {:ok, comments} <- fetch_paginated_api(host, "repos/#{owner}/#{repo}/pulls/#{number}/comments", opts, :invalid_pr_review_comments_payload) do
+      {:ok, Enum.map(comments, &normalize_inline_comment/1)}
+    else
+      :error -> {:error, :invalid_pr_url}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def fetch_pr_review_comments(_pr_url, _opts), do: {:error, :invalid_pr_url}
+
+  def fetch_pr_reviews(pr_url, opts \\ [])
+
+  @spec fetch_pr_reviews(term(), keyword()) :: {:ok, [review()]} | {:error, term()}
+  def fetch_pr_reviews(pr_url, opts) when is_binary(pr_url) and is_list(opts) do
+    with {:ok, host, owner, repo, number} <- parse_github_pr_url(pr_url, opts),
+         {:ok, reviews} <- fetch_paginated_api(host, "repos/#{owner}/#{repo}/pulls/#{number}/reviews", opts, :invalid_pr_reviews_payload) do
+      {:ok, Enum.map(reviews, &normalize_review/1)}
+    else
+      :error -> {:error, :invalid_pr_url}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def fetch_pr_reviews(_pr_url, _opts), do: {:error, :invalid_pr_url}
 
   def rerun_failed(run_id, opts \\ [])
 
@@ -267,6 +323,35 @@ defmodule SymphonyElixir.GitHub.PullRequest do
     end
   end
 
+  defp fetch_paginated_api(host, endpoint, opts, invalid_reason) do
+    case run_gh(github_paginated_api_args(host, endpoint), opts) do
+      {:ok, output} -> decode_paginated_list(output, invalid_reason)
+      {:error, {:gh_failed, _args, 404, _output}} -> {:ok, []}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_paginated_list(output, invalid_reason) when is_binary(output) do
+    case Jason.decode(output) do
+      {:ok, payload} when is_list(payload) ->
+        {:ok, flatten_paginated_payload(payload)}
+
+      {:ok, _payload} ->
+        {:error, invalid_reason}
+
+      {:error, %Jason.DecodeError{} = error} ->
+        {:error, {invalid_reason, Exception.message(error)}}
+    end
+  end
+
+  defp flatten_paginated_payload(payload) do
+    Enum.flat_map(payload, fn
+      page when is_list(page) -> page
+      item when is_map(item) -> [item]
+      _other -> []
+    end)
+  end
+
   defp pr_comments(%{"comments" => comments}) when is_list(comments) do
     Enum.map(comments, fn comment ->
       %{
@@ -282,6 +367,22 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   end
 
   defp pr_comments(_pr), do: []
+
+  defp normalize_pr_comment(comment) when is_map(comment) do
+    %{
+      id: normalize_id(Map.get(comment, "id") || Map.get(comment, "node_id") || Map.get(comment, "html_url")),
+      node_id: normalize_id(Map.get(comment, "node_id")),
+      kind: "comment",
+      author: get_in(comment, ["user", "login"]),
+      author_association: normalize_id(Map.get(comment, "author_association")),
+      body: Map.get(comment, "body"),
+      url: Map.get(comment, "html_url"),
+      created_at: parse_datetime(Map.get(comment, "created_at")),
+      updated_at: parse_datetime(Map.get(comment, "updated_at"))
+    }
+  end
+
+  defp normalize_pr_comment(_comment), do: %{}
 
   defp review_comments(%{"reviews" => reviews}) when is_list(reviews) do
     reviews
@@ -342,12 +443,33 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       url: Map.get(comment, "html_url"),
       path: Map.get(comment, "path"),
       line: normalize_line(Map.get(comment, "line") || Map.get(comment, "original_line")),
+      side: normalize_id(Map.get(comment, "side")),
+      position: normalize_line(Map.get(comment, "position")),
+      original_position: normalize_line(Map.get(comment, "original_position")),
+      review_id: normalize_id(Map.get(comment, "pull_request_review_id")),
+      commit_id: normalize_id(Map.get(comment, "commit_id")),
+      diff_hunk: Map.get(comment, "diff_hunk"),
       created_at: parse_datetime(Map.get(comment, "created_at")),
       updated_at: parse_datetime(Map.get(comment, "updated_at"))
     }
   end
 
   defp normalize_inline_comment(_comment), do: %{}
+
+  defp normalize_review(review) when is_map(review) do
+    %{
+      id: normalize_id(Map.get(review, "id") || Map.get(review, "node_id") || Map.get(review, "html_url")),
+      node_id: normalize_id(Map.get(review, "node_id")),
+      author: get_in(review, ["user", "login"]),
+      body: Map.get(review, "body"),
+      url: Map.get(review, "html_url"),
+      state: normalize_id(Map.get(review, "state")),
+      commit_id: normalize_id(Map.get(review, "commit_id")),
+      submitted_at: parse_datetime(Map.get(review, "submitted_at"))
+    }
+  end
+
+  defp normalize_review(_review), do: %{}
 
   defp latest_activity_at(pr, comments) do
     ([parse_datetime(Map.get(pr, "updatedAt"))] ++ Enum.flat_map(comments, &comment_timestamps/1))
@@ -402,6 +524,9 @@ defmodule SymphonyElixir.GitHub.PullRequest do
 
   defp github_api_args("github.com", endpoint), do: ["api", endpoint]
   defp github_api_args(host, endpoint), do: ["api", "--hostname", host, endpoint]
+
+  defp github_paginated_api_args("github.com", endpoint), do: ["api", "--paginate", "--slurp", endpoint]
+  defp github_paginated_api_args(host, endpoint), do: ["api", "--hostname", host, "--paginate", "--slurp", endpoint]
 
   @doc false
   @spec run_gh([String.t()], keyword()) :: {:ok, String.t()} | {:error, term()}

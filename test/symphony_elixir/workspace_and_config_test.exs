@@ -258,6 +258,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert attachments.allowed_hosts == ["github.com"]
   end
 
+  test "github config defaults and validates failed run log ceiling" do
+    assert Config.settings!().github.failed_run_log_max_bytes == 65_536
+
+    assert {:ok, settings} =
+             Schema.parse(%{
+               "github" => %{
+                 "failed_run_log_max_bytes" => 12_345
+               }
+             })
+
+    assert settings.github.failed_run_log_max_bytes == 12_345
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{
+               "github" => %{
+                 "failed_run_log_max_bytes" => 0
+               }
+             })
+
+    assert message =~ "github.failed_run_log_max_bytes"
+    assert message =~ "must be greater than 0"
+  end
+
   test "dependency allow-list config defaults and normalizes entries" do
     assert Config.settings!().dependencies.allow_registries == []
     assert Config.settings!().dependencies.allow_git_sources == []
@@ -903,6 +926,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     issue = Client.normalize_issue_for_test(raw_issue)
 
     assert Config.settings!().github.enterprise_hosts == ["github.example.com"]
+    assert Config.settings!().github.failed_run_log_max_bytes == 65_536
     assert Hosts.allowed_github_hosts() == ["github.com", "www.github.com", "github.example.com"]
     assert issue.pr_urls == ["https://github.example.com/example/repo/pull/42"]
     assert issue.pull_request_url == "https://github.example.com/example/repo/pull/42"

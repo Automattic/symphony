@@ -33,6 +33,7 @@ defmodule SymphonyElixir.DispatchState do
       |> maybe_manual(state)
       |> maybe_budget(state, config)
       |> maybe_missing_api_keys(config, env)
+      |> maybe_missing_tracker_api_key(config)
       |> Enum.reverse()
 
     %{active?: blockers == [], blockers: blockers}
@@ -107,4 +108,9 @@ defmodule SymphonyElixir.DispatchState do
   defp normalize_provider(:openai), do: [:openai]
   defp normalize_provider("openai"), do: [:openai]
   defp normalize_provider(_provider), do: []
+
+  defp maybe_missing_tracker_api_key(blockers, %{tracker_kind: "linear", tracker_api_key_present?: false}),
+    do: [%{kind: :missing_api_key, provider: :linear} | blockers]
+
+  defp maybe_missing_tracker_api_key(blockers, _config), do: blockers
 end

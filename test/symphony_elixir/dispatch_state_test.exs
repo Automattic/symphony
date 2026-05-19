@@ -134,6 +134,36 @@ defmodule SymphonyElixir.DispatchStateTest do
       assert result.blockers == []
     end
 
+    test "linear tracker without api key emits missing_api_key blocker" do
+      config =
+        base_config(%{tracker_kind: "linear", tracker_api_key_present?: false})
+
+      result = DispatchState.compute(base_state(), config, full_env())
+
+      assert result.active? == false
+      assert [%{kind: :missing_api_key, provider: :linear}] = result.blockers
+    end
+
+    test "linear tracker with api key present does not block" do
+      config =
+        base_config(%{tracker_kind: "linear", tracker_api_key_present?: true})
+
+      result = DispatchState.compute(base_state(), config, full_env())
+
+      assert result.active? == true
+      assert result.blockers == []
+    end
+
+    test "non-linear tracker without api key does not block" do
+      config =
+        base_config(%{tracker_kind: "memory", tracker_api_key_present?: false})
+
+      result = DispatchState.compute(base_state(), config, full_env())
+
+      assert result.active? == true
+      assert result.blockers == []
+    end
+
     test "all blockers stack" do
       state =
         base_state()

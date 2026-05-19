@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Orchestrator do
     Quality,
     QualityGate,
     RunStore,
+    Secret,
     StatusDashboard,
     Tracker,
     URLUtils,
@@ -4086,7 +4087,9 @@ defmodule SymphonyElixir.Orchestrator do
         daily_limit: agent.max_tokens_per_day,
         quality_gate: settings.quality_gate,
         self_review: settings.self_review,
-        learnings: settings.learnings
+        learnings: settings.learnings,
+        tracker_kind: settings.tracker.kind,
+        tracker_api_key_present?: Secret.present?(settings.tracker.api_key)
       },
       System.get_env()
     )

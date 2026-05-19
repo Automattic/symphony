@@ -1507,8 +1507,88 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert is_list(snapshot.dispatch_state.blockers)
 
     Enum.each(snapshot.dispatch_state.blockers, fn blocker ->
-      assert blocker.kind in [:manual, :budget, :missing_api_key]
+      assert blocker.kind in [:manual, :budget, :missing_api_key, :tracker_unavailable]
     end)
+  end
+
+  test "orchestrator records tracker poll failures and resets on success" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_api_token: "token",
+      poll_interval_ms: 5_000
+    )
+
+    repos = [%{name: "default"}]
+    failure_fetcher = fn _repo -> {:error, {:linear_api_request, :timeout}} end
+    success_fetcher = fn _repo -> {:ok, []} end
+    state = %Orchestrator.State{poll_interval_ms: 5_000}
+
+    assert {:error, {:linear_api_request, :timeout}, state} =
+             Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, failure_fetcher, 0)
+
+    assert %{
+             tracker: :linear,
+             reason: :linear_api_request,
+             since: %DateTime{} = since,
+             consecutive_failures: 1
+           } = state.tracker_health
+
+    assert {:error, {:linear_api_request, :timeout}, state} =
+             Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, failure_fetcher, 5_000)
+
+    assert %{since: ^since, consecutive_failures: 2} = state.tracker_health
+
+    assert {:ok, %{dispatchable: []}, state} =
+             Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, failure_fetcher, 10_000)
+
+    assert %{since: ^since, consecutive_failures: 3} = state.tracker_health
+
+    assert {:ok, %{dispatchable: []}, state} =
+             Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, success_fetcher, 15_000)
+
+    assert %{tracker: :linear, reason: nil, since: nil, consecutive_failures: 0} = state.tracker_health
+  end
+
+  test "orchestrator snapshot stacks tracker unavailable with other dispatch blockers" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_api_token: nil,
+      max_concurrent_agents: 1,
+      max_tokens_per_day: 10
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :TrackerUnavailableDispatchStateOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | pause: %{paused: true, reason: "maintenance", paused_at: ~U[2026-05-08 10:00:00Z]},
+          budget_daily_used: 10,
+          budget_day_started_on: Date.utc_today(),
+          tracker_health: %{
+            tracker: :linear,
+            reason: :missing_linear_api_token,
+            since: ~U[2026-05-08 10:05:00Z],
+            consecutive_failures: 3
+          }
+      }
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    kinds = Enum.map(snapshot.dispatch_state.blockers, & &1.kind)
+
+    assert snapshot.dispatch_state.active? == false
+    assert :manual in kinds
+    assert :budget in kinds
+    assert :missing_api_key in kinds
+    assert :tracker_unavailable in kinds
   end
 
   test "operator pause is exposed in snapshots and preserves retry queue without dispatching" do

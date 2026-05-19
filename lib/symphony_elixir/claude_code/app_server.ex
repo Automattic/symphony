@@ -144,16 +144,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   # --- Event parsing ---
 
+  @typep parsed_event ::
+           {:session_started, String.t()}
+           | {:tool_use, String.t()}
+           | {:tool_result, String.t()}
+           | {:agent_text, String.t()}
+           | {:notification, String.t()}
+           | {:turn_completed, map()}
+           | {:turn_failed, String.t()}
+           | {:rate_limited, %{retry_after_seconds: nil | non_neg_integer(), message: String.t()}, String.t()}
+           | {:malformed, String.t()}
+
   @doc false
-  @spec parse_event(String.t()) ::
-          {:session_started, String.t()}
-          | {:tool_use, String.t()}
-          | {:agent_text, String.t()}
-          | {:notification, String.t()}
-          | {:turn_completed, map()}
-          | {:turn_failed, String.t()}
-          | {:rate_limited, %{retry_after_seconds: nil | non_neg_integer(), message: String.t()}, String.t()}
-          | {:malformed, String.t()}
+  @spec parse_event(String.t()) :: parsed_event | {:multi, [parsed_event]}
   def parse_event(line) when is_binary(line) do
     case Jason.decode(line) do
       {:ok, event} -> parse_decoded_event(event, line)
@@ -165,14 +168,20 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     do: {:session_started, session_id}
 
   defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line) do
-    case extract_assistant_text(message) do
-      nil -> {:notification, "assistant message"}
-      text -> {:agent_text, text}
+    case extract_assistant_events(message) do
+      [] -> {:notification, "assistant message"}
+      [event] -> event
+      events -> {:multi, events}
     end
   end
 
-  defp parse_decoded_event(%{"type" => "user", "message" => message}, _line),
-    do: {:notification, summarize_user_message(message)}
+  defp parse_decoded_event(%{"type" => "user", "message" => message}, _line) do
+    case extract_tool_result_events(message) do
+      [] -> {:notification, "tool_result"}
+      [event] -> event
+      events -> {:multi, events}
+    end
+  end
 
   defp parse_decoded_event(%{"type" => "tool_use", "name" => name}, _line), do: {:tool_use, name}
 
@@ -241,6 +250,17 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       payload: %{
         method: "item/tool/call",
         params: %{tool: name}
+      }
+    }
+  end
+
+  def event_to_update({:tool_result, text}) when is_binary(text) do
+    %{
+      event: :tool_result,
+      timestamp: DateTime.utc_now(),
+      payload: %{
+        method: "item/tool/result",
+        params: %{text: text}
       }
     }
   end
@@ -981,12 +1001,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         event = parse_event(full_line)
 
         new_command_deadline =
-          case event do
-            {:tool_use, _} when command_timeout_ms > 0 ->
-              System.monotonic_time(:millisecond) + command_timeout_ms
-
-            _ ->
-              command_deadline
+          if command_timeout_ms > 0 and event_contains_tool_use?(event) do
+            System.monotonic_time(:millisecond) + command_timeout_ms
+          else
+            command_deadline
           end
 
         acc = apply_event(event, on_message, acc)
@@ -1022,8 +1040,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     {:ok, acc |> Map.delete(:turn_failed) |> Map.delete(:turn_completed)}
   end
 
+  defp event_contains_tool_use?({:tool_use, _}), do: true
+
+  defp event_contains_tool_use?({:multi, events}) when is_list(events),
+    do: Enum.any?(events, &event_contains_tool_use?/1)
+
+  defp event_contains_tool_use?(_), do: false
+
   defp apply_event(event, on_message, acc) do
     case event do
+      {:multi, events} when is_list(events) ->
+        Enum.reduce(events, acc, fn child, acc -> apply_event(child, on_message, acc) end)
+
       {:session_started, session_id} ->
         on_message.({:session_started, session_id})
         %{acc | session_id: session_id}
@@ -1043,6 +1071,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
       {:tool_use, name} ->
         on_message.({:tool_use, name})
+        acc
+
+      {:tool_result, text} ->
+        on_message.({:tool_result, text})
         acc
 
       {:notification, text} ->
@@ -1074,38 +1106,54 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.uniq()
   end
 
-  defp extract_assistant_text(%{"content" => content}) when is_list(content) do
-    Enum.find_value(content, fn
-      %{"type" => "text", "text" => text} when is_binary(text) -> text
-      _ -> nil
-    end)
+  defp extract_assistant_events(%{"content" => content}) when is_list(content) do
+    Enum.flat_map(content, &assistant_block_event/1)
   end
 
-  defp extract_assistant_text(_), do: nil
+  defp extract_assistant_events(_), do: []
 
-  defp summarize_user_message(%{"content" => content}) when is_list(content) do
-    content
-    |> Enum.find_value(&tool_result_summary/1)
-    |> case do
-      nil -> "tool_result"
-      text -> "tool_result: " <> String.slice(text, 0, 120)
+  defp assistant_block_event(%{"type" => "text", "text" => text}) when is_binary(text),
+    do: [{:agent_text, text}]
+
+  defp assistant_block_event(%{"type" => "tool_use", "name" => name}) when is_binary(name),
+    do: [{:tool_use, name}]
+
+  defp assistant_block_event(_), do: []
+
+  defp extract_tool_result_events(%{"content" => content}) when is_list(content) do
+    Enum.flat_map(content, &tool_result_block_event/1)
+  end
+
+  defp extract_tool_result_events(_), do: []
+
+  defp tool_result_block_event(%{"type" => "tool_result"} = block) do
+    case tool_result_text(block) do
+      nil -> []
+      text -> [{:tool_result, text}]
     end
   end
 
-  defp summarize_user_message(_), do: "tool_result"
+  defp tool_result_block_event(_), do: []
 
-  defp tool_result_summary(%{"type" => "tool_result", "content" => content}) when is_binary(content),
-    do: content
+  defp tool_result_text(%{"content" => content}) when is_binary(content), do: content
 
-  defp tool_result_summary(%{"type" => "tool_result", "content" => content}) when is_list(content) do
-    Enum.find_value(content, fn
-      %{"type" => "text", "text" => text} when is_binary(text) -> text
-      %{"type" => "tool_reference", "tool_name" => name} when is_binary(name) -> name
-      _ -> nil
-    end)
+  defp tool_result_text(%{"content" => content}) when is_list(content) do
+    content
+    |> Enum.flat_map(&tool_result_chunk/1)
+    |> case do
+      [] -> nil
+      chunks -> Enum.join(chunks, "\n")
+    end
   end
 
-  defp tool_result_summary(_), do: nil
+  defp tool_result_text(_), do: nil
+
+  defp tool_result_chunk(%{"type" => "text", "text" => text}) when is_binary(text), do: [text]
+
+  defp tool_result_chunk(%{"type" => "tool_reference", "tool_name" => name}) when is_binary(name),
+    do: [name]
+
+  defp tool_result_chunk(_), do: []
 
   defp classify_rate_limit_event(info) when is_map(info) do
     rate_limit_type = Map.get(info, "rateLimitType", "rate_limit")

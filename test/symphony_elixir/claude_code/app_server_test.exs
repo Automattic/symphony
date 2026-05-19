@@ -211,14 +211,29 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:tool_use, "bash"} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event with no text content items and returns notification" do
+    test "parses assistant event with only tool_use block returns tool_use" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2"})
 
-      assert {:notification, "assistant message"} = AppServer.parse_event(line)
+      assert {:tool_use, "bash"} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event with non-list content and returns notification" do
+    test "parses assistant event with text and tool_use returns multi event preserving order" do
+      line =
+        ~s({"type":"assistant","message":{"id":"msg-2a","type":"message","role":"assistant","content":[{"type":"text","text":"Running ls"},{"type":"tool_use","id":"t-1","name":"bash","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2a"})
+
+      assert {:multi, [{:agent_text, "Running ls"}, {:tool_use, "bash"}]} =
+               AppServer.parse_event(line)
+    end
+
+    test "parses assistant event with multiple tool_use blocks returns multi event" do
+      line =
+        ~s({"type":"assistant","message":{"id":"msg-2b","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{}},{"type":"tool_use","id":"t-2","name":"read","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2b"})
+
+      assert {:multi, [{:tool_use, "bash"}, {:tool_use, "read"}]} = AppServer.parse_event(line)
+    end
+
+    test "parses assistant event with non-list content and returns placeholder notification" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-3","type":"message","role":"assistant","content":"text response","model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":2}},"session_id":"sess-3"})
 
@@ -240,22 +255,35 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:malformed, ^line} = AppServer.parse_event(line)
     end
 
-    test "parses user/tool_result event with string content and returns notification" do
+    test "parses user/tool_result event with string content and returns tool_result" do
       line =
         ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"Hello world"}]},"session_id":"sess-1"})
 
-      assert {:notification, text} = AppServer.parse_event(line)
-      assert text =~ "tool_result"
-      assert text =~ "Hello world"
+      assert {:tool_result, "Hello world"} = AppServer.parse_event(line)
     end
 
-    test "parses user/tool_result event with nested tool_reference content and returns notification" do
+    test "preserves full tool_result body without truncation" do
+      long_text = String.duplicate("a", 500)
+
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"#{long_text}"}]},"session_id":"sess-tr"})
+
+      assert {:tool_result, ^long_text} = AppServer.parse_event(line)
+    end
+
+    test "parses user/tool_result event with nested tool_reference content" do
       line =
         ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":[{"type":"tool_reference","tool_name":"Read"}]}]},"session_id":"sess-1"})
 
-      assert {:notification, text} = AppServer.parse_event(line)
-      assert text =~ "tool_result"
-      assert text =~ "Read"
+      assert {:tool_result, "Read"} = AppServer.parse_event(line)
+    end
+
+    test "parses user event with multiple tool_result blocks returns multi event" do
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t-1","content":"first"},{"type":"tool_result","tool_use_id":"t-2","content":"second"}]},"session_id":"sess-multi"})
+
+      assert {:multi, [{:tool_result, "first"}, {:tool_result, "second"}]} =
+               AppServer.parse_event(line)
     end
 
     test "parses user/tool_result event with no recognizable content and returns generic notification" do
@@ -342,6 +370,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                timestamp: %DateTime{},
                payload: %{method: "item/tool/call", params: %{tool: "bash"}}
              } = AppServer.event_to_update({:tool_use, "bash"})
+
+      assert %{
+               event: :tool_result,
+               timestamp: %DateTime{},
+               payload: %{method: "item/tool/result", params: %{text: "ok"}}
+             } = AppServer.event_to_update({:tool_result, "ok"})
 
       usage = %{input_tokens: 10, cached_input_tokens: 3, output_tokens: 5, total_tokens: 15}
 

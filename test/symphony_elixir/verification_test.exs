@@ -42,7 +42,11 @@ defmodule SymphonyElixir.VerificationTest do
     assert ports == [4110, 4111]
     assert {:error, :exhausted} = PortPool.allocate(attrs.("run-3"))
 
-    assert :ok = PortPool.release("run-1", "test release")
+    %{run_id: released_run_id} =
+      PortPool.active_allocations()
+      |> Enum.find(&(&1.port == 4110))
+
+    assert :ok = PortPool.release(released_run_id, "test release")
     assert {:ok, %{port: 4110}} = PortPool.allocate(attrs.("run-3"))
   end
 

@@ -3,6 +3,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
   alias SymphonyElixir.AgentTools.GitHub
   alias SymphonyElixir.AgentTools.SecretScanner
+  alias SymphonyElixir.Config.Schema
 
   test "public defaults fail closed when required scope is missing" do
     assert {:error, :missing_github_origin_repo} = GitHub.get_pull_request(%{})
@@ -129,10 +130,32 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         opts ->
           assert opts[:cd] == workspace
           {"https://github.com/acme/symphony/pull/3051\n", 0}
+
+        [
+          "pr",
+          "create",
+          "--repo",
+          "acme/symphony",
+          "--head",
+          "auto/RSM-3051",
+          "--title",
+          "Title",
+          "--body",
+          "Body with nil draft"
+        ],
+        opts ->
+          assert opts[:cd] == workspace
+          {"https://github.com/acme/symphony/pull/3051\n", 0}
       end
 
       assert {:ok, %{"draft" => true, "head" => "auto/RSM-3051"}} =
                GitHub.create_pull_request(scoped_context(workspace), "Title", "Body", true,
+                 git_runner: git_runner,
+                 gh_runner: gh_runner
+               )
+
+      assert {:ok, %{"draft" => false, "head" => "auto/RSM-3051"}} =
+               GitHub.create_pull_request(scoped_context(workspace), "Title", "Body with nil draft", nil,
                  git_runner: git_runner,
                  gh_runner: gh_runner
                )
@@ -527,6 +550,166 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
                  git_runner: branch_runner(workspace),
                  gh_runner: gh_runner,
                  failed_run_log_max_bytes: 10
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log uses configured max bytes and preserves valid UTF-8" do
+    workspace = tmp_workspace!("github-agent-failed-run-log-utf8")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{"name" => "queued", "status" => "QUEUED"},
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => " timed_out ",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          {"aéz", 0}
+      end
+
+      settings = %Schema{github: %Schema.GitHub{failed_run_log_max_bytes: 2}}
+
+      assert {:ok, %{"log" => "a", "truncated" => true, "max_bytes" => 2}} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner,
+                 settings: settings
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log returns untruncated logs with default config max bytes" do
+    workspace = tmp_workspace!("github-agent-failed-run-log-default-config")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{
+                 "name" => "failed external check",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://ci.example.com/build/987"
+               },
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          {"short log", 0}
+      end
+
+      assert {:ok, %{"log" => "short log", "truncated" => false, "max_bytes" => 65_536}} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log rejects invalid max bytes before fetching logs" do
+    workspace = tmp_workspace!("github-agent-failed-run-log-invalid-max")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          flunk("failed logs should not be fetched with an invalid clamp")
+      end
+
+      assert {:error, :invalid_failed_run_log_max_bytes} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner,
+                 failed_run_log_max_bytes: 0
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "get_failed_run_log rejects non-binary log payloads" do
+    workspace = tmp_workspace!("github-agent-failed-run-log-invalid-payload")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+          {Jason.encode!(%{
+             "url" => pr_url,
+             "statusCheckRollup" => [
+               %{
+                 "name" => "mix test",
+                 "status" => "COMPLETED",
+                 "conclusion" => "FAILURE",
+                 "detailsUrl" => "https://github.com/acme/symphony/actions/runs/987/jobs/654"
+               }
+             ]
+           }), 0}
+
+        ["run", "view", "987", "--log-failed"], _opts ->
+          {:ok, :not_binary}
+      end
+
+      assert {:error, :invalid_failed_run_log} =
+               GitHub.get_failed_run_log(scoped_context(workspace),
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner,
+                 failed_run_log_max_bytes: 65_536
                )
     after
       File.rm_rf(workspace)

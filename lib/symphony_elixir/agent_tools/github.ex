@@ -14,7 +14,6 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   alias SymphonyElixir.Workspace
 
   @pr_view_fields "number,state,title,body,url,headRefName,baseRefName"
-  @default_failed_run_log_max_bytes 65_536
   @failed_conclusions MapSet.new(["ACTION_REQUIRED", "CANCELLED", "FAILURE", "STARTUP_FAILURE", "TIMED_OUT"])
 
   @type context :: %{
@@ -122,10 +121,10 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   @spec get_failed_run_log(context(), keyword()) :: {:ok, map()} | {:error, term()}
   def get_failed_run_log(context, opts \\ []) do
     with {:ok, status} <- get_pr_checks(context, opts),
-         {:ok, check} <- latest_failed_check(Map.get(status, :checks, [])),
-         {:ok, run_id} <- check_run_id(check),
+         {:ok, check, run_id} <- status |> status_checks() |> latest_failed_check(),
+         {:ok, max_bytes} <- failed_run_log_max_bytes(opts),
          {:ok, log} <- PullRequest.fetch_failed_log(run_id, github_opts(context, opts)),
-         {:ok, max_bytes} <- failed_run_log_max_bytes(opts) do
+         true <- is_binary(log) do
       {excerpt, truncated?} = clamp_log(log, max_bytes)
 
       {:ok,
@@ -137,6 +136,9 @@ defmodule SymphonyElixir.AgentTools.GitHub do
          "truncated" => truncated?,
          "max_bytes" => max_bytes
        }}
+    else
+      false -> {:error, :invalid_failed_run_log}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -285,37 +287,36 @@ defmodule SymphonyElixir.AgentTools.GitHub do
     |> Keyword.put_new(:cwd, Map.get(context, :workspace))
   end
 
-  defp latest_failed_check(checks) when is_list(checks) do
+  defp status_checks(%{checks: checks}) when is_list(checks), do: Enum.filter(checks, &is_map/1)
+
+  defp latest_failed_check(checks) do
     checks
     |> Enum.filter(&failed_check?/1)
-    |> Enum.find(&present?(Map.get(&1, :run_id) || Map.get(&1, "run_id")))
+    |> Enum.find_value(&failed_check_with_run_id/1)
     |> case do
       nil -> {:error, :no_failed_github_actions_run}
-      check -> {:ok, check}
+      result -> result
     end
   end
-
-  defp latest_failed_check(_checks), do: {:error, :no_failed_github_actions_run}
 
   defp failed_check?(check) when is_map(check) do
-    conclusion = Map.get(check, :conclusion) || Map.get(check, "conclusion")
-    MapSet.member?(@failed_conclusions, normalize_status_value(conclusion))
-  end
+    case Map.get(check, :conclusion) || Map.get(check, "conclusion") do
+      conclusion when is_binary(conclusion) ->
+        MapSet.member?(@failed_conclusions, normalize_status_value(conclusion))
 
-  defp failed_check?(_check), do: false
-
-  defp check_run_id(check) when is_map(check) do
-    case Map.get(check, :run_id) || Map.get(check, "run_id") do
-      run_id when is_binary(run_id) and run_id != "" -> {:ok, run_id}
-      run_id when is_integer(run_id) -> {:ok, Integer.to_string(run_id)}
-      _missing -> {:error, :no_failed_github_actions_run}
+      _missing ->
+        false
     end
   end
 
-  defp check_run_id(_check), do: {:error, :no_failed_github_actions_run}
+  defp failed_check_with_run_id(check) do
+    case Map.get(check, :run_id) || Map.get(check, "run_id") do
+      run_id when is_binary(run_id) and run_id != "" -> {:ok, check, run_id}
+      _missing -> nil
+    end
+  end
 
   defp normalize_status_value(value) when is_binary(value), do: value |> String.trim() |> String.upcase()
-  defp normalize_status_value(_value), do: nil
 
   defp failed_run_log_max_bytes(opts) do
     case Keyword.get(opts, :failed_run_log_max_bytes) do
@@ -333,14 +334,8 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   defp settings_failed_run_log_max_bytes(opts) do
     case Keyword.get(opts, :settings) do
       %Schema{} = settings -> settings.github.failed_run_log_max_bytes
-      _settings -> config_failed_run_log_max_bytes()
+      _settings -> Config.settings!().github.failed_run_log_max_bytes
     end
-  end
-
-  defp config_failed_run_log_max_bytes do
-    Config.settings!().github.failed_run_log_max_bytes
-  rescue
-    _error -> @default_failed_run_log_max_bytes
   end
 
   defp clamp_log(log, max_bytes) when is_binary(log) and byte_size(log) > max_bytes do
@@ -348,9 +343,6 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   end
 
   defp clamp_log(log, _max_bytes) when is_binary(log), do: {log, false}
-  defp clamp_log(_log, _max_bytes), do: {"", false}
-
-  defp take_valid_prefix(_log, max_bytes) when max_bytes <= 0, do: ""
 
   defp take_valid_prefix(log, max_bytes) do
     prefix = binary_part(log, 0, min(byte_size(log), max_bytes))
@@ -361,10 +353,6 @@ defmodule SymphonyElixir.AgentTools.GitHub do
       take_valid_prefix(log, max_bytes - 1)
     end
   end
-
-  defp present?(value) when is_binary(value), do: String.trim(value) != ""
-  defp present?(value) when is_integer(value), do: true
-  defp present?(_value), do: false
 
   defp run_git(args, workspace, opts) do
     cmd_opts = [stderr_to_stdout: true, cd: workspace]

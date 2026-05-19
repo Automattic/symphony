@@ -124,6 +124,13 @@ the prompt-facing API.
   `60000`. Avoid tight `write_stdin` polling; if a command is still running,
   wait at least 30 seconds before polling again unless there is a specific
   reason to expect immediate failure output.
+- Match the test command to the loop:
+  - During iteration, prefer `mix test` (or `mix test --stale`, or a targeted
+    file/line) without `--cover`. Coverage instrumentation recompiles every
+    module with tracing and roughly doubles CPU and wall time, which is wasted
+    when re-running a focused subset.
+  - Reserve `make all` and `make coverage` for the pre-push gate, not the inner
+    edit/test loop.
 - In sandboxed Elixir runs, prefer
   `HEX_HOME=/private/tmp/symphony-hex-home make all` for the full gate so Hex
   and Dialyzer cache writes stay inside a writable location.
@@ -293,7 +300,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
       - incomplete hunks, half-finished removals, or reverted-only placeholders.
     - Only push after this review is clean.
     - Record `diff reviewed — clean` in the workpad before each push.
-    - If `self_review.enabled: true` is configured in `WORKFLOW.md`, stop before `git push` after validation and diff review are complete. Symphony will run the pre-push self-review and inject the next continuation prompt. Follow that prompt exactly; when instructed to push regardless, proceed even if the self-review still lists known limitations.
+    - If `self_review.enabled: true` is configured in `symphony.yml`, stop before `git push` after validation and diff review are complete. Symphony will run the pre-push self-review and inject the next continuation prompt. Follow that prompt exactly; when instructed to push regardless, proceed even if the self-review still lists known limitations.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
     - Ensure the PR body is reviewer-facing and includes:

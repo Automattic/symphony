@@ -96,6 +96,30 @@ Do not craft raw Linear GraphQL from prompts. If a required workflow needs a
 Linear operation outside this list, pause and record the gap instead of widening
 the prompt-facing API.
 
+## Prerequisite: scoped GitHub tools are available
+
+For PR operations on the current issue, use Symphony's scoped `github_*` tools
+rather than shelling out to `gh`. `Bash(gh:*)` is denied for some agent
+runtimes (notably Claude). The scoped tools always operate on the current
+issue's PR in the configured origin repo and accept no owner/repo/PR
+arguments — Symphony injects the scope server-side.
+
+Available scoped GitHub tools:
+
+- `github_get_pull_request()` — read the pull request for the current workspace branch.
+- `github_create_pull_request(title, body, draft)` — open a PR from the current
+  workspace branch to the origin repo's default branch. Routed through the
+  dependency-audit gate.
+- `github_update_pull_request_body(body)` — replace the PR body.
+- `github_add_pr_comment(body)` — add a top-level comment to the current PR.
+- `github_push_branch()` — push the current workspace branch to origin.
+- `github_get_pr_checks()` — read the status-check rollup for the current PR.
+
+If a required GitHub operation is outside this list (for example: listing PR or
+review comments, fetching failed CI run logs, listing PRs by branch, checking
+`gh` auth status), record the gap in the workpad instead of synthesising a
+`gh` call.
+
 ## Default posture
 
 - Start by determining the ticket's current status, then follow the matching flow for that status.
@@ -174,8 +198,8 @@ the prompt-facing API.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
    - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
-5. For `Todo` tickets, do startup sequencing in this exact order:
-   - `update_issue(..., state: "In Progress")`
+5. For `Todo` tickets, do startup sequencing in this exact order. The state transition must be the first tool call of the run, before any other reads, planning, or analysis:
+   - `linear_update_state("In Progress")`
    - find/create `{{ agent.workpad_heading }}` bootstrap comment
    - only then begin analysis/planning/implementation work.
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
@@ -225,9 +249,16 @@ When a ticket has an attached PR, run this protocol before moving to `In Review`
 
 1. Identify the PR number from issue links/attachments.
 2. Gather feedback from all channels:
-   - Top-level PR comments (`gh pr view --comments`).
-   - Inline review comments (`gh api repos/<owner>/<repo>/pulls/<pr>/comments`).
-   - Review summaries/states (`gh pr view --json reviews`).
+   - PR body and metadata via `github_get_pull_request()`.
+   - CI status rollup via `github_get_pr_checks()`.
+   - Top-level PR comments, inline review comments, and review summaries: these
+     channels currently require `gh` shell-out (`gh pr view --comments`,
+     `gh api repos/<owner>/<repo>/pulls/<pr>/comments`,
+     `gh pr view --json reviews`) because Symphony's scoped tools do not yet
+     expose them. When `Bash(gh:*)` is denied in the active runtime, treat
+     these channels as unavailable: note the gap in the workpad and use the
+     blocked-access escape hatch if reviewer feedback cannot otherwise be
+     resolved.
 3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
    - code/test/docs updated to address it, or
    - explicit, justified pushback reply is posted on that thread.
@@ -239,7 +270,11 @@ When a ticket has an attached PR, run this protocol before moving to `In Review`
 
 Use this whenever pushed checks come back failing, at any push gate (including the §7 push gate and the §11 pre-`In Review` loop).
 
-1. Fetch the failed log output with `gh run view --log-failed`.
+1. Read the check summary via `github_get_pr_checks()` to identify which check
+   failed. Detailed run logs currently require `gh run view --log-failed`
+   because Symphony's scoped tools do not yet expose run-log fetching. When
+   `Bash(gh:*)` is denied in the active runtime, work from the check summary
+   alone and note the missing log access in the workpad.
 2. Categorize the failure as flaky/retryable infrastructure or a real code defect.
 3. For real failures, diagnose the root cause, fix it, rerun validation locally, then loop back through the validation, diff-review, commit, and push gates.
 4. Never use `--no-verify`, `--force`, or skipped hooks to bypass failures.

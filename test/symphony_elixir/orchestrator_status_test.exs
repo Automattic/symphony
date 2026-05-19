@@ -1829,6 +1829,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert warning =~ "Operator dispatch pause active"
     assert RunStore.list_runs() == []
 
+    wait_for_orchestrator_state(
+      pid,
+      fn state -> map_size(state.dispatch_readiness_tasks || %{}) == 0 end,
+      500
+    )
+
     retry_token = make_ref()
     due_at_ms = System.monotonic_time(:millisecond)
 

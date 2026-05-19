@@ -306,6 +306,10 @@ defmodule SymphonyElixir.Config.Cache do
           {:error, reason} ->
             Logger.warning("Failed to watch config directory=#{dir} reason=#{inspect(reason)}")
             state
+
+          :ignore ->
+            Logger.warning("Config watcher unavailable for directory=#{dir}; falling back to stat-based refresh")
+            state
         end
 
       true ->

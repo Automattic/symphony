@@ -54,6 +54,13 @@ workspace:
 agent:
   kind: codex
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_HEADLESS="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_ISOLATED="true"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_ACTION="5000"' --config 'mcp_servers.playwright.env.PLAYWRIGHT_MCP_TIMEOUT_NAVIGATION="15000"' app-server
+  mcp:
+    # Codex inherits the operator's host ~/.codex/config.toml playwright server
+    # because the --config mcp_servers.playwright.env.* flags above only override
+    # env on an inherited server. Switch to inherit: none and declare playwright
+    # explicitly in servers: when you want full lock-down.
+    inherit: allowlist
+    allowed_servers: [playwright]
   max_concurrent_agents: 10
   # max_concurrent_agents_by_state:
   #   rework: 2 # Optional per-Linear-state concurrency override.

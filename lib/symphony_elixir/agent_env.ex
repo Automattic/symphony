@@ -52,6 +52,13 @@ defmodule SymphonyElixir.AgentEnv do
   def build, do: build(System.get_env())
 
   @doc """
+  Builds the env list from the current process environment plus explicit safe
+  runtime overrides.
+  """
+  @spec build_with(%{optional(String.t()) => String.t()}) :: [{charlist(), charlist() | false}]
+  def build_with(extra_env) when is_map(extra_env), do: build(System.get_env(), extra_env)
+
+  @doc """
   Builds the env list from an explicit env map.
 
   Each whitelisted variable present in `env_source` becomes a
@@ -61,12 +68,22 @@ defmodule SymphonyElixir.AgentEnv do
   override any value present in the source.
   """
   @spec build(%{optional(String.t()) => String.t()}) :: [{charlist(), charlist() | false}]
-  def build(env_source) when is_map(env_source) do
+  def build(env_source) when is_map(env_source), do: build(env_source, %{})
+
+  @doc """
+  Builds the env list from an explicit env map plus explicit safe runtime
+  overrides.
+  """
+  @spec build(%{optional(String.t()) => String.t()}, %{optional(String.t()) => String.t()}) :: [
+          {charlist(), charlist() | false}
+        ]
+  def build(env_source, extra_env) when is_map(env_source) and is_map(extra_env) do
     {pass, strip} = Map.split(env_source, @passthrough)
 
     strip_entries =
       strip
       |> Map.delete(@agent_runtime_env)
+      |> Map.drop(Map.keys(extra_env))
       |> Map.keys()
       |> Enum.map(fn name -> {String.to_charlist(name), false} end)
 
@@ -75,8 +92,13 @@ defmodule SymphonyElixir.AgentEnv do
       |> Map.delete(@agent_runtime_env)
       |> Enum.map(fn {name, value} -> {String.to_charlist(name), String.to_charlist(value)} end)
 
+    override_entries =
+      extra_env
+      |> Enum.reject(fn {_name, value} -> not is_binary(value) end)
+      |> Enum.map(fn {name, value} -> {String.to_charlist(to_string(name)), String.to_charlist(value)} end)
+
     marker = {String.to_charlist(@agent_runtime_env), String.to_charlist(@agent_runtime_env_value)}
 
-    strip_entries ++ passthrough_entries ++ [marker]
+    strip_entries ++ passthrough_entries ++ override_entries ++ [marker]
   end
 end

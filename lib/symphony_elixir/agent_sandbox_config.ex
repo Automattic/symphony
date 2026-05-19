@@ -146,11 +146,11 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   end
 
   @doc false
-  @spec codex_config_overrides(String.t(), [String.t()], [String.t()]) :: [String.t()]
-  def codex_config_overrides(network_mode, allowed_domains, allow_read_paths \\ []) do
+  @spec codex_config_overrides(String.t(), [String.t()], [String.t()], [String.t()]) :: [String.t()]
+  def codex_config_overrides(network_mode, allowed_domains, allow_read_paths \\ [], extra_deny_read_paths \\ []) do
     [
       ~s(default_permissions="#{@codex_profile}"),
-      "permissions.#{@codex_profile}.filesystem=#{codex_filesystem_policy(allow_read_paths)}",
+      "permissions.#{@codex_profile}.filesystem=#{codex_filesystem_policy(allow_read_paths, extra_deny_read_paths)}",
       "permissions.#{@codex_profile}.network=#{codex_network_policy(network_mode)}",
       "permissions.#{@codex_profile}.network.domains=#{codex_network_domains(network_mode, allowed_domains)}"
     ]
@@ -192,8 +192,9 @@ defmodule SymphonyElixir.AgentSandboxConfig do
      }}
   end
 
-  defp codex_filesystem_policy(allow_read_paths) do
+  defp codex_filesystem_policy(allow_read_paths, extra_deny_read_paths) do
     allow_read_paths = normalize_allow_read_paths(allow_read_paths)
+    extra_deny_read_paths = normalize_sandbox_paths(extra_deny_read_paths)
     operator_allow_read_paths = Enum.reject(allow_read_paths, &codex_runtime_read_override_path?/1)
 
     project_entries =
@@ -208,6 +209,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
       @deny_read_paths
       |> Enum.reject(fn path -> path in operator_allow_read_paths end)
       |> Kernel.++(@codex_runtime_deny_read_paths)
+      |> Kernel.++(extra_deny_read_paths)
       |> expand_home_paths()
 
     deny_read_set = MapSet.new(deny_read_paths)

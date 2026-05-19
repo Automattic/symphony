@@ -2737,6 +2737,136 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert message =~ "agent.sandbox_runtime.kind=\"srt\" is only supported for agent.kind=codex"
   end
 
+  test "schema parses agent MCP defaults and declared servers" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{
+        servers: %{
+          "context-a8c" => %{
+            transport: "stdio",
+            command: "node",
+            args: ["/srv/context-a8c/server.js"],
+            env: %{LOG_LEVEL: "info"},
+            runtimes: ["claude", "codex"]
+          },
+          "docs" => %{
+            transport: "http",
+            url: "https://docs.example/mcp",
+            headers: %{Authorization: "Bearer token"},
+            runtimes: ["claude"]
+          }
+        }
+      }
+    )
+
+    mcp = Config.settings!().agent.mcp
+    assert mcp.inherit == "none"
+    assert mcp.allowed_servers == []
+    assert mcp.servers["context-a8c"].transport == "stdio"
+    assert mcp.servers["context-a8c"].command == "node"
+    assert mcp.servers["context-a8c"].args == ["/srv/context-a8c/server.js"]
+    assert mcp.servers["context-a8c"].env == %{"LOG_LEVEL" => "info"}
+    assert mcp.servers["docs"].transport == "http"
+    assert mcp.servers["docs"].runtimes == ["claude"]
+  end
+
+  test "schema validates agent MCP inheritance and Codex transport restrictions" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{inherit: "allowlist", allowed_servers: []}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "agent.mcp.allowed_servers"
+    assert message =~ "must not be empty"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude",
+      agent_command: "claude",
+      agent_mcp: %{inherit: "all"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ ~s(agent.mcp.inherit="all" is not supported for agent.kind=claude)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{
+        servers: %{
+          "browser" => %{
+            transport: "sse",
+            url: "https://browser.example/sse",
+            runtimes: ["codex"]
+          }
+        }
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "browser is invalid"
+    assert message =~ "Codex MCP servers must use transport"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{
+        servers: %{
+          "browser-default-runtimes" => %{
+            transport: "sse",
+            url: "https://browser.example/sse"
+          }
+        }
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "browser-default-runtimes is invalid"
+    assert message =~ "Codex MCP servers must use transport"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{inherit: "none", allowed_servers: ["context-a8c"]}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "agent.mcp.allowed_servers"
+    assert message =~ "must be empty unless agent.mcp.inherit is allowlist"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{
+        inherit: "allowlist",
+        allowed_servers: ["context-a8c"],
+        servers: %{
+          "invalid-runtime" => %{
+            command: "node",
+            env: [],
+            runtimes: ["unknown"]
+          }
+        }
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "invalid-runtime is invalid"
+    assert message =~ "unsupported runtime"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{servers: %{"invalid-transport" => %{transport: "websocket", command: "node"}}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "invalid-transport is invalid"
+    assert message =~ "is invalid"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{servers: %{"symphony" => %{command: "shadow"}}}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "must not declare reserved MCP server names"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_mcp: %{servers: []}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "agent.mcp.servers"
+  end
+
   test "schema network helpers tolerate missing embedded network config" do
     settings = %Schema{
       agent: %Agent{network_access: nil},

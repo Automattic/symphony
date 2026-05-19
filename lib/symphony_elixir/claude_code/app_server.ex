@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AgentEnv, AgentSandboxConfig, Config, DependencyGate, McpServer, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, AgentMcp, AgentSandboxConfig, Config, DependencyGate, McpServer, PathSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
   alias SymphonyElixir.GitHub.Hosts
@@ -130,15 +130,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     })
   end
 
-  defp build_mcp_config(mcp_session, socket_path, shim_path) do
+  defp build_mcp_config(mcp_session, socket_path, shim_path, settings) do
+    declared_servers =
+      settings
+      |> AgentMcp.declared_servers("claude")
+      |> Map.new(fn {name, server} -> {name, AgentMcp.claude_server_config(server)} end)
+
     %{
-      "mcpServers" => %{
-        "symphony" => %{
-          "command" => shim_path,
-          "args" => ["--socket", socket_path, "--session", mcp_session.token],
-          "alwaysLoad" => true
+      "mcpServers" =>
+        %{
+          "symphony" => AgentMcp.symphony_claude_config(mcp_session, socket_path, shim_path)
         }
-      }
+        |> Map.merge(declared_servers)
     }
   end
 
@@ -484,7 +487,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     effective_socket_path = socket_path || mcp_session.socket_path
 
     settings_json = build_claude_settings(network_access, allow_read_paths)
-    mcp_config_json = build_mcp_config(mcp_session, effective_socket_path, effective_shim_path)
+    mcp_config_json = build_mcp_config(mcp_session, effective_socket_path, effective_shim_path, settings)
 
     settings_dir = claude_settings_dir(worker_host, mcp_session)
     settings_path = Path.join(settings_dir, "settings.json")

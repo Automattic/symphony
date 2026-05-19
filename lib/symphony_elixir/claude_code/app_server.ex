@@ -839,15 +839,21 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     case File.mkdir(prompt_dir) do
       :ok ->
         case File.chmod(prompt_dir, 0o700) do
-          :ok -> {:ok, prompt_dir}
-          {:error, reason} -> {:error, reason}
+          :ok ->
+            {:ok, prompt_dir}
+
+          {:error, reason} ->
+            # Without 0700 the dir is world-traversable under default umask;
+            # remove it so chmod failure doesn't leave a permissive directory.
+            _ = File.rmdir(prompt_dir)
+            {:error, {:chmod, reason}}
         end
 
       {:error, :eexist} ->
         create_prompt_dir(temp_root, attempts_remaining - 1)
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, {:mkdir, reason}}
     end
   end
 

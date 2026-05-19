@@ -183,15 +183,15 @@ defmodule SymphonyElixir.SelfReviewTest do
   end
 
   test "summarizes large diffs and logs coverage while still running the gate" do
-    repo = changed_repo!("feature.txt", Enum.map_join(1..20, "\n", &"line #{&1}"))
+    repo = changed_repo!("feature.txt", Enum.map_join(1..180, "\n", &"line #{&1}"))
     Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
 
     log =
       capture_log(fn ->
-        result = SelfReview.evaluate(issue(), repo, enabled_config(diff_max_lines: 3), provider_module: StubProvider)
+        result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider)
         assert result.verdict == :approve
         assert result.source.diff_truncated?
-        assert result.source.diff_line_count > 3
+        assert result.source.diff_line_count > 160
         assert result.source.diff =~ "Changed file inventory:"
         assert result.source.diff =~ "File: feature.txt"
         assert result.source.review_coverage.summarized_files == ["feature.txt"]
@@ -208,14 +208,14 @@ defmodule SymphonyElixir.SelfReviewTest do
     ExUnit.Callbacks.on_exit(fn -> File.rm_rf(repo) end)
     init_repo!(repo)
 
-    File.write!(Path.join(repo, "aaa-large.txt"), Enum.map_join(1..40, "\n", &"early line #{&1}"))
+    File.write!(Path.join(repo, "aaa-large.txt"), Enum.map_join(1..180, "\n", &"early line #{&1}"))
     File.write!(Path.join(repo, "zzz-late.txt"), "late safety-sensitive change\n")
     git!(repo, ["add", "aaa-large.txt", "zzz-late.txt"])
     git!(repo, ["commit", "-m", "feat: add multi file review"])
 
     Application.put_env(:symphony_elixir, :self_review_test_response, ~s({"verdict":"approve","findings":[]}))
 
-    result = SelfReview.evaluate(issue(), repo, enabled_config(diff_max_lines: 12), provider_module: StubProvider)
+    result = SelfReview.evaluate(issue(), repo, enabled_config(), provider_module: StubProvider)
 
     assert result.verdict == :approve
     assert result.source.diff_truncated?
@@ -654,9 +654,7 @@ defmodule SymphonyElixir.SelfReviewTest do
         [
           enabled: true,
           provider: "anthropic",
-          model: "claude-haiku-4-5-20251001",
-          diff_max_lines: 600,
-          max_rounds: 1
+          model: "claude-haiku-4-5-20251001"
         ],
         opts
       )

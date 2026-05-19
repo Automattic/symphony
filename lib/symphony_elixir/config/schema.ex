@@ -1210,14 +1210,12 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     @providers ["anthropic", "openai"]
-    @fields [:enabled, :provider, :model, :diff_max_lines, :max_rounds]
+    @fields [:enabled, :provider, :model]
 
     embedded_schema do
       field(:enabled, :boolean, default: false)
       field(:provider, :string, default: "anthropic")
       field(:model, :string, default: "claude-haiku-4-5-20251001")
-      field(:diff_max_lines, :integer, default: 600)
-      field(:max_rounds, :integer, default: 1)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -1225,17 +1223,13 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(attrs, @fields, empty_values: [])
       |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
-      |> validate_number(:diff_max_lines, greater_than: 0)
-      |> validate_number(:max_rounds, equal_to: 1, message: "only supports 1 in v1")
       |> validate_required_when_enabled()
     end
 
     defp validate_required_when_enabled(changeset) do
       if get_field(changeset, :enabled) do
         changeset
-        |> validate_required([:provider, :model, :diff_max_lines, :max_rounds],
-          message: "is required when self_review.enabled is true"
-        )
+        |> validate_required([:provider, :model], message: "is required when self_review.enabled is true")
       else
         changeset
       end

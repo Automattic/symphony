@@ -9,8 +9,8 @@ defmodule SymphonyElixir.SelfReviewConfigTest do
       refute review.enabled
       assert review.provider == "anthropic"
       assert review.model == "claude-haiku-4-5-20251001"
-      assert review.diff_max_lines == 600
-      assert review.max_rounds == 1
+      refute Map.has_key?(review, :diff_max_lines)
+      refute Map.has_key?(review, :max_rounds)
     end
 
     test "accepts an enabled section" do
@@ -18,9 +18,7 @@ defmodule SymphonyElixir.SelfReviewConfigTest do
         self_review: %{
           enabled: true,
           provider: "openai",
-          model: "gpt-5.1-mini",
-          diff_max_lines: 250,
-          max_rounds: 1
+          model: "gpt-5.1-mini"
         }
       )
 
@@ -29,8 +27,34 @@ defmodule SymphonyElixir.SelfReviewConfigTest do
       assert review.enabled
       assert review.provider == "openai"
       assert review.model == "gpt-5.1-mini"
-      assert review.diff_max_lines == 250
-      assert review.max_rounds == 1
+    end
+
+    test "ignores legacy diff_max_lines and max_rounds values" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        self_review: %{
+          enabled: true,
+          provider: "openai",
+          model: "gpt-5.1-mini"
+        }
+      )
+
+      symphony_file = Workflow.symphony_file_path()
+      without_legacy = File.read!(symphony_file)
+      assert {:ok, %Schema{self_review: expected}} = Config.settings()
+
+      with_legacy =
+        String.replace(
+          without_legacy,
+          "  model: gpt-5.1-mini\n",
+          "  model: gpt-5.1-mini\n  diff_max_lines: 600\n  max_rounds: 1\n"
+        )
+
+      File.write!(symphony_file, with_legacy)
+      WorkflowStore.force_reload()
+
+      assert :ok = Config.validate!()
+      assert {:ok, %Schema{self_review: actual}} = Config.settings()
+      assert actual == expected
     end
 
     test "accepts an explicitly disabled section" do
@@ -52,17 +76,6 @@ defmodule SymphonyElixir.SelfReviewConfigTest do
       assert message =~ "provider"
       assert message =~ "anthropic"
       assert message =~ "openai"
-    end
-
-    test "rejects max_rounds above the v1 limit" do
-      write_workflow_file!(Workflow.workflow_file_path(),
-        self_review: %{enabled: true, max_rounds: 2}
-      )
-
-      assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-      assert message =~ "self_review"
-      assert message =~ "max_rounds"
-      assert message =~ "only supports 1"
     end
   end
 end

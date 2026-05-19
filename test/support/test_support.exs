@@ -870,9 +870,7 @@ defmodule SymphonyElixir.TestSupport do
       [
         kv("enabled", Map.get(config, :enabled)),
         kv("provider", Map.get(config, :provider)),
-        kv("model", Map.get(config, :model)),
-        kv("diff_max_lines", Map.get(config, :diff_max_lines)),
-        kv("max_rounds", Map.get(config, :max_rounds))
+        kv("model", Map.get(config, :model))
       ]
       |> Enum.reject(&is_nil/1)
 

@@ -3,7 +3,7 @@ defmodule SymphonyElixir.HttpServer do
   Compatibility facade that starts the Phoenix observability endpoint when enabled.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.{Config, ControlToken, ControlUrl, Orchestrator}
   alias SymphonyElixirWeb.Endpoint
   require Logger
 
@@ -32,28 +32,65 @@ defmodule SymphonyElixir.HttpServer do
 
         with {:ok, ip} <- parse_host(host),
              :ok <- guard_remote_bind(ip, host) do
-          endpoint_opts = [
-            server: true,
-            http: [ip: ip, port: port],
-            url: [host: normalize_host(host)],
-            orchestrator: orchestrator,
-            snapshot_timeout_ms: snapshot_timeout_ms,
-            secret_key_base: secret_key_base()
-          ]
-
-          endpoint_config =
-            :symphony_elixir
-            |> Application.get_env(Endpoint, [])
-            |> Keyword.merge(endpoint_opts)
-
-          Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
-          Endpoint.start_link()
+          start_endpoint(ip, port, host, orchestrator, snapshot_timeout_ms)
         end
 
       _ ->
         :ignore
     end
   end
+
+  defp start_endpoint(ip, port, host, orchestrator, snapshot_timeout_ms) do
+    endpoint_opts = [
+      server: true,
+      http: [ip: ip, port: port],
+      url: [host: normalize_host(host)],
+      orchestrator: orchestrator,
+      snapshot_timeout_ms: snapshot_timeout_ms,
+      secret_key_base: secret_key_base()
+    ]
+
+    endpoint_config =
+      :symphony_elixir
+      |> Application.get_env(Endpoint, [])
+      |> Keyword.merge(endpoint_opts)
+
+    Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
+
+    with {:ok, _pid} = ok <- Endpoint.start_link() do
+      persist_control_url(host)
+      _ = ControlToken.current()
+      ok
+    end
+  end
+
+  defp persist_control_url(host) do
+    case bound_port() do
+      port when is_integer(port) ->
+        url = "http://#{discovery_host(host)}:#{port}"
+
+        case ControlUrl.persist(url) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("failed to persist control_url to #{inspect(ControlUrl.path())}: #{inspect(reason)}")
+            :ok
+        end
+
+      _ ->
+        Logger.warning("skipping control_url persist: Bandit has no bound port yet; CLI will fall back to the default URL")
+        :ok
+    end
+  end
+
+  # The control_url file is consumed by same-machine CLI clients. Wildcard bind
+  # addresses (0.0.0.0, ::) are not valid destinations, so rewrite them to a
+  # loopback equivalent. Remote callers should set SYMPHONY_CONTROL_URL.
+  defp discovery_host("0.0.0.0"), do: "127.0.0.1"
+  defp discovery_host("::"), do: "::1"
+  defp discovery_host("::0"), do: "::1"
+  defp discovery_host(host), do: normalize_host(host)
 
   @spec bound_port(term()) :: non_neg_integer() | nil
   def bound_port(_server \\ __MODULE__) do

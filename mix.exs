@@ -65,6 +65,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.ErrorHTML,
           SymphonyElixirWeb.ErrorJSON,
           SymphonyElixirWeb.Layouts,
+          SymphonyElixirWeb.ControlApiController,
           SymphonyElixirWeb.LearningsLive,
           SymphonyElixirWeb.ObservabilityApiController,
           SymphonyElixirWeb.Presenter,

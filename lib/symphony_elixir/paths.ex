@@ -52,6 +52,16 @@ defmodule SymphonyElixir.Paths do
     Path.join(state_root(), "erlang_cookie")
   end
 
+  @spec control_token_file() :: Path.t()
+  def control_token_file do
+    Path.join(state_root(), "control_token")
+  end
+
+  @spec control_url_file() :: Path.t()
+  def control_url_file do
+    Path.join(state_root(), "control_url")
+  end
+
   @spec set_state_root(Path.t()) :: :ok
   def set_state_root(root) when is_binary(root) do
     Application.put_env(@app, @state_root_override_key, Path.expand(root))

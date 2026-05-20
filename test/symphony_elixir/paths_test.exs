@@ -114,6 +114,8 @@ defmodule SymphonyElixir.PathsTest do
     assert Paths.audit_dir() == Path.join(root, "audit")
     assert Paths.secret_key_base_file() == Path.join(root, "secret_key_base")
     assert Paths.erlang_cookie_file() == Path.join(root, "erlang_cookie")
+    assert Paths.control_token_file() == Path.join(root, "control_token")
+    assert Paths.control_url_file() == Path.join(root, "control_url")
   end
 
   test "env helpers store trimmed expanded roots in app env" do

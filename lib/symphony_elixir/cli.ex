@@ -109,7 +109,7 @@ defmodule SymphonyElixir.CLI do
         case SymphonyElixir.ControlClient.dispatch_pr(target, pr_opts) do
           {:ok, result} ->
             IO.puts("Dispatched PR run: #{Map.get(result, :pull_request_url) || target}")
-            :ok
+            {:halt, 0}
 
           :unavailable ->
             {:error, "Orchestrator unavailable"}

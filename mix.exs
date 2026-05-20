@@ -58,6 +58,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Workflow,
           SymphonyElixir.WorkflowStore,
           SymphonyElixir.Workspace,
+          SymphonyElixirWeb.AuditController,
+          SymphonyElixirWeb.AuditLive,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,

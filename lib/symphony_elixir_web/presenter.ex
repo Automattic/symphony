@@ -5,6 +5,19 @@ defmodule SymphonyElixirWeb.Presenter do
 
   alias SymphonyElixir.{AuditLog, Config, Orchestrator, StatusDashboard, URLUtils}
 
+  @audit_page_size 200
+  @audit_event_types ~w(
+    file_change
+    linear_comment
+    linear_state_change
+    pr_opened
+    prompt_sent
+    refused_agent_action
+    self_review
+    token_usage_delta
+    tool_call
+  )
+
   @empty_codex_totals %{
     input_tokens: 0,
     cached_input_tokens: 0,
@@ -111,6 +124,47 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  @spec audit_payload(map(), GenServer.name(), timeout()) :: map()
+  def audit_payload(params, orchestrator, snapshot_timeout_ms) when is_map(params) do
+    snapshot_context = audit_snapshot_context(orchestrator, snapshot_timeout_ms)
+    filters = audit_filters(params, snapshot_context)
+
+    query_opts = [
+      repo: filters.repo,
+      issue: filters.issue,
+      event_type: filters.event_type,
+      run_id: filters.run_id,
+      from: filters.date_from,
+      to: filters.date_to,
+      since: filters.since
+    ]
+
+    case AuditLog.query(query_opts) do
+      {:ok, stream} ->
+        raw_events = stream |> Enum.take(@audit_page_size + 1)
+        {page, overflow} = Enum.split(raw_events, @audit_page_size)
+
+        %{
+          filters: filters,
+          repos: snapshot_context.repos,
+          events: Enum.map(page, &audit_event_payload/1),
+          event_types: @audit_event_types,
+          truncated?: overflow != [],
+          error: nil
+        }
+
+      {:error, reason} ->
+        %{
+          filters: filters,
+          repos: snapshot_context.repos,
+          events: [],
+          event_types: @audit_event_types,
+          truncated?: false,
+          error: %{code: "invalid_audit_filter", message: inspect(reason)}
+        }
+    end
+  end
+
   @spec refresh_payload(GenServer.name()) :: {:ok, map()} | {:error, :unavailable}
   def refresh_payload(orchestrator) do
     case Orchestrator.request_refresh(orchestrator) do
@@ -121,6 +175,117 @@ defmodule SymphonyElixirWeb.Presenter do
         {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
     end
   end
+
+  defp audit_snapshot_context(orchestrator, snapshot_timeout_ms) do
+    case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
+      %{} = snapshot ->
+        %{
+          repos: repo_keys(snapshot),
+          poll_interval_ms: get_in(snapshot, [:polling, :poll_interval_ms])
+        }
+
+      _ ->
+        %{repos: [], poll_interval_ms: nil}
+    end
+  end
+
+  defp audit_filters(params, snapshot_context) do
+    today = Date.utc_today() |> Date.to_iso8601()
+    date_from = present_param(params, "from") || present_param(params, "date_from") || today
+    date_to = present_param(params, "to") || present_param(params, "date_to") || date_from
+    since_last_poll? = truthy_param?(Map.get(params, "since_last_poll"))
+
+    %{
+      repo: normalize_audit_repo(present_param(params, "repo"), snapshot_context.repos),
+      issue: present_param(params, "issue"),
+      event_type: present_param(params, "type") || present_param(params, "event_type"),
+      run_id: present_param(params, "run_id"),
+      date_from: date_from,
+      date_to: date_to,
+      since_last_poll?: since_last_poll?,
+      since: audit_since(since_last_poll?, snapshot_context.poll_interval_ms)
+    }
+  end
+
+  defp normalize_audit_repo(nil, _repos), do: nil
+  defp normalize_audit_repo("all", _repos), do: nil
+  defp normalize_audit_repo(repo, []), do: repo
+  defp normalize_audit_repo(repo, repos), do: if(repo in repos, do: repo)
+
+  defp audit_since(false, _poll_interval_ms), do: nil
+
+  defp audit_since(true, poll_interval_ms) when is_integer(poll_interval_ms) and poll_interval_ms > 0 do
+    DateTime.utc_now()
+    |> DateTime.add(-poll_interval_ms, :millisecond)
+    |> DateTime.to_iso8601()
+  end
+
+  defp audit_since(true, _poll_interval_ms) do
+    DateTime.utc_now()
+    |> DateTime.add(-60, :second)
+    |> DateTime.to_iso8601()
+  end
+
+  defp audit_event_payload(event) do
+    %{
+      timestamp: Map.get(event, "timestamp"),
+      event_type: Map.get(event, "event_type"),
+      issue: Map.get(event, "issue_identifier") || Map.get(event, "issue_id"),
+      issue_id: Map.get(event, "issue_id"),
+      issue_identifier: Map.get(event, "issue_identifier"),
+      repo_key: Map.get(event, "repo_key"),
+      run_id: Map.get(event, "run_id"),
+      date: Map.get(event, "date"),
+      record_hash: Map.get(event, "record_hash"),
+      preview: audit_preview(event),
+      record: event,
+      record_json: encode_record(event)
+    }
+  end
+
+  defp audit_preview(event) do
+    body =
+      Map.drop(event, [
+        "timestamp",
+        "event_type",
+        "issue_id",
+        "issue_identifier",
+        "repo_key",
+        "run_id",
+        "date",
+        "previous_hash",
+        "record_hash"
+      ])
+
+    case Jason.encode(body) do
+      {:ok, json} -> String.slice(json, 0, 220)
+      {:error, _reason} -> "(unencodable record)"
+    end
+  end
+
+  defp encode_record(event) do
+    case Jason.encode(event, pretty: true) do
+      {:ok, json} -> json
+      {:error, _reason} -> "(unencodable record)"
+    end
+  end
+
+  defp present_param(params, key) do
+    case Map.get(params, key) do
+      value when is_binary(value) ->
+        value
+        |> String.trim()
+        |> case do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp truthy_param?(value), do: value in ["1", "true", "on", true]
 
   defp issue_payload_body(issue_identifier, running, retry, watching) do
     payload = %{

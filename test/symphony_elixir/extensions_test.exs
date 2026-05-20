@@ -4,6 +4,8 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias Mix.Tasks.Symphony.Audit
+  alias SymphonyElixir.AuditLog
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
   alias SymphonyElixirWeb.ObservabilityPubSub
@@ -795,6 +797,98 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert [%{"run_id" => "run-api-1"}] = report["runs"]
   end
 
+  test "audit api streams filtered NDJSON and paginates by cursor" do
+    audit_dir = use_audit_dir!()
+
+    for sequence <- 1..30 do
+      assert :ok =
+               AuditLog.record(
+                 %{
+                   repo_key: "default",
+                   issue_id: "issue-audit",
+                   issue_identifier: "RSM-AUDIT",
+                   run_id: "run-audit",
+                   timestamp: ~U[2026-05-07 12:00:00Z],
+                   event_type: "tool_call",
+                   sequence: sequence
+                 },
+                 dir: audit_dir
+               )
+    end
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "default",
+                 issue_id: "issue-other",
+                 issue_identifier: "RSM-OTHER",
+                 timestamp: ~U[2026-05-07 12:00:00Z],
+                 event_type: "file_change"
+               },
+               dir: audit_dir
+             )
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditApiOrchestrator), snapshot_timeout_ms: 5)
+
+    conn = get(build_conn(), "/api/v1/audit?issue=RSM-AUDIT&type=tool_call&from=2026-05-07&to=2026-05-07&limit=25")
+    lines = conn.resp_body |> String.split("\n", trim: true)
+
+    assert Plug.Conn.get_resp_header(conn, "content-type") == ["application/x-ndjson; charset=utf-8"]
+    assert length(lines) == 25
+    assert [%{"issue_identifier" => "RSM-AUDIT", "sequence" => 1} | _] = Enum.map(lines, &Jason.decode!/1)
+    assert [cursor] = Plug.Conn.get_resp_header(conn, "x-next-cursor")
+
+    next_conn =
+      get(
+        build_conn(),
+        "/api/v1/audit?issue=RSM-AUDIT&type=tool_call&from=2026-05-07&to=2026-05-07&cursor=#{URI.encode_www_form(cursor)}"
+      )
+
+    assert next_conn.resp_body |> String.split("\n", trim: true) |> length() == 5
+
+    last_page_conn = get(build_conn(), "/api/v1/audit?issue=RSM-AUDIT&from=2026-05-07&to=2026-05-07&limit=40")
+    assert Plug.Conn.get_resp_header(last_page_conn, "x-next-cursor") == []
+
+    invalid_limit_conn = get(build_conn(), "/api/v1/audit?issue=RSM-AUDIT&from=2026-05-07&to=2026-05-07&limit=bad")
+    assert json_response(invalid_limit_conn, 400)["error"]["code"] == "invalid_audit_filter"
+  end
+
+  test "audit api export matches mix symphony.audit output for the same filters" do
+    audit_dir = use_audit_dir!()
+    previous_shell = Mix.shell()
+    Mix.shell(Mix.Shell.Process)
+
+    on_exit(fn -> Mix.shell(previous_shell) end)
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "default",
+                 issue_id: "issue-cli",
+                 issue_identifier: "RSM-CLI",
+                 run_id: "run-cli",
+                 timestamp: ~U[2026-05-07 12:00:00Z],
+                 event_type: "tool_call"
+               },
+               dir: audit_dir
+             )
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditExportOrchestrator), snapshot_timeout_ms: 5)
+
+    download_conn = get(build_conn(), "/api/v1/audit?issue=issue-cli&from=2026-05-07&to=2026-05-07&download=1")
+
+    assert Plug.Conn.get_resp_header(download_conn, "content-disposition") ==
+             [~s(attachment; filename="symphony-audit.ndjson")]
+
+    no_download_conn = get(build_conn(), "/api/v1/audit?issue=issue-cli&from=2026-05-07&to=2026-05-07")
+    assert Plug.Conn.get_resp_header(no_download_conn, "content-disposition") == []
+
+    Audit.run(["issue-cli", "--from", "2026-05-07", "--to", "2026-05-07"])
+
+    assert_receive {:mix_shell, :info, [cli_line]}
+    assert download_conn.resp_body == cli_line <> "\n"
+  end
+
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
@@ -806,6 +900,9 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/api/v1/runs", %{}), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
+    assert json_response(post(build_conn(), "/api/v1/audit", %{}), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/", %{}), 405) ==
@@ -1480,6 +1577,119 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(name="outcome")
     assert html =~ ~s(href="/")
     assert html =~ "/api/v1/runs?export=json"
+  end
+
+  test "audit liveview renders empty state" do
+    use_audit_dir!()
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditEmptyLiveOrchestrator), snapshot_timeout_ms: 5)
+
+    {:ok, _view, html} = live(build_conn(), "/audit")
+
+    assert html =~ "Audit Timeline"
+    assert html =~ "No audit events match the current filters."
+    assert html =~ ~s(action="/audit")
+    assert html =~ ~s(href="/")
+  end
+
+  test "audit liveview filters timeline, expands records, verifies chain, and links export" do
+    audit_dir = use_audit_dir!()
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "default",
+                 issue_id: "issue-live-audit",
+                 issue_identifier: "RSM-AUDIT-LIVE",
+                 run_id: "run-live-audit",
+                 timestamp: ~U[2026-05-07 12:00:00Z],
+                 event_type: "tool_call",
+                 payload: %{safe: "visible"}
+               },
+               dir: audit_dir
+             )
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "default",
+                 issue_id: "issue-live-other",
+                 issue_identifier: "RSM-AUDIT-OTHER",
+                 timestamp: ~U[2026-05-07 12:00:00Z],
+                 event_type: "file_change"
+               },
+               dir: audit_dir
+             )
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "default",
+                 issue_id: "issue-live-short",
+                 issue_identifier: "RSM-AUDIT-SHORT",
+                 run_id: "short",
+                 timestamp: ~U[2026-05-07 12:00:00Z],
+                 event_type: "tool_call"
+               },
+               dir: audit_dir
+             )
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditLiveOrchestrator), snapshot_timeout_ms: 5)
+
+    {:ok, view, html} =
+      live(build_conn(), "/audit?issue=RSM-AUDIT-LIVE&type=tool_call&from=2026-05-07&to=2026-05-07")
+
+    assert html =~ "RSM-AUDIT-LIVE"
+    assert html =~ "tool_call"
+    assert html =~ "Full record"
+    assert html =~ ~s(&quot;safe&quot;: &quot;visible&quot;)
+    assert html =~ "/api/v1/audit?"
+    refute html =~ "RSM-AUDIT-OTHER"
+
+    assert render_click(view, "verify-chain") =~ "Chain verified for 2026-05-07."
+
+    path = Path.join(audit_dir, "2026-05-07.ndjson")
+    [first_line, second_line | rest] = path |> File.read!() |> String.split("\n", trim: true)
+    tampered_second = second_line |> Jason.decode!() |> Map.put("previous_hash", "tampered") |> Jason.encode!()
+    File.write!(path, Enum.join([first_line, tampered_second | rest], "\n") <> "\n")
+
+    assert render_click(view, "verify-chain") =~ "Chain break at"
+
+    {:ok, _all_view, all_html} = live(build_conn(), "/audit?from=2026-05-07&to=2026-05-07")
+    assert all_html =~ "short"
+    assert all_html =~ ">n/a</td>"
+
+    {:ok, _since_view, since_html} = live(build_conn(), "/audit?since_last_poll=1")
+    assert since_html =~ "since="
+    refute since_html =~ "since_last_poll=1"
+
+    {:ok, _error_view, error_html} = live(build_conn(), "/audit?from=bad-date")
+    assert error_html =~ "invalid_audit_filter"
+  end
+
+  test "audit liveview clears verify result on filter change" do
+    audit_dir = use_audit_dir!()
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "default",
+                 issue_id: "issue-verify-clear",
+                 issue_identifier: "RSM-VERIFY-CLEAR",
+                 timestamp: ~U[2026-05-07 12:00:00Z],
+                 event_type: "tool_call"
+               },
+               dir: audit_dir
+             )
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditClearOrchestrator), snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/audit?from=2026-05-07&to=2026-05-07")
+    assert render_click(view, "verify-chain") =~ "Chain verified for 2026-05-07."
+
+    {:ok, _next_view, next_html} =
+      live(build_conn(), "/audit?from=2026-05-07&to=2026-05-07&issue=RSM-VERIFY-CLEAR")
+
+    refute next_html =~ "Chain verified for"
   end
 
   test "learnings liveview renders records and filters by repo and tag" do
@@ -2244,6 +2454,31 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
+  end
+
+  defp use_audit_dir! do
+    previous_audit_dir = Application.get_env(:symphony_elixir, :audit_log_dir)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-audit-web-#{System.unique_integer([:positive])}"
+      )
+
+    audit_dir = Path.join(test_root, "audit")
+    Application.put_env(:symphony_elixir, :audit_log_dir, audit_dir)
+
+    on_exit(fn ->
+      if previous_audit_dir do
+        Application.put_env(:symphony_elixir, :audit_log_dir, previous_audit_dir)
+      else
+        Application.delete_env(:symphony_elixir, :audit_log_dir)
+      end
+
+      File.rm_rf(test_root)
+    end)
+
+    audit_dir
   end
 
   defp start_test_endpoint(overrides) do

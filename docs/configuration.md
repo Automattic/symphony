@@ -764,3 +764,7 @@ review_agent:
 - Reviewer sessions reuse the executor workspace checkout and receive read-only scoped tool lists.
   Linear/GitHub write tools are hidden from MCP listings and rejected if called directly.
   Reviewer token usage is stored separately while the aggregate run total remains budget-visible.
+- `agent.max_turns` budgets every reviewer-driven continuation turn. With `review_agent.enabled: true`,
+  size it to cover the executor turn, each correction round, and the final push handoff — i.e. at
+  least `2 + 2 * review_agent.max_iterations`. If `agent.max_turns` is too low Symphony stops the run
+  before the reviewer can hand off, leaving the workspace committed but unpushed.

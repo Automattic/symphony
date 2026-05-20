@@ -31,7 +31,7 @@ defmodule SymphonyElixir.ReviewAgent do
     with true <- enabled?(config),
          {:ok, source} <- source_material(issue, workspace, settings, opts),
          {:ok, raw_response} <- run_reviewer_agent(issue, workspace, settings, source, opts),
-         {:ok, verdict} <- parse_response(raw_response) do
+         {:ok, verdict} <- pick_review_response(raw_response) do
       {:ok, Map.put(verdict, :source, source)}
     else
       false -> {:ok, %{verdict: :approve, comments: [], reason: "review_agent disabled"}}
@@ -98,36 +98,38 @@ defmodule SymphonyElixir.ReviewAgent do
 
   defp run_reviewer_agent(issue, workspace, settings, source, opts) do
     config = settings.review_agent
-    reviewer_settings = reviewer_settings(settings, config)
-    agent_module = Keyword.get(opts, :review_agent_module) || agent_module(config.kind)
-    prompt = reviewer_prompt(issue, source, opts)
-    message_collector = Keyword.get(opts, :review_agent_message_collector, self())
-    on_message = reviewer_on_message(message_collector, Keyword.get(opts, :on_reviewer_message))
 
-    with {:ok, session} <-
-           agent_module.start_session(workspace,
-             worker_host: Keyword.get(opts, :worker_host),
-             settings: reviewer_settings,
-             issue: issue,
-             repo_key: Keyword.get(opts, :repo_key),
-             run_id: Keyword.get(opts, :run_id),
-             tool_scope: :read_only,
-             linear_comment_registry: Keyword.get(opts, :linear_comment_registry)
-           ) do
-      try do
-        case agent_module.run_turn(session, prompt, issue,
-               on_message: on_message,
+    with {:ok, agent_module} <- resolve_agent_module(opts, config) do
+      reviewer_settings = reviewer_settings(settings, config)
+      prompt = reviewer_prompt(issue, source, opts)
+      message_collector = Keyword.get(opts, :review_agent_message_collector, self())
+      on_message = reviewer_on_message(message_collector, Keyword.get(opts, :on_reviewer_message))
+
+      with {:ok, session} <-
+             agent_module.start_session(workspace,
+               worker_host: Keyword.get(opts, :worker_host),
                settings: reviewer_settings,
+               issue: issue,
                repo_key: Keyword.get(opts, :repo_key),
                run_id: Keyword.get(opts, :run_id),
                tool_scope: :read_only,
                linear_comment_registry: Keyword.get(opts, :linear_comment_registry)
              ) do
-          {:ok, result} -> {:ok, collected_response(result, message_collector)}
-          {:error, reason} -> {:error, {:review_agent_failed, reason}}
+        try do
+          case agent_module.run_turn(session, prompt, issue,
+                 on_message: on_message,
+                 settings: reviewer_settings,
+                 repo_key: Keyword.get(opts, :repo_key),
+                 run_id: Keyword.get(opts, :run_id),
+                 tool_scope: :read_only,
+                 linear_comment_registry: Keyword.get(opts, :linear_comment_registry)
+               ) do
+            {:ok, result} -> {:ok, response_payload(result, message_collector)}
+            {:error, reason} -> {:error, {:review_agent_failed, reason}}
+          end
+        after
+          agent_module.stop_session(session)
         end
-      after
-        agent_module.stop_session(session)
       end
     end
   end
@@ -136,8 +138,16 @@ defmodule SymphonyElixir.ReviewAgent do
     %{settings | agent: %{settings.agent | kind: config.kind, command: config.command}}
   end
 
-  defp agent_module("codex"), do: SymphonyElixir.Codex.AppServer
-  defp agent_module("claude"), do: SymphonyElixir.ClaudeCode.AppServer
+  defp resolve_agent_module(opts, %Schema.ReviewAgent{} = config) do
+    case Keyword.get(opts, :review_agent_module) do
+      nil -> agent_module(config.kind)
+      module when is_atom(module) -> {:ok, module}
+    end
+  end
+
+  defp agent_module("codex"), do: {:ok, SymphonyElixir.Codex.AppServer}
+  defp agent_module("claude"), do: {:ok, SymphonyElixir.ClaudeCode.AppServer}
+  defp agent_module(other), do: {:error, {:unsupported_review_agent_kind, other}}
 
   defp reviewer_prompt(issue, source, opts) do
     workflow_prompt =
@@ -191,15 +201,23 @@ defmodule SymphonyElixir.ReviewAgent do
 
   defp collect_message(_collector, _message), do: :ok
 
-  defp collected_response(result, collector) do
+  defp response_payload(result, collector) do
+    primary = result |> response_text() |> String.trim()
     messages = drain_collected_messages(collector, [])
 
-    [
-      response_text(result),
-      Enum.map_join(messages, "\n", &message_text/1)
-    ]
-    |> Enum.join("\n")
-    |> String.trim()
+    combined =
+      [primary, Enum.map_join(messages, "\n", &message_text/1)]
+      |> Enum.join("\n")
+      |> String.trim()
+
+    %{primary: primary, combined: combined}
+  end
+
+  defp pick_review_response(%{primary: primary, combined: combined}) do
+    case parse_response(primary) do
+      {:ok, _result} = ok -> ok
+      {:error, _reason} -> parse_response(combined)
+    end
   end
 
   defp drain_collected_messages(collector, acc) when is_pid(collector) do

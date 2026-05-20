@@ -4151,7 +4151,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reviewer_token_delta(%{agent_phase: :reviewer}, token_delta), do: token_delta
-  defp reviewer_token_delta(%{"agent_phase" => "reviewer"}, token_delta), do: token_delta
 
   defp reviewer_token_delta(_update, _token_delta) do
     %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}

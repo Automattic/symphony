@@ -44,9 +44,36 @@ defmodule SymphonyElixir.InitTest do
     assert File.read!(symphony_path) == Init.scaffold()
   end
 
-  test "rejects unsupported init arguments" do
+  test "rejects unknown switches with the offending flag in the message" do
     assert {:error, message} = Init.run(["--language", "elixir"], cwd: tmp_dir())
-    assert message == "Usage: symphony init [--force]"
+    assert message =~ "Unknown option --language"
+    assert message =~ "Usage: symphony init [--force]"
+  end
+
+  test "rejects stray positional arguments with the offending value in the message" do
+    assert {:error, message} = Init.run(["extra"], cwd: tmp_dir())
+    assert message =~ "Unexpected argument extra"
+    assert message =~ "Usage: symphony init [--force]"
+  end
+
+  test "returns a write error when the target directory does not exist" do
+    missing_root =
+      Path.join(System.tmp_dir!(), "symphony-init-missing-#{System.unique_integer([:positive])}")
+
+    refute File.exists?(missing_root)
+
+    assert {:error, message} = Init.run([], cwd: missing_root)
+    assert message =~ "Failed to write #{Path.join(missing_root, "symphony.yml")}"
+  end
+
+  test "agent skill paths resolve to the same shared SKILL.md content" do
+    canonical = Path.expand("../../.ai/skills/symphony-init-workflow/SKILL.md", __DIR__)
+    codex = Path.expand("../../.codex/skills/symphony-init-workflow/SKILL.md", __DIR__)
+    claude = Path.expand("../../.claude/skills/symphony-init-workflow/SKILL.md", __DIR__)
+
+    contents = File.read!(canonical)
+    assert File.read!(codex) == contents
+    assert File.read!(claude) == contents
   end
 
   test "shared workflow skill has valid front matter and resolves through agent skill links" do

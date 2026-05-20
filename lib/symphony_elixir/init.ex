@@ -25,7 +25,12 @@ defmodule SymphonyElixir.Init do
   @type result :: {:ok, String.t()} | {:error, String.t()}
 
   @spec run([String.t()]) :: result()
-  def run(args), do: run(args, cwd: File.cwd!())
+  def run(args) do
+    case File.cwd() do
+      {:ok, cwd} -> run(args, cwd: cwd)
+      {:error, reason} -> {:error, "Failed to read current directory: #{inspect(reason)}"}
+    end
+  end
 
   @spec run([String.t()], keyword()) :: result()
   def run(args, opts) do
@@ -43,7 +48,8 @@ defmodule SymphonyElixir.Init do
   defp parse_args(args) do
     case OptionParser.parse(args, strict: @switches, aliases: @aliases) do
       {opts, [], []} -> {:ok, opts}
-      _ -> {:error, @usage}
+      {_opts, _argv, [{flag, _value} | _rest]} -> {:error, "Unknown option #{flag}\n#{@usage}"}
+      {_opts, [extra | _rest], []} -> {:error, "Unexpected argument #{extra}\n#{@usage}"}
     end
   end
 
@@ -62,8 +68,10 @@ defmodule SymphonyElixir.Init do
 
   defp write_scaffold(path, content, force?) do
     if File.regular?(path) and not force? do
-      existing = File.read!(path)
-      {:error, conflict_message(path, existing, content)}
+      case File.read(path) do
+        {:ok, existing} -> {:error, conflict_message(path, existing, content)}
+        {:error, reason} -> {:error, "Failed to read #{path}: #{inspect(reason)}"}
+      end
     else
       case File.write(path, content) do
         :ok -> {:ok, "Wrote #{path}"}

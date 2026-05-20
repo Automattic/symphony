@@ -80,21 +80,26 @@ workflow prompts that let coding agents work safely.
 
 1. Get a Linear personal token from Settings -> Security & access -> Personal API keys, and export
    it as `LINEAR_API_KEY`.
-2. Run `symphony init` from the operator repo to scaffold `symphony.yml`, then edit the deterministic
-   operator fields such as tracker scope, agent command, workspace root, and `repos:`.
-3. Invoke the `symphony-init-workflow` skill from Codex or Claude in each target repo so the agent
-   inspects the repo and writes a tailored `WORKFLOW.md`.
-4. Install the Elixir/Erlang toolchain with `mise`.
-5. Start Symphony from this repository root.
+2. Install the Elixir/Erlang toolchain and build Symphony:
 
-```bash
-cd symphony
-mise trust
-mise install
-mise exec -- mix setup
-mise exec -- mix build
-mise exec -- ./bin/symphony
-```
+   ```bash
+   cd symphony
+   mise trust
+   mise install
+   mise exec -- mix setup
+   mise exec -- mix build
+   ```
+
+3. Run `mise exec -- ./bin/symphony init` from the operator repo to scaffold `symphony.yml`, then
+   edit the deterministic operator fields such as tracker scope, agent command, workspace root, and
+   `repos:`.
+4. Invoke the `symphony-init-workflow` skill from Codex or Claude in each target repo so the agent
+   inspects the repo and writes a tailored `WORKFLOW.md`.
+5. Start Symphony from this repository root:
+
+   ```bash
+   mise exec -- ./bin/symphony
+   ```
 
 The LiveView dashboard is available at `http://127.0.0.1:4000` by default when observability is
 enabled.

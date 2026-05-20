@@ -92,6 +92,22 @@ defmodule SymphonyElixir.CLITest do
     refute_received :started
   end
 
+  test "surfaces init errors verbatim without starting the runtime" do
+    parent = self()
+
+    deps =
+      base_deps(%{
+        init: fn _args -> {:error, "symphony.yml already exists"} end,
+        ensure_all_started: fn ->
+          send(parent, :started)
+          {:ok, [:symphony_elixir]}
+        end
+      })
+
+    assert {:error, "symphony.yml already exists"} = CLI.evaluate(["init"], deps)
+    refute_received :started
+  end
+
   test "defaults to ./symphony.yml when --config is omitted" do
     parent = self()
     expected_path = Path.expand("symphony.yml")

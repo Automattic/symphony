@@ -27,7 +27,7 @@ repos:
   - name: symphony
     # default: true                          # Fallback repo when an issue does not match another repo route.
     # path: ~/Projects/symphony              # Legacy base path for resolving workflow.
-    # base_branch: main                      # Self-review comparison branch; defaults to origin/HEAD or origin/main.
+    # base_branch: main                      # Review-agent comparison branch; defaults to origin/HEAD or origin/main.
     # team: ENG                              # Repo-level Linear team selector.
     # labels: [backend]                      # Repo-level Linear label selector.
     # assignee: me                           # Repo-level Linear assignee selector.
@@ -161,11 +161,6 @@ quality_gate:
   max_clarification_rounds: 2
   # min_score: 6                             # Legacy alias used only when pass_threshold is unset.
   on_error: pass                             # pass dispatches on scorer failure; skip retries later.
-
-# self_review:
-#   enabled: false                           # Pre-push LLM review of committed diff vs base_branch.
-#   provider: anthropic                      # anthropic | openai
-#   model: claude-haiku-4-5-20251001
 
 learnings:
   enabled: false                             # Requires pr_review.mode: polling.

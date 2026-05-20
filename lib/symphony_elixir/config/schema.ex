@@ -1244,41 +1244,6 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defmodule SelfReview do
-    @moduledoc false
-    use Ecto.Schema
-    import Ecto.Changeset
-
-    @type t :: %__MODULE__{}
-
-    @primary_key false
-    @providers ["anthropic", "openai"]
-    @fields [:enabled, :provider, :model]
-
-    embedded_schema do
-      field(:enabled, :boolean, default: false)
-      field(:provider, :string, default: "anthropic")
-      field(:model, :string, default: "claude-haiku-4-5-20251001")
-    end
-
-    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
-    def changeset(schema, attrs) do
-      schema
-      |> cast(attrs, @fields, empty_values: [])
-      |> validate_inclusion(:provider, @providers, message: "must be one of: #{Enum.join(@providers, ", ")}")
-      |> validate_required_when_enabled()
-    end
-
-    defp validate_required_when_enabled(changeset) do
-      if get_field(changeset, :enabled) do
-        changeset
-        |> validate_required([:provider, :model], message: "is required when self_review.enabled is true")
-      else
-        changeset
-      end
-    end
-  end
-
   defmodule ReviewAgent do
     @moduledoc false
     use Ecto.Schema
@@ -1554,7 +1519,6 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:learnings, Learnings, on_replace: :update, defaults_to_struct: true)
-    embeds_one(:self_review, SelfReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:review_agent, ReviewAgent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:dependencies, Dependencies, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Notifications, on_replace: :update, defaults_to_struct: true)
@@ -1562,22 +1526,42 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
+    config =
+      config
+      |> normalize_keys()
+      |> drop_nil_values()
+
+    with :ok <- reject_removed_keys(config),
+         {:ok, settings} <- apply_schema_changes(config),
+         :ok <- validate_finalized_settings(settings) do
+      {:ok, settings}
+    else
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, {:invalid_workflow_config, format_errors(changeset)}}
+
+      {:error, message} when is_binary(message) ->
+        {:error, {:invalid_workflow_config, message}}
+
+      {:error, {:invalid_workflow_config, _message}} = error ->
+        error
+    end
+  end
+
+  defp apply_schema_changes(config) do
     config
-    |> normalize_keys()
-    |> drop_nil_values()
     |> changeset()
     |> apply_action(:validate)
     |> case do
-      {:ok, settings} ->
-        settings = finalize_settings(settings)
+      {:ok, settings} -> {:ok, finalize_settings(settings)}
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
 
-        case validate_finalized_settings(settings) do
-          :ok -> {:ok, settings}
-          {:error, message} -> {:error, {:invalid_workflow_config, message}}
-        end
-
-      {:error, changeset} ->
-        {:error, {:invalid_workflow_config, format_errors(changeset)}}
+  defp reject_removed_keys(config) do
+    if Map.has_key?(config, "self_review") do
+      {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
+    else
+      :ok
     end
   end
 
@@ -1718,7 +1702,6 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:server, with: &Server.changeset/2)
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
     |> cast_embed(:learnings, with: &Learnings.changeset/2)
-    |> cast_embed(:self_review, with: &SelfReview.changeset/2)
     |> cast_embed(:review_agent, with: &ReviewAgent.changeset/2)
     |> cast_embed(:dependencies, with: &Dependencies.changeset/2)
     |> cast_embed(:notifications, with: &Notifications.changeset/2)

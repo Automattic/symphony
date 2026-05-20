@@ -131,7 +131,7 @@ between them or when porting a config across runtimes.
 | Continuation turns (`agent.max_turns`) | Reuses one app-server `threadId` across turns. | Re-launches `claude --print --output-format stream-json` per turn; continuation is workspace + prompt driven, no Symphony-managed resume id. |
 | Token budget enforcement (`agent.max_tokens_*`) | Most complete: app-server token events feed Symphony's structured path. | Best-effort until Claude usage events are normalized the same way. |
 
-The rest of `symphony.yml` (tracker, repos, workspace lifecycle, quality_gate, self_review,
+The rest of `symphony.yml` (tracker, repos, workspace lifecycle, quality_gate, review_agent,
 pr_review, ci, learnings, notifications, watchdog, dependencies, verification, github,
 observability) behaves the same regardless of `agent.kind`.
 
@@ -191,7 +191,7 @@ Per-repo fields:
 | --- | --- | --- |
 | `name` | yes | Unique. Surfaced as `<repo_key>` in dashboard URLs. |
 | `workflow` | no (default `WORKFLOW.md`) | Path to that repo's `WORKFLOW.md`. Relative paths resolve from the directory containing `symphony.yml` unless legacy `path` is set. |
-| `base_branch` | no | Integration branch used as the comparison base for pre-push self-review (e.g. `develop`). `origin/<branch>` and `refs/heads/<branch>` are accepted. When omitted, self-review uses `origin/HEAD`, falling back to `origin/main`. |
+| `base_branch` | no | Integration branch used as the comparison base for review-agent diff context (e.g. `develop`). `origin/<branch>` and `refs/heads/<branch>` are accepted. When omitted, the reviewer uses `origin/HEAD`, falling back to `origin/main`. |
 | `path` | no | Legacy checkout path used only as the base for relative `workflow` paths. `~` is expanded. |
 | `workspace.strategy` | no | `clone` or `worktree`. Overrides the global default for this repo. |
 | `workspace.repo` | no | Primary clone path when `strategy: worktree`. |
@@ -493,41 +493,6 @@ Notes:
 - `on_error: pass` (default) lets an issue qualify when the LLM call fails. `on_error: skip` is
   stricter: failure skips the cycle and retries on the next poll. Neither mode updates the cache
   on failure.
-
-### `self_review`
-
-```yaml
-self_review:
-  enabled: true
-  provider: anthropic              # or: openai
-  model: claude-haiku-4-5-20251001
-```
-
-Optional pre-push LLM gate. Disabled by default. When enabled, the workflow prompt tells the
-agent to pause before `git push`; Symphony then builds a structured context pack from the
-committed diff vs the repo's configured `base_branch` (falling back to `origin/HEAD`,
-`origin/main`).
-
-- **Blocking findings are limited** to `acceptance_criteria`, `commit_message`, or `scope_creep`.
-  Style, design, speculative risk, and subjective test-coverage opinions are discarded.
-- **Diffs are balanced per file:** every changed file is represented by path, status, stats,
-  classification, and hunk headers. Small source files can be full diffs; large source files and
-  generated, lock, or binary files are summarized with explicit coverage metadata. Each rendered
-  diff is clamped to `[12, 160]` lines. Legacy `diff_max_lines` and `max_rounds` keys are ignored.
-- The context pack also includes bounded nearby line windows around changed hunks, same-name test
-  files when tracked, and best-effort `rg` call-site matches for changed public function names
-  defined in Elixir (`def`/`defmacro`) or JS/TS (`function`, top-level `const`). Other languages
-  are not scanned in this first pass.
-- Reviewer output may include non-blocking advisory notes (`missing_context`, `test_evidence_gap`,
-  `docs_sync_risk`, `blast_radius_risk`, `review_coverage_low`). They can be carried into PR
-  context but do not block push.
-- Self-review audit events record coverage metadata (fully reviewed files, summarized files,
-  generated/lock/binary counts, adjacent-context coverage, validation evidence count, reviewer
-  comment count, whether CI context was included).
-- **Fail-open:** malformed LLM output or provider failures default to `approve`.
-- On `request_changes`, Symphony injects findings into one additional agent pass. Afterwards the
-  agent is prompted to push regardless; the PR body gets a `Known limitations from self-review`
-  block if findings remain.
 
 ### `pr_review`
 
@@ -875,10 +840,6 @@ quality_gate:
   clarification_floor: 4
   max_clarification_rounds: 2
   on_error: pass
-self_review:
-  enabled: false
-  provider: anthropic
-  model: claude-haiku-4-5-20251001
 dependencies:
   allow_registries: []
   allow_git_sources: []

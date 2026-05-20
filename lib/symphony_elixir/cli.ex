@@ -42,10 +42,42 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  @spec evaluate([String.t()]) :: :ok | {:error, String.t()}
+  def evaluate(args), do: evaluate(args, runtime_deps())
+
   @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
-  def evaluate(args, deps \\ runtime_deps()) do
+  def evaluate(["pr" | args], _deps) do
+    dispatch_pr(args)
+  end
+
+  def evaluate(args, deps) do
     with :ok <- configure(args, deps) do
       start_runtime(deps)
+    end
+  end
+
+  defp dispatch_pr(args) do
+    case OptionParser.parse(args, strict: [intent: :string]) do
+      {opts, [target], []} ->
+        pr_opts =
+          opts
+          |> Keyword.take([:intent])
+          |> Enum.reject(fn {_key, value} -> is_nil(value) or String.trim(value) == "" end)
+
+        case SymphonyElixir.ControlClient.dispatch_pr(target, pr_opts) do
+          {:ok, result} ->
+            IO.puts("Dispatched PR run: #{Map.get(result, :pull_request_url) || target}")
+            :ok
+
+          :unavailable ->
+            {:error, "Orchestrator unavailable"}
+
+          {:error, reason} ->
+            {:error, "PR dispatch failed: #{inspect(reason)}"}
+        end
+
+      _ ->
+        {:error, "Usage: symphony pr <url-or-number> [--intent \"address review comments\"]"}
     end
   end
 
@@ -103,7 +135,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]"
+    "Usage: symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]\n       symphony pr <url-or-number> [--intent \"address review comments\"]"
   end
 
   @spec runtime_deps() :: deps()

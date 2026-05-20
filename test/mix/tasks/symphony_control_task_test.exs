@@ -4,6 +4,7 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
   import ExUnit.CaptureIO
 
   alias Mix.Tasks.Symphony.Pause
+  alias Mix.Tasks.Symphony.Pr
   alias Mix.Tasks.Symphony.Resume
   alias Mix.Tasks.Symphony.Stop
   alias SymphonyElixir.ControlClient
@@ -26,10 +27,17 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
       send(Application.fetch_env!(:symphony_elixir, :control_task_test_recipient), {:stop, issue_id_or_identifier})
       Application.fetch_env!(:symphony_elixir, :control_task_test_result)
     end
+
+    @spec dispatch_pr(String.t(), keyword()) :: {:ok, map()}
+    def dispatch_pr(target, opts) do
+      send(Application.fetch_env!(:symphony_elixir, :control_task_test_recipient), {:dispatch_pr, target, opts})
+      Application.fetch_env!(:symphony_elixir, :control_task_test_result)
+    end
   end
 
   setup do
     Mix.Task.reenable("symphony.pause")
+    Mix.Task.reenable("symphony.pr")
     Mix.Task.reenable("symphony.resume")
     Mix.Task.reenable("symphony.stop")
 
@@ -103,6 +111,56 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
     assert_receive {:stop, "RSM-1"}
   end
 
+  test "pr task sends target and intent through the control client" do
+    Application.put_env(
+      :symphony_elixir,
+      :control_task_test_result,
+      {:ok, %{pull_request_url: "https://github.com/example/repo/pull/123"}}
+    )
+
+    output =
+      capture_io(fn ->
+        assert :ok = Pr.run(["123", "--intent", "address review comments"])
+      end)
+
+    assert output =~ "Dispatched PR run: https://github.com/example/repo/pull/123"
+    assert_receive {:dispatch_pr, "123", [intent: "address review comments"]}
+  end
+
+  test "pr task omits blank intent and falls back to target in output" do
+    Application.put_env(:symphony_elixir, :control_task_test_result, {:ok, %{}})
+
+    output =
+      capture_io(fn ->
+        assert :ok = Pr.run(["123", "--intent", " "])
+      end)
+
+    assert output =~ "Dispatched PR run: 123"
+    assert_receive {:dispatch_pr, "123", []}
+  end
+
+  test "pr task reports usage errors" do
+    assert_raise Mix.Error, ~r/Usage: mix symphony\.pr/, fn ->
+      Pr.run([])
+    end
+  end
+
+  test "pr task reports unavailable orchestrator" do
+    Application.put_env(:symphony_elixir, :control_task_test_result, :unavailable)
+
+    assert_raise Mix.Error, "Orchestrator unavailable", fn ->
+      Pr.run(["123"])
+    end
+  end
+
+  test "pr task reports dispatch failures" do
+    Application.put_env(:symphony_elixir, :control_task_test_result, {:error, :boom})
+
+    assert_raise Mix.Error, "PR dispatch failed: :boom", fn ->
+      Pr.run(["123"])
+    end
+  end
+
   test "control client calls a running node over rpc when no local orchestrator is present" do
     target = :"symphony@127.0.0.1"
     parent = self()
@@ -131,6 +189,24 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
     assert local_node |> Atom.to_string() |> String.starts_with?("symphony_ctl_")
     assert_receive {:connect, ^target}
     assert_receive :rpc_called
+  end
+
+  test "control client can dispatch PR runs over rpc" do
+    target = :"symphony@127.0.0.1"
+
+    result =
+      ControlClient.dispatch_pr("123", [intent: "fix CI"],
+        prefer_local?: false,
+        target_node: target,
+        node_alive?: fn -> false end,
+        node_start: fn _local_node, :longnames -> {:ok, self()} end,
+        connect: fn ^target -> true end,
+        rpc: fn ^target, SymphonyElixir.Orchestrator, :dispatch_pr, ["123", [intent: "fix CI"]], 15_000 ->
+          {:ok, %{pull_request_url: "https://github.com/example/repo/pull/123"}}
+        end
+      )
+
+    assert {:ok, %{pull_request_url: "https://github.com/example/repo/pull/123"}} = result
   end
 
   test "control client uses SYMPHONY_COOKIE when present" do

@@ -78,6 +78,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply, reload_after_control(socket, result)}
   end
 
+  def handle_event("run-pr", %{"pr" => params}, socket) do
+    target = params |> Map.get("target", "") |> String.trim()
+    intent = params |> Map.get("intent", "") |> String.trim()
+
+    result =
+      if target == "" do
+        {:error, :missing_pr_target}
+      else
+        pr_opts = if intent == "", do: [], else: [intent: intent]
+        SymphonyElixir.Orchestrator.dispatch_pr(orchestrator(), target, pr_opts)
+      end
+
+    {:noreply, reload_after_control(socket, result)}
+  end
+
   def handle_event("filter-repo", %{"repo" => repo_filter}, socket) do
     repo_filter = normalize_repo_filter(repo_filter, socket.assigns.payload)
 
@@ -211,6 +226,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <span :if={@dashboard_refreshing?} class="dashboard-refresh-status">Updating...</span>
         </section>
 
+        <section class="dashboard-filter-card">
+          <form phx-submit="run-pr" class="dashboard-pr-run-form">
+            <label class="dashboard-filter-field">
+              <span>Run on PR</span>
+              <input name="pr[target]" type="text" placeholder="URL or number" aria-label="Pull request URL or number" />
+            </label>
+            <label class="dashboard-filter-field dashboard-pr-intent-field">
+              <span>Intent</span>
+              <input name="pr[intent]" type="text" placeholder="address review comments" aria-label="PR run intent" />
+            </label>
+            <button type="submit" class="secondary">Run</button>
+          </form>
+        </section>
+
         <section class="metric-grid dashboard-metrics">
           <article class="metric-card">
             <p class="metric-label">Running</p>
@@ -311,6 +340,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           <span class="issue-id"><%= entry.issue_identifier %></span>
                         <% end %>
                         <.repo_chip repo={repo_label(entry)} />
+                        <span :if={entry.run_kind == :pr || entry.run_kind == "pr"} class="repo-chip repo-chip-pr">
+                          <span class="repo-chip-text">PR</span>
+                        </span>
                       </div>
                     </td>
                     <td>
@@ -363,6 +395,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td class="links-cell">
                       <div class="link-actions">
+                        <a :if={entry.pull_request_url} class="action-pill" href={entry.pull_request_url} target="_blank" rel="noreferrer">PR</a>
                         <a class="action-pill" href={transcript_path(entry)}>Transcript</a>
                         <a class="action-pill" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                       </div>

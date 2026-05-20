@@ -113,7 +113,7 @@ defmodule SymphonyElixir.TestSupport do
   defp split_workflow_content(path, overrides) do
     {:ok, {config, prompt}} = SymphonyElixir.Workflow.parse_document(workflow_content(overrides))
 
-    repo_config = Map.take(config, ["hooks", "verification"])
+    repo_config = Map.take(config, ["hooks", "prompts", "verification"])
     repos = Map.get(config, "repos")
     tracker_team = get_in(config, ["tracker", "team"])
     default_team = if is_binary(tracker_team) and String.trim(tracker_team) != "", do: tracker_team, else: "Test"
@@ -129,7 +129,7 @@ defmodule SymphonyElixir.TestSupport do
 
     system_config =
       config
-      |> Map.drop(["hooks", "verification"])
+      |> Map.drop(["hooks", "prompts", "verification"])
       |> Map.put("repos", repos || default_repos)
 
     {system_config, repo_config, prompt}
@@ -313,6 +313,10 @@ defmodule SymphonyElixir.TestSupport do
 
     case restart_supervised_child(SymphonyElixir.RunStore) do
       :ok ->
+        wait_for_named_process!(SymphonyElixir.RunStore)
+
+      {:error, :not_found} ->
+        recover_missing_application_supervisor!()
         wait_for_named_process!(SymphonyElixir.RunStore)
 
       {:error, restart_reason} ->
@@ -523,6 +527,7 @@ defmodule SymphonyElixir.TestSupport do
           hook_after_run: nil,
           hook_before_remove: nil,
           hook_timeout_ms: 60_000,
+          prompts: nil,
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
@@ -592,6 +597,7 @@ defmodule SymphonyElixir.TestSupport do
     hook_after_run = Keyword.get(config, :hook_after_run)
     hook_before_remove = Keyword.get(config, :hook_before_remove)
     hook_timeout_ms = Keyword.get(config, :hook_timeout_ms)
+    prompts = Keyword.get(config, :prompts)
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
@@ -661,6 +667,7 @@ defmodule SymphonyElixir.TestSupport do
         "  stall_timeout_ms: #{yaml_value(agent_stall_timeout_ms)}",
         "  command_timeout_ms: #{yaml_value(agent_command_timeout_ms)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
+        prompts_yaml(prompts),
         observability_yaml(
           observability_enabled,
           observability_refresh_ms,
@@ -992,6 +999,9 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp notification_headers_yaml(_headers), do: nil
+
+  defp prompts_yaml(nil), do: nil
+  defp prompts_yaml(prompts), do: "prompts: #{yaml_value(prompts)}"
 
   defp map_from(opts) when is_list(opts), do: Enum.into(opts, %{})
   defp map_from(opts) when is_map(opts), do: opts

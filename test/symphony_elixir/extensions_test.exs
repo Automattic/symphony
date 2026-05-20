@@ -445,6 +445,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
                  "url" => "https://linear.app/example/issue/MT-HTTP",
+                 "run_kind" => nil,
+                 "pull_request_url" => nil,
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",

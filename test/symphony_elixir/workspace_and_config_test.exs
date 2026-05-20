@@ -127,6 +127,123 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "worktree strategy can create a PR workspace from an explicit head ref" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-pr-head-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      origin_repo = Path.join(test_root, "origin.git")
+      peer_repo = Path.join(test_root, "peer")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo, origin_repo)
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+      git!(peer_repo, ["checkout", "-b", "feature/pr-head"])
+      File.write!(Path.join(peer_repo, "pr.txt"), "from pr branch\n")
+      git!(peer_repo, ["add", "pr.txt"])
+      git!(peer_repo, ["commit", "-m", "pr branch"])
+      git!(peer_repo, ["push", "origin", "feature/pr-head"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo
+      )
+
+      issue = %Issue{
+        identifier: "PR-42",
+        workspace_branch: "feature/pr-head",
+        workspace_base_ref: "origin/feature/pr-head"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "pr.txt")) == "from pr branch\n"
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "feature/pr-head"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "worktree strategy resets existing PR branch to explicit head ref" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-pr-reset-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      origin_repo = Path.join(test_root, "origin.git")
+      peer_repo = Path.join(test_root, "peer")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo, origin_repo)
+      git!(primary_repo, ["checkout", "-b", "feature/pr-reset"])
+      File.write!(Path.join(primary_repo, "pr.txt"), "stale local branch\n")
+      git!(primary_repo, ["add", "pr.txt"])
+      git!(primary_repo, ["commit", "-m", "stale local branch"])
+      git!(primary_repo, ["checkout", "main"])
+
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+      git!(peer_repo, ["checkout", "-b", "feature/pr-reset"])
+      File.write!(Path.join(peer_repo, "pr.txt"), "fetched pr head\n")
+      git!(peer_repo, ["add", "pr.txt"])
+      git!(peer_repo, ["commit", "-m", "pr branch"])
+      git!(peer_repo, ["push", "origin", "feature/pr-reset"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo
+      )
+
+      issue = %Issue{
+        identifier: "PR-44",
+        workspace_branch: "feature/pr-reset",
+        workspace_base_ref: "origin/feature/pr-reset"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "pr.txt")) == "fetched pr head\n"
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "feature/pr-reset"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "after_create hook receives PR workspace branch for clone-style workspaces" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-pr-hook-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf '%s' \"$SYMPHONY_BRANCH\" > branch.txt"
+      )
+
+      issue = %Issue{
+        identifier: "PR-43",
+        workspace_branch: "feature/pr-hook"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "branch.txt")) == "feature/pr-hook"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "repo-level worktree settings select the matched repo primary clone" do
     test_root =
       Path.join(

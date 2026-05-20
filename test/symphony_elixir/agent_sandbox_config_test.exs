@@ -436,7 +436,22 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
   end
 
   test "srt settings keep absolute write roots when canonicalization fails" do
-    missing_path = "/dev/fd/2147483647"
+    # Force a non-:enoent lstat error by traversing through a regular file as
+    # if it were a directory (yields :enotdir on every POSIX kernel). A simply
+    # non-existent path won't do: canonicalize treats :enoent as a successful
+    # match and returns {:ok, path}.
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-srt-canonicalize-fail-#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    File.mkdir_p!(test_root)
+    blocker = Path.join(test_root, "blocker")
+    File.touch!(blocker)
+    missing_path = Path.join(blocker, "child")
 
     assert {:error, _reason} = PathSafety.canonicalize(missing_path)
 

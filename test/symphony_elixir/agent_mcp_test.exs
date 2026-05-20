@@ -68,6 +68,15 @@ defmodule SymphonyElixir.AgentMcpTest do
              "url" => "https://mcp.example/http",
              "headers" => %{"Authorization" => "Bearer test"}
            }
+
+    assert AgentMcp.normalize_claude_server_config(%{
+             "type" => :custom,
+             custom: %{nested_key: "value"},
+             empty: []
+           }) == %{
+             "type" => :custom,
+             "custom" => %{"nested_key" => "value"}
+           }
   end
 
   describe "env and headers $VAR expansion" do

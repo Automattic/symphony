@@ -38,6 +38,23 @@ defmodule SymphonyElixir.ClaudeCode.McpConfigTest do
     assert {:ok, %{}} = McpConfig.inherited_servers(settings, missing_path)
   end
 
+  test "invalid settings return no inherited servers without reading host config" do
+    missing_path = Path.join(System.tmp_dir!(), "missing-claude-#{System.unique_integer([:positive])}.json")
+
+    assert {:ok, %{}} = McpConfig.inherited_servers(%{}, missing_path)
+    assert {:ok, %{}} = McpConfig.inherited_servers(%Schema{agent: %{}}, missing_path)
+  end
+
+  test "host Claude config read failures return structured errors" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-claude-mcp-read-error-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(test_root) end)
+    File.mkdir_p!(test_root)
+    settings = settings!(%{inherit: "allowlist", allowed_servers: ["filesystem"]})
+
+    assert {:error, {:claude_mcp_inheritance_read_failed, ^test_root, _reason}} =
+             McpConfig.inherited_servers(settings, test_root)
+  end
+
   test "inherit none does not read host Claude config" do
     missing_path = Path.join(System.tmp_dir!(), "missing-claude-#{System.unique_integer([:positive])}.json")
     settings = settings!(%{inherit: "none"})
@@ -68,6 +85,12 @@ defmodule SymphonyElixir.ClaudeCode.McpConfigTest do
 
     assert {:error, {:claude_mcp_inheritance_invalid_config, ^wrong_shape_path, :invalid_mcp_servers}} =
              McpConfig.inherited_servers(settings, wrong_shape_path)
+
+    invalid_root_path = Path.join(test_root, "invalid-root.json")
+    File.write!(invalid_root_path, Jason.encode!([]))
+
+    assert {:error, {:claude_mcp_inheritance_invalid_config, ^invalid_root_path, :invalid_root}} =
+             McpConfig.inherited_servers(settings, invalid_root_path)
 
     invalid_server_path = Path.join(test_root, "invalid-server.json")
     File.write!(invalid_server_path, Jason.encode!(%{"mcpServers" => %{"filesystem" => []}}))

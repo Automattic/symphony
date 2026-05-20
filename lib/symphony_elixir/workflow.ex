@@ -66,6 +66,25 @@ defmodule SymphonyElixir.Workflow do
           prompt_template: String.t()
         }
 
+  @spec prompt_template(loaded_workflow(), :issue | :pr | String.t() | atom()) :: String.t() | nil
+  def prompt_template(%{config: config, prompt_template: prompt}, mode) when is_map(config) do
+    mode = mode |> to_string()
+
+    config
+    |> Map.get("prompts", %{})
+    |> case do
+      prompts when is_map(prompts) -> Map.get(prompts, mode)
+      _prompts -> nil
+    end
+    |> case do
+      configured when is_binary(configured) -> configured
+      _missing when mode == "issue" -> prompt
+      _missing -> nil
+    end
+  end
+
+  def prompt_template(_workflow, _mode), do: nil
+
   @spec current() :: {:ok, loaded_workflow()} | {:error, term()}
   def current do
     case Process.whereis(WorkflowStore) do

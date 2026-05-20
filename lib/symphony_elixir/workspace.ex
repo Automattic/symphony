@@ -154,13 +154,16 @@ defmodule SymphonyElixir.Workspace do
   defp ensure_worktree_workspace(workspace, issue_context, nil, settings) do
     with {:ok, repo} <- local_worktree_repo(settings),
          :ok <- maybe_fetch_worktree_repo(repo, settings),
-         {:ok, created?} <- add_or_reuse_local_worktree(repo, workspace, worktree_branch(issue_context)) do
+         branch = worktree_branch(issue_context),
+         base_ref = worktree_base_ref(issue_context),
+         {:ok, created?} <- add_or_reuse_local_worktree(repo, workspace, branch, base_ref) do
       {:ok, workspace, created?}
     end
   end
 
   defp ensure_worktree_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
     branch = worktree_branch(issue_context)
+    base_ref = worktree_base_ref(issue_context)
 
     script =
       [
@@ -169,6 +172,7 @@ defmodule SymphonyElixir.Workspace do
         remote_shell_assign("repo", settings.workspace.repo || ""),
         remote_shell_assign("workspace", workspace),
         "branch=#{shell_escape(branch)}",
+        "base_ref=#{shell_escape(base_ref || "HEAD")}",
         "if [ -z \"$repo\" ]; then",
         "  echo \"workspace_repo_missing: workspace.repo is required for worktree strategy\"",
         "  exit 41",
@@ -242,40 +246,64 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp add_or_reuse_local_worktree(repo, workspace, branch) do
+  defp add_or_reuse_local_worktree(repo, workspace, branch, base_ref) do
     cond do
       File.dir?(workspace) ->
-        case registered_worktree?(repo, workspace) do
-          true -> {:ok, false}
-          false -> {:error, {:workspace_not_registered_worktree, workspace}}
-        end
+        reuse_local_worktree(repo, workspace, base_ref)
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
-        add_local_worktree(repo, workspace, branch)
+        add_local_worktree(repo, workspace, branch, base_ref)
 
       true ->
-        add_local_worktree(repo, workspace, branch)
+        add_local_worktree(repo, workspace, branch, base_ref)
     end
   end
 
-  defp add_local_worktree(repo, workspace, branch) do
+  defp reuse_local_worktree(repo, workspace, base_ref) do
+    case registered_worktree?(repo, workspace) do
+      true ->
+        with :ok <- reset_worktree_to_base_ref(workspace, base_ref) do
+          {:ok, false}
+        end
+
+      false ->
+        {:error, {:workspace_not_registered_worktree, workspace}}
+    end
+  end
+
+  # PR runs pass an explicit base_ref (e.g. "origin/<head>") so a redispatch sees
+  # the latest PR head. Issue runs pass nil and keep the existing worktree state.
+  defp reset_worktree_to_base_ref(_workspace, nil), do: :ok
+  defp reset_worktree_to_base_ref(_workspace, ""), do: :ok
+
+  defp reset_worktree_to_base_ref(workspace, base_ref) when is_binary(base_ref) do
+    run_git(workspace, ["reset", "--hard", base_ref])
+  end
+
+  defp add_local_worktree(repo, workspace, branch, base_ref) do
     File.mkdir_p!(Path.dirname(workspace))
 
-    with :ok <- run_git(repo, worktree_add_args(repo, workspace, branch)) do
+    with :ok <- run_git(repo, worktree_add_args(repo, workspace, branch, base_ref)) do
       {:ok, true}
     end
   end
 
-  defp worktree_add_args(repo, workspace, branch) do
-    case git_branch_exists?(repo, branch) do
-      true -> ["worktree", "add", workspace, branch]
-      false -> ["worktree", "add", "-b", branch, workspace, "HEAD"]
+  defp worktree_add_args(repo, workspace, branch, base_ref) do
+    cond do
+      is_binary(base_ref) and base_ref != "" ->
+        ["worktree", "add", "-B", branch, workspace, base_ref]
+
+      git_branch_exists?(repo, branch) ->
+        ["worktree", "add", workspace, branch]
+
+      true ->
+        ["worktree", "add", "-b", branch, workspace, "HEAD"]
     end
   end
 
   defp remote_worktree_add_command do
-    "if git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
+    "if [ \"$base_ref\" != \"HEAD\" ]; then git -C \"$repo\" worktree add -B \"$branch\" \"$workspace\" \"$base_ref\"; elif git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
   end
 
   # Builds the shell preamble that canonicalizes the remote workspace root
@@ -872,11 +900,18 @@ defmodule SymphonyElixir.Workspace do
     {:ok, Path.join([Config.settings!().workspace.root, safe_repo_key, safe_id])}
   end
 
+  defp worktree_branch(%{workspace_branch: branch}) when is_binary(branch) and branch != "" do
+    branch
+  end
+
   defp worktree_branch(%{issue_identifier: identifier}) when is_binary(identifier) and identifier != "" do
     "auto/#{identifier}"
   end
 
   defp worktree_branch(_issue_context), do: "auto/issue"
+
+  defp worktree_base_ref(%{workspace_base_ref: base_ref}) when is_binary(base_ref) and base_ref != "", do: base_ref
+  defp worktree_base_ref(_issue_context), do: nil
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
     hooks = hooks_for_issue_context(issue_context)
@@ -888,13 +923,16 @@ defmodule SymphonyElixir.Workspace do
             :ok
 
           command ->
+            env = workspace_ref_hook_env(issue_context)
+
             run_hook(
               command,
               workspace,
               issue_context,
               "after_create",
               worker_host,
-              hooks.timeout_ms
+              hooks.timeout_ms,
+              env
             )
         end
 
@@ -1005,7 +1043,7 @@ defmodule SymphonyElixir.Workspace do
   defp ignore_hook_failure(:ok), do: :ok
   defp ignore_hook_failure({:error, _reason}), do: :ok
 
-  defp before_remove_hook_env(issue_context) do
+  defp workspace_ref_hook_env(issue_context) do
     settings = settings_for_issue_context(issue_context)
     branch = worktree_branch(issue_context)
 
@@ -1014,6 +1052,8 @@ defmodule SymphonyElixir.Workspace do
       repo -> [{"SYMPHONY_REPO", repo}, {"SYMPHONY_BRANCH", branch}]
     end
   end
+
+  defp before_remove_hook_env(issue_context), do: workspace_ref_hook_env(issue_context)
 
   defp configured_hook_repo(issue_context, settings) do
     issue_context
@@ -1089,7 +1129,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp remote_before_remove_repo_env_fallback(_settings), do: []
 
-  defp run_hook(command, workspace, issue_context, hook_name, worker_host, timeout_ms, env \\ [])
+  defp run_hook(command, workspace, issue_context, hook_name, worker_host, timeout_ms, env)
 
   defp run_hook(command, workspace, issue_context, hook_name, nil, timeout_ms, env) do
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
@@ -1395,6 +1435,8 @@ defmodule SymphonyElixir.Workspace do
       issue_id: issue_id,
       repo_key: issue_repo_key(issue, repo_key),
       issue_identifier: identifier || "issue",
+      workspace_branch: workspace_branch(issue),
+      workspace_base_ref: workspace_base_ref(issue),
       labels: issue_labels(issue)
     }
   end
@@ -1404,6 +1446,8 @@ defmodule SymphonyElixir.Workspace do
       issue_id: nil,
       repo_key: normalize_repo_key(repo_key),
       issue_identifier: identifier,
+      workspace_branch: nil,
+      workspace_base_ref: nil,
       labels: []
     }
   end
@@ -1413,6 +1457,8 @@ defmodule SymphonyElixir.Workspace do
       issue_id: nil,
       repo_key: normalize_repo_key(repo_key),
       issue_identifier: "issue",
+      workspace_branch: nil,
+      workspace_base_ref: nil,
       labels: []
     }
   end
@@ -1420,6 +1466,14 @@ defmodule SymphonyElixir.Workspace do
   defp issue_repo_key(%{repo_key: repo_key}, _fallback), do: normalize_repo_key(repo_key)
   defp issue_repo_key(%{"repo_key" => repo_key}, _fallback), do: normalize_repo_key(repo_key)
   defp issue_repo_key(_issue, fallback), do: normalize_repo_key(fallback)
+
+  defp workspace_branch(%{workspace_branch: branch}) when is_binary(branch), do: String.trim(branch)
+  defp workspace_branch(%{"workspace_branch" => branch}) when is_binary(branch), do: String.trim(branch)
+  defp workspace_branch(_issue), do: nil
+
+  defp workspace_base_ref(%{workspace_base_ref: ref}) when is_binary(ref), do: String.trim(ref)
+  defp workspace_base_ref(%{"workspace_base_ref" => ref}) when is_binary(ref), do: String.trim(ref)
+  defp workspace_base_ref(_issue), do: nil
 
   defp normalize_repo_key(repo_key) when is_binary(repo_key) and repo_key != "", do: repo_key
   defp normalize_repo_key(_repo_key), do: Config.repo_key!()

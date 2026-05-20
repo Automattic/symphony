@@ -70,6 +70,8 @@ stops the active agent for that issue and cleans up matching workspaces.
 - **Verification dev server orchestration** for parallel worktree runs: per-issue port allocation,
   dev-server lifecycle, and health checks via `SYMPHONY_VERIFICATION_PORT`.
 - **Learnings capture** from merged PR reviews, fed back into future workflow prompts.
+- **Executor + reviewer runs** with an optional read-only reviewer agent that gates the executor's
+  push on a structured verdict.
 - **Docker runner** for hosting Symphony with mounted repos, state, logs, and agent credentials.
 
 ## Setup

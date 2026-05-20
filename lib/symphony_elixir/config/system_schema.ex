@@ -11,7 +11,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
   @primary_key false
   @allowed_keys ~w(
     agent ci dependencies dispatch github learnings notifications observability polling pr_review quality_gate repos self_review
-    server token_budget tracker verification watchdog worker workspace
+    review_agent server token_budget tracker verification watchdog worker workspace
   )
 
   defmodule Repo do
@@ -134,6 +134,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     embeds_one(:quality_gate, Schema.QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:learnings, Schema.Learnings, on_replace: :update, defaults_to_struct: true)
     embeds_one(:self_review, Schema.SelfReview, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:review_agent, Schema.ReviewAgent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:dependencies, Schema.Dependencies, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Schema.Notifications, on_replace: :update, defaults_to_struct: true)
     embeds_many(:repos, Repo, on_replace: :delete)
@@ -178,6 +179,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
       "quality_gate" => struct_to_map(system_config.quality_gate),
       "learnings" => struct_to_map(system_config.learnings),
       "self_review" => struct_to_map(system_config.self_review),
+      "review_agent" => struct_to_map(system_config.review_agent),
       "dependencies" => struct_to_map(system_config.dependencies),
       "notifications" => notifications_to_map(system_config.notifications)
     }
@@ -238,6 +240,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast_embed(:quality_gate, with: &Schema.QualityGate.changeset/2)
     |> cast_embed(:learnings, with: &Schema.Learnings.changeset/2)
     |> cast_embed(:self_review, with: &Schema.SelfReview.changeset/2)
+    |> cast_embed(:review_agent, with: &Schema.ReviewAgent.changeset/2)
     |> cast_embed(:dependencies, with: &Schema.Dependencies.changeset/2)
     |> cast_embed(:notifications, with: &Schema.Notifications.changeset/2)
     |> cast_embed(:repos, with: &Repo.changeset/2, required: true)

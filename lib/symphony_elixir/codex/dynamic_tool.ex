@@ -247,6 +247,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "github.list_pr_reviews" => "github_list_pr_reviews",
     "github.get_failed_run_log" => "github_get_failed_run_log"
   }
+  @read_only_tools MapSet.new([
+                     "linear_get_current_issue",
+                     "linear_get_subissues",
+                     "linear_get_parent_issue",
+                     "linear_get_comments",
+                     "linear_get_related_issues",
+                     "github_get_pull_request",
+                     "github_get_pr_checks",
+                     "github_list_pr_comments",
+                     "github_list_pr_review_comments",
+                     "github_list_pr_reviews",
+                     "github_get_failed_run_log"
+                   ])
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
@@ -255,7 +268,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     case Map.fetch(@allowed_arguments, tool) do
       {:ok, allowed_arguments} ->
-        with_arguments(tool, arguments, allowed_arguments, fn args -> execute_tool(tool, context, args, opts) end)
+        with_arguments(tool, arguments, allowed_arguments, &execute_authorized_tool(tool, context, &1, opts))
 
       :error ->
         tool_not_found_response(tool)
@@ -264,6 +277,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @spec tool_specs() :: [map()]
   def tool_specs, do: @tool_schemas
+
+  @spec tool_specs(:default | :read_only | nil) :: [map()]
+  def tool_specs(:read_only), do: Enum.filter(@tool_schemas, &(Map.get(&1, "name") in @read_only_tools))
+  def tool_specs(_scope), do: tool_specs()
 
   defp tool_context(opts) do
     %{
@@ -288,6 +305,23 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp execute_tool("linear_" <> _rest = tool, context, args, opts), do: execute_linear_tool(tool, context, args, opts)
   defp execute_tool("github_" <> _rest = tool, context, args, opts), do: execute_github_tool(tool, context, args, opts)
+
+  defp execute_authorized_tool(tool, context, args, opts) do
+    case authorize_tool_scope(tool, opts) do
+      :ok -> execute_tool(tool, context, args, opts)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp authorize_tool_scope(tool, opts) do
+    case Keyword.get(opts, :tool_scope) do
+      :read_only ->
+        if MapSet.member?(@read_only_tools, tool), do: :ok, else: {:error, {:tool_scope_rejected, :read_only, tool}}
+
+      _scope ->
+        :ok
+    end
+  end
 
   defp execute_linear_tool("linear_get_current_issue", context, _args, opts), do: Linear.get_current_issue(context, opts)
   defp execute_linear_tool("linear_get_subissues", context, _args, opts), do: Linear.get_subissues(context, opts)
@@ -474,6 +508,17 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "code" => "unexpected_arguments",
         "message" => "Unexpected argument(s): #{Enum.join(keys, ", ")}.",
         "arguments" => keys
+      }
+    }
+  end
+
+  defp tool_error_payload({:tool_scope_rejected, :read_only, tool}) do
+    %{
+      "error" => %{
+        "code" => "tool_scope_rejected",
+        "message" => "The reviewer tool scope is read-only; #{tool} is not available in this phase.",
+        "tool" => tool,
+        "scope" => "read_only"
       }
     }
   end

@@ -213,6 +213,12 @@ agent:
     kind: none
     command: srt
     enable_weaker_network_isolation: false
+review_agent:
+  enabled: false
+  # When enabled, kind and command are required and may match or differ from agent.
+  # kind: codex
+  # command: codex app-server
+  # max_iterations: 1
 pr_review:
   mode: tracker
   # The following keys are polling-mode only and are ignored while mode is tracker.
@@ -512,6 +518,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   budget, and active session rows show per-issue token usage with remaining headroom. Token displays
   include cached and uncached input when the agent reports cached input tokens, so large gross totals
   can be distinguished from fresh context.
+- `review_agent` enables an executor + reviewer run shape. It is disabled by default. When enabled,
+  Symphony injects prompt guidance telling the executor to stop before push, runs a second app-server
+  agent in the same workspace with read-only Linear/GitHub tools, and requires a structured reviewer
+  JSON verdict. `approve` injects a push handoff prompt, `request_changes` injects reviewer comments
+  into one more executor pass while `max_iterations` allows it, and `block` fails the worker run
+  without pushing. Reviewer token usage is tracked separately from total run token usage for
+  observability.
 - `github.enterprise_hosts` is an exact host allowlist for GitHub Enterprise PR and repository
   URLs. `github.com` and `www.github.com` are always accepted; other GitHub-like hostnames are
   ignored unless listed here.
@@ -729,3 +742,25 @@ self_review:
   follow-up pass, Symphony prompts the agent to push regardless and includes a
   `Known limitations from self-review` PR body block when the final non-blocking pass still reports
   findings.
+
+## Review Agent
+
+The optional `review_agent` block runs a second configured coding agent after the executor finishes
+its pre-push work. The reviewer sees issue context, the repo workflow prompt, and the committed diff,
+then must return only a JSON object with `verdict`, `comments`, and `reason` fields.
+
+```yaml
+review_agent:
+  enabled: true
+  kind: codex
+  command: codex app-server
+  max_iterations: 1
+```
+
+- `enabled` defaults to `false`; with the block absent, runs keep the existing single-agent shape.
+- `kind` is `codex` or `claude`, and `command` is required when enabled.
+- `max_iterations` defaults to `1` and controls how many `request_changes` correction passes are
+  allowed before Symphony blocks the run with the latest reviewer reason.
+- Reviewer sessions reuse the executor workspace checkout and receive read-only scoped tool lists.
+  Linear/GitHub write tools are hidden from MCP listings and rejected if called directly.
+  Reviewer token usage is stored separately while the aggregate run total remains budget-visible.

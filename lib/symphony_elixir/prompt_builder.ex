@@ -39,6 +39,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
     |> append_reviewer_comments(reviewer_comments)
     |> append_ci_failure(ci_failure)
+    |> append_review_agent_instructions(Keyword.get(opts, :settings))
     |> append_linear_input_warnings(linear_input_warnings)
   end
 
@@ -255,6 +256,21 @@ defmodule SymphonyElixir.PromptBuilder do
   defp append_ci_failure(prompt, ci_failure) when is_map(ci_failure) do
     prompt <> "\n\n" <> ci_failure_section(ci_failure)
   end
+
+  defp append_review_agent_instructions(prompt, %{review_agent: %{enabled: true}}) do
+    prompt <>
+      """
+
+      Review-agent gate:
+
+      - After implementation, validation, commit, and committed-diff review are complete, stop before `git push`.
+      - Do not push, open a PR, or move the issue to review until Symphony injects the reviewer-agent verdict.
+      - If the reviewer requests changes, address those comments in the same workspace and stop before push again.
+      - If the reviewer approves, follow the injected continuation prompt and complete the normal push/PR handoff.
+      """
+  end
+
+  defp append_review_agent_instructions(prompt, _settings), do: prompt
 
   defp append_linear_input_warnings(prompt, []), do: prompt
 

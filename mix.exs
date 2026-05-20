@@ -41,6 +41,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Learnings.Store,
           SymphonyElixir.RunStore,
           SymphonyElixir.AgentRunner,
+          SymphonyElixir.ReviewAgent,
           SymphonyElixir.AuditLog,
           SymphonyElixir.SelfReview.Context,
           SymphonyElixir.Verification,

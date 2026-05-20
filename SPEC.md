@@ -418,6 +418,7 @@ Top-level keys accepted by the Elixir implementation:
 - `quality_gate`
 - `learnings`
 - `self_review`
+- `review_agent`
 - `notifications`
 - `repos`
 - `dispatch` (alias for selected `agent` settings)
@@ -945,7 +946,26 @@ Fields:
 
 Compatibility note: legacy `self_review.diff_max_lines` and `self_review.max_rounds` config entries are ignored.
 
-#### 5.4.18 `notifications` (object)
+#### 5.4.18 `review_agent` (object)
+
+Fields:
+
+- `enabled` (boolean)
+  - Default: `false`.
+- `kind` (`codex` or `claude`)
+  - REQUIRED when `enabled` is true.
+- `command` (string)
+  - REQUIRED when `enabled` is true.
+- `max_iterations` (positive integer)
+  - Default: `1`.
+
+When enabled, Symphony SHOULD run an executor + reviewer flow in the same workspace. The executor
+SHOULD stop before pushing, the reviewer SHOULD receive issue context plus the committed diff, and
+the reviewer MUST return a structured verdict of `approve`, `request_changes`, or `block`. Reviewer
+sessions SHOULD expose only read-only scoped Linear/GitHub tools. Reviewer token usage SHOULD be
+tracked separately from the aggregate run token total.
+
+#### 5.4.19 `notifications` (object)
 
 Fields:
 
@@ -1227,6 +1247,10 @@ not require recognizing or validating extension fields unless that extension is 
 - `self_review.enabled`: boolean, default `false`
 - `self_review.provider`: `anthropic` or `openai`, default `anthropic`
 - `self_review.model`: string, default `claude-haiku-4-5-20251001`
+- `review_agent.enabled`: boolean, default `false`
+- `review_agent.kind`: `codex` or `claude`, required when enabled
+- `review_agent.command`: string, required when enabled
+- `review_agent.max_iterations`: integer, default `1`
 - `notifications.enabled`: boolean, default `false`
 - `notifications.redact_titles`: boolean, default `false`
 - `notifications.channels`: list of Slack/webhook channel configs, default `[]`
@@ -2146,6 +2170,8 @@ Token accounting rules:
 - Do not treat generic `usage` maps as cumulative totals unless the event type defines them that
   way.
 - Accumulate aggregate totals in orchestrator state.
+- When a reviewer-agent phase is enabled, count reviewer token deltas in the aggregate run total and
+  also expose reviewer-specific token totals separately for dashboards and run metadata.
 
 Runtime accounting:
 

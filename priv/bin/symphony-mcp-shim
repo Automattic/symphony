@@ -4,9 +4,9 @@ defmodule SymphonyMcpShim do
   @moduledoc false
 
   def main(args) do
-    with {:ok, socket_path, token} <- parse_args(args),
-         {:ok, socket} <- :socket.open(:local, :stream),
-         :ok <- :socket.connect(socket, %{family: :local, path: socket_path}),
+    with {:ok, endpoint, token} <- parse_args(args),
+         {:ok, socket} <- open_socket(endpoint),
+         :ok <- connect_socket(socket, endpoint),
          :ok <- :socket.send(socket, "symphony-session-token: #{token}\r\n\r\n") do
       pump(socket)
     else
@@ -16,12 +16,47 @@ defmodule SymphonyMcpShim do
     end
   end
 
-  defp parse_args(args), do: parse_args(args, nil, nil)
+  defp parse_args(args), do: parse_args(args, nil)
 
-  defp parse_args(["--socket", socket_path | rest], _socket_path, token), do: parse_args(rest, socket_path, token)
-  defp parse_args(["--session", token | rest], socket_path, _token), do: parse_args(rest, socket_path, token)
-  defp parse_args([], socket_path, token) when is_binary(socket_path) and is_binary(token), do: {:ok, socket_path, token}
-  defp parse_args(_args, _socket_path, _token), do: {:error, :invalid_arguments}
+  defp parse_args(["--socket", socket_path | rest], _endpoint), do: parse_args(rest, {:unix, socket_path})
+
+  defp parse_args(["--tcp-host", host, "--tcp-port", port | rest], _endpoint) do
+    with {:ok, addr} <- parse_tcp_host(host),
+         {:ok, port} <- parse_tcp_port(port) do
+      parse_args(rest, {:tcp, addr, port})
+    end
+  end
+
+  defp parse_args([], endpoint) when not is_nil(endpoint) do
+    case System.get_env("SYMPHONY_MCP_SESSION_TOKEN") do
+      token when is_binary(token) and token != "" -> {:ok, endpoint, token}
+      _missing -> {:error, :missing_session_token}
+    end
+  end
+
+  defp parse_args(_args, _endpoint), do: {:error, :invalid_arguments}
+
+  defp parse_tcp_host("127.0.0.1"), do: {:ok, {127, 0, 0, 1}}
+  defp parse_tcp_host("localhost"), do: {:ok, {127, 0, 0, 1}}
+  defp parse_tcp_host(host), do: {:error, {:unsupported_tcp_host, host}}
+
+  defp parse_tcp_port(port) do
+    case Integer.parse(port) do
+      {port, ""} when port in 1..65_535 -> {:ok, port}
+      _invalid -> {:error, {:invalid_tcp_port, port}}
+    end
+  end
+
+  defp open_socket({:unix, _path}), do: :socket.open(:local, :stream)
+  defp open_socket({:tcp, _addr, _port}), do: :socket.open(:inet, :stream)
+
+  defp connect_socket(socket, {:unix, socket_path}) do
+    :socket.connect(socket, %{family: :local, path: socket_path})
+  end
+
+  defp connect_socket(socket, {:tcp, addr, port}) do
+    :socket.connect(socket, %{family: :inet, addr: addr, port: port})
+  end
 
   defp pump(socket) do
     parent = self()

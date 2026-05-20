@@ -68,6 +68,36 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
+  test "lists scoped tools over token-authenticated loopback TCP" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        transport: :tcp,
+        shim_path: "/tmp/shim"
+      )
+
+    assert session.transport == :tcp
+    assert session.socket_path == nil
+    assert session.tcp_host == "127.0.0.1"
+    assert is_integer(session.tcp_port)
+
+    socket = connect_tcp!(session.tcp_port, session.token)
+
+    try do
+      response = request!(socket, 1, "tools/list")
+      tool_names = response["result"]["tools"] |> Enum.map(& &1["name"])
+
+      assert "linear_get_current_issue" in tool_names
+      assert "github_get_pr_checks" in tool_names
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
   test "read-only tool scope hides and rejects Linear and GitHub write tools" do
     server = unique_server()
     start_supervised!({McpServer, name: server})
@@ -689,6 +719,13 @@ defmodule SymphonyElixir.McpServerTest do
   defp connect!(path, token) do
     {:ok, socket} = :socket.open(:local, :stream)
     :ok = :socket.connect(socket, %{family: :local, path: path})
+    :ok = :socket.send(socket, "symphony-session-token: #{token}\r\n\r\n")
+    socket
+  end
+
+  defp connect_tcp!(port, token) do
+    {:ok, socket} = :socket.open(:inet, :stream)
+    :ok = :socket.connect(socket, %{family: :inet, addr: {127, 0, 0, 1}, port: port})
     :ok = :socket.send(socket, "symphony-session-token: #{token}\r\n\r\n")
     socket
   end

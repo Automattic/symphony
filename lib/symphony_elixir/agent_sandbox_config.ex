@@ -19,7 +19,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
       (operator-authored Claude Code prompts / subagents / hooks)
     * `/etc/sudoers`, `/private/etc/sudoers`, `/var/root` (macOS admin/root state)
     * `~/Library/Application Support`, `~/Library/Keychains`, `~/Library/Preferences` (macOS app data)
-    * shell and REPL history files
+    * shell startup and REPL/history files
 
   Codex command sandboxing additionally denies reads of selected runtime
   files under `~/.codex` while leaving the parent Codex process able to
@@ -68,6 +68,12 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     "~/.config/gcloud",
     "~/.azure",
     "~/.kube",
+    "~/.zshrc",
+    "~/.zshenv",
+    "~/.zprofile",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.profile",
     "~/.bash_history",
     "~/.zsh_history",
     "~/.history",
@@ -146,11 +152,11 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   end
 
   @doc false
-  @spec codex_config_overrides(String.t(), [String.t()], [String.t()], [String.t()]) :: [String.t()]
-  def codex_config_overrides(network_mode, allowed_domains, allow_read_paths \\ [], extra_deny_read_paths \\ []) do
+  @spec codex_config_overrides(String.t(), [String.t()], [String.t()], [String.t()], keyword()) :: [String.t()]
+  def codex_config_overrides(network_mode, allowed_domains, allow_read_paths \\ [], extra_deny_read_paths \\ [], opts \\ []) do
     [
       ~s(default_permissions="#{@codex_profile}"),
-      "permissions.#{@codex_profile}.filesystem=#{codex_filesystem_policy(allow_read_paths, extra_deny_read_paths)}",
+      "permissions.#{@codex_profile}.filesystem=#{codex_filesystem_policy(allow_read_paths, extra_deny_read_paths, opts)}",
       "permissions.#{@codex_profile}.network=#{codex_network_policy(network_mode)}",
       "permissions.#{@codex_profile}.network.domains=#{codex_network_domains(network_mode, allowed_domains)}"
     ]
@@ -195,18 +201,10 @@ defmodule SymphonyElixir.AgentSandboxConfig do
      }}
   end
 
-  defp codex_filesystem_policy(allow_read_paths, extra_deny_read_paths) do
+  defp codex_filesystem_policy(allow_read_paths, extra_deny_read_paths, opts) do
     allow_read_paths = normalize_allow_read_paths(allow_read_paths)
     extra_deny_read_paths = normalize_sandbox_paths(extra_deny_read_paths)
     operator_allow_read_paths = Enum.reject(allow_read_paths, &codex_runtime_read_override_path?/1)
-
-    project_entries =
-      [{".", "write"}] ++
-        (@deny_write_paths
-         |> Enum.filter(&project_relative_sandbox_path?/1)
-         |> Enum.map(fn path ->
-           {String.trim_leading(path, "./"), "read"}
-         end))
 
     deny_read_paths =
       @deny_read_paths
@@ -229,10 +227,46 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
     deny_read_paths
     |> Enum.map(&{&1, "none"})
-    |> List.insert_at(0, {":project_roots", project_entries})
+    |> Kernel.++(codex_project_entries(Keyword.get(opts, :workspace)))
     |> Kernel.++(external_write_protect_entries)
     |> Kernel.++(Enum.map(operator_allow_read_paths, &{&1, "read"}))
     |> toml_inline_table()
+  end
+
+  defp codex_project_entries(workspace) when is_binary(workspace) do
+    workspace = String.trim(workspace)
+
+    if codex_workspace_path?(workspace) do
+      [{workspace, "write"}] ++
+        (@deny_write_paths
+         |> Enum.filter(&project_relative_sandbox_path?/1)
+         |> Enum.map(fn path ->
+           {Path.join(workspace, String.trim_leading(path, "./")), "read"}
+         end))
+    else
+      legacy_codex_project_entries()
+    end
+  end
+
+  # Fallback for direct unit-level callers that do not have a resolved runtime
+  # workspace. AppServer launch paths pass the validated workspace so current
+  # Codex versions do not have to rely on this legacy special path.
+  defp codex_project_entries(_workspace), do: legacy_codex_project_entries()
+
+  defp codex_workspace_path?("/" <> _rest), do: true
+  defp codex_workspace_path?("~/" <> _rest), do: true
+  defp codex_workspace_path?(_workspace), do: false
+
+  defp legacy_codex_project_entries do
+    [
+      {":project_roots",
+       [{".", "write"}] ++
+         (@deny_write_paths
+          |> Enum.filter(&project_relative_sandbox_path?/1)
+          |> Enum.map(fn path ->
+            {String.trim_leading(path, "./"), "read"}
+          end))}
+    ]
   end
 
   defp project_relative_sandbox_path?(path) do
@@ -285,13 +319,30 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
   defp srt_allow_write_paths(extra_paths) do
     ([".", "/tmp", System.tmp_dir!()] ++ @srt_codex_runtime_write_paths ++ normalize_sandbox_paths(extra_paths))
-    |> Enum.map(fn
-      "." -> "."
-      "~/" <> _rest = path -> path
-      "/" <> _rest = path -> path
-      path -> "./#{path}"
-    end)
+    |> Enum.flat_map(&srt_allow_write_path_variants/1)
     |> Enum.uniq()
+  end
+
+  defp srt_allow_write_path_variants(path) do
+    path = normalize_srt_allow_write_path(path)
+
+    case path do
+      "/" <> _rest -> [path | canonical_absolute_path_variants(path)]
+      _path -> [path]
+    end
+  end
+
+  defp normalize_srt_allow_write_path("."), do: "."
+  defp normalize_srt_allow_write_path("~/" <> _rest = path), do: path
+  defp normalize_srt_allow_write_path("/" <> _rest = path), do: path
+  defp normalize_srt_allow_write_path(path), do: "./#{path}"
+
+  defp canonical_absolute_path_variants(path) do
+    case SymphonyElixir.PathSafety.canonicalize(path) do
+      {:ok, canonical_path} when canonical_path != path -> [canonical_path]
+      {:ok, _canonical_path} -> []
+      {:error, _reason} -> []
+    end
   end
 
   defp srt_deny_write_paths(extra_paths),

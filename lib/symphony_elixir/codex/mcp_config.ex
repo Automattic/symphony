@@ -31,7 +31,8 @@ defmodule SymphonyElixir.Codex.McpConfig do
          :ok <- File.chmod(home_path, 0o700),
          :ok <- File.write(config_path, config_toml),
          :ok <- File.chmod(config_path, 0o600),
-         :ok <- link_auth_json(home_path, host_codex_home) do
+         :ok <- link_auth_json(home_path, host_codex_home),
+         :ok <- copy_cloud_requirements_cache(home_path, host_codex_home) do
       {:ok, %{home_path: home_path, config_path: config_path, cleanup_paths: [home_path]}}
     else
       {:error, reason} ->
@@ -40,7 +41,7 @@ defmodule SymphonyElixir.Codex.McpConfig do
     end
   end
 
-  @spec build_config(Schema.t(), map(), Path.t(), Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @spec build_config(Schema.t(), map(), Path.t() | nil, Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def build_config(settings, mcp_session, socket_path, shim_path, opts \\ []) do
     host_codex_home = Keyword.get_lazy(opts, :host_codex_home, &host_codex_home/0)
     mcp = agent_mcp(settings)
@@ -123,6 +124,22 @@ defmodule SymphonyElixir.Codex.McpConfig do
     else
       Logger.warning("Codex host auth.json not found at #{target}; skipping symlink in generated CODEX_HOME")
       :ok
+    end
+  end
+
+  defp copy_cloud_requirements_cache(home_path, host_codex_home) do
+    source = Path.join(host_codex_home, "cloud-requirements-cache.json")
+    destination = Path.join(home_path, "cloud-requirements-cache.json")
+
+    case File.cp(source, destination) do
+      :ok ->
+        File.chmod(destination, 0o600)
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, {:codex_cloud_requirements_cache_copy_failed, source, reason}}
     end
   end
 

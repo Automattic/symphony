@@ -26,6 +26,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   @dev_server_pid_key {__MODULE__, :verification_dev_server_pid}
   @dependency_review_state "In Review"
+  @codex_stdio_prompt_soft_limit 12_000
 
   @type worker_host :: String.t() | nil
 
@@ -531,12 +532,13 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns) do
-    PromptBuilder.build_prompt(
-      issue,
+    prompt_opts =
       opts
       |> put_reviewer_comments(issue)
       |> put_ci_failure(issue)
-    )
+
+    prompt = PromptBuilder.build_prompt(issue, prompt_opts)
+    maybe_compact_codex_initial_prompt(prompt, issue, prompt_opts)
   end
 
   defp build_turn_prompt(_issue, opts, turn_number, max_turns) do
@@ -559,6 +561,31 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp agent_kind_from_settings(%{agent: %{kind: kind}}), do: kind
   defp agent_kind_from_settings(_settings), do: nil
+
+  defp maybe_compact_codex_initial_prompt(prompt, issue, opts) when is_binary(prompt) do
+    if codex_agent?(opts) and byte_size(prompt) > @codex_stdio_prompt_soft_limit do
+      Logger.warning(
+        "Codex initial prompt exceeded stdio soft limit; using compact bootstrap prompt issue_identifier=#{issue_identifier(issue)} bytes=#{byte_size(prompt)} limit=#{@codex_stdio_prompt_soft_limit}"
+      )
+
+      PromptBuilder.build_compact_prompt(issue, opts)
+    else
+      prompt
+    end
+  end
+
+  defp codex_agent?(opts) do
+    opts
+    |> Keyword.get(:settings)
+    |> agent_kind_from_settings()
+    |> case do
+      "codex" -> true
+      :codex -> true
+      _kind -> false
+    end
+  end
+
+  defp issue_identifier(%Issue{identifier: identifier}), do: identifier || "unknown"
 
   defp audit_prompt_sent(issue, run_id, prompt, turn_number, max_turns, agent_module, opts) do
     issue

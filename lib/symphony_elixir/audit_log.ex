@@ -33,9 +33,9 @@ defmodule SymphonyElixir.AuditLog do
     Path.join(logs_root, "audit")
   end
 
-  @spec audit_dir(keyword()) :: Path.t()
+  @spec audit_dir(keyword() | map()) :: Path.t()
   def audit_dir(opts \\ []) do
-    Keyword.get(opts, :dir) ||
+    query_value(opts, [:dir, "dir"]) ||
       Application.get_env(:symphony_elixir, :audit_log_dir) ||
       Paths.audit_dir()
   end
@@ -222,17 +222,62 @@ defmodule SymphonyElixir.AuditLog do
   @spec list_events(String.t(), Date.t() | String.t(), Date.t() | String.t(), query_opts()) ::
           {:ok, [map()]} | {:error, term()}
   def list_events(issue_id, date_from, date_to, opts \\ []) when is_binary(issue_id) do
-    with {:ok, from_date} <- normalize_date(date_from),
-         {:ok, to_date} <- normalize_date(date_to),
-         :ok <- validate_date_range(from_date, to_date) do
-      events =
+    opts =
+      opts
+      |> Keyword.put(:date_from, date_from)
+      |> Keyword.put(:date_to, date_to)
+      |> Keyword.put(:issue_id, issue_id)
+
+    with {:ok, events} <- query(opts) do
+      {:ok, events |> Enum.to_list() |> Enum.sort_by(&timestamp_sort_key/1)}
+    end
+  end
+
+  @doc """
+  Streams redacted audit events for an inclusive date range and optional filters.
+  """
+  @spec query(query_opts() | map()) :: {:ok, Enumerable.t()} | {:error, term()}
+  def query(opts \\ []) when is_list(opts) or is_map(opts) do
+    today = Date.utc_today()
+
+    with {:ok, from_date} <- normalize_date(query_value(opts, [:from, :date_from, "from", "date_from"]) || today),
+         {:ok, to_date} <- normalize_date(query_value(opts, [:to, :date_to, "to", "date_to"]) || from_date),
+         :ok <- validate_date_range(from_date, to_date),
+         {:ok, cursor} <- normalize_cursor(query_value(opts, [:cursor, "cursor"])),
+         {:ok, since} <- normalize_timestamp(query_value(opts, [:since, "since"])),
+         {:ok, limit} <- normalize_limit(query_value(opts, [:limit, "limit"])) do
+      filters = query_filters(opts)
+      secrets = configured_secret_values(query_keyword_opts(opts))
+
+      stream =
         from_date
         |> Date.range(to_date)
-        |> Enum.flat_map(&read_events_for_date(&1, opts))
-        |> Enum.filter(&(Map.get(&1, "issue_id") == issue_id))
-        |> Enum.sort_by(&timestamp_sort_key/1)
+        |> Stream.flat_map(&stream_events_for_date(&1, opts))
+        |> Stream.map(&redact_value(&1, secrets))
+        |> Stream.filter(&event_matches_filters?(&1, filters))
+        |> Stream.filter(&event_since?(&1, since))
+        |> apply_cursor(cursor)
+        |> apply_limit(limit)
 
-      {:ok, events}
+      {:ok, stream}
+    end
+  end
+
+  @doc """
+  Verifies the hash chain for one daily audit file.
+  """
+  @spec verify_chain(Date.t() | String.t(), query_opts()) :: :ok | {:error, {:break_at, String.t()}}
+  def verify_chain(day, opts \\ []) do
+    case normalize_date(day) do
+      {:ok, date} ->
+        opts
+        |> audit_dir()
+        |> event_path(Date.to_iso8601(date))
+        |> read_ndjson_lines()
+        |> verify_chain_lines(nil)
+
+      _ ->
+        {:error, {:break_at, "invalid_date"}}
     end
   end
 
@@ -841,6 +886,161 @@ defmodule SymphonyElixir.AuditLog do
     end)
   end
 
+  defp stream_events_for_date(date, opts) do
+    path =
+      opts
+      |> audit_dir()
+      |> event_path(Date.to_iso8601(date))
+
+    if File.exists?(path) do
+      path
+      |> File.stream!(:line, read_ahead: 64 * 1_024)
+      |> Stream.with_index(1)
+      |> Stream.flat_map(&decode_streamed_event/1)
+    else
+      []
+    end
+  end
+
+  defp decode_streamed_event({line, _line_number}) do
+    case line |> String.trim() |> decode_json_line() do
+      %{} = event -> [event]
+      _ -> []
+    end
+  end
+
+  defp query_keyword_opts(opts) when is_list(opts), do: opts
+  defp query_keyword_opts(opts) when is_map(opts), do: Map.to_list(opts)
+
+  defp query_value(opts, keys) do
+    Enum.find_value(keys, fn key ->
+      case fetch_query_value(opts, key) do
+        nil -> nil
+        "" -> nil
+        value -> value
+      end
+    end)
+  end
+
+  defp fetch_query_value(opts, key) when is_list(opts) do
+    case List.keyfind(opts, key, 0) do
+      {^key, value} -> value
+      nil -> nil
+    end
+  end
+
+  defp fetch_query_value(opts, key) when is_map(opts), do: Map.get(opts, key)
+
+  defp query_filters(opts) do
+    %{
+      repo_key: query_value(opts, [:repo_key, :repo, "repo_key", "repo"]),
+      issue: query_value(opts, [:issue, "issue"]),
+      issue_id: query_value(opts, [:issue_id, "issue_id"]),
+      issue_identifier: query_value(opts, [:issue_identifier, "issue_identifier"]),
+      event_type: query_value(opts, [:event_type, :type, "event_type", "type"]),
+      run_id: query_value(opts, [:run_id, "run_id"])
+    }
+  end
+
+  defp event_matches_filters?(event, filters) do
+    repo_matches?(event, filters.repo_key) and
+      issue_matches?(event, filters) and
+      field_matches?(event, "event_type", filters.event_type) and
+      field_matches?(event, "run_id", filters.run_id)
+  end
+
+  defp repo_matches?(_event, value) when value in [nil, ""], do: true
+  defp repo_matches?(event, value), do: Map.get(event, "repo_key") == value
+
+  defp issue_matches?(event, %{issue: issue}) when is_binary(issue) and issue != "" do
+    Map.get(event, "issue_id") == issue or Map.get(event, "issue_identifier") == issue
+  end
+
+  defp issue_matches?(event, filters) do
+    field_matches?(event, "issue_id", filters.issue_id) and
+      field_matches?(event, "issue_identifier", filters.issue_identifier)
+  end
+
+  defp field_matches?(_event, _field, value) when value in [nil, ""], do: true
+  defp field_matches?(event, field, value), do: Map.get(event, field) == value
+
+  defp event_since?(_event, nil), do: true
+
+  defp event_since?(event, %DateTime{} = since) do
+    case DateTime.from_iso8601(Map.get(event, "timestamp", "")) do
+      {:ok, timestamp, _offset} -> DateTime.compare(timestamp, since) != :lt
+      _ -> false
+    end
+  end
+
+  defp apply_cursor(stream, nil), do: stream
+
+  defp apply_cursor(stream, {%Date{} = date, record_hash}) when is_binary(record_hash) do
+    date_string = Date.to_iso8601(date)
+
+    Stream.transform(stream, false, fn event, cursor_seen? ->
+      event_date = Map.get(event, "date")
+
+      cond do
+        cursor_seen? ->
+          {[event], true}
+
+        is_binary(event_date) and event_date > date_string ->
+          {[event], true}
+
+        event_date == date_string and Map.get(event, "record_hash") == record_hash ->
+          {[], true}
+
+        true ->
+          {[], false}
+      end
+    end)
+  end
+
+  defp apply_limit(stream, nil), do: stream
+  defp apply_limit(stream, limit) when is_integer(limit), do: Stream.take(stream, limit)
+
+  defp normalize_cursor(nil), do: {:ok, nil}
+
+  defp normalize_cursor({date, record_hash}) when is_binary(record_hash) do
+    with {:ok, normalized_date} <- normalize_date(date) do
+      {:ok, {normalized_date, record_hash}}
+    end
+  end
+
+  defp normalize_cursor(cursor) when is_binary(cursor) do
+    case String.split(cursor, [":", ","], parts: 2) do
+      [date, record_hash] when record_hash != "" -> normalize_cursor({date, record_hash})
+      _ -> {:error, :invalid_cursor}
+    end
+  end
+
+  defp normalize_cursor(_cursor), do: {:error, :invalid_cursor}
+
+  defp normalize_timestamp(nil), do: {:ok, nil}
+  defp normalize_timestamp(%DateTime{} = timestamp), do: {:ok, timestamp}
+
+  defp normalize_timestamp(timestamp) when is_binary(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, parsed, _offset} -> {:ok, parsed}
+      _ -> {:error, :invalid_since}
+    end
+  end
+
+  defp normalize_timestamp(_timestamp), do: {:error, :invalid_since}
+
+  defp normalize_limit(nil), do: {:ok, nil}
+  defp normalize_limit(limit) when is_integer(limit) and limit > 0, do: {:ok, limit}
+
+  defp normalize_limit(limit) when is_binary(limit) do
+    case Integer.parse(limit) do
+      {parsed, ""} when parsed > 0 -> {:ok, parsed}
+      _ -> {:error, :invalid_limit}
+    end
+  end
+
+  defp normalize_limit(_limit), do: {:error, :invalid_limit}
+
   defp read_ndjson_lines(path) do
     if File.exists?(path) do
       path
@@ -896,6 +1096,37 @@ defmodule SymphonyElixir.AuditLog do
 
   defp verify_lines([{line_number, _event} | _rest], _previous_hash, _next_line_number, _count) do
     {:error, {:invalid_record, line_number, :not_a_json_object}}
+  end
+
+  defp verify_chain_lines([], _previous_hash), do: :ok
+
+  defp verify_chain_lines([{line_number, {:error, _reason}} | _rest], _previous_hash) do
+    {:error, {:break_at, "line:#{line_number}"}}
+  end
+
+  defp verify_chain_lines([{line_number, event} | rest], previous_hash) when is_map(event) do
+    stored_hash = Map.get(event, "record_hash")
+    stored_previous_hash = Map.get(event, "previous_hash")
+    calculated_hash = event |> Map.delete("record_hash") |> hash_event()
+
+    cond do
+      stored_previous_hash != previous_hash ->
+        {:error, {:break_at, record_id(event, line_number)}}
+
+      stored_hash != calculated_hash ->
+        {:error, {:break_at, record_id(event, line_number)}}
+
+      true ->
+        verify_chain_lines(rest, stored_hash)
+    end
+  end
+
+  defp verify_chain_lines([{line_number, _event} | _rest], _previous_hash) do
+    {:error, {:break_at, "line:#{line_number}"}}
+  end
+
+  defp record_id(event, line_number) do
+    Map.get(event, "record_hash") || "#{Map.get(event, "date", "unknown")}:#{line_number}"
   end
 
   defp last_record_hash(path) do

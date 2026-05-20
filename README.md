@@ -52,7 +52,7 @@ stops the active agent for that issue and cleans up matching workspaces.
   single `symphony.yml`, with per-repo Linear selectors and conflict detection for issues that
   match more than one repo.
 - **LiveView dashboard** for active runs, watched issues, the retry queue, quality-gate state,
-  captured learnings, and per-issue transcripts.
+  captured learnings, per-issue transcripts, and the local audit timeline.
 
 ![Symphony Web dashboard screenshot](.github/media/elixir-screenshot-web.png)
 
@@ -96,6 +96,10 @@ mise exec -- ./bin/symphony
 
 The LiveView dashboard is available at `http://127.0.0.1:4000` by default when observability is
 enabled.
+
+The dashboard also exposes an Audit tab at `/audit`, with filters, per-record expansion, daily
+hash-chain verification, and NDJSON export. The same filtered audit stream is available from
+`/api/v1/audit`.
 
 **Exposing the dashboard remotely.** The HTTP dashboard and `/api/v1/*` endpoints have no built-in
 authentication. Do not set `SYMPHONY_SERVER_HOST=0.0.0.0` directly. If you need remote access, keep

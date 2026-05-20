@@ -840,6 +840,52 @@ pre,
   box-shadow: var(--shadow-sm);
 }
 
+.audit-filter-form {
+  grid-template-columns: repeat(4, minmax(9rem, 1fr));
+}
+
+.audit-checkbox-field input[type="checkbox"] {
+  width: 1.1rem;
+  min-height: 1.1rem;
+  align-self: center;
+}
+
+.audit-table {
+  table-layout: fixed;
+  min-width: 1040px;
+}
+
+.audit-preview {
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.audit-record-details {
+  margin-top: 0.35rem;
+}
+
+.audit-verify-result {
+  margin: 0.8rem 0 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.audit-verify-ok {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+
+.audit-verify-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+}
+
 .quality-table {
   table-layout: fixed;
   min-width: 980px;

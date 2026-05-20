@@ -80,10 +80,12 @@ defmodule SymphonyElixir.ControlTokenTest do
     assert ControlToken.read() == nil
   end
 
-  defp file_mode(path) do
-    case System.cmd("stat", ["-f", "%Lp", path], stderr_to_stdout: true) do
+  defp file_mode(path), do: stat_mode(["-c", "%a", path]) || stat_mode(["-f", "%Lp", path])
+
+  defp stat_mode(args) do
+    case System.cmd("stat", args, stderr_to_stdout: true) do
       {mode, 0} -> String.trim(mode)
-      _ -> nil
+      {_output, _status} -> nil
     end
   end
 end

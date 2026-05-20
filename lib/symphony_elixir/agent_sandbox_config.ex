@@ -174,12 +174,15 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   def srt_settings(network_mode, allowed_domains, denied_domains, allow_read_paths, opts) do
     allow_read_paths = normalize_allow_read_paths(allow_read_paths)
 
+    # `allowLocalBinding: true` permits bind/listen on 127.0.0.0/8 only.
+    # Mix 1.19+ `Mix.Sync.PubSub` opens an ephemeral loopback socket on every
+    # mix subcommand; outbound allowlist and credential deny-reads are unaffected.
     {:ok,
      %{
        "network" => %{
          "allowedDomains" => srt_allowed_domains(network_mode, allowed_domains),
          "deniedDomains" => normalize_domains(denied_domains),
-         "allowLocalBinding" => false
+         "allowLocalBinding" => true
        },
        "filesystem" => %{
          "denyRead" => @deny_read_paths |> Enum.reject(&(&1 in allow_read_paths)) |> expand_home_paths(),

@@ -424,7 +424,7 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
-  test "rejects token replay after the token has been claimed" do
+  test "the same session token accepts multiple connections during the session lifetime" do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
@@ -436,15 +436,47 @@ defmodule SymphonyElixir.McpServerTest do
       )
 
     first = connect!(session.socket_path, session.token)
+    second = connect!(session.socket_path, session.token)
 
     try do
       assert request!(first, 1, "initialize")["result"]["serverInfo"]["name"] == "symphony"
-      second = connect!(session.socket_path, session.token)
-      assert {:error, _reason} = request(second, 2, "tools/list")
-      close_socket(second)
+      assert request!(second, 2, "initialize")["result"]["serverInfo"]["name"] == "symphony"
     after
       close_socket(first)
+      close_socket(second)
       McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "session tokens stop working after stop_session cleans up the session" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        socket_path: socket_path(),
+        shim_path: "/tmp/shim"
+      )
+
+    McpServer.stop_session(session, server: server)
+
+    # Socket may already be removed; connect will fail before auth, which is
+    # also acceptable. The key invariant is the token can't be used to do work.
+    case :socket.open(:local, :stream) do
+      {:ok, socket} ->
+        case :socket.connect(socket, %{family: :local, path: session.socket_path}) do
+          :ok ->
+            :socket.send(socket, "symphony-session-token: #{session.token}\r\n\r\n")
+            assert {:error, _reason} = request(socket, 1, "tools/list")
+            close_socket(socket)
+
+          {:error, _reason} ->
+            :socket.close(socket)
+        end
+
+      {:error, _reason} ->
+        :ok
     end
   end
 
@@ -631,9 +663,8 @@ defmodule SymphonyElixir.McpServerTest do
 
   defp request(socket, id, method, params \\ %{}) do
     payload = %{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params}
-    body = Jason.encode!(payload)
 
-    with :ok <- :socket.send(socket, "Content-Length: #{byte_size(body)}\r\n\r\n#{body}") do
+    with :ok <- :socket.send(socket, Jason.encode!(payload) <> "\n") do
       read_response(socket, "")
     end
   end
@@ -652,50 +683,17 @@ defmodule SymphonyElixir.McpServerTest do
   end
 
   defp parse_response(buffer) do
-    case String.split(buffer, "\r\n\r\n", parts: 2) do
-      [headers, body_and_rest] ->
-        headers
-        |> response_content_length()
-        |> parse_response_body(body_and_rest)
+    case String.split(buffer, "\n", parts: 2) do
+      [line, rest] ->
+        case String.trim(line) do
+          "" -> parse_response(rest)
+          json -> {:ok, Jason.decode!(json), rest}
+        end
 
       [_incomplete] ->
         :more
     end
   end
-
-  defp response_content_length(headers) do
-    headers
-    |> String.split("\r\n", trim: true)
-    |> Enum.find_value(&response_header_length/1)
-  end
-
-  defp response_header_length(header) do
-    case String.split(header, ":", parts: 2) do
-      [key, value] ->
-        parse_length_header(key, value)
-
-      _ ->
-        nil
-    end
-  end
-
-  defp parse_length_header(key, value) do
-    if String.downcase(String.trim(key)) == "content-length" do
-      {length, ""} = value |> String.trim() |> Integer.parse()
-      length
-    end
-  end
-
-  defp parse_response_body(length, body_and_rest) when is_integer(length) do
-    if byte_size(body_and_rest) >= length do
-      <<body::binary-size(length), rest::binary>> = body_and_rest
-      {:ok, Jason.decode!(body), rest}
-    else
-      :more
-    end
-  end
-
-  defp parse_response_body(_length, _body_and_rest), do: :more
 
   defp close_socket(socket) do
     :socket.close(socket)

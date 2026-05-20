@@ -111,11 +111,15 @@ defmodule SymphonyElixir.McpServer do
     {:reply, :ok, cleanup_session(state, id)}
   end
 
+  # The token stays valid for the lifetime of the session, not single-use.
+  # Claude legitimately reconnects to the MCP server within a single agent run
+  # (e.g., after idle, or for parallel tool calls). `cleanup_session/2` removes
+  # the token when the session is explicitly stopped.
   def handle_call({:claim, token}, _from, state) do
     case Map.fetch(state.tokens, token) do
       {:ok, id} ->
         session = Map.fetch!(state.sessions, id)
-        {:reply, {:ok, id, session.context}, %{state | tokens: Map.delete(state.tokens, token)}}
+        {:reply, {:ok, id, session.context}, state}
 
       :error ->
         {:reply, {:error, :invalid_session_token}, state}
@@ -291,8 +295,49 @@ defmodule SymphonyElixir.McpServer do
   defp shim_path(opts) do
     case Keyword.get(opts, :shim_path) do
       path when is_binary(path) and path != "" -> path
-      _ -> Application.app_dir(:symphony_elixir, "priv/bin/symphony-mcp-shim")
+      _ -> resolved_shim_path()
     end
+  end
+
+  # `Application.app_dir/2` returns a path inside the loaded app. In escript
+  # mode that path is virtual and the surrounding archive contains only `ebin/`
+  # — `priv/` is dropped by `mix escript.build`. Embed the shim contents into
+  # this BEAM at compile time via `@external_resource` so the bytes ride along
+  # in the escript, and write them out to a stable temp file on first use.
+  @shim_relative_path "priv/bin/symphony-mcp-shim"
+  @shim_source_path Path.join([__DIR__, "..", "..", @shim_relative_path])
+  @external_resource @shim_source_path
+  @shim_contents File.read!(@shim_source_path)
+  @shim_extract_cache_key {__MODULE__, :extracted_shim_path}
+
+  defp resolved_shim_path do
+    app_dir_path = Application.app_dir(:symphony_elixir, @shim_relative_path)
+
+    if File.exists?(app_dir_path) do
+      app_dir_path
+    else
+      ensure_extracted_shim_path()
+    end
+  end
+
+  defp ensure_extracted_shim_path do
+    case :persistent_term.get(@shim_extract_cache_key, nil) do
+      path when is_binary(path) ->
+        if File.exists?(path), do: path, else: extract_shim_to_disk()
+
+      nil ->
+        extract_shim_to_disk()
+    end
+  end
+
+  defp extract_shim_to_disk do
+    vsn = Application.spec(:symphony_elixir, :vsn) |> to_string()
+    target = Path.join(System.tmp_dir!(), "symphony-mcp-shim-#{vsn}")
+
+    File.write!(target, @shim_contents)
+    File.chmod!(target, 0o755)
+    :persistent_term.put(@shim_extract_cache_key, target)
+    target
   end
 
   defp cleanup_session(state, id) do
@@ -406,30 +451,20 @@ defmodule SymphonyElixir.McpServer do
     end
   end
 
+  # MCP stdio transport is newline-delimited JSON, per the MCP spec. The shim
+  # forwards each line from Claude's stdin straight to the socket, so we read
+  # one line at a time. Skip blank/whitespace-only lines (e.g., a stray `\r`
+  # left between messages).
   defp parse_message(buffer) do
-    case String.split(buffer, @header_separator, parts: 2) do
-      [headers, body_and_rest] ->
-        with {:ok, length} <- content_length(headers) do
-          parse_message_body(body_and_rest, length)
+    case String.split(buffer, "\n", parts: 2) do
+      [line, rest] ->
+        case String.trim(line) do
+          "" -> parse_message(rest)
+          json -> {:ok, Jason.decode!(json), rest}
         end
 
       [_incomplete] ->
         :more
-    end
-  end
-
-  defp content_length(headers) do
-    headers
-    |> header_value("content-length")
-    |> parse_content_length()
-  end
-
-  defp parse_message_body(body_and_rest, length) do
-    if byte_size(body_and_rest) >= length do
-      <<body::binary-size(length), rest::binary>> = body_and_rest
-      {:ok, Jason.decode!(body), rest}
-    else
-      :more
     end
   end
 
@@ -450,24 +485,6 @@ defmodule SymphonyElixir.McpServer do
         nil
     end
   end
-
-  defp parse_content_length(value) do
-    value
-    |> parse_integer()
-    |> case do
-      length when is_integer(length) and length >= 0 -> {:ok, length}
-      _ -> {:error, :missing_content_length}
-    end
-  end
-
-  defp parse_integer(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {integer, ""} -> integer
-      _ -> nil
-    end
-  end
-
-  defp parse_integer(_value), do: nil
 
   defp handle_payload(%{"id" => id, "method" => "initialize"} = payload, _context) do
     protocol_version = get_in(payload, ["params", "protocolVersion"]) || @protocol_version
@@ -512,7 +529,7 @@ defmodule SymphonyElixir.McpServer do
 
   defp maybe_send_response(socket, payload) do
     body = Jason.encode!(payload)
-    :ok = :socket.send(socket, "Content-Length: #{byte_size(body)}\r\n\r\n#{body}")
+    :ok = :socket.send(socket, body <> "\n")
   end
 
   defp tool_opts(context) do

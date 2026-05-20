@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   require Logger
   alias SymphonyElixir.{AgentEnv, AgentMcp, AgentSandboxConfig, Config, DependencyGate, McpServer, PathSafety, SSH}
+  alias SymphonyElixir.ClaudeCode.McpConfig
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
   alias SymphonyElixir.GitHub.Hosts
@@ -141,13 +142,17 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       |> AgentMcp.declared_servers("claude")
       |> Map.new(fn {name, server} -> {name, AgentMcp.claude_server_config(server)} end)
 
-    %{
-      "mcpServers" =>
-        %{
-          "symphony" => AgentMcp.symphony_claude_config(mcp_session, socket_path, shim_path)
-        }
-        |> Map.merge(declared_servers)
-    }
+    with {:ok, inherited_servers} <- McpConfig.inherited_servers(settings, host_claude_json_path()) do
+      {:ok,
+       %{
+         "mcpServers" =>
+           %{
+             "symphony" => AgentMcp.symphony_claude_config(mcp_session, socket_path, shim_path)
+           }
+           |> Map.merge(inherited_servers)
+           |> Map.merge(declared_servers)
+       }}
+    end
   end
 
   # --- Event parsing ---
@@ -159,6 +164,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
            | {:agent_text, String.t()}
            | {:notification, String.t()}
            | {:turn_completed, map()}
+           | {:token_usage_delta, map()}
            | {:turn_failed, String.t()}
            | {:rate_limited, %{retry_after_seconds: nil | non_neg_integer(), message: String.t()}, String.t()}
            | {:malformed, String.t()}
@@ -526,21 +532,24 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     effective_socket_path = socket_path || mcp_session.socket_path
 
     settings_json = build_claude_settings(network_access, allow_read_paths)
-    mcp_config_json = build_mcp_config(mcp_session, effective_socket_path, effective_shim_path, settings)
-
     settings_dir = claude_settings_dir(worker_host, mcp_session)
     settings_path = Path.join(settings_dir, "settings.json")
     mcp_config_path = Path.join(settings_dir, "mcp_config.json")
 
-    runtime_files = [
-      {settings_path, settings_json},
-      {mcp_config_path, mcp_config_json}
-    ]
-
-    with {:ok, encoded_runtime_files} <- encode_runtime_files(runtime_files),
+    with {:ok, mcp_config_json} <- build_mcp_config(mcp_session, effective_socket_path, effective_shim_path, settings),
+         runtime_files = [
+           {settings_path, settings_json},
+           {mcp_config_path, mcp_config_json}
+         ],
+         {:ok, encoded_runtime_files} <- encode_runtime_files(runtime_files),
          :ok <- write_runtime_files(settings_dir, encoded_runtime_files, worker_host) do
       {:ok, %{settings_path: settings_path, mcp_config_path: mcp_config_path}}
     end
+  end
+
+  defp host_claude_json_path do
+    home = System.get_env("HOME") || System.user_home!()
+    Path.join(home, ".claude.json")
   end
 
   defp workspace_sandbox_allow_read_paths(%Schema{workspace: %{sandbox: %{allow_read_paths: paths}}}) when is_list(paths),

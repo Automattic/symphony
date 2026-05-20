@@ -957,6 +957,101 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
+  test "orchestrator attaches reviewer token snapshot to review-agent verdict transcript events" do
+    issue_id = "issue-reviewer-verdict-tokens"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-REVIEW-VERDICT",
+      title: "Reviewer verdict token test",
+      description: "Attach reviewer token snapshot",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-REVIEW-VERDICT"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ReviewerVerdictTokenOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      repo_key: "default",
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 11,
+      codex_cached_input_tokens: 4,
+      codex_output_tokens: 7,
+      codex_total_tokens: 18,
+      reviewer_input_tokens: 5,
+      reviewer_cached_input_tokens: 2,
+      reviewer_output_tokens: 3,
+      reviewer_total_tokens: 8,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_cached_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    assert :ok = ObservabilityPubSub.subscribe_transcript()
+
+    verdict_update = %{
+      event: :review_agent_verdict,
+      agent_phase: :reviewer,
+      timestamp: DateTime.utc_now(),
+      payload: %{
+        verdict: :approve,
+        round: 1,
+        max_iterations: 1,
+        reason: nil,
+        comments: [],
+        tokens: %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
+      }
+    }
+
+    send(pid, {:codex_worker_update, issue_id, verdict_update})
+
+    assert_receive {:transcript_event,
+                    %{
+                      event: :review_agent_verdict,
+                      issue_id: ^issue_id,
+                      payload: %{
+                        tokens: %{
+                          input_tokens: 5,
+                          cached_input_tokens: 2,
+                          uncached_input_tokens: 3,
+                          output_tokens: 3,
+                          total_tokens: 8
+                        }
+                      }
+                    }}
+
+    state = get_orchestrator_state(pid)
+    running = Map.fetch!(state.running, issue_id)
+    assert [buffered_event] = running.transcript_buffer |> :queue.to_list()
+    assert buffered_event.payload.tokens.total_tokens == 8
+  end
+
   test "orchestrator snapshot tracks codex token-count cumulative usage payloads" do
     issue_id = "issue-token-count-snapshot"
 

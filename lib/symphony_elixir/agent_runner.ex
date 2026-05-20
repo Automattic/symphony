@@ -428,33 +428,12 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp review_agent_next_turn(%{review_agent: %{phase: phase}} = run_context, config)
        when phase in [:not_run, :awaiting_correction] do
+    round = review_agent_request_change_rounds(run_context) + 1
+
     case evaluate_review_agent(run_context) do
-      {:ok, %{verdict: :approve} = result} ->
-        {:review_agent_turn,
-         %{
-           run_context
-           | review_agent: %{phase: :complete, request_change_rounds: review_agent_request_change_rounds(run_context)},
-             next_prompt: ReviewAgent.approval_prompt(result)
-         }}
-
-      {:ok, %{verdict: :request_changes} = result} ->
-        if review_agent_correction_round_available?(run_context, config) do
-          {:review_agent_turn,
-           %{
-             run_context
-             | review_agent: %{
-                 phase: :awaiting_correction,
-                 request_change_rounds: next_review_agent_request_change_round(run_context),
-                 comments: result.comments
-               },
-               next_prompt: ReviewAgent.request_changes_prompt(result)
-           }}
-        else
-          {:error, {:review_agent_blocked, "review_agent.max_iterations reached: #{ReviewAgent.block_reason(result)}"}}
-        end
-
-      {:ok, %{verdict: :block} = result} ->
-        {:error, {:review_agent_blocked, ReviewAgent.block_reason(result)}}
+      {:ok, result} ->
+        emit_review_agent_verdict(run_context, result, round, config.max_iterations)
+        handle_review_agent_result(result, run_context, config)
 
       {:error, reason} ->
         {:error, {:review_agent_failed, reason}}
@@ -462,6 +441,69 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp review_agent_next_turn(_run_context, _config), do: :normal_continuation
+
+  defp handle_review_agent_result(%{verdict: :approve} = result, run_context, _config) do
+    {:review_agent_turn,
+     %{
+       run_context
+       | review_agent: %{
+           phase: :complete,
+           request_change_rounds: review_agent_request_change_rounds(run_context)
+         },
+         next_prompt: ReviewAgent.approval_prompt(result)
+     }}
+  end
+
+  defp handle_review_agent_result(%{verdict: :request_changes} = result, run_context, config) do
+    if review_agent_correction_round_available?(run_context, config) do
+      {:review_agent_turn,
+       %{
+         run_context
+         | review_agent: %{
+             phase: :awaiting_correction,
+             request_change_rounds: next_review_agent_request_change_round(run_context),
+             comments: result.comments
+           },
+           next_prompt: ReviewAgent.request_changes_prompt(result)
+       }}
+    else
+      {:error, {:review_agent_blocked, "review_agent.max_iterations reached: #{ReviewAgent.block_reason(result)}"}}
+    end
+  end
+
+  defp handle_review_agent_result(%{verdict: :block} = result, _run_context, _config) do
+    {:error, {:review_agent_blocked, ReviewAgent.block_reason(result)}}
+  end
+
+  defp emit_review_agent_verdict(
+         %{
+           issue: issue,
+           codex_update_recipient: codex_update_recipient
+         },
+         result,
+         round,
+         max_iterations
+       ) do
+    event = %{
+      event: :review_agent_verdict,
+      timestamp: DateTime.utc_now(),
+      payload: %{
+        type: "review_agent_verdict",
+        verdict: result.verdict,
+        round: round,
+        max_iterations: max_iterations,
+        reason: review_agent_verdict_reason(result),
+        comments: Map.get(result, :comments, []),
+        tokens: %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
+      }
+    }
+
+    send_codex_update(codex_update_recipient, issue, event, :reviewer)
+  end
+
+  defp review_agent_verdict_reason(%{reason: reason}) when is_binary(reason) and reason != "", do: reason
+  defp review_agent_verdict_reason(%{comments: [comment | _]}) when is_binary(comment), do: comment
+  defp review_agent_verdict_reason(_result), do: nil
 
   defp review_agent_correction_round_available?(run_context, config) do
     review_agent_request_change_rounds(run_context) < config.max_iterations

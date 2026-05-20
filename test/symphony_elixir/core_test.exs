@@ -3136,7 +3136,7 @@ defmodule SymphonyElixir.CoreTest do
       put_review_agent_responses!([~s({"verdict":"approve","comments":[]})])
 
       assert :ok =
-               AgentRunner.run(self_review_issue(), nil,
+               AgentRunner.run(self_review_issue(), self(),
                  workspace_path: repo,
                  issue_state_fetcher: self_review_state_fetcher(self(), 2),
                  issue_enricher: no_op_issue_enricher(),
@@ -3149,6 +3149,21 @@ defmodule SymphonyElixir.CoreTest do
       assert review_prompt =~ "Return ONLY one JSON object"
       assert review_prompt =~ "Diff context:"
       assert run_opts[:tool_scope] == :read_only
+
+      assert_receive {:codex_worker_update, "issue-self-review-runner",
+                      %{
+                        event: :review_agent_verdict,
+                        agent_phase: :reviewer,
+                        payload: %{
+                          verdict: :approve,
+                          round: 1,
+                          max_iterations: 1,
+                          reason: nil,
+                          comments: [],
+                          tokens: %{total_tokens: 0}
+                        }
+                      }}
+
       assert_receive {:review_agent_stop_session, _session}
       refute_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}, 50
 
@@ -3183,7 +3198,7 @@ defmodule SymphonyElixir.CoreTest do
       ])
 
       assert :ok =
-               AgentRunner.run(self_review_issue(), nil,
+               AgentRunner.run(self_review_issue(), self(),
                  workspace_path: repo,
                  issue_state_fetcher: self_review_state_fetcher(self(), 3),
                  issue_enricher: no_op_issue_enricher(),
@@ -3192,6 +3207,27 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+
+      assert_receive {:codex_worker_update, "issue-self-review-runner",
+                      %{
+                        event: :review_agent_verdict,
+                        agent_phase: :reviewer,
+                        payload: %{
+                          verdict: :request_changes,
+                          round: 1,
+                          max_iterations: 1,
+                          reason: "Tighten the regression coverage.",
+                          comments: ["Tighten the regression coverage."]
+                        }
+                      }}
+
+      assert_receive {:codex_worker_update, "issue-self-review-runner",
+                      %{
+                        event: :review_agent_verdict,
+                        agent_phase: :reviewer,
+                        payload: %{verdict: :approve, round: 2, max_iterations: 1}
+                      }}
+
       refute_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}, 50
 
       turn_texts = self_review_turn_texts!(trace_file)
@@ -3226,7 +3262,7 @@ defmodule SymphonyElixir.CoreTest do
       ])
 
       assert_raise RuntimeError, ~r/review_agent.max_iterations reached/, fn ->
-        AgentRunner.run(self_review_issue(), nil,
+        AgentRunner.run(self_review_issue(), self(),
           workspace_path: repo,
           issue_state_fetcher: self_review_state_fetcher(self(), 4),
           issue_enricher: no_op_issue_enricher(),
@@ -3236,11 +3272,73 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+
+      assert_receive {:codex_worker_update, "issue-self-review-runner",
+                      %{
+                        event: :review_agent_verdict,
+                        agent_phase: :reviewer,
+                        payload: %{verdict: :request_changes, round: 1, max_iterations: 1}
+                      }}
+
+      assert_receive {:codex_worker_update, "issue-self-review-runner",
+                      %{
+                        event: :review_agent_verdict,
+                        agent_phase: :reviewer,
+                        payload: %{
+                          verdict: :request_changes,
+                          round: 2,
+                          max_iterations: 1,
+                          reason: "Still not acceptable."
+                        }
+                      }}
+
       refute_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}, 50
 
       turn_texts = self_review_turn_texts!(trace_file)
       assert length(turn_texts) == 2
       refute Enum.any?(turn_texts, &String.contains?(&1, "Reviewer agent approved"))
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner emits a review-agent block verdict event before blocking" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-block-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = self_review_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      write_self_review_fake_codex!(codex_binary, Path.join(test_root, "codex.trace"))
+      write_review_agent_workflow!(codex_binary, max_turns: 2, max_iterations: 1)
+      put_review_agent_responses!([~s({"verdict":"block","comments":[],"reason":"Unsafe to continue."})])
+
+      assert_raise RuntimeError, ~r/Unsafe to continue/, fn ->
+        AgentRunner.run(self_review_issue(), self(),
+          workspace_path: repo,
+          issue_state_fetcher: self_review_state_fetcher(self(), 3),
+          issue_enricher: no_op_issue_enricher(),
+          review_agent_module: ReviewAgentSequenceAppServer
+        )
+      end
+
+      assert_receive {:codex_worker_update, "issue-self-review-runner",
+                      %{
+                        event: :review_agent_verdict,
+                        agent_phase: :reviewer,
+                        payload: %{
+                          verdict: :block,
+                          round: 1,
+                          max_iterations: 1,
+                          reason: "Unsafe to continue.",
+                          comments: []
+                        }
+                      }}
     after
       clear_review_agent_env!()
       File.rm_rf(test_root)

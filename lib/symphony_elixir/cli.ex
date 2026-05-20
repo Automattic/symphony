@@ -5,6 +5,9 @@ defmodule SymphonyElixir.CLI do
 
   alias SymphonyElixir.Paths
 
+  # Retained so existing scripts (Docker, ops runbooks) that still pass the long
+  # flag keep parsing — its value is ignored now that the banner is purely
+  # informational.
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @burrito_args_module Burrito.Util.Args
   @service_switches [
@@ -42,6 +45,7 @@ defmodule SymphonyElixir.CLI do
           set_logs_root_from_env: (-> :ok | {:error, term()}),
           set_server_host_override: (String.t() | nil -> :ok | {:error, term()}),
           set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
+          print_banner: (-> :ok),
           ensure_all_started: (-> ensure_started_result()),
           run_one_shot: (String.t(), keyword() -> one_shot_result())
         }
@@ -150,8 +154,9 @@ defmodule SymphonyElixir.CLI do
   defp parse_and_configure(args, deps) do
     case OptionParser.parse(args, strict: @service_switches) do
       {opts, [], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- set_symphony_config(opts, deps),
+        :ok = deps.print_banner.()
+
+        with :ok <- set_symphony_config(opts, deps),
              :ok <- maybe_set_state_root(opts, deps),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_host(opts, deps) do
@@ -187,8 +192,9 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp configure_run(opts, deps) do
-    with :ok <- require_guardrails_acknowledgement(opts),
-         :ok <- deps.set_state_root_from_env.(),
+    :ok = deps.print_banner.()
+
+    with :ok <- deps.set_state_root_from_env.(),
          :ok <- deps.set_logs_root_from_env.(),
          :ok <- set_symphony_config(opts, deps),
          :ok <- maybe_set_state_root(opts, deps) do
@@ -277,6 +283,7 @@ defmodule SymphonyElixir.CLI do
       set_logs_root_from_env: &Paths.set_logs_root_from_env/0,
       set_server_host_override: &set_server_host_override/1,
       set_server_port_override: &set_server_port_override/1,
+      print_banner: &print_startup_banner/0,
       ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end,
       run_one_shot: &SymphonyElixir.OneShot.run/2
     }
@@ -308,24 +315,25 @@ defmodule SymphonyElixir.CLI do
     end)
   end
 
-  defp require_guardrails_acknowledgement(opts) do
-    if Keyword.get(opts, @acknowledgement_switch, false) do
-      :ok
-    else
-      {:error, acknowledgement_banner()}
-    end
+  defp print_startup_banner do
+    IO.puts(:stderr, acknowledgement_banner())
+    :ok
   end
 
+  @doc """
+  Returns the trust-model disclosure banner printed at service and one-shot startup.
+
+  Exposed so tests can assert on the banner contents without rewiring stderr.
+  """
   @spec acknowledgement_banner() :: String.t()
-  defp acknowledgement_banner do
+  def acknowledgement_banner do
     lines = [
       "Symphony is an engineering preview for operator-controlled, trusted environments.",
       "Codex and Claude will run without the usual guardrails.",
       "Agents can access provider runtime config files:",
       "  ~/.codex/auth.json",
       "  ~/.claude/.credentials.json",
-      "SymphonyElixir is not a supported product and is presented as-is.",
-      "To proceed, start with `--i-understand-that-this-will-be-running-without-the-usual-guardrails` CLI argument"
+      "SymphonyElixir is not a supported product and is presented as-is."
     ]
 
     width = Enum.max(Enum.map(lines, &String.length/1))

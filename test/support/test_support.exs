@@ -531,6 +531,7 @@ defmodule SymphonyElixir.TestSupport do
           observability_enabled: true,
           observability_refresh_ms: 1_000,
           observability_render_interval_ms: 16,
+          observability_snapshot_publish_ms: 500,
           observability_transcript_buffer_size: 200,
           pr_review_mode: "tracker",
           pr_review_cooldown_minutes: nil,
@@ -601,6 +602,7 @@ defmodule SymphonyElixir.TestSupport do
     observability_enabled = Keyword.get(config, :observability_enabled)
     observability_refresh_ms = Keyword.get(config, :observability_refresh_ms)
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
+    observability_snapshot_publish_ms = Keyword.get(config, :observability_snapshot_publish_ms)
     observability_transcript_buffer_size = Keyword.get(config, :observability_transcript_buffer_size)
     pr_review_mode = Keyword.get(config, :pr_review_mode)
     pr_review_cooldown_minutes = Keyword.get(config, :pr_review_cooldown_minutes)
@@ -672,6 +674,7 @@ defmodule SymphonyElixir.TestSupport do
           observability_enabled,
           observability_refresh_ms,
           observability_render_interval_ms,
+          observability_snapshot_publish_ms,
           observability_transcript_buffer_size
         ),
         pr_review_yaml(
@@ -772,12 +775,13 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
-  defp observability_yaml(enabled, refresh_ms, render_interval_ms, transcript_buffer_size) do
+  defp observability_yaml(enabled, refresh_ms, render_interval_ms, snapshot_publish_ms, transcript_buffer_size) do
     [
       "observability:",
       "  dashboard_enabled: #{yaml_value(enabled)}",
       "  refresh_ms: #{yaml_value(refresh_ms)}",
       "  render_interval_ms: #{yaml_value(render_interval_ms)}",
+      "  snapshot_publish_ms: #{yaml_value(snapshot_publish_ms)}",
       "  transcript_buffer_size: #{yaml_value(transcript_buffer_size)}"
     ]
     |> Enum.join("\n")

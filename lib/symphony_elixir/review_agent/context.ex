@@ -1,11 +1,11 @@
-defmodule SymphonyElixir.SelfReview.Context do
+defmodule SymphonyElixir.ReviewAgent.Context do
   @moduledoc """
-  Builds structured source material for the pre-push self-review gate.
+  Builds structured source material for the reviewer-agent gate.
   """
 
   require Logger
 
-  alias SymphonyElixir.{AgentLabels, Config.Schema, PromptSafety}
+  alias SymphonyElixir.{AgentLabels, PromptSafety}
   alias SymphonyElixir.Linear.Issue
 
   @context_radius 6
@@ -27,9 +27,9 @@ defmodule SymphonyElixir.SelfReview.Context do
 
   @type git_fun :: (list(String.t()) -> {:ok, String.t()} | {:error, term()})
 
-  @spec build(Issue.t(), Path.t(), Schema.SelfReview.t(), String.t(), keyword(), git_fun()) ::
+  @spec build(Issue.t(), Path.t(), String.t(), keyword(), git_fun()) ::
           {:ok, map()} | {:error, term()}
-  def build(%Issue{} = issue, workspace, %Schema.SelfReview{} = _config, git_range, opts, git_fun)
+  def build(%Issue{} = issue, workspace, git_range, opts, git_fun)
       when is_binary(workspace) and is_binary(git_range) and is_function(git_fun, 1) do
     with {:ok, diff} <- git_fun.(["diff", git_range]),
          {:ok, name_status} <- git_fun.(["diff", "--name-status", git_range]),
@@ -82,7 +82,7 @@ defmodule SymphonyElixir.SelfReview.Context do
             "summarized=#{length(coverage.summarized_files)} " <>
             "generated_lock=#{length(coverage.generated_lock_files)}"
 
-        Logger.info("SelfReview context summarized issue=#{issue.identifier || issue.id} #{summary}")
+        Logger.info("ReviewAgent context summarized issue=#{issue.identifier || issue.id} #{summary}")
       end
 
       {:ok,
@@ -565,7 +565,7 @@ defmodule SymphonyElixir.SelfReview.Context do
   defp call_sites(workspace, inventory, _worker_host) do
     case System.find_executable("rg") do
       nil ->
-        Logger.info("SelfReview call-site lookup skipped: rg executable not on PATH")
+        Logger.info("ReviewAgent call-site lookup skipped: rg executable not on PATH")
         []
 
       rg ->

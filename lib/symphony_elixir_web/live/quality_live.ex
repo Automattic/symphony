@@ -159,7 +159,19 @@ defmodule SymphonyElixirWeb.QualityLive do
                   </td>
                   <td>
                     <span class={status_badge_class(entry.status)}><%= status_label(entry.status) %></span>
-                    <span :if={entry.error} class="quality-reason" title={entry.error}><%= entry.error %></span>
+                    <details :if={entry.error} class="quality-reason-details">
+                      <summary class="quality-reason-summary">View details</summary>
+                      <div class="quality-reason-body">
+                        <pre class="quality-reason-pre"><%= entry.error %></pre>
+                        <button
+                          type="button"
+                          class="subtle-button quality-reason-copy"
+                          aria-label="Copy details"
+                          data-copy={entry.error}
+                          onclick="navigator.clipboard.writeText(this.dataset.copy); const label = this.dataset.label || this.textContent; this.dataset.label = label; this.textContent = 'Copied ✓'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = label }, 1400);"
+                        >Copy</button>
+                      </div>
+                    </details>
                   </td>
                   <td><%= entry.agent_kind || "unknown" %></td>
                   <td class="numeric">

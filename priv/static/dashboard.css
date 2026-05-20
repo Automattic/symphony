@@ -845,15 +845,63 @@ pre,
   min-width: 980px;
 }
 
-.quality-reason {
+.quality-reason-details {
   display: block;
+  margin-top: 0.15rem;
   font-size: 0.72rem;
   color: var(--muted);
-  margin-top: 0.15rem;
   letter-spacing: 0;
+}
+
+.quality-reason-summary {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  list-style: none;
+}
+
+.quality-reason-summary::-webkit-details-marker {
+  display: none;
+}
+
+.quality-reason-summary::before {
+  content: "▸ ";
+  color: var(--muted);
+}
+
+.quality-reason-details[open] > .quality-reason-summary::before {
+  content: "▾ ";
+}
+
+.quality-reason-body {
+  margin-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.quality-reason-pre {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  background: var(--surface, #f6f6f6);
+  border: 1px solid var(--line, #e2e2e2);
+  border-radius: 6px;
+  font-family: "Sohne Mono", "SFMono-Regular", "SF Mono", Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 18rem;
+  overflow: auto;
+  user-select: text;
+}
+
+.quality-reason-copy {
+  align-self: flex-start;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.55rem;
 }
 
 .session-copy-btn {

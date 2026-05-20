@@ -19,6 +19,7 @@ defmodule SymphonyElixir.CLITest do
         set_logs_root_from_env: fn -> :ok end,
         set_server_host_override: fn _host -> :ok end,
         set_server_port_override: fn _port -> :ok end,
+        print_banner: fn -> :ok end,
         ensure_all_started: fn -> {:ok, [:symphony_elixir]} end,
         run_one_shot: fn _identifier, _opts -> {:ok, %{}} end
       },
@@ -26,18 +27,18 @@ defmodule SymphonyElixir.CLITest do
     )
   end
 
-  test "returns the guardrails acknowledgement banner when the flag is missing" do
+  test "prints the trust-model banner once before runtime configuration" do
     parent = self()
 
     deps =
       base_deps(%{
+        print_banner: fn ->
+          send(parent, :banner_printed)
+          :ok
+        end,
         file_regular?: fn _path ->
           send(parent, :file_checked)
           true
-        end,
-        set_symphony_file_path: fn _path ->
-          send(parent, :symphony_set)
-          :ok
         end,
         ensure_all_started: fn ->
           send(parent, :started)
@@ -45,25 +46,33 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert {:error, banner} = CLI.evaluate([], deps)
+    assert :ok = CLI.evaluate([], deps)
+
+    assert_received :banner_printed
+    assert_received :file_checked
+    assert_received :started
+  end
+
+  test "trust-model banner discloses the full preview/guardrails/credentials warning" do
+    banner = CLI.acknowledgement_banner()
+
     assert banner =~ "Symphony is an engineering preview for operator-controlled, trusted environments."
     assert banner =~ "Codex and Claude will run without the usual guardrails."
-    assert banner =~ "Agents can access provider runtime config files:"
     assert banner =~ "~/.codex/auth.json"
     assert banner =~ "~/.claude/.credentials.json"
     assert banner =~ "SymphonyElixir is not a supported product and is presented as-is."
-    assert banner =~ @ack_flag
-    refute_received :file_checked
-    refute_received :symphony_set
-    refute_received :started
+  end
+
+  test "legacy acknowledgement flag is silently accepted for backward compatibility" do
+    assert :ok = CLI.evaluate([@ack_flag], base_deps())
   end
 
   test "rejects unknown positional arguments" do
-    assert {:error, message} = CLI.evaluate([@ack_flag, "WORKFLOW.md"], base_deps())
+    assert {:error, message} = CLI.evaluate(["WORKFLOW.md"], base_deps())
     assert message =~ "Usage: symphony"
   end
 
-  test "runs init without guardrails acknowledgement or runtime startup" do
+  test "init subcommand skips the banner and runtime startup" do
     parent = self()
 
     deps =
@@ -71,6 +80,10 @@ defmodule SymphonyElixir.CLITest do
         init: fn args ->
           send(parent, {:init, args})
           {:ok, "Wrote /tmp/repo/symphony.yml"}
+        end,
+        print_banner: fn ->
+          send(parent, :banner_printed)
+          :ok
         end,
         file_regular?: fn _path ->
           send(parent, :file_checked)
@@ -89,6 +102,7 @@ defmodule SymphonyElixir.CLITest do
 
     assert output == "Wrote /tmp/repo/symphony.yml\n"
     assert_received {:init, ["--force"]}
+    refute_received :banner_printed
     refute_received :file_checked
     refute_received :started
   end
@@ -120,7 +134,7 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert {:halt, 0} = CLI.evaluate(["run", "RSM-3603", @ack_flag, "--timeout", "30m", "--no-retry"], deps)
+    assert {:halt, 0} = CLI.evaluate(["run", "RSM-3603", "--timeout", "30m", "--no-retry"], deps)
     assert_received {:run_one_shot, "RSM-3603", opts}
     assert opts[:timeout_ms] == 1_800_000
     assert opts[:no_retry] == true
@@ -129,28 +143,25 @@ defmodule SymphonyElixir.CLITest do
   test "one-shot mode maps failure, config, and timeout outcomes to documented exit codes" do
     assert {:error, _message, 1} =
              CLI.evaluate(
-               ["run", "RSM-3603", @ack_flag],
+               ["run", "RSM-3603"],
                base_deps(%{run_one_shot: fn _identifier, _opts -> {:error, :boom} end})
              )
 
     assert {:error, _message, 2} =
              CLI.evaluate(
-               ["run", "RSM-3603", @ack_flag],
+               ["run", "RSM-3603"],
                base_deps(%{run_one_shot: fn _identifier, _opts -> {:config_error, :bad_config} end})
              )
 
     assert {:halt, 124} =
              CLI.evaluate(
-               ["run", "RSM-3603", @ack_flag],
+               ["run", "RSM-3603"],
                base_deps(%{run_one_shot: fn _identifier, _opts -> {:timeout, :timeout_exceeded} end})
              )
   end
 
-  test "one-shot mode returns config error code for missing guardrail acknowledgement or bad timeout syntax" do
-    assert {:error, banner, 2} = CLI.evaluate(["run", "RSM-3603"], base_deps())
-    assert banner =~ @ack_flag
-
-    assert {:error, message, 2} = CLI.evaluate(["run", "RSM-3603", @ack_flag, "--timeout", "later"], base_deps())
+  test "one-shot mode returns config error code for bad timeout syntax" do
+    assert {:error, message, 2} = CLI.evaluate(["run", "RSM-3603", "--timeout", "later"], base_deps())
     assert message =~ "Invalid --timeout"
   end
 
@@ -170,7 +181,7 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert :ok = CLI.evaluate([@ack_flag], deps)
+    assert :ok = CLI.evaluate([], deps)
     assert_received {:file_checked, ^expected_path}
     assert_received {:symphony_set, ^expected_path}
   end
@@ -192,7 +203,7 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert :ok = CLI.evaluate([@ack_flag, "--config", config_path], deps)
+    assert :ok = CLI.evaluate(["--config", config_path], deps)
     assert_received {:file_checked, ^expanded_config_path}
     assert_received {:symphony_set, ^expanded_config_path}
   end
@@ -200,14 +211,14 @@ defmodule SymphonyElixir.CLITest do
   test "returns not found when the symphony config does not exist" do
     deps = base_deps(%{file_regular?: fn _path -> false end})
 
-    assert {:error, message} = CLI.evaluate([@ack_flag, "--config", "missing.yml"], deps)
+    assert {:error, message} = CLI.evaluate(["--config", "missing.yml"], deps)
     assert message =~ "Symphony config file not found:"
   end
 
   test "returns not found when the default symphony.yml is missing" do
     deps = base_deps(%{file_regular?: fn _path -> false end})
 
-    assert {:error, message} = CLI.evaluate([@ack_flag], deps)
+    assert {:error, message} = CLI.evaluate([], deps)
     assert message =~ "Symphony config file not found:"
     assert message =~ "symphony.yml"
   end
@@ -223,7 +234,7 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert :ok = CLI.evaluate([@ack_flag, "--logs-root", "tmp/custom-logs"], deps)
+    assert :ok = CLI.evaluate(["--logs-root", "tmp/custom-logs"], deps)
     assert_received {:logs_root, expanded_path}
     assert expanded_path == Path.expand("tmp/custom-logs")
   end
@@ -239,7 +250,7 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert :ok = CLI.evaluate([@ack_flag, "--state-root", "tmp/custom-state"], deps)
+    assert :ok = CLI.evaluate(["--state-root", "tmp/custom-state"], deps)
     assert_received {:state_root, expanded_path}
     assert expanded_path == Path.expand("tmp/custom-state")
   end
@@ -259,7 +270,7 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert :ok = CLI.configure([@ack_flag, "--state-root", "tmp/configure-state"], deps)
+    assert :ok = CLI.configure(["--state-root", "tmp/configure-state"], deps)
     assert_received {:state_root, expanded_path}
     assert expanded_path == Path.expand("tmp/configure-state")
     refute_received :started
@@ -294,7 +305,7 @@ defmodule SymphonyElixir.CLITest do
 
     assert :ok =
              CLI.evaluate(
-               [@ack_flag, "--state-root", "tmp/custom-state", "--logs-root", "tmp/custom-logs"],
+               ["--state-root", "tmp/custom-state", "--logs-root", "tmp/custom-logs"],
                deps
              )
 
@@ -317,19 +328,19 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert :ok = CLI.evaluate([@ack_flag, "--host", "0.0.0.0"], deps)
+    assert :ok = CLI.evaluate(["--host", "0.0.0.0"], deps)
     assert_received {:host, "0.0.0.0"}
   end
 
   test "returns startup error when app cannot start" do
     deps = base_deps(%{ensure_all_started: fn -> {:error, :boom} end})
 
-    assert {:error, message} = CLI.evaluate([@ack_flag], deps)
+    assert {:error, message} = CLI.evaluate([], deps)
     assert message =~ "Failed to start Symphony"
     assert message =~ ":boom"
   end
 
   test "returns ok when symphony.yml exists and the app starts" do
-    assert :ok = CLI.evaluate([@ack_flag], base_deps())
+    assert :ok = CLI.evaluate([], base_deps())
   end
 end

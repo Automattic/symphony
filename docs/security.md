@@ -52,6 +52,18 @@ on the credential paths, allow-writes scoped to the issue workspace, and an `ext
 policy so SRT — not nested `sandbox-exec` — owns command enforcement. Use this when native Codex
 deny-list enforcement is not enough.
 
+**Git write model.** SRT settings always deny writes to the high-risk Git metadata files
+`config`, `config.worktree`, `hooks`, `info`, `packed-refs`, and any `worktrees/*/config(.worktree)`
+entries on every discovered Git metadata root. Writes to `.git/objects` are allowed only when the
+Git metadata root lives inside the per-issue workspace — the default clone layout
+(`workspace.strategy: clone`). For linked worktrees (`workspace.strategy: worktree`,
+`workspace.repo: <source>`), the shared `<source>/.git/objects` database stays write-denied by
+default so a sandboxed run cannot mutate objects visible to peer workspaces. To run `git
+add`/`git commit` under SRT in a linked-worktree setup, switch the affected workflow to a clone
+strategy or stage commits through a per-run isolated object store provisioned inside the
+workspace (for example via `GIT_OBJECT_DIRECTORY`). Operator-provisioned isolated stores outside
+the discovered metadata roots receive no implicit deny.
+
 ### Network access controls
 
 `agent.network_access` supports `allowlist`, `block`, and `open`. `denied_domains` always

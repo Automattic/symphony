@@ -168,11 +168,26 @@ defmodule SymphonyElixir.CLI do
     with {:ok, issue_identifier, opts} <- parse_run_args(args),
          :ok <- validate_run_timeout(opts),
          :ok <- configure_run(opts, deps) do
+      announce_run_start(issue_identifier)
+
       issue_identifier
       |> deps.run_one_shot.(run_options(opts))
+      |> tap(&announce_run_result(issue_identifier, &1))
       |> one_shot_result()
     end
   end
+
+  defp announce_run_start(issue_identifier) do
+    IO.puts(:stderr, "▶ Running #{issue_identifier}  (logs: #{Paths.log_file()})")
+  end
+
+  defp announce_run_result(issue_identifier, {:ok, _result}),
+    do: IO.puts(:stderr, "✓ #{issue_identifier} completed")
+
+  defp announce_run_result(issue_identifier, {:timeout, _reason}),
+    do: IO.puts(:stderr, "✗ #{issue_identifier} timed out")
+
+  defp announce_run_result(_issue_identifier, _other), do: :ok
 
   defp parse_run_args(args) do
     case OptionParser.parse(args, strict: @run_switches) do

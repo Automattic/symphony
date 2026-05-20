@@ -1374,6 +1374,7 @@ defmodule SymphonyElixir.Config.Schema do
         "pr_opened",
         "awaiting_review",
         "run_failed",
+        "run_stuck",
         "issue_completed",
         "budget_exceeded",
         "dependency_pending_approval",

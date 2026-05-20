@@ -201,9 +201,9 @@ notifications:
   channels:
     - kind: slack
       webhook_url: $SLACK_WEBHOOK_URL
-      # Supported events: pr_opened, awaiting_review, run_failed, issue_completed,
-      # budget_exceeded, dependency_pending_approval, reviewer_commented,
-      # rework_pushed, ci_failed, ci_escalated.
+      # Supported events: pr_opened, awaiting_review, run_failed, run_stuck,
+      # issue_completed, budget_exceeded, dependency_pending_approval,
+      # reviewer_commented, rework_pushed, ci_failed, ci_escalated.
       events: [pr_opened, awaiting_review, run_failed, budget_exceeded]
     # - kind: webhook
     #   url: $NOTIFY_WEBHOOK_URL

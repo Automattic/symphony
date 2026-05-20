@@ -306,9 +306,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <%= if entry.url do %>
-                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer" title={entry.title}><%= entry.issue_identifier %></a>
                         <% else %>
-                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                          <span class="issue-id" title={entry.title}><%= entry.issue_identifier %></span>
                         <% end %>
                         <.repo_chip repo={repo_label(entry)} />
                       </div>
@@ -427,9 +427,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <%= if entry.url do %>
-                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer" title={entry.title}><%= entry.issue_identifier %></a>
                         <% else %>
-                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                          <span class="issue-id" title={entry.title}><%= entry.issue_identifier %></span>
                         <% end %>
                         <.repo_chip repo={repo_label(entry)} />
                       </div>
@@ -486,9 +486,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <%= if entry.url do %>
-                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer" title={entry.title}><%= entry.issue_identifier %></a>
                         <% else %>
-                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                          <span class="issue-id" title={entry.title}><%= entry.issue_identifier %></span>
                         <% end %>
                       </div>
                     </td>
@@ -534,7 +534,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr :for={entry <- @visible_payload.retrying}>
                     <td>
                       <div class="issue-stack">
-                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <span class="issue-id" title={entry.title}><%= entry.issue_identifier %></span>
                         <.repo_chip repo={repo_label(entry)} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
@@ -583,9 +583,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <%= if entry.url do %>
-                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer" title={entry.title}><%= entry.issue_identifier %></a>
                         <% else %>
-                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                          <span class="issue-id" title={entry.title}><%= entry.issue_identifier %></span>
                         <% end %>
                         <.repo_chip repo={repo_label(entry)} />
                       </div>
@@ -637,9 +637,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <%= if entry.url do %>
-                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer"><%= entry.issue_identifier %></a>
+                          <a class="issue-id" href={entry.url} target="_blank" rel="noreferrer" title={entry.title}><%= entry.issue_identifier %></a>
                         <% else %>
-                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                          <span class="issue-id" title={entry.title}><%= entry.issue_identifier %></span>
                         <% end %>
                         <.repo_chip repo={repo_label(entry)} />
                       </div>

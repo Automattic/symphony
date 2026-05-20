@@ -956,7 +956,7 @@ the reviewer MUST return a structured verdict of `approve`, `request_changes`, o
 sessions SHOULD expose only read-only scoped Linear/GitHub tools. Reviewer token usage SHOULD be
 tracked separately from the aggregate run token total.
 
-#### 5.4.19 `notifications` (object)
+#### 5.4.18 `notifications` (object)
 
 Fields:
 

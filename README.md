@@ -80,8 +80,10 @@ workflow prompts that let coding agents work safely.
 
 1. Get a Linear personal token from Settings -> Security & access -> Personal API keys, and export
    it as `LINEAR_API_KEY`.
-2. Prepare each target repo with a `WORKFLOW.md`.
-3. List those repos under `repos:` in `symphony.yml`.
+2. Run `symphony init` from the operator repo to scaffold `symphony.yml`, then edit the deterministic
+   operator fields such as tracker scope, agent command, workspace root, and `repos:`.
+3. Invoke the `symphony-init-workflow` skill from Codex or Claude in each target repo so the agent
+   inspects the repo and writes a tailored `WORKFLOW.md`.
 4. Install the Elixir/Erlang toolchain with `mise`.
 5. Start Symphony from this repository root.
 
@@ -117,6 +119,20 @@ Start Symphony from a directory containing `symphony.yml`:
 ```bash
 ./bin/symphony
 ```
+
+For a new operator config, scaffold the deterministic YAML first:
+
+```bash
+./bin/symphony init
+```
+
+`symphony init` writes only `symphony.yml`; it does not create `WORKFLOW.md` or guess repository
+validation commands. If `symphony.yml` already exists, rerun with `--force` only after reviewing the
+printed diff.
+
+After editing `symphony.yml`, invoke the shared `symphony-init-workflow` skill from Codex or Claude
+inside the target repository. The skill inspects repo files and CI scripts, asks for clarification
+when commands are ambiguous, writes `WORKFLOW.md`, and validates it with Symphony's runtime parser.
 
 Pass `--config` to point at a different operator config:
 

@@ -18,8 +18,10 @@ defmodule SymphonyElixir.CLI do
   @default_symphony_file "symphony.yml"
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
+  @type evaluation_result :: :ok | :halt | {:error, String.t()}
   @type deps :: %{
           file_regular?: (String.t() -> boolean()),
+          init: ([String.t()] -> SymphonyElixir.Init.result()),
           set_symphony_file_path: (String.t() -> :ok | {:error, term()}),
           set_state_root: (String.t() -> :ok | {:error, term()}),
           set_state_root_from_env: (-> :ok | {:error, term()}),
@@ -36,14 +38,31 @@ defmodule SymphonyElixir.CLI do
       :ok ->
         wait_for_shutdown()
 
+      :halt ->
+        System.halt(0)
+
       {:error, message} ->
         IO.puts(:stderr, message)
         System.halt(1)
     end
   end
 
-  @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
-  def evaluate(args, deps \\ runtime_deps()) do
+  @spec evaluate([String.t()]) :: evaluation_result()
+  def evaluate(args), do: evaluate(args, runtime_deps())
+
+  @spec evaluate([String.t()], deps()) :: evaluation_result()
+  def evaluate(["init" | args], deps) do
+    case deps.init.(args) do
+      {:ok, message} ->
+        IO.puts(message)
+        :halt
+
+      {:error, message} ->
+        {:error, message}
+    end
+  end
+
+  def evaluate(args, deps) do
     with :ok <- configure(args, deps) do
       start_runtime(deps)
     end
@@ -103,13 +122,14 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]"
+    "Usage: symphony init [--force]\n       symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]"
   end
 
   @spec runtime_deps() :: deps()
   defp runtime_deps do
     %{
       file_regular?: &File.regular?/1,
+      init: &SymphonyElixir.Init.run/1,
       set_symphony_file_path: &SymphonyElixir.Workflow.set_symphony_file_path/1,
       set_state_root: &set_state_root/1,
       set_state_root_from_env: &Paths.set_state_root_from_env/0,

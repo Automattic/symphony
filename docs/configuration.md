@@ -25,6 +25,22 @@ repo-local `hooks`, and repo-specific verification dev-server commands.
 
 ## Startup
 
+For a new setup, create the operator config first:
+
+```bash
+./bin/symphony init
+```
+
+`symphony init` scaffolds only `symphony.yml` and validates the generated YAML against Symphony's
+operator config schema before writing it. It does not create `WORKFLOW.md`, choose a language
+template, or guess validation commands. If `symphony.yml` already exists, the command refuses to
+overwrite it and prints a diff; pass `--force` only after reviewing that diff.
+
+Then invoke the shared `symphony-init-workflow` skill from Codex or Claude inside each target
+repository. The skill reads repo manifests, scripts, and CI workflows to identify real bootstrap and
+validation commands, asks one or two clarifying questions only when the repo has multiple plausible
+gates, writes `WORKFLOW.md`, and validates it with the same parser Symphony uses at runtime.
+
 Run `./bin/symphony` from a directory that contains `symphony.yml`:
 
 ```bash

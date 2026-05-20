@@ -44,6 +44,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert get_in(result, ["sandbox", "filesystem", "denyWrite"]) == expected_filesystem["denyWrite"]
 
       assert get_in(result, ["sandbox", "network", "allowManagedDomainsOnly"]) == true
+      assert get_in(result, ["sandbox", "network", "allowLocalBinding"]) == true
 
       allowed = get_in(result, ["sandbox", "network", "allowedDomains"])
       assert is_list(allowed)
@@ -79,6 +80,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert get_in(result, ["sandbox", "enabled"]) == true
       assert get_in(result, ["sandbox", "network", "allowedDomains"]) == []
       assert get_in(result, ["sandbox", "network", "allowManagedDomainsOnly"]) == true
+      assert get_in(result, ["sandbox", "network", "allowLocalBinding"]) == true
     end
 
     test "open mode does not include network key in sandbox" do

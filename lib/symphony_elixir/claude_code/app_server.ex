@@ -97,11 +97,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         }
       }
 
+    # `allowLocalBinding: true` permits bind/listen on 127.0.0.0/8 only.
+    # Mix 1.19+ `Mix.Sync.PubSub` opens an ephemeral loopback socket on every
+    # mix subcommand; outbound allowlist and credential deny-reads are unaffected.
     case mode do
       "block" ->
         put_in(base, ["sandbox", "network"], %{
           "allowedDomains" => [],
-          "allowManagedDomainsOnly" => true
+          "allowManagedDomainsOnly" => true,
+          "allowLocalBinding" => true
         })
 
       "allowlist" ->
@@ -109,7 +113,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
         put_in(base, ["sandbox", "network"], %{
           "allowedDomains" => effective_domains,
-          "allowManagedDomainsOnly" => true
+          "allowManagedDomainsOnly" => true,
+          "allowLocalBinding" => true
         })
 
       "open" ->

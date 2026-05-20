@@ -333,7 +333,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert settings["network"] == %{
              "allowedDomains" => ["github.com", "api.openai.com"],
              "deniedDomains" => ["api.github.com"],
-             "allowLocalBinding" => false
+             "allowLocalBinding" => true
            }
 
     assert settings["filesystem"]["allowRead"] == ["~/.npmrc"]

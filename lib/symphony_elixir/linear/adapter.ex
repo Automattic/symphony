@@ -43,6 +43,9 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec fetch_candidate_issues_for_repo(term()) :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues_for_repo(repo), do: client_module().fetch_candidate_issues_for_repo(repo)
 
+  @spec fetch_issue_by_identifier(String.t()) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_by_identifier(identifier), do: client_module().fetch_issue_by_identifier(identifier)
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issues_by_states(states), do: client_module().fetch_issues_by_states(states)
 

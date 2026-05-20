@@ -16,7 +16,8 @@ defmodule SymphonyElixir.CLITest do
         set_logs_root_from_env: fn -> :ok end,
         set_server_host_override: fn _host -> :ok end,
         set_server_port_override: fn _port -> :ok end,
-        ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+        ensure_all_started: fn -> {:ok, [:symphony_elixir]} end,
+        run_one_shot: fn _identifier, _opts -> {:ok, %{}} end
       },
       overrides
     )
@@ -57,6 +58,51 @@ defmodule SymphonyElixir.CLITest do
   test "rejects unknown positional arguments" do
     assert {:error, message} = CLI.evaluate([@ack_flag, "WORKFLOW.md"], base_deps())
     assert message =~ "Usage: symphony"
+  end
+
+  test "runs one-shot mode with issue identifier and parsed options" do
+    parent = self()
+
+    deps =
+      base_deps(%{
+        run_one_shot: fn identifier, opts ->
+          send(parent, {:run_one_shot, identifier, opts})
+          {:ok, %{run_id: "run-1"}}
+        end
+      })
+
+    assert {:halt, 0} = CLI.evaluate(["run", "RSM-3603", @ack_flag, "--timeout", "30m", "--no-retry"], deps)
+    assert_received {:run_one_shot, "RSM-3603", opts}
+    assert opts[:timeout_ms] == 1_800_000
+    assert opts[:no_retry] == true
+  end
+
+  test "one-shot mode maps failure, config, and timeout outcomes to documented exit codes" do
+    assert {:error, _message, 1} =
+             CLI.evaluate(
+               ["run", "RSM-3603", @ack_flag],
+               base_deps(%{run_one_shot: fn _identifier, _opts -> {:error, :boom} end})
+             )
+
+    assert {:error, _message, 2} =
+             CLI.evaluate(
+               ["run", "RSM-3603", @ack_flag],
+               base_deps(%{run_one_shot: fn _identifier, _opts -> {:config_error, :bad_config} end})
+             )
+
+    assert {:halt, 124} =
+             CLI.evaluate(
+               ["run", "RSM-3603", @ack_flag],
+               base_deps(%{run_one_shot: fn _identifier, _opts -> {:timeout, :timeout_exceeded} end})
+             )
+  end
+
+  test "one-shot mode returns config error code for missing guardrail acknowledgement or bad timeout syntax" do
+    assert {:error, banner, 2} = CLI.evaluate(["run", "RSM-3603"], base_deps())
+    assert banner =~ @ack_flag
+
+    assert {:error, message, 2} = CLI.evaluate(["run", "RSM-3603", @ack_flag, "--timeout", "later"], base_deps())
+    assert message =~ "Invalid --timeout"
   end
 
   test "defaults to ./symphony.yml when --config is omitted" do

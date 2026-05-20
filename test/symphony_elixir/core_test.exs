@@ -1461,6 +1461,44 @@ defmodule SymphonyElixir.CoreTest do
     assert {:ok, []} = Client.fetch_issues_by_states([])
   end
 
+  test "linear client fetches a single issue by identifier" do
+    graphql_fun = fn query, variables ->
+      send(self(), {:issue_query, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "issue-1",
+             "identifier" => "RSM-1",
+             "title" => "Run one issue",
+             "description" => "Run this directly",
+             "priority" => 2,
+             "state" => %{"name" => "Todo"},
+             "team" => %{"key" => "RSM", "name" => "Radical Speed Month"},
+             "project" => %{"id" => "project-1", "name" => "Harness"},
+             "branchName" => "rsm-1-run-one-issue",
+             "url" => "https://linear.app/example/issue/RSM-1",
+             "attachments" => %{"nodes" => []},
+             "assignee" => %{"id" => "user-1"},
+             "labels" => %{"nodes" => [%{"name" => "backend"}]},
+             "comments" => %{"nodes" => []},
+             "inverseRelations" => %{"nodes" => []},
+             "createdAt" => "2026-05-20T00:00:00Z",
+             "updatedAt" => "2026-05-20T01:00:00Z"
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issue} = Client.fetch_issue_by_identifier_for_test("RSM-1", graphql_fun)
+
+    assert_receive {:issue_query, query, %{id: "RSM-1", relationFirst: 50, attachmentFirst: 20, commentLast: 20}}
+
+    assert query =~ "SymphonyLinearIssueByIdentifier"
+    assert %Issue{id: "issue-1", identifier: "RSM-1", state: "Todo", labels: ["backend"]} = issue
+  end
+
   test "linear client enriches issue comments and linked issues" do
     long_body = String.duplicate("x", 805)
 

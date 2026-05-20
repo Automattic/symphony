@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Tracker do
 
   @callback fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   @callback fetch_candidate_issues_for_repo(term()) :: {:ok, [term()]} | {:error, term()}
+  @callback fetch_issue_by_identifier(String.t()) :: {:ok, Issue.t()} | {:error, term()}
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback enrich_issue(Issue.t()) :: {:ok, Issue.t()} | {:error, term()}
@@ -21,6 +22,11 @@ defmodule SymphonyElixir.Tracker do
   @spec fetch_candidate_issues_for_repo(term()) :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues_for_repo(repo) do
     adapter().fetch_candidate_issues_for_repo(repo)
+  end
+
+  @spec fetch_issue_by_identifier(String.t()) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_by_identifier(identifier) when is_binary(identifier) do
+    adapter().fetch_issue_by_identifier(identifier)
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}

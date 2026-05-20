@@ -29,6 +29,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Notifications.Notifier,
           SymphonyElixir.Repo.Supervisor,
           SymphonyElixir.SpecsCheck,
+          SymphonyElixir.OneShot,
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
           SymphonyElixir.CiPoller,

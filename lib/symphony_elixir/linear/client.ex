@@ -151,6 +151,69 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @query_by_identifier """
+  query SymphonyLinearIssueByIdentifier($id: String!, $relationFirst: Int!, $attachmentFirst: Int!, $commentLast: Int!) {
+    issue(id: $id) {
+      id
+      identifier
+      title
+      description
+      priority
+      state {
+        name
+      }
+      team {
+        key
+        name
+      }
+      project {
+        id
+        name
+      }
+      branchName
+      url
+      attachments(first: $attachmentFirst) {
+        nodes {
+          title
+          url
+          sourceType
+        }
+      }
+      assignee {
+        id
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+      comments(last: $commentLast, orderBy: createdAt) {
+        nodes {
+          body
+          createdAt
+          user {
+            name
+          }
+        }
+      }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue {
+            id
+            identifier
+            state {
+              name
+            }
+          }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+  }
+  """
+
   @viewer_query """
   query SymphonyLinearViewer {
     viewer {
@@ -201,6 +264,11 @@ defmodule SymphonyElixir.Linear.Client do
     with {:ok, context} <- repo_poll_context() do
       do_fetch_repo_by_states(repo, context.tracker.active_states, context.tracker)
     end
+  end
+
+  @spec fetch_issue_by_identifier(String.t()) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_by_identifier(identifier) when is_binary(identifier) do
+    do_fetch_issue_by_identifier(identifier, &graphql/2)
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -337,6 +405,14 @@ defmodule SymphonyElixir.Linear.Client do
         {:ok, dedupe_repo_issues(repo_results)}
       end
     end
+  end
+
+  @doc false
+  @spec fetch_issue_by_identifier_for_test(String.t(), (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_by_identifier_for_test(identifier, graphql_fun)
+      when is_binary(identifier) and is_function(graphql_fun, 2) do
+    do_fetch_issue_by_identifier(identifier, graphql_fun)
   end
 
   @doc false
@@ -710,6 +786,25 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
+  defp do_fetch_issue_by_identifier(identifier, graphql_fun)
+       when is_binary(identifier) and is_function(graphql_fun, 2) do
+    case normalize_issue_id(identifier) do
+      nil ->
+        {:error, :missing_issue_identifier}
+
+      id ->
+        case graphql_fun.(@query_by_identifier, %{
+               id: id,
+               relationFirst: @issue_page_size,
+               attachmentFirst: @attachment_page_size,
+               commentLast: @enrichment_comment_last
+             }) do
+          {:ok, body} -> decode_linear_issue_response(body, nil)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
   defp normalize_issue_id(issue_id) when is_binary(issue_id) do
     case String.trim(issue_id) do
       "" -> nil
@@ -848,6 +943,21 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp decode_linear_page_response(response, assignee_filter), do: decode_linear_response(response, assignee_filter)
+
+  defp decode_linear_issue_response(%{"data" => %{"issue" => issue}}, assignee_filter) when is_map(issue) do
+    case normalize_issue(issue, assignee_filter) do
+      %Issue{} = issue -> {:ok, issue}
+      nil -> {:error, :linear_invalid_issue}
+    end
+  end
+
+  defp decode_linear_issue_response(%{"data" => %{"issue" => nil}}, _assignee_filter), do: {:error, :issue_not_found}
+
+  defp decode_linear_issue_response(%{"errors" => errors}, _assignee_filter) do
+    {:error, {:linear_graphql_errors, errors}}
+  end
+
+  defp decode_linear_issue_response(_unknown, _assignee_filter), do: {:error, :linear_unknown_payload}
 
   defp decode_issue_enrichment_response(%{"data" => %{"issue" => issue}}) when is_map(issue) do
     {:ok, issue}

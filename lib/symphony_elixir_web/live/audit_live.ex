@@ -15,20 +15,35 @@ defmodule SymphonyElixirWeb.AuditLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply, assign(socket, :payload, Presenter.audit_payload(params, orchestrator(), snapshot_timeout_ms()))}
+    payload = Presenter.audit_payload(params, orchestrator(), snapshot_timeout_ms())
+
+    {:noreply,
+     socket
+     |> assign(:payload, payload)
+     |> assign(:verify_result, nil)}
   end
 
   @impl true
   def handle_event("verify-chain", _params, socket) do
     date = socket.assigns.payload.filters.date_to || socket.assigns.payload.filters.date_from
 
-    result =
-      case AuditLog.verify_chain(date) do
-        :ok -> %{status: :ok, message: "Chain verified for #{date}."}
-        {:error, {:break_at, record_id}} -> %{status: :error, message: "Chain break at #{record_id}."}
-      end
+    {:noreply, assign(socket, :verify_result, verify_chain_result(date))}
+  end
 
-    {:noreply, assign(socket, :verify_result, result)}
+  defp verify_chain_result(date) do
+    case AuditLog.verify_chain(date) do
+      :ok ->
+        %{status: :ok, message: "Chain verified for #{date}."}
+
+      {:error, :invalid_date} ->
+        %{status: :error, message: "Invalid date: #{inspect(date)}."}
+
+      {:error, {:invalid_record, line, _reason}} ->
+        %{status: :error, message: "Malformed audit record on line #{line}."}
+
+      {:error, {:chain_break, %{record_hash: record_hash, line: line}}} ->
+        %{status: :error, message: "Chain break at #{record_hash || "line #{line}"}."}
+    end
   end
 
   @impl true
@@ -175,26 +190,19 @@ defmodule SymphonyElixirWeb.AuditLive do
   end
 
   defp audit_export_href(filters) do
-    filters
-    |> Map.take([:repo, :issue, :event_type, :run_id, :date_from, :date_to, :since])
-    |> Enum.flat_map(fn
-      {_key, nil} -> []
-      {:event_type, value} -> [{"type", value}]
-      {:date_from, value} -> [{"from", value}]
-      {:date_to, value} -> [{"to", value}]
-      {:since, value} -> [{"since", value}]
-      {key, value} -> [{Atom.to_string(key), value}]
-    end)
-    |> then(fn params ->
-      params =
-        if Map.get(filters, :since_last_poll?) do
-          [{"since_last_poll", "1"} | params]
-        else
-          params
-        end
+    params =
+      filters
+      |> Map.take([:repo, :issue, :event_type, :run_id, :date_from, :date_to, :since])
+      |> Enum.flat_map(fn
+        {_key, nil} -> []
+        {:event_type, value} -> [{"type", value}]
+        {:date_from, value} -> [{"from", value}]
+        {:date_to, value} -> [{"to", value}]
+        {:since, value} -> [{"since", value}]
+        {key, value} -> [{Atom.to_string(key), value}]
+      end)
 
-      "/api/v1/audit?" <> URI.encode_query([{"download", "1"} | params])
-    end)
+    "/api/v1/audit?" <> URI.encode_query([{"download", "1"} | params])
   end
 
   defp repo_chip(assigns) do

@@ -96,9 +96,18 @@ defmodule SymphonyElixirWeb.AuditController do
     conn = send_chunked(conn, 200)
 
     Enum.reduce_while(stream, conn, fn event, conn ->
-      {:ok, conn} = chunk(conn, Jason.encode!(event) <> "\n")
-      {:cont, conn}
+      case chunk(conn, encode_event_line(event)) do
+        {:ok, conn} -> {:cont, conn}
+        {:error, _reason} -> {:halt, conn}
+      end
     end)
+  end
+
+  defp encode_event_line(event) do
+    case Jason.encode(event) do
+      {:ok, json} -> json <> "\n"
+      {:error, _reason} -> ~s({"error":"unencodable_record"}\n)
+    end
   end
 
   defp error_response(conn, status, code, message) do

@@ -306,7 +306,73 @@ defmodule SymphonyElixir.AuditLogTest do
 
     File.write!(path, Enum.join([first_line, tampered_second], "\n") <> "\n")
 
-    assert {:error, {:break_at, ^second_record_hash}} = AuditLog.verify_chain("2026-05-07", dir: audit_dir)
+    assert {:error, {:chain_break, %{line: 2, record_hash: ^second_record_hash}}} =
+             AuditLog.verify_chain("2026-05-07", dir: audit_dir)
+  end
+
+  test "verify_chain reports invalid_date for non-parseable input", %{audit_dir: audit_dir} do
+    assert {:error, :invalid_date} = AuditLog.verify_chain("not-a-date", dir: audit_dir)
+  end
+
+  test "verify_chain returns ok when the daily file does not exist", %{audit_dir: audit_dir} do
+    assert :ok = AuditLog.verify_chain(~D[2099-01-01], dir: audit_dir)
+  end
+
+  test "query/1 rejects malformed cursors", %{audit_dir: audit_dir} do
+    assert {:error, :invalid_cursor} =
+             AuditLog.query(cursor: "bad", from: "2026-05-07", to: "2026-05-07", dir: audit_dir)
+
+    assert {:error, :invalid_cursor} =
+             AuditLog.query(cursor: 42, from: "2026-05-07", to: "2026-05-07", dir: audit_dir)
+  end
+
+  test "query/1 rejects malformed since timestamps", %{audit_dir: audit_dir} do
+    assert {:error, :invalid_since} =
+             AuditLog.query(since: "not-a-timestamp", from: "2026-05-07", to: "2026-05-07", dir: audit_dir)
+  end
+
+  test "query/1 cursor positioning is preserved when filters change", %{audit_dir: audit_dir} do
+    for sequence <- 1..3 do
+      assert :ok =
+               AuditLog.record(
+                 %{
+                   issue_id: "issue-1",
+                   repo_key: "default",
+                   timestamp: ~U[2026-05-07 09:00:00Z],
+                   event_type: "tool_call",
+                   sequence: sequence
+                 },
+                 dir: audit_dir
+               )
+    end
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 issue_id: "issue-2",
+                 repo_key: "other",
+                 timestamp: ~U[2026-05-07 09:00:00Z],
+                 event_type: "tool_call",
+                 sequence: 99
+               },
+               dir: audit_dir
+             )
+
+    {:ok, page} = AuditLog.query(from: "2026-05-07", to: "2026-05-07", limit: 2, dir: audit_dir)
+    [_first, second] = Enum.to_list(page)
+    cursor = "#{second["date"]}:#{second["record_hash"]}"
+
+    # Reuse the cursor with a tighter filter that excludes the cursor record's repo.
+    {:ok, next_page} =
+      AuditLog.query(
+        from: "2026-05-07",
+        to: "2026-05-07",
+        cursor: cursor,
+        repo: "other",
+        dir: audit_dir
+      )
+
+    assert [%{"sequence" => 99, "repo_key" => "other"}] = Enum.to_list(next_page)
   end
 
   test "records tool, Linear, file-change, PR, and token side-effect events", %{audit_dir: audit_dir} do

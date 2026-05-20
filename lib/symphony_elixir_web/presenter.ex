@@ -5,6 +5,19 @@ defmodule SymphonyElixirWeb.Presenter do
 
   alias SymphonyElixir.{AuditLog, Config, Orchestrator, StatusDashboard, URLUtils}
 
+  @audit_page_size 200
+  @audit_event_types ~w(
+    file_change
+    linear_comment
+    linear_state_change
+    pr_opened
+    prompt_sent
+    refused_agent_action
+    self_review
+    token_usage_delta
+    tool_call
+  )
+
   @empty_codex_totals %{
     input_tokens: 0,
     cached_input_tokens: 0,
@@ -128,14 +141,15 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case AuditLog.query(query_opts) do
       {:ok, stream} ->
-        events = stream |> Enum.take(200) |> Enum.map(&audit_event_payload/1)
+        raw_events = stream |> Enum.take(@audit_page_size + 1)
+        {page, overflow} = Enum.split(raw_events, @audit_page_size)
 
         %{
           filters: filters,
           repos: snapshot_context.repos,
-          events: events,
-          event_types: event_type_options(events),
-          truncated?: length(events) == 200,
+          events: Enum.map(page, &audit_event_payload/1),
+          event_types: @audit_event_types,
+          truncated?: overflow != [],
           error: nil
         }
 
@@ -144,7 +158,7 @@ defmodule SymphonyElixirWeb.Presenter do
           filters: filters,
           repos: snapshot_context.repos,
           events: [],
-          event_types: [],
+          event_types: @audit_event_types,
           truncated?: false,
           error: %{code: "invalid_audit_filter", message: inspect(reason)}
         }
@@ -225,23 +239,35 @@ defmodule SymphonyElixirWeb.Presenter do
       record_hash: Map.get(event, "record_hash"),
       preview: audit_preview(event),
       record: event,
-      record_json: Jason.encode!(event, pretty: true)
+      record_json: encode_record(event)
     }
   end
 
   defp audit_preview(event) do
-    event
-    |> Map.drop(["timestamp", "event_type", "issue_id", "issue_identifier", "repo_key", "run_id", "date", "previous_hash", "record_hash"])
-    |> Jason.encode!()
-    |> String.slice(0, 220)
+    body =
+      Map.drop(event, [
+        "timestamp",
+        "event_type",
+        "issue_id",
+        "issue_identifier",
+        "repo_key",
+        "run_id",
+        "date",
+        "previous_hash",
+        "record_hash"
+      ])
+
+    case Jason.encode(body) do
+      {:ok, json} -> String.slice(json, 0, 220)
+      {:error, _reason} -> "(unencodable record)"
+    end
   end
 
-  defp event_type_options(events) do
-    events
-    |> Enum.map(& &1.event_type)
-    |> Enum.filter(&is_binary/1)
-    |> Enum.uniq()
-    |> Enum.sort()
+  defp encode_record(event) do
+    case Jason.encode(event, pretty: true) do
+      {:ok, json} -> json
+      {:error, _reason} -> "(unencodable record)"
+    end
   end
 
   defp present_param(params, key) do

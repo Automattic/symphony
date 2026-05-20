@@ -862,12 +862,18 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditExportOrchestrator), snapshot_timeout_ms: 5)
 
-    api_body = get(build_conn(), "/api/v1/audit?issue=issue-cli&from=2026-05-07&to=2026-05-07&download=1").resp_body
+    download_conn = get(build_conn(), "/api/v1/audit?issue=issue-cli&from=2026-05-07&to=2026-05-07&download=1")
+
+    assert Plug.Conn.get_resp_header(download_conn, "content-disposition") ==
+             [~s(attachment; filename="symphony-audit.ndjson")]
+
+    no_download_conn = get(build_conn(), "/api/v1/audit?issue=issue-cli&from=2026-05-07&to=2026-05-07")
+    assert Plug.Conn.get_resp_header(no_download_conn, "content-disposition") == []
 
     Audit.run(["issue-cli", "--from", "2026-05-07", "--to", "2026-05-07"])
 
     assert_receive {:mix_shell, :info, [cli_line]}
-    assert api_body == cli_line <> "\n"
+    assert download_conn.resp_body == cli_line <> "\n"
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -1640,11 +1646,37 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert all_html =~ ">n/a</td>"
 
     {:ok, _since_view, since_html} = live(build_conn(), "/audit?since_last_poll=1")
-    assert since_html =~ "since_last_poll=1"
     assert since_html =~ "since="
+    refute since_html =~ "since_last_poll=1"
 
     {:ok, _error_view, error_html} = live(build_conn(), "/audit?from=bad-date")
     assert error_html =~ "invalid_audit_filter"
+  end
+
+  test "audit liveview clears verify result on filter change" do
+    audit_dir = use_audit_dir!()
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "default",
+                 issue_id: "issue-verify-clear",
+                 issue_identifier: "RSM-VERIFY-CLEAR",
+                 timestamp: ~U[2026-05-07 12:00:00Z],
+                 event_type: "tool_call"
+               },
+               dir: audit_dir
+             )
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditClearOrchestrator), snapshot_timeout_ms: 5)
+
+    {:ok, view, _html} = live(build_conn(), "/audit?from=2026-05-07&to=2026-05-07")
+    assert render_click(view, "verify-chain") =~ "Chain verified for 2026-05-07."
+
+    {:ok, _next_view, next_html} =
+      live(build_conn(), "/audit?from=2026-05-07&to=2026-05-07&issue=RSM-VERIFY-CLEAR")
+
+    refute next_html =~ "Chain verified for"
   end
 
   test "learnings liveview renders records and filters by repo and tag" do

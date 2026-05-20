@@ -27,6 +27,10 @@ defmodule SymphonyElixir.AuditLog do
 
   @type event_attrs :: map()
   @type query_opts :: keyword()
+  @type verify_break ::
+          :invalid_date
+          | {:invalid_record, line :: pos_integer(), reason :: term()}
+          | {:chain_break, %{line: pos_integer(), record_hash: String.t() | nil}}
 
   @spec default_dir(Path.t()) :: Path.t()
   def default_dir(logs_root) when is_binary(logs_root) do
@@ -235,6 +239,25 @@ defmodule SymphonyElixir.AuditLog do
 
   @doc """
   Streams redacted audit events for an inclusive date range and optional filters.
+
+  Accepts either a keyword list or a map; atom and string keys are both honored.
+
+  Options:
+
+    * `:from` / `:date_from` — inclusive start date (`Date` or ISO-8601). Defaults to today.
+    * `:to` / `:date_to` — inclusive end date. Defaults to `:from`.
+    * `:cursor` — pagination cursor `"YYYY-MM-DD:<record_hash>"` or `{Date.t(), record_hash}`;
+      events strictly after the cursor are emitted, positioned by raw file order so
+      the cursor remains valid across filter changes.
+    * `:since` — ISO-8601 timestamp or `DateTime`; only events at/after it are emitted.
+    * `:limit` — positive integer cap on emitted events.
+    * `:repo_key` / `:repo`, `:issue`, `:issue_id`, `:issue_identifier`,
+      `:event_type` / `:type`, `:run_id` — exact-match filters.
+    * `:dir` — audit log directory override.
+
+  Returns `{:ok, Enumerable.t()}` or `{:error, reason}` where `reason` is
+  `:invalid_date`, `:invalid_cursor`, `:invalid_since`, `:invalid_limit`, or
+  `:invalid_date_range`.
   """
   @spec query(query_opts() | map()) :: {:ok, Enumerable.t()} | {:error, term()}
   def query(opts \\ []) when is_list(opts) or is_map(opts) do
@@ -253,10 +276,10 @@ defmodule SymphonyElixir.AuditLog do
         from_date
         |> Date.range(to_date)
         |> Stream.flat_map(&stream_events_for_date(&1, opts))
+        |> apply_cursor(cursor)
         |> Stream.map(&redact_value(&1, secrets))
         |> Stream.filter(&event_matches_filters?(&1, filters))
         |> Stream.filter(&event_since?(&1, since))
-        |> apply_cursor(cursor)
         |> apply_limit(limit)
 
       {:ok, stream}
@@ -265,8 +288,22 @@ defmodule SymphonyElixir.AuditLog do
 
   @doc """
   Verifies the hash chain for one daily audit file.
+
+  `day` is a `Date` or ISO-8601 string. Options are forwarded to `audit_dir/1`
+  (e.g. `:dir` to override the audit log directory).
+
+  Returns `:ok` when every record's `previous_hash` and `record_hash` match the
+  recomputed chain. A non-existent or empty file is also reported as `:ok` —
+  there is nothing to verify. On failure, returns one of:
+
+    * `{:error, :invalid_date}` — `day` could not be parsed.
+    * `{:error, {:invalid_record, line, reason}}` — a line could not be parsed
+      as a JSON object.
+    * `{:error, {:chain_break, %{line: pos_integer(), record_hash: String.t() | nil}}}`
+      — `previous_hash` or `record_hash` did not match the recomputed chain.
   """
-  @spec verify_chain(Date.t() | String.t(), query_opts()) :: :ok | {:error, {:break_at, String.t()}}
+  @spec verify_chain(Date.t() | String.t(), query_opts() | map()) ::
+          :ok | {:error, verify_break()}
   def verify_chain(day, opts \\ []) do
     case normalize_date(day) do
       {:ok, date} ->
@@ -277,7 +314,7 @@ defmodule SymphonyElixir.AuditLog do
         |> verify_chain_lines(nil)
 
       _ ->
-        {:error, {:break_at, "invalid_date"}}
+        {:error, :invalid_date}
     end
   end
 
@@ -1100,8 +1137,8 @@ defmodule SymphonyElixir.AuditLog do
 
   defp verify_chain_lines([], _previous_hash), do: :ok
 
-  defp verify_chain_lines([{line_number, {:error, _reason}} | _rest], _previous_hash) do
-    {:error, {:break_at, "line:#{line_number}"}}
+  defp verify_chain_lines([{line_number, {:error, reason}} | _rest], _previous_hash) do
+    {:error, {:invalid_record, line_number, reason}}
   end
 
   defp verify_chain_lines([{line_number, event} | rest], previous_hash) when is_map(event) do
@@ -1111,10 +1148,10 @@ defmodule SymphonyElixir.AuditLog do
 
     cond do
       stored_previous_hash != previous_hash ->
-        {:error, {:break_at, record_id(event, line_number)}}
+        {:error, {:chain_break, %{line: line_number, record_hash: stored_hash}}}
 
       stored_hash != calculated_hash ->
-        {:error, {:break_at, record_id(event, line_number)}}
+        {:error, {:chain_break, %{line: line_number, record_hash: stored_hash}}}
 
       true ->
         verify_chain_lines(rest, stored_hash)
@@ -1122,11 +1159,7 @@ defmodule SymphonyElixir.AuditLog do
   end
 
   defp verify_chain_lines([{line_number, _event} | _rest], _previous_hash) do
-    {:error, {:break_at, "line:#{line_number}"}}
-  end
-
-  defp record_id(event, line_number) do
-    Map.get(event, "record_hash") || "#{Map.get(event, "date", "unknown")}:#{line_number}"
+    {:error, {:invalid_record, line_number, :not_a_json_object}}
   end
 
   defp last_record_hash(path) do

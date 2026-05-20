@@ -16,6 +16,8 @@ ci:
   enabled: false
 quality_gate:
   enabled: false
+self_review:
+  enabled: false
 learnings:
   enabled: false
 watchdog:

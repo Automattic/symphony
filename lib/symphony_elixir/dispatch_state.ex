@@ -28,7 +28,7 @@ defmodule SymphonyElixir.DispatchState do
   @type t :: %{active?: boolean(), blockers: [blocker]}
 
   @default_tracker_unavailable_threshold 3
-  @api_key_feature_keys [:quality_gate, :learnings]
+  @api_key_feature_keys [:quality_gate, :self_review, :learnings]
   @provider_env_vars %{
     anthropic: "ANTHROPIC_API_KEY",
     openai: "OPENAI_API_KEY"

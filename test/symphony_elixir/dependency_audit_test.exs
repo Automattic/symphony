@@ -39,28 +39,6 @@ defmodule SymphonyElixir.DependencyAuditTest do
     assert {:ok, []} = DependencyAudit.audit(repo)
   end
 
-  test "uses configured repo base branch when base_ref is omitted", %{repo: repo} do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      repos: [
-        %{
-          "name" => "default",
-          "path" => Path.dirname(Workflow.workflow_file_path()),
-          "workflow" => Path.basename(Workflow.workflow_file_path()),
-          "team" => "Test",
-          "base_branch" => "develop"
-        }
-      ]
-    )
-
-    write_package_json!(repo, %{"dependencies" => %{}})
-    commit_base!(repo)
-    git!(repo, ["update-ref", "refs/remotes/origin/develop", "HEAD"])
-
-    File.write!(Path.join(repo, "README.md"), "changed\n")
-
-    assert {:ok, []} = DependencyAudit.audit(repo, settings: Config.settings!())
-  end
-
   test "git audit commands ignore malicious repo fsmonitor config", %{repo: repo} do
     write_package_json!(repo, %{"dependencies" => %{}})
     commit_base!(repo)

@@ -44,7 +44,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.AgentRunner,
           SymphonyElixir.ReviewAgent,
           SymphonyElixir.AuditLog,
-          SymphonyElixir.ReviewAgent.Context,
+          SymphonyElixir.SelfReview.Context,
           SymphonyElixir.Verification,
           SymphonyElixir.Verification.DevServer,
           SymphonyElixir.Verification.PortPool,

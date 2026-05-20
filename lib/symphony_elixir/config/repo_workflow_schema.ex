@@ -24,8 +24,7 @@ defmodule SymphonyElixir.Config.RepoWorkflowSchema do
     config = normalize_keys(config)
     configured_paths = configured_paths(config)
 
-    with :ok <- reject_removed_keys(config),
-         :ok <- reject_unknown_keys(config) do
+    with :ok <- reject_unknown_keys(config) do
       config
       |> drop_nil_values()
       |> changeset()
@@ -64,14 +63,6 @@ defmodule SymphonyElixir.Config.RepoWorkflowSchema do
 
       [key | _rest] ->
         {:error, {:invalid_repo_workflow_config, "WORKFLOW.md contains operator-level key `#{key}`; move operator-owned configuration to symphony.yml"}}
-    end
-  end
-
-  defp reject_removed_keys(config) do
-    if Map.has_key?(config, "self_review") do
-      {:error, {:invalid_repo_workflow_config, "`self_review` has been removed; use `review_agent` in symphony.yml instead"}}
-    else
-      :ok
     end
   end
 

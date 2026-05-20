@@ -417,6 +417,7 @@ Top-level keys accepted by the Elixir implementation:
 - `server`
 - `quality_gate`
 - `learnings`
+- `self_review`
 - `review_agent`
 - `notifications`
 - `repos`
@@ -932,7 +933,20 @@ Fields:
 - `max_per_run` (integer 0..3)
   - Default: `3`.
 
-#### 5.4.17 `review_agent` (object)
+#### 5.4.17 `self_review` (object)
+
+Fields:
+
+- `enabled` (boolean)
+  - Default: `false`.
+- `provider` (`anthropic` or `openai`)
+  - Default: `anthropic`.
+- `model` (string)
+  - Default: `claude-haiku-4-5-20251001`.
+
+Compatibility note: legacy `self_review.diff_max_lines` and `self_review.max_rounds` config entries are ignored.
+
+#### 5.4.18 `review_agent` (object)
 
 Fields:
 
@@ -1230,6 +1244,9 @@ not require recognizing or validating extension fields unless that extension is 
 - `learnings.model`: string, default `claude-haiku-4-5-20251001`
 - `learnings.max_total_per_repo`: integer, default `500`
 - `learnings.max_per_run`: integer, default `3`
+- `self_review.enabled`: boolean, default `false`
+- `self_review.provider`: `anthropic` or `openai`, default `anthropic`
+- `self_review.model`: string, default `claude-haiku-4-5-20251001`
 - `review_agent.enabled`: boolean, default `false`
 - `review_agent.kind`: `codex` or `claude`, required when enabled
 - `review_agent.command`: string, required when enabled

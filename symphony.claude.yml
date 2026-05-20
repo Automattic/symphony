@@ -22,7 +22,7 @@ repos:
   - name: symphony
     # default: true # Optional fallback repo when an issue does not match another repo route.
     # path: ~/Projects/symphony # Optional legacy base path for resolving workflow.
-    # base_branch: main # Optional review-agent comparison branch; defaults to origin/HEAD or origin/main.
+    # base_branch: main # Optional self-review comparison branch; defaults to origin/HEAD or origin/main.
     # team: ENG # Optional repo-level Linear team selector.
     # labels: [backend] # Optional repo-level Linear label selector.
     # assignee: me # Optional repo-level assignee selector.
@@ -111,6 +111,10 @@ learnings:
   model: claude-haiku-4-5-20251001
   max_total_per_repo: 500
   max_per_run: 3
+self_review:
+  enabled: false
+  provider: anthropic # Optional: anthropic or openai.
+  model: claude-sonnet-4-6
 # dependencies:
 #   allow_registries: [] # Extra package registries trusted by dependency audit.
 #   allow_git_sources: [] # Extra git dependency sources trusted by dependency audit.

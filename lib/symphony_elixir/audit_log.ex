@@ -163,6 +163,66 @@ defmodule SymphonyElixir.AuditLog do
     end
   end
 
+  @spec record_self_review(map(), String.t() | nil, map(), keyword()) ::
+          :ok | {:error, term()}
+  def record_self_review(issue, run_id, %{verdict: verdict} = result, opts \\ [])
+      when is_map(issue) and verdict in [:approve, :request_changes] do
+    findings = Map.get(result, :findings, [])
+    advisory_notes = Map.get(result, :advisory_notes, [])
+    source = Map.get(result, :source)
+
+    record(
+      %{}
+      |> Map.merge(%{
+        repo_key: repo_key(issue, opts),
+        issue_id: issue_id(issue),
+        issue_identifier: issue_identifier(issue),
+        run_id: run_id,
+        event_type: "self_review",
+        verdict: verdict,
+        fail_open_category: Map.get(result, :fail_open_category),
+        round: Keyword.get(opts, :round)
+      })
+      |> Map.merge(self_review_finding_attrs(findings, advisory_notes))
+      |> Map.merge(self_review_source_attrs(source)),
+      opts
+    )
+  end
+
+  defp self_review_finding_attrs(findings, advisory_notes) do
+    %{
+      findings_count: length(findings),
+      finding_categories: findings |> Enum.map(& &1.category) |> Enum.uniq(),
+      advisory_notes_count: length(advisory_notes),
+      advisory_note_categories: advisory_notes |> Enum.map(& &1.category) |> Enum.uniq()
+    }
+  end
+
+  defp self_review_source_attrs(nil), do: %{diff_truncated: nil, diff_line_count: nil}
+
+  defp self_review_source_attrs(source) do
+    source
+    |> Map.get(:review_coverage, %{})
+    |> self_review_coverage_attrs()
+    |> Map.merge(%{
+      diff_truncated: Map.get(source, :diff_truncated?),
+      diff_line_count: Map.get(source, :diff_line_count)
+    })
+  end
+
+  defp self_review_coverage_attrs(coverage) do
+    %{
+      fully_reviewed_files: Map.get(coverage, :fully_reviewed_files),
+      summarized_files: Map.get(coverage, :summarized_files),
+      generated_lock_files: Map.get(coverage, :generated_lock_files),
+      adjacent_context_files: Map.get(coverage, :adjacent_context_files),
+      adjacent_context_omitted_files: Map.get(coverage, :adjacent_context_omitted_files),
+      validation_evidence_count: Map.get(coverage, :validation_evidence_count),
+      reviewer_comment_count: Map.get(coverage, :reviewer_comment_count),
+      ci_context_included: Map.get(coverage, :ci_context_included?)
+    }
+  end
+
   @spec list_events(String.t(), Date.t() | String.t(), Date.t() | String.t(), query_opts()) ::
           {:ok, [map()]} | {:error, term()}
   def list_events(issue_id, date_from, date_to, opts \\ []) when is_binary(issue_id) do
@@ -255,6 +315,41 @@ defmodule SymphonyElixir.AuditLog do
 
       _ ->
         {:error, :invalid_date}
+    end
+  end
+
+  @spec latest_self_review_by_run([String.t()], query_opts()) :: %{String.t() => map()}
+  def latest_self_review_by_run(run_ids, opts \\ []) when is_list(run_ids) do
+    wanted = run_ids |> Enum.filter(&is_binary/1) |> MapSet.new()
+
+    if MapSet.size(wanted) == 0 do
+      %{}
+    else
+      do_latest_self_review_by_run(wanted, opts)
+    end
+  end
+
+  defp do_latest_self_review_by_run(wanted, opts) do
+    today = Date.utc_today()
+    date_from = Keyword.get(opts, :date_from, Date.add(today, -1))
+    date_to = Keyword.get(opts, :date_to, today)
+
+    with {:ok, from_date} <- normalize_date(date_from),
+         {:ok, to_date} <- normalize_date(date_to),
+         :ok <- validate_date_range(from_date, to_date) do
+      from_date
+      |> Date.range(to_date)
+      |> Enum.flat_map(&read_events_for_date(&1, opts))
+      |> Enum.filter(fn event ->
+        Map.get(event, "event_type") == "self_review" and
+          MapSet.member?(wanted, Map.get(event, "run_id"))
+      end)
+      |> Enum.sort_by(&timestamp_sort_key/1)
+      |> Enum.reduce(%{}, fn event, acc ->
+        Map.put(acc, Map.get(event, "run_id"), event)
+      end)
+    else
+      _ -> %{}
     end
   end
 
@@ -814,6 +909,19 @@ defmodule SymphonyElixir.AuditLog do
   end
 
   defp default_repo_key, do: Config.repo_key_or_nil()
+
+  defp read_events_for_date(date, opts) do
+    opts
+    |> audit_dir()
+    |> event_path(Date.to_iso8601(date))
+    |> read_ndjson_lines()
+    |> Enum.flat_map(fn {_line, decoded} ->
+      case decoded do
+        %{} = event -> [event]
+        _ -> []
+      end
+    end)
+  end
 
   defp stream_events_for_date(date, opts) do
     path =

@@ -18,6 +18,7 @@ defmodule SymphonyElixir.AgentRunner do
     PromptBuilder,
     PrReviewPoller,
     ReviewAgent,
+    SelfReview,
     Tracker,
     URLUtils,
     Verification,
@@ -26,6 +27,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   @dev_server_pid_key {__MODULE__, :verification_dev_server_pid}
   @dependency_review_state "In Review"
+  @self_review_max_rounds 1
 
   @type worker_host :: String.t() | nil
 
@@ -213,6 +215,7 @@ defmodule SymphonyElixir.AgentRunner do
         opts: Keyword.put(opts, :linear_comment_registry, linear_comment_registry),
         issue_state_fetcher: issue_state_fetcher,
         worker_host: worker_host,
+        self_review: initial_self_review_state(),
         review_agent: initial_review_agent_state(),
         next_prompt: nil
       }
@@ -373,6 +376,29 @@ defmodule SymphonyElixir.AgentRunner do
         {:error, reason}
 
       :normal_continuation ->
+        maybe_self_review_continuation(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns)
+    end
+  end
+
+  defp maybe_self_review_continuation(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns) do
+    case maybe_self_review_next_turn(run_context, turn_number, max_turns) do
+      {:self_review_turn, next_context} ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} with self-review guidance turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(agent_module, app_session, next_context, turn_number + 1, max_turns)
+
+      {:normal_continuation, next_context} ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(
+          agent_module,
+          app_session,
+          next_context,
+          turn_number + 1,
+          max_turns
+        )
+
+      :normal_continuation ->
         Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
         do_run_codex_turns(
@@ -385,6 +411,7 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  defp initial_self_review_state, do: %{phase: :not_run, request_change_rounds: 0}
   defp initial_review_agent_state, do: %{phase: :not_run, request_change_rounds: 0}
 
   defp maybe_review_agent_next_turn(run_context, _turn_number, _max_turns) do
@@ -443,6 +470,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp next_review_agent_request_change_round(run_context), do: review_agent_request_change_rounds(run_context) + 1
 
   defp review_agent_request_change_rounds(%{review_agent: %{request_change_rounds: rounds}}) when is_integer(rounds), do: rounds
+  defp review_agent_request_change_rounds(_run_context), do: 0
 
   defp evaluate_review_agent(%{
          issue: issue,
@@ -455,7 +483,7 @@ defmodule SymphonyElixir.AgentRunner do
       opts
       |> Keyword.take([:repo_key, :run_id, :linear_comment_registry, :review_agent_module])
       |> Keyword.put(:worker_host, worker_host)
-      |> maybe_put_option(:base_branch, review_base_branch(opts))
+      |> maybe_put_option(:base_branch, self_review_base_branch(opts))
       |> Keyword.put(:on_reviewer_message, reviewer_message_handler(codex_update_recipient, issue))
       |> put_reviewer_comments(issue)
       |> put_ci_failure(issue)
@@ -467,7 +495,101 @@ defmodule SymphonyElixir.AgentRunner do
     fn message -> send_codex_update(recipient, issue, message, :reviewer) end
   end
 
-  defp review_base_branch(opts) do
+  defp maybe_self_review_next_turn(run_context, turn_number, max_turns) do
+    config = run_context.opts |> Keyword.fetch!(:settings) |> Map.fetch!(:self_review)
+
+    if self_review_enabled?(config) do
+      self_review_next_turn(run_context, config, turn_number, max_turns)
+    else
+      :normal_continuation
+    end
+  end
+
+  defp self_review_enabled?(%SymphonyElixir.Config.Schema.SelfReview{enabled: true}), do: true
+  defp self_review_enabled?(_config), do: false
+
+  defp self_review_next_turn(%{self_review: %{phase: :not_run}} = run_context, config, _turn_number, _max_turns) do
+    result = evaluate_self_review(run_context, config)
+
+    cond do
+      SelfReview.request_changes?(result) and correction_round_available?(run_context, config) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{
+               phase: :awaiting_correction,
+               findings: result.findings,
+               request_change_rounds: next_request_change_round(run_context)
+             },
+             next_prompt: SelfReview.request_changes_prompt(result)
+         }}
+
+      SelfReview.fail_open?(result) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{phase: :complete, request_change_rounds: request_change_rounds(run_context)},
+             next_prompt: SelfReview.fail_open_prompt(result)
+         }}
+
+      SelfReview.request_changes?(result) ->
+        {:self_review_turn,
+         %{
+           run_context
+           | self_review: %{
+               phase: :complete,
+               final_findings: result.findings,
+               request_change_rounds: request_change_rounds(run_context)
+             },
+             next_prompt: SelfReview.push_prompt(result)
+         }}
+
+      true ->
+        {:normal_continuation,
+         %{
+           run_context
+           | self_review: %{phase: :complete, request_change_rounds: request_change_rounds(run_context)}
+         }}
+    end
+  end
+
+  defp self_review_next_turn(%{self_review: %{phase: :awaiting_correction}} = run_context, config, _turn_number, _max_turns) do
+    result = evaluate_self_review(run_context, config)
+
+    {:self_review_turn,
+     %{
+       run_context
+       | self_review: %{
+           phase: :complete,
+           final_findings: result.findings,
+           request_change_rounds: request_change_rounds(run_context)
+         },
+         next_prompt: SelfReview.push_prompt(result)
+     }}
+  end
+
+  defp self_review_next_turn(_run_context, _config, _turn_number, _max_turns), do: :normal_continuation
+
+  defp correction_round_available?(run_context, _config) do
+    request_change_rounds(run_context) < @self_review_max_rounds
+  end
+
+  defp next_request_change_round(run_context), do: request_change_rounds(run_context) + 1
+
+  defp request_change_rounds(%{self_review: %{request_change_rounds: rounds}}) when is_integer(rounds), do: rounds
+
+  defp evaluate_self_review(%{issue: issue, workspace: workspace, opts: opts, worker_host: worker_host} = run_context, config) do
+    provider_module = Keyword.get(opts, :self_review_provider_module)
+    review_opts = [worker_host: worker_host, base_branch: self_review_base_branch(opts)]
+    review_opts = if provider_module, do: Keyword.put(review_opts, :provider_module, provider_module), else: review_opts
+    review_opts = review_opts |> put_reviewer_comments(issue) |> put_ci_failure(issue)
+
+    result = SelfReview.evaluate(issue, workspace, config, review_opts)
+    audit_self_review(issue, Keyword.get(opts, :run_id), result, self_review_round(run_context), opts)
+    result
+  end
+
+  defp self_review_base_branch(opts) do
     repo_key = Keyword.get(opts, :repo_key)
 
     case Config.repo_base_branch(repo_key) do
@@ -475,10 +597,19 @@ defmodule SymphonyElixir.AgentRunner do
         base_branch
 
       {:error, reason} ->
-        Logger.warning("ReviewAgent base_branch lookup failed repo_key=#{inspect(repo_key)} reason=#{inspect(reason)}")
+        Logger.warning("SelfReview base_branch lookup failed repo_key=#{inspect(repo_key)} reason=#{inspect(reason)}")
         nil
     end
   end
+
+  defp audit_self_review(issue, run_id, result, round, opts) do
+    issue
+    |> AuditLog.record_self_review(run_id, result, audit_opts(opts, round: round))
+    |> log_audit_error("record self_review")
+  end
+
+  defp self_review_round(%{self_review: %{phase: :awaiting_correction}}), do: 2
+  defp self_review_round(_run_context), do: 1
 
   defp agent_module do
     case Config.settings!().agent.kind do

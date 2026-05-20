@@ -490,6 +490,114 @@ defmodule SymphonyElixir.AuditLogTest do
     assert event["to_state"] == "In Review"
   end
 
+  test "records self-review approve with truncation flag", %{audit_dir: audit_dir} do
+    issue = %Issue{id: "issue-1", identifier: "RSM-1"}
+
+    result = %{
+      verdict: :approve,
+      findings: [],
+      advisory_notes: [%{category: :review_coverage_low, description: "Large file summarized."}],
+      source: %{
+        diff_truncated?: true,
+        diff_line_count: 640,
+        review_coverage: %{
+          fully_reviewed_files: ["lib/a.ex"],
+          summarized_files: ["lib/b.ex"],
+          generated_lock_files: ["pnpm-lock.yaml"],
+          adjacent_context_files: ["lib/a.ex"],
+          adjacent_context_omitted_files: ["lib/b.ex"],
+          validation_evidence_count: 3,
+          reviewer_comment_count: 2,
+          ci_context_included?: true
+        }
+      }
+    }
+
+    assert :ok =
+             AuditLog.record_self_review(issue, "run-1", result,
+               timestamp: ~U[2026-05-08 16:32:08Z],
+               dir: audit_dir,
+               round: 1
+             )
+
+    assert {:ok, [event]} =
+             AuditLog.list_events("issue-1", ~D[2026-05-08], ~D[2026-05-08], dir: audit_dir)
+
+    assert event["event_type"] == "self_review"
+    assert event["verdict"] == "approve"
+    assert event["findings_count"] == 0
+    assert event["finding_categories"] == []
+    assert event["diff_truncated"] == true
+    assert event["diff_line_count"] == 640
+    assert event["advisory_notes_count"] == 1
+    assert event["advisory_note_categories"] == ["review_coverage_low"]
+    assert event["fully_reviewed_files"] == ["lib/a.ex"]
+    assert event["summarized_files"] == ["lib/b.ex"]
+    assert event["generated_lock_files"] == ["pnpm-lock.yaml"]
+    refute Map.has_key?(event, "omitted_files")
+    assert event["adjacent_context_files"] == ["lib/a.ex"]
+    assert event["adjacent_context_omitted_files"] == ["lib/b.ex"]
+    assert event["validation_evidence_count"] == 3
+    assert event["reviewer_comment_count"] == 2
+    assert event["ci_context_included"] == true
+    assert event["round"] == 1
+    refute Map.has_key?(event, "fail_open_category")
+  end
+
+  test "records self-review request_changes with finding categories but not descriptions",
+       %{audit_dir: audit_dir} do
+    issue = %Issue{id: "issue-2", identifier: "RSM-2"}
+
+    result = %{
+      verdict: :request_changes,
+      findings: [
+        %{severity: :blocking, category: :scope_creep, description: "Unrelated config change."},
+        %{severity: :blocking, category: :scope_creep, description: "Second scope creep finding."}
+      ]
+    }
+
+    assert :ok =
+             AuditLog.record_self_review(issue, "run-2", result,
+               timestamp: ~U[2026-05-08 17:00:00Z],
+               dir: audit_dir,
+               round: 2
+             )
+
+    assert {:ok, [event]} =
+             AuditLog.list_events("issue-2", ~D[2026-05-08], ~D[2026-05-08], dir: audit_dir)
+
+    assert event["verdict"] == "request_changes"
+    assert event["findings_count"] == 2
+    assert event["finding_categories"] == ["scope_creep"]
+    assert event["round"] == 2
+    refute event |> Jason.encode!() |> String.contains?("Unrelated config change")
+  end
+
+  test "records self-review fail-open with category", %{audit_dir: audit_dir} do
+    issue = %Issue{id: "issue-3", identifier: "RSM-3"}
+
+    result = %{
+      verdict: :approve,
+      findings: [],
+      fail_open_category: :provider_unavailable,
+      fail_open_reason: :missing_anthropic_api_key
+    }
+
+    assert :ok =
+             AuditLog.record_self_review(issue, "run-3", result,
+               timestamp: ~U[2026-05-08 18:00:00Z],
+               dir: audit_dir,
+               round: 1
+             )
+
+    assert {:ok, [event]} =
+             AuditLog.list_events("issue-3", ~D[2026-05-08], ~D[2026-05-08], dir: audit_dir)
+
+    assert event["verdict"] == "approve"
+    assert event["fail_open_category"] == "provider_unavailable"
+    refute Map.has_key?(event, "diff_truncated")
+  end
+
   describe "redact_for_log/2" do
     test "renders exception structs without raising" do
       error = %Req.TransportError{reason: :timeout}

@@ -201,7 +201,7 @@ workpad instead of synthesising a `gh` call.
     - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
     - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad (for example: launch path, changed interaction path, and expected result path).
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
-7.  Run a principal-style review of the plan and refine it in the comment.
+7.  Run a principal-style self-review of the plan and refine it in the comment.
 8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
 9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
     - Include a `pull skill evidence` note with:
@@ -301,7 +301,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
       - incomplete hunks, half-finished removals, or reverted-only placeholders.
     - Only push after this review is clean.
     - Record `diff reviewed — clean` in the workpad before each push.
-    - If `review_agent.enabled: true` is configured in `symphony.yml`, stop before `git push` after validation and diff review are complete. Symphony will run the pre-push reviewer agent and inject the next continuation prompt.
+    - If `self_review.enabled: true` is configured in `symphony.yml`, stop before `git push` after validation and diff review are complete. Symphony will run the pre-push self-review and inject the next continuation prompt. Follow that prompt exactly; when instructed to push regardless, proceed even if the self-review still lists known limitations.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
     - Ensure the PR body is reviewer-facing and includes:
@@ -325,7 +325,7 @@ Use this only when planning reaches a fundamentally unclear specification and th
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `In Review`.
     - No blocked-access exception: blocked issues must follow the blocked-access escape hatch and move to `Backlog` with a blocker comment.
-    - After the PR is attached and the issue is moved to `In Review`, end the turn. Do not continue ordinary implementation work unless Symphony injects reviewer, CI, or operator rework context.
+    - After the PR is attached and the issue is moved to `In Review`, end the turn. Do not continue ordinary implementation work unless Symphony injects reviewer, CI, self-review, or operator rework context.
 13. For `Todo` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.

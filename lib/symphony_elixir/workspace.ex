@@ -249,15 +249,7 @@ defmodule SymphonyElixir.Workspace do
   defp add_or_reuse_local_worktree(repo, workspace, branch, base_ref) do
     cond do
       File.dir?(workspace) ->
-        case registered_worktree?(repo, workspace) do
-          true ->
-            with :ok <- reset_worktree_to_base_ref(workspace, base_ref) do
-              {:ok, false}
-            end
-
-          false ->
-            {:error, {:workspace_not_registered_worktree, workspace}}
-        end
+        reuse_local_worktree(repo, workspace, base_ref)
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
@@ -265,6 +257,18 @@ defmodule SymphonyElixir.Workspace do
 
       true ->
         add_local_worktree(repo, workspace, branch, base_ref)
+    end
+  end
+
+  defp reuse_local_worktree(repo, workspace, base_ref) do
+    case registered_worktree?(repo, workspace) do
+      true ->
+        with :ok <- reset_worktree_to_base_ref(workspace, base_ref) do
+          {:ok, false}
+        end
+
+      false ->
+        {:error, {:workspace_not_registered_worktree, workspace}}
     end
   end
 

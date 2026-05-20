@@ -84,7 +84,7 @@ defmodule SymphonyElixir.DispatchStateTest do
       config =
         base_config(%{
           quality_gate: feature_config(true, :anthropic),
-          self_review: feature_config(true, :openai)
+          learnings: feature_config(true, :openai)
         })
 
       result = DispatchState.compute(base_state(), config, %{})
@@ -99,8 +99,7 @@ defmodule SymphonyElixir.DispatchStateTest do
       config =
         base_config(%{
           quality_gate: feature_config(true, :anthropic),
-          self_review: feature_config(true, :openai),
-          learnings: feature_config(true, :anthropic)
+          learnings: feature_config(true, :openai)
         })
 
       result = DispatchState.compute(base_state(), config, full_env())
@@ -113,7 +112,6 @@ defmodule SymphonyElixir.DispatchStateTest do
       config =
         base_config(%{
           quality_gate: feature_config(true, "openai"),
-          self_review: feature_config(true, :openai),
           learnings: feature_config(true, "openai")
         })
 
@@ -305,7 +303,6 @@ defmodule SymphonyElixir.DispatchStateTest do
     %{
       daily_limit: 5_000_000,
       quality_gate: feature_config(false, :anthropic),
-      self_review: feature_config(false, :anthropic),
       learnings: feature_config(false, :anthropic)
     }
     |> Map.merge(overrides)

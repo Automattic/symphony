@@ -540,7 +540,6 @@ defmodule SymphonyElixir.TestSupport do
           server_host: nil,
           quality_gate: %{enabled: false},
           learnings: nil,
-          self_review: nil,
           review_agent: nil,
           dependencies: nil,
           notifications: nil,
@@ -610,7 +609,6 @@ defmodule SymphonyElixir.TestSupport do
     server_host = Keyword.get(config, :server_host)
     quality_gate = Keyword.get(config, :quality_gate)
     learnings = Keyword.get(config, :learnings)
-    self_review = Keyword.get(config, :self_review)
     review_agent = Keyword.get(config, :review_agent)
     dependencies = Keyword.get(config, :dependencies)
     notifications = Keyword.get(config, :notifications)
@@ -683,7 +681,6 @@ defmodule SymphonyElixir.TestSupport do
         server_yaml(server_port, server_host),
         quality_gate_yaml(quality_gate),
         learnings_yaml(learnings),
-        self_review_yaml(self_review),
         review_agent_yaml(review_agent),
         dependencies && "dependencies: #{yaml_value(dependencies)}",
         notifications_yaml(notifications),
@@ -906,25 +903,6 @@ defmodule SymphonyElixir.TestSupport do
     case fields do
       [] -> nil
       lines -> Enum.join(["learnings:" | lines], "\n")
-    end
-  end
-
-  defp self_review_yaml(nil), do: nil
-
-  defp self_review_yaml(opts) when is_list(opts) or is_map(opts) do
-    config = map_from(opts)
-
-    fields =
-      [
-        kv("enabled", Map.get(config, :enabled)),
-        kv("provider", Map.get(config, :provider)),
-        kv("model", Map.get(config, :model))
-      ]
-      |> Enum.reject(&is_nil/1)
-
-    case fields do
-      [] -> nil
-      lines -> Enum.join(["self_review:" | lines], "\n")
     end
   end
 

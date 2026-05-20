@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   @primary_key false
   @allowed_keys ~w(
-    agent ci dependencies dispatch github learnings notifications observability polling pr_review quality_gate repos self_review
+    agent ci dependencies dispatch github learnings notifications observability polling pr_review quality_gate repos
     review_agent server token_budget tracker verification watchdog worker workspace
   )
 
@@ -133,7 +133,6 @@ defmodule SymphonyElixir.Config.SystemSchema do
     embeds_one(:server, Schema.Server, on_replace: :update, defaults_to_struct: true)
     embeds_one(:quality_gate, Schema.QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:learnings, Schema.Learnings, on_replace: :update, defaults_to_struct: true)
-    embeds_one(:self_review, Schema.SelfReview, on_replace: :update, defaults_to_struct: true)
     embeds_one(:review_agent, Schema.ReviewAgent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:dependencies, Schema.Dependencies, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Schema.Notifications, on_replace: :update, defaults_to_struct: true)
@@ -150,7 +149,8 @@ defmodule SymphonyElixir.Config.SystemSchema do
       |> drop_nil_values()
       |> normalize_operator_aliases()
 
-    with :ok <- reject_unknown_keys(config) do
+    with :ok <- reject_removed_keys(config),
+         :ok <- reject_unknown_keys(config) do
       config
       |> changeset()
       |> apply_action(:validate)
@@ -178,7 +178,6 @@ defmodule SymphonyElixir.Config.SystemSchema do
       "server" => struct_to_map(system_config.server),
       "quality_gate" => struct_to_map(system_config.quality_gate),
       "learnings" => struct_to_map(system_config.learnings),
-      "self_review" => struct_to_map(system_config.self_review),
       "review_agent" => struct_to_map(system_config.review_agent),
       "dependencies" => struct_to_map(system_config.dependencies),
       "notifications" => notifications_to_map(system_config.notifications)
@@ -239,7 +238,6 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast_embed(:server, with: &Schema.Server.changeset/2)
     |> cast_embed(:quality_gate, with: &Schema.QualityGate.changeset/2)
     |> cast_embed(:learnings, with: &Schema.Learnings.changeset/2)
-    |> cast_embed(:self_review, with: &Schema.SelfReview.changeset/2)
     |> cast_embed(:review_agent, with: &Schema.ReviewAgent.changeset/2)
     |> cast_embed(:dependencies, with: &Schema.Dependencies.changeset/2)
     |> cast_embed(:notifications, with: &Schema.Notifications.changeset/2)
@@ -255,6 +253,14 @@ defmodule SymphonyElixir.Config.SystemSchema do
     case unknown_keys do
       [] -> :ok
       [key | _rest] -> {:error, {:invalid_symphony_config, "unknown symphony.yml key `#{key}`"}}
+    end
+  end
+
+  defp reject_removed_keys(config) do
+    if Map.has_key?(config, "self_review") do
+      {:error, {:invalid_symphony_config, "`self_review` has been removed; use `review_agent` instead"}}
+    else
+      :ok
     end
   end
 

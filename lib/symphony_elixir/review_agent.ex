@@ -8,7 +8,7 @@ defmodule SymphonyElixir.ReviewAgent do
   alias SymphonyElixir.{Config, PromptSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Linear.Issue
-  alias SymphonyElixir.SelfReview.Context
+  alias SymphonyElixir.ReviewAgent.Context
 
   @max_diff_prompt_bytes 120_000
 
@@ -93,7 +93,7 @@ defmodule SymphonyElixir.ReviewAgent do
     git_range = "#{comparison_base}..HEAD"
     git_fun = fn args -> git(workspace, args, worker_host) end
 
-    Context.build(issue, workspace, %Schema.SelfReview{}, git_range, opts, git_fun)
+    Context.build(issue, workspace, git_range, opts, git_fun)
   end
 
   defp run_reviewer_agent(issue, workspace, settings, source, opts) do

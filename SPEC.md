@@ -375,7 +375,8 @@ Operator config path precedence:
 
 Repo workflow path precedence:
 
-1. The CLI does not accept a workflow path. The orchestrator resolves repo workflows from
+1. The runtime CLI does not accept a workflow path. The `symphony init` subcommand may scaffold a
+   repo workflow file, but the orchestrator resolves repo workflows from
    `symphony.yml` once it loads.
 2. After `symphony.yml` loads, each repo workflow path is resolved from its `repos:` entry.
 
@@ -3117,7 +3118,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.7 CLI and Host Lifecycle
 
-- CLI takes no positional arguments. Repo workflow paths are read only from `symphony.yml`.
+- Runtime CLI takes no positional arguments. Repo workflow paths are read only from `symphony.yml`.
+- CLI supports `symphony init` as a scaffolding subcommand that writes starter `WORKFLOW.md` and
+  `symphony.yml` files for the current directory.
 - CLI accepts `--config path-to-symphony.yml` to select an alternate operator config
 - CLI defaults to `./symphony.yml` when `--config` is omitted
 - CLI errors when the resolved `symphony.yml` (explicit or default) does not exist

@@ -1,0 +1,30 @@
+tracker:
+  kind: linear
+  api_key: "$LINEAR_API_KEY"
+  team: <%= @yaml.(@team) %>
+  project_slug: <%= @yaml.(@project_slug) %>
+  assignee: me
+workspace:
+  root: <%= @yaml.(@workspace_root) %>
+agent:
+  kind: <%= @yaml.(@agent_kind) %>
+  command: <%= @yaml.(@agent_command) %>
+  max_concurrent_agents: 2
+  max_turns: 20
+  thread_sandbox: workspace-write
+  network_access:
+    mode: allowlist
+pr_review:
+  mode: tracker
+quality_gate:
+  enabled: false
+repos:
+  - name: <%= @yaml.(@repo_name) %>
+    path: <%= @yaml.(@cwd) %>
+    workflow: WORKFLOW.md
+    team: <%= @yaml.(@team) %>
+    default: true
+    workspace:
+      strategy: worktree
+      repo: <%= @yaml.(@cwd) %>
+      fetch_before_dispatch: true

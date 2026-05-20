@@ -31,6 +31,17 @@ defmodule SymphonyElixir.CLI do
         }
 
   @spec main([String.t()]) :: no_return()
+  def main(["init" | args]) do
+    case SymphonyElixir.Init.run(args) do
+      :ok ->
+        System.halt(0)
+
+      {:error, message} ->
+        IO.puts(:stderr, message)
+        System.halt(1)
+    end
+  end
+
   def main(args) do
     case evaluate(args) do
       :ok ->

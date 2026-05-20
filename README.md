@@ -80,8 +80,8 @@ workflow prompts that let coding agents work safely.
 
 1. Get a Linear personal token from Settings -> Security & access -> Personal API keys, and export
    it as `LINEAR_API_KEY`.
-2. Prepare each target repo with a `WORKFLOW.md`.
-3. List those repos under `repos:` in `symphony.yml`.
+2. Run `symphony init` in the target repo to scaffold `WORKFLOW.md` and `symphony.yml`.
+3. Edit the generated files as needed for repo-specific commands and routing.
 4. Install the Elixir/Erlang toolchain with `mise`.
 5. Start Symphony from this repository root.
 
@@ -111,6 +111,16 @@ Symphony reads two files:
   notifications, and the `repos:` list. Plain YAML, no front-matter fences.
 - **`WORKFLOW.md`**: repo-local prompt body and per-repo hooks. YAML front matter between two
   `---` lines, then the prompt template. Each repo listed under `repos:` has its own `WORKFLOW.md`.
+
+For a single-repo starter setup, run:
+
+```bash
+symphony init --team ENG --project-slug my-linear-project --agent codex
+```
+
+The init wizard detects common stack markers (`mix.exs`, `package.json`, `Gemfile`,
+`pyproject.toml`, `go.mod`, `Cargo.toml`), writes a stack-specific `WORKFLOW.md`, writes a
+single-repo `symphony.yml`, and refuses to overwrite existing files unless `--force` is passed.
 
 Start Symphony from a directory containing `symphony.yml`:
 

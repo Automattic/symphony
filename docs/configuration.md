@@ -25,6 +25,18 @@ repo-local `hooks`, and repo-specific verification dev-server commands.
 
 ## Startup
 
+For a single-repo starter setup, run `symphony init` in the target repo:
+
+```bash
+symphony init --team ENG --project-slug my-linear-project --agent codex
+```
+
+If `--team`, `--project-slug`, or `--agent` is omitted, the wizard prompts for the value. Supported
+agent kinds are `codex` and `claude`. The wizard detects common stack markers (`mix.exs`,
+`package.json`, `Gemfile`, `pyproject.toml`, `go.mod`, `Cargo.toml`), writes `WORKFLOW.md` and
+`symphony.yml`, validates the generated config with the same schemas used at startup, and refuses
+to overwrite existing files unless `--force` is passed.
+
 Run `./bin/symphony` from a directory that contains `symphony.yml`:
 
 ```bash
@@ -316,7 +328,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   reuses that repo's cached issues, and retries that repo after the full polling interval. If a repo
   keeps failing before it ever warms, three consecutive cold failures mark its cache as an empty
   result so the other repos can continue dispatching.
-- The CLI takes no positional arguments. Once `symphony.yml` loads, each repo's
+- Except for the `init` scaffolding subcommand, the CLI takes no positional arguments. Once
+  `symphony.yml` loads, each repo's
   `<path>/<workflow>` is the source of truth Symphony dispatches against. The dashboard transcript
   URL embeds the repo `name` as `<repo_key>` —
   `/repos/<repo_key>/issues/<issue_identifier>/transcript`.

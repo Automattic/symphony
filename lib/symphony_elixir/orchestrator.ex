@@ -4937,7 +4937,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp turn_completed_usage_from_payload(payload) when is_map(payload) do
     method = Map.get(payload, "method") || Map.get(payload, :method)
 
-    if method in ["turn/completed", :turn_completed] do
+    if method in ["turn/completed", :turn_completed, "token_count", :token_count] do
       direct =
         Map.get(payload, "usage") ||
           Map.get(payload, :usage) ||

@@ -199,12 +199,24 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:malformed, ^line} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event and returns agent_text" do
+    test "parses assistant event and returns agent_text with token usage delta" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"I will help you."}],"model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-1"})
 
-      assert {:agent_text, text} = AppServer.parse_event(line)
+      assert {:multi,
+              [
+                {:agent_text, text},
+                {:token_usage_delta, %{input_tokens: 10, output_tokens: 5, cached_input_tokens: 0}}
+              ]} = AppServer.parse_event(line)
+
       assert text =~ "I will help you."
+    end
+
+    test "parses assistant event without usage and returns agent_text only" do
+      line =
+        ~s({"type":"assistant","message":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"Hi."}],"model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}},"session_id":"sess-1"})
+
+      assert {:agent_text, "Hi."} = AppServer.parse_event(line)
     end
 
     test "parses tool_use event and returns tool_use with tool name" do
@@ -213,33 +225,58 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:tool_use, "bash"} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event with only tool_use block returns tool_use" do
+    test "parses assistant event with only tool_use block returns tool_use with usage delta" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2"})
 
-      assert {:tool_use, "bash"} = AppServer.parse_event(line)
+      assert {:multi,
+              [
+                {:tool_use, "bash"},
+                {:token_usage_delta, %{input_tokens: 10, output_tokens: 5, cached_input_tokens: 0}}
+              ]} = AppServer.parse_event(line)
     end
 
     test "parses assistant event with text and tool_use returns multi event preserving order" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-2a","type":"message","role":"assistant","content":[{"type":"text","text":"Running ls"},{"type":"tool_use","id":"t-1","name":"bash","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2a"})
 
-      assert {:multi, [{:agent_text, "Running ls"}, {:tool_use, "bash"}]} =
-               AppServer.parse_event(line)
+      assert {:multi,
+              [
+                {:agent_text, "Running ls"},
+                {:tool_use, "bash"},
+                {:token_usage_delta, %{input_tokens: 10, output_tokens: 5, cached_input_tokens: 0}}
+              ]} = AppServer.parse_event(line)
     end
 
     test "parses assistant event with multiple tool_use blocks returns multi event" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-2b","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{}},{"type":"tool_use","id":"t-2","name":"read","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2b"})
 
-      assert {:multi, [{:tool_use, "bash"}, {:tool_use, "read"}]} = AppServer.parse_event(line)
+      assert {:multi,
+              [
+                {:tool_use, "bash"},
+                {:tool_use, "read"},
+                {:token_usage_delta, %{input_tokens: 10, output_tokens: 5, cached_input_tokens: 0}}
+              ]} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event with non-list content and returns placeholder notification" do
+    test "parses assistant event with non-list content returns lone usage delta when usage present" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-3","type":"message","role":"assistant","content":"text response","model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":2}},"session_id":"sess-3"})
 
-      assert {:notification, "assistant message"} = AppServer.parse_event(line)
+      assert {:token_usage_delta, %{input_tokens: 5, output_tokens: 2, cached_input_tokens: 0}} =
+               AppServer.parse_event(line)
+    end
+
+    test "parses assistant event with cache_read_input_tokens" do
+      line =
+        ~s({"type":"assistant","message":{"id":"msg-cache","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":50}},"session_id":"sess-cache"})
+
+      assert {:multi,
+              [
+                {:agent_text, "hi"},
+                {:token_usage_delta, %{input_tokens: 3, output_tokens: 2, cached_input_tokens: 50}}
+              ]} = AppServer.parse_event(line)
     end
 
     test "preserves full assistant text without truncation" do
@@ -248,7 +285,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       line =
         ~s({"type":"assistant","message":{"id":"msg-4","type":"message","role":"assistant","content":[{"type":"text","text":"#{long_text}"}],"model":"claude-opus-4-5","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-4"})
 
-      assert {:agent_text, ^long_text} = AppServer.parse_event(line)
+      assert {:multi, [{:agent_text, ^long_text}, {:token_usage_delta, _}]} =
+               AppServer.parse_event(line)
     end
 
     test "returns malformed for assistant events without message" do
@@ -387,6 +425,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                usage: ^usage,
                payload: %{method: "turn/completed", usage: ^usage}
              } = AppServer.event_to_update({:turn_completed, usage})
+
+      assert %{
+               event: :token_count,
+               timestamp: %DateTime{},
+               usage: ^usage,
+               payload: %{method: "token_count", usage: ^usage}
+             } = AppServer.event_to_update({:token_usage, usage})
 
       assert %{
                event: :turn_failed,
@@ -1303,6 +1348,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert result.output_tokens == 5
 
         assert_received {:turn_msg, {:agent_text, _}}
+        assert_received {:turn_msg, {:token_usage, %{input_tokens: 10, output_tokens: 5, total_tokens: 15}}}
         assert_received {:turn_msg, {:turn_completed, _}}
       after
         File.rm_rf(test_root)

@@ -3,8 +3,7 @@ defmodule SymphonyElixir.HttpServerTest do
 
   import ExUnit.CaptureLog
 
-  alias SymphonyElixir.HttpServer
-  alias SymphonyElixir.TestSupport
+  alias SymphonyElixir.{ControlUrl, HttpServer, Paths, TestSupport}
 
   @allow_remote_bind_env "SYMPHONY_ALLOW_REMOTE_BIND"
   @allowed_origins_env "SYMPHONY_DASHBOARD_ALLOWED_ORIGINS"
@@ -18,10 +17,18 @@ defmodule SymphonyElixir.HttpServerTest do
     File.mkdir_p!(tmp)
     allow_remote_bind = System.get_env(@allow_remote_bind_env)
     allowed_origins = System.get_env(@allowed_origins_env)
+    previous_state_override = Application.get_env(:symphony_elixir, :state_root_override)
+    Paths.set_state_root(tmp)
 
     on_exit(fn ->
       restore_env(@allow_remote_bind_env, allow_remote_bind)
       restore_env(@allowed_origins_env, allowed_origins)
+
+      case previous_state_override do
+        nil -> Application.delete_env(:symphony_elixir, :state_root_override)
+        value -> Application.put_env(:symphony_elixir, :state_root_override, value)
+      end
+
       File.rm_rf(tmp)
     end)
 
@@ -58,6 +65,21 @@ defmodule SymphonyElixir.HttpServerTest do
       start_supervised!({HttpServer, [host: "0.0.0.0", port: 0]})
 
       assert is_integer(HttpServer.bound_port())
+    end
+
+    test "persists the bound control URL for the CLI to discover" do
+      start_supervised!({HttpServer, [host: "127.0.0.1", port: 0]})
+      port = HttpServer.bound_port()
+
+      assert ControlUrl.read() == "http://127.0.0.1:#{port}"
+    end
+
+    test "creates the control token file so the CLI can authenticate immediately" do
+      start_supervised!({HttpServer, [host: "127.0.0.1", port: 0]})
+
+      token = SymphonyElixir.ControlToken.read()
+      refute is_nil(token)
+      assert byte_size(token) > 0
     end
   end
 

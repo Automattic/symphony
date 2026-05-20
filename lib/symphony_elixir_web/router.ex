@@ -6,7 +6,7 @@ defmodule SymphonyElixirWeb.Router do
   use Phoenix.Router
   import Phoenix.LiveView.Router
 
-  alias SymphonyElixirWeb.Plugs.SameOriginOrAllowlisted
+  alias SymphonyElixirWeb.Plugs.{BearerToken, SameOriginOrAllowlisted}
 
   pipeline :browser do
     plug(:fetch_session)
@@ -18,6 +18,10 @@ defmodule SymphonyElixirWeb.Router do
 
   pipeline :api_state_changing do
     plug(SameOriginOrAllowlisted)
+  end
+
+  pipeline :control_api do
+    plug(BearerToken)
   end
 
   scope "/", SymphonyElixirWeb do
@@ -42,6 +46,15 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through(:api_state_changing)
 
     post("/api/v1/refresh", ObservabilityApiController, :refresh)
+  end
+
+  scope "/api/v1/control", SymphonyElixirWeb do
+    pipe_through(:control_api)
+
+    post("/pause", ControlApiController, :pause)
+    post("/resume", ControlApiController, :resume)
+    post("/stop", ControlApiController, :stop)
+    post("/dispatch_pr", ControlApiController, :dispatch_pr)
   end
 
   scope "/", SymphonyElixirWeb do

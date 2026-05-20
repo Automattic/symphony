@@ -1,149 +1,130 @@
 defmodule SymphonyElixir.ControlClient do
   @moduledoc """
-  Local-node client for operator pause, resume, and stop controls.
+  Client for the Symphony daemon's operator controls: pause, resume, stop,
+  and PR dispatch. Talks to the HTTP control plane at
+  `POST /api/v1/control/*` so the CLI does not need distributed Erlang.
+
+  Calls invoked from inside the daemon BEAM (e.g. tests, attached IEx)
+  short-circuit to the in-process `SymphonyElixir.Orchestrator` GenServer
+  unless `prefer_local?: false` is passed.
   """
 
-  alias SymphonyElixir.Orchestrator
+  alias SymphonyElixir.{ControlToken, ControlUrl, Orchestrator}
 
-  @default_target_node "symphony@127.0.0.1"
-  @default_timeout_ms 15_000
+  @default_url "http://127.0.0.1:4000"
+  @url_env "SYMPHONY_CONTROL_URL"
+  @token_env "SYMPHONY_CONTROL_TOKEN"
+  @control_path "/api/v1/control/"
 
   @type control_result :: {:ok, map()} | :unavailable | {:error, term()}
 
-  @spec pause_dispatch(String.t(), keyword()) :: control_result()
-  def pause_dispatch(reason, opts \\ []) when is_binary(reason) do
-    call(:pause_dispatch, [reason], opts)
+  @spec pause_dispatch(String.t() | nil, keyword()) :: control_result()
+  def pause_dispatch(reason, opts \\ []) when is_binary(reason) or is_nil(reason) do
+    invoke(:pause_dispatch, [reason], "pause", body_for_pause(reason), opts)
   end
 
   @spec resume_dispatch(keyword()) :: control_result()
   def resume_dispatch(opts \\ []) do
-    call(:resume_dispatch, [], opts)
+    invoke(:resume_dispatch, [], "resume", %{}, opts)
   end
 
   @spec stop_running(String.t(), keyword()) :: control_result()
-  def stop_running(issue_id_or_identifier, opts \\ []) when is_binary(issue_id_or_identifier) do
-    call(:stop_running, [issue_id_or_identifier], opts)
+  def stop_running(identifier, opts \\ []) when is_binary(identifier) do
+    invoke(:stop_running, [identifier], "stop", %{issue_identifier: identifier}, opts)
   end
 
   @spec dispatch_pr(String.t(), keyword(), keyword()) :: control_result()
-  def dispatch_pr(target, pr_opts \\ [], opts \\ []) when is_binary(target) and is_list(pr_opts) and is_list(opts) do
-    call(:dispatch_pr, [target, pr_opts], opts)
+  def dispatch_pr(target, pr_opts \\ [], opts \\ [])
+      when is_binary(target) and is_list(pr_opts) and is_list(opts) do
+    invoke(:dispatch_pr, [target, pr_opts], "dispatch_pr", body_for_pr(target, pr_opts), opts)
   end
 
-  @spec call(atom(), [term()], keyword()) :: control_result()
-  def call(function, args, opts \\ []) when is_atom(function) and is_list(args) do
-    if Keyword.get(opts, :prefer_local?, true) and Process.whereis(Orchestrator) do
+  defp invoke(function, args, path_suffix, body, opts) do
+    if Keyword.get(opts, :prefer_local?, true) and local_orchestrator_alive?() do
       apply(Orchestrator, function, args)
     else
-      remote_call(function, args, opts)
+      remote_post(path_suffix, body, opts)
     end
   end
 
-  defp remote_call(function, args, opts) do
-    target = target_node(opts)
+  defp local_orchestrator_alive? do
+    case Process.whereis(Orchestrator) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      _ -> false
+    end
+  end
 
-    with :ok <- ensure_local_node_started(target, opts),
-         :ok <- maybe_set_cookie(opts),
-         true <- connect(target, opts) do
-      case rpc_call(target, Orchestrator, function, args, opts) do
-        {:badrpc, reason} -> {:error, {:remote_call_failed, reason}}
-        result -> result
+  defp remote_post(path_suffix, body, opts) do
+    with {:ok, token} <- resolve_token(opts) do
+      url = resolve_url(opts) <> @control_path <> path_suffix
+      poster = Keyword.get(opts, :http_post, &default_post/3)
+
+      case poster.(url, body, token) do
+        {:ok, 200, payload} -> {:ok, atomize_keys(payload)}
+        {:ok, 401, payload} -> {:error, {:unauthorized, payload}}
+        {:ok, 422, payload} -> {:error, {:invalid_request, payload}}
+        {:ok, 503, _payload} -> :unavailable
+        {:ok, status, payload} -> {:error, {:http_status, status, payload}}
+        {:error, reason} -> {:error, {:connection_failed, reason}}
       end
-    else
-      false -> {:error, {:node_connect_failed, target}}
+    end
+  end
+
+  defp resolve_url(opts) do
+    Keyword.get(opts, :control_url) ||
+      System.get_env(@url_env) ||
+      ControlUrl.read() ||
+      @default_url
+  end
+
+  defp resolve_token(opts) do
+    case Keyword.get(opts, :control_token) ||
+           System.get_env(@token_env) ||
+           ControlToken.read() do
+      nil -> {:error, :control_token_unavailable}
+      token when is_binary(token) -> {:ok, token}
+    end
+  end
+
+  defp body_for_pause(nil), do: %{}
+  defp body_for_pause(reason) when is_binary(reason), do: %{reason: reason}
+
+  defp body_for_pr(target, pr_opts) do
+    base = %{target: target}
+
+    case Keyword.get(pr_opts, :intent) do
+      intent when is_binary(intent) ->
+        case String.trim(intent) do
+          "" -> base
+          trimmed -> Map.put(base, :intent, trimmed)
+        end
+
+      _ ->
+        base
+    end
+  end
+
+  defp default_post(url, body, token) do
+    {:ok, _started} = Application.ensure_all_started(:req)
+
+    case Req.post(url,
+           json: body,
+           headers: [{"authorization", "Bearer " <> token}],
+           connect_options: [timeout: 5_000],
+           receive_timeout: 15_000
+         ) do
+      {:ok, %Req.Response{status: status, body: payload}} -> {:ok, status, payload}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp target_node(opts) do
-    opts
-    |> Keyword.get(:target_node, System.get_env("SYMPHONY_NODE") || @default_target_node)
-    |> normalize_node()
-  end
-
-  defp normalize_node(node_name) when is_atom(node_name), do: node_name
-  defp normalize_node(node_name) when is_binary(node_name), do: String.to_atom(node_name)
-
-  defp ensure_local_node_started(target, opts) do
-    node_alive? = Keyword.get(opts, :node_alive?, &Node.alive?/0)
-
-    if node_alive?.() do
-      :ok
-    else
-      local_node = Keyword.get_lazy(opts, :local_node, fn -> local_node_name(target) end)
-      node_start = Keyword.get(opts, :node_start, &Node.start/2)
-
-      case node_start.(local_node, name_mode(target)) do
-        {:ok, _pid} -> :ok
-        {:error, {:already_started, _pid}} -> :ok
-        {:error, reason} -> {:error, {:node_start_failed, reason}}
-      end
-    end
-  end
-
-  defp local_node_name(target) do
-    host = target |> Atom.to_string() |> node_host()
-    String.to_atom("symphony_ctl_#{System.unique_integer([:positive])}@#{host}")
-  end
-
-  defp name_mode(target) do
-    target
-    |> Atom.to_string()
-    |> node_host()
-    |> then(fn host ->
-      if String.contains?(host, "."), do: :longnames, else: :shortnames
+  defp atomize_keys(value) when is_map(value) do
+    Map.new(value, fn
+      {k, v} when is_binary(k) -> {String.to_atom(k), atomize_keys(v)}
+      {k, v} -> {k, atomize_keys(v)}
     end)
   end
 
-  defp node_host(node_name) do
-    case String.split(node_name, "@", parts: 2) do
-      [_name, host] -> host
-      _ -> "127.0.0.1"
-    end
-  end
-
-  defp maybe_set_cookie(opts) do
-    case Keyword.get_lazy(opts, :cookie, &cookie_from_env_or_file/0) do
-      cookie when is_binary(cookie) and cookie != "" ->
-        set_cookie = Keyword.get(opts, :set_cookie, &Node.set_cookie/1)
-        set_cookie.(String.to_atom(cookie))
-        :ok
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp cookie_from_env_or_file do
-    case System.get_env("SYMPHONY_COOKIE") do
-      cookie when is_binary(cookie) and cookie != "" ->
-        cookie
-
-      _ ->
-        read_persisted_cookie()
-    end
-  end
-
-  defp read_persisted_cookie do
-    path = SymphonyElixir.Paths.erlang_cookie_file()
-
-    with {:ok, contents} <- File.read(path),
-         cookie = String.trim(contents),
-         true <- cookie != "" do
-      cookie
-    else
-      _ -> nil
-    end
-  end
-
-  defp connect(target, opts) do
-    connect = Keyword.get(opts, :connect, &Node.connect/1)
-    connect.(target)
-  end
-
-  defp rpc_call(target, module, function, args, opts) do
-    timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
-    rpc = Keyword.get(opts, :rpc, &:rpc.call/5)
-    rpc.(target, module, function, args, timeout_ms)
-  end
+  defp atomize_keys(value) when is_list(value), do: Enum.map(value, &atomize_keys/1)
+  defp atomize_keys(value), do: value
 end

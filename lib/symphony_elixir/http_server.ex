@@ -3,7 +3,7 @@ defmodule SymphonyElixir.HttpServer do
   Compatibility facade that starts the Phoenix observability endpoint when enabled.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.{Config, ControlToken, ControlUrl, Orchestrator}
   alias SymphonyElixirWeb.Endpoint
   require Logger
 
@@ -32,26 +32,45 @@ defmodule SymphonyElixir.HttpServer do
 
         with {:ok, ip} <- parse_host(host),
              :ok <- guard_remote_bind(ip, host) do
-          endpoint_opts = [
-            server: true,
-            http: [ip: ip, port: port],
-            url: [host: normalize_host(host)],
-            orchestrator: orchestrator,
-            snapshot_timeout_ms: snapshot_timeout_ms,
-            secret_key_base: secret_key_base()
-          ]
-
-          endpoint_config =
-            :symphony_elixir
-            |> Application.get_env(Endpoint, [])
-            |> Keyword.merge(endpoint_opts)
-
-          Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
-          Endpoint.start_link()
+          start_endpoint(ip, port, host, orchestrator, snapshot_timeout_ms)
         end
 
       _ ->
         :ignore
+    end
+  end
+
+  defp start_endpoint(ip, port, host, orchestrator, snapshot_timeout_ms) do
+    endpoint_opts = [
+      server: true,
+      http: [ip: ip, port: port],
+      url: [host: normalize_host(host)],
+      orchestrator: orchestrator,
+      snapshot_timeout_ms: snapshot_timeout_ms,
+      secret_key_base: secret_key_base()
+    ]
+
+    endpoint_config =
+      :symphony_elixir
+      |> Application.get_env(Endpoint, [])
+      |> Keyword.merge(endpoint_opts)
+
+    Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
+
+    with {:ok, _pid} = ok <- Endpoint.start_link() do
+      persist_control_url(host)
+      _ = ControlToken.current()
+      ok
+    end
+  end
+
+  defp persist_control_url(host) do
+    with port when is_integer(port) <- bound_port(),
+         url = "http://#{normalize_host(host)}:#{port}",
+         :ok <- ControlUrl.persist(url) do
+      :ok
+    else
+      _ -> :ok
     end
   end
 

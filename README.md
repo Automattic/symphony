@@ -237,11 +237,10 @@ The dashboard exposes dispatch controls at `/`:
 - `Stop` on a running issue terminates that issue's active agent session, records the run as
   `stopped`, and leaves the Linear issue state unchanged.
 
-Explicit PR runs are CLI-only for now. Use the mix task or release binary against a named local
-Symphony node:
+The CLI reaches the running daemon over an HTTP control plane on the same port as the dashboard
+(`http://127.0.0.1:4000` by default, loopback-only). No distributed Erlang setup is required:
 
 ```bash
-export SYMPHONY_NODE=symphony@127.0.0.1
 mise exec -- mix symphony.pause "deploy window"
 mise exec -- mix symphony.resume
 mise exec -- mix symphony.stop RSM-123
@@ -253,6 +252,10 @@ Release binaries expose the same PR entry point:
 ```bash
 ./bin/symphony pr 123 --intent "fix failing CI"
 ```
+
+Discovery is automatic: when the daemon starts it writes `<state-root>/control_url` and a bearer
+token to `<state-root>/control_token` (both `0600`). Override either with `SYMPHONY_CONTROL_URL` or
+`SYMPHONY_CONTROL_TOKEN` for remote setups (e.g. when the daemon is reverse-proxied).
 
 ## Documentation
 

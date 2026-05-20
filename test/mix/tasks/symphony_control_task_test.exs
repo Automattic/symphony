@@ -7,7 +7,6 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
   alias Mix.Tasks.Symphony.Pr
   alias Mix.Tasks.Symphony.Resume
   alias Mix.Tasks.Symphony.Stop
-  alias SymphonyElixir.ControlClient
 
   defmodule FakeControlClient do
     @spec pause_dispatch(String.t()) :: {:ok, map()}
@@ -41,16 +40,10 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
     Mix.Task.reenable("symphony.resume")
     Mix.Task.reenable("symphony.stop")
 
-    previous_cookie_env = System.get_env("SYMPHONY_COOKIE")
-    previous_state_root = Application.get_env(:symphony_elixir, :state_root_override)
-
-    System.delete_env("SYMPHONY_COOKIE")
     Application.put_env(:symphony_elixir, :control_client, FakeControlClient)
     Application.put_env(:symphony_elixir, :control_task_test_recipient, self())
 
     on_exit(fn ->
-      restore_env("SYMPHONY_COOKIE", previous_cookie_env)
-      restore_app_env(:state_root_override, previous_state_root)
       Application.delete_env(:symphony_elixir, :control_client)
       Application.delete_env(:symphony_elixir, :control_task_test_recipient)
       Application.delete_env(:symphony_elixir, :control_task_test_result)
@@ -160,144 +153,4 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
       Pr.run(["123"])
     end
   end
-
-  test "control client calls a running node over rpc when no local orchestrator is present" do
-    target = :"symphony@127.0.0.1"
-    parent = self()
-
-    result =
-      ControlClient.pause_dispatch("overnight",
-        prefer_local?: false,
-        target_node: target,
-        node_alive?: fn -> false end,
-        node_start: fn local_node, :longnames ->
-          send(parent, {:node_start, local_node})
-          {:ok, self()}
-        end,
-        connect: fn ^target ->
-          send(parent, {:connect, target})
-          true
-        end,
-        rpc: fn ^target, SymphonyElixir.Orchestrator, :pause_dispatch, ["overnight"], 15_000 ->
-          send(parent, :rpc_called)
-          {:ok, %{paused: true, reason: "overnight"}}
-        end
-      )
-
-    assert {:ok, %{paused: true, reason: "overnight"}} = result
-    assert_receive {:node_start, local_node}
-    assert local_node |> Atom.to_string() |> String.starts_with?("symphony_ctl_")
-    assert_receive {:connect, ^target}
-    assert_receive :rpc_called
-  end
-
-  test "control client can dispatch PR runs over rpc" do
-    target = :"symphony@127.0.0.1"
-
-    result =
-      ControlClient.dispatch_pr("123", [intent: "fix CI"],
-        prefer_local?: false,
-        target_node: target,
-        node_alive?: fn -> false end,
-        node_start: fn _local_node, :longnames -> {:ok, self()} end,
-        connect: fn ^target -> true end,
-        rpc: fn ^target, SymphonyElixir.Orchestrator, :dispatch_pr, ["123", [intent: "fix CI"]], 15_000 ->
-          {:ok, %{pull_request_url: "https://github.com/example/repo/pull/123"}}
-        end
-      )
-
-    assert {:ok, %{pull_request_url: "https://github.com/example/repo/pull/123"}} = result
-  end
-
-  test "control client uses SYMPHONY_COOKIE when present" do
-    target = :"symphony@127.0.0.1"
-    parent = self()
-    System.put_env("SYMPHONY_COOKIE", "operator_cookie")
-
-    result =
-      ControlClient.pause_dispatch("overnight",
-        prefer_local?: false,
-        target_node: target,
-        node_alive?: fn -> false end,
-        node_start: fn _local_node, :longnames -> {:ok, self()} end,
-        set_cookie: fn cookie ->
-          send(parent, {:cookie, cookie})
-          true
-        end,
-        connect: fn ^target -> true end,
-        rpc: fn ^target, SymphonyElixir.Orchestrator, :pause_dispatch, ["overnight"], 15_000 ->
-          {:ok, %{paused: true, reason: "overnight"}}
-        end
-      )
-
-    assert {:ok, %{paused: true, reason: "overnight"}} = result
-    assert_receive {:cookie, :operator_cookie}
-  end
-
-  test "control client falls back to persisted release cookie" do
-    target = :"symphony@127.0.0.1"
-    parent = self()
-    tmp = Path.join(System.tmp_dir!(), "symphony-control-cookie-test-#{System.unique_integer([:positive])}")
-    cookie_path = Path.join(tmp, "erlang_cookie")
-
-    File.mkdir_p!(tmp)
-    File.write!(cookie_path, "persisted_cookie\n")
-    SymphonyElixir.Paths.set_state_root(tmp)
-
-    on_exit(fn -> File.rm_rf(tmp) end)
-
-    result =
-      ControlClient.pause_dispatch("overnight",
-        prefer_local?: false,
-        target_node: target,
-        node_alive?: fn -> false end,
-        node_start: fn _local_node, :longnames -> {:ok, self()} end,
-        set_cookie: fn cookie ->
-          send(parent, {:cookie, cookie})
-          true
-        end,
-        connect: fn ^target -> true end,
-        rpc: fn ^target, SymphonyElixir.Orchestrator, :pause_dispatch, ["overnight"], 15_000 ->
-          {:ok, %{paused: true, reason: "overnight"}}
-        end
-      )
-
-    assert {:ok, %{paused: true, reason: "overnight"}} = result
-    assert_receive {:cookie, :persisted_cookie}
-  end
-
-  test "control client does not set a cookie when neither env nor persisted cookie exists" do
-    target = :"symphony@127.0.0.1"
-    parent = self()
-    tmp = Path.join(System.tmp_dir!(), "symphony-control-cookie-test-#{System.unique_integer([:positive])}")
-
-    SymphonyElixir.Paths.set_state_root(tmp)
-
-    on_exit(fn -> File.rm_rf(tmp) end)
-
-    result =
-      ControlClient.pause_dispatch("overnight",
-        prefer_local?: false,
-        target_node: target,
-        node_alive?: fn -> false end,
-        node_start: fn _local_node, :longnames -> {:ok, self()} end,
-        set_cookie: fn cookie ->
-          send(parent, {:cookie, cookie})
-          true
-        end,
-        connect: fn ^target -> true end,
-        rpc: fn ^target, SymphonyElixir.Orchestrator, :pause_dispatch, ["overnight"], 15_000 ->
-          {:ok, %{paused: true, reason: "overnight"}}
-        end
-      )
-
-    assert {:ok, %{paused: true, reason: "overnight"}} = result
-    refute_received {:cookie, _cookie}
-  end
-
-  defp restore_env(name, nil), do: System.delete_env(name)
-  defp restore_env(name, value), do: System.put_env(name, value)
-
-  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
-  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 end

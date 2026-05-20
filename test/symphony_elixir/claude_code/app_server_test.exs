@@ -494,10 +494,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         assert get_in(mcp_config, ["mcpServers", "symphony", "args"]) == [
                  "--socket",
-                 session.mcp_session.socket_path,
-                 "--session",
-                 session.mcp_session.token
+                 session.mcp_session.socket_path
                ]
+
+        assert get_in(mcp_config, ["mcpServers", "symphony", "env", "SYMPHONY_MCP_SESSION_TOKEN"]) ==
+                 session.mcp_session.token
 
         assert get_in(mcp_config, ["mcpServers", "symphony", "alwaysLoad"]) == true
 

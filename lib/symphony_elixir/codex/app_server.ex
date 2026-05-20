@@ -69,7 +69,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     with :ok <- validate_remote_launch_preconditions(worker_host, settings),
          {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host, settings),
          {:ok, mcp_session, remote_socket_path, remote_shim_path} <-
-           start_mcp_session(expanded_workspace, worker_host, opts) do
+           start_mcp_session(expanded_workspace, worker_host, settings, opts) do
       start_session_with_mcp(
         expanded_workspace,
         worker_host,
@@ -483,7 +483,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_mcp_session(workspace, worker_host, opts) do
+  defp start_mcp_session(workspace, worker_host, settings, opts) do
     issue = Keyword.get(opts, :issue)
 
     context = %{
@@ -502,6 +502,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         run_id: Keyword.get(opts, :run_id),
         server: Keyword.get(opts, :mcp_server, McpServer),
         shim_path: Keyword.get(opts, :mcp_shim_path),
+        transport: mcp_transport(settings, worker_host),
         worker_host: worker_host
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
@@ -521,6 +522,9 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, reason}
     end
   end
+
+  defp mcp_transport(%Schema{agent: %{sandbox_runtime: %Schema.Agent.SandboxRuntime{kind: "srt"}}}, nil), do: :tcp
+  defp mcp_transport(_settings, _worker_host), do: :unix
 
   defp tool_opts(opts) do
     opts
@@ -622,7 +626,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       |> AgentSandboxConfig.codex_config_overrides(
         Schema.codex_effective_network_allowed_domains(settings),
         workspace_sandbox_allow_read_paths(settings),
-        extra_deny_read_paths
+        extra_deny_read_paths,
+        workspace: workspace
       )
 
     with {:ok, command} <- inject_config_overrides(command, overrides) do
@@ -1084,28 +1089,54 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:error, _reason} ->
         log_non_json_stream_line(payload_string, "turn stream")
 
-        if protocol_message_candidate?(payload_string) do
-          emit_message(
-            on_message,
-            :malformed,
-            %{
-              payload: payload_string,
-              raw: payload_string
-            },
-            metadata_from_message(port, %{raw: payload_string})
-          )
-        end
+        cond do
+          codex_stdio_write_failed?(payload_string) ->
+            trimmed = String.trim(payload_string)
+            Logger.error("Codex app-server stdout write failed; aborting turn: #{trimmed}")
 
-        receive_loop(
-          port,
-          on_message,
-          timeout_ms,
-          "",
-          tool_executor,
-          auto_approve_requests,
-          approval_context,
-          turn_stream_state
-        )
+            emit_message(
+              on_message,
+              :transport_failed,
+              %{reason: :codex_stdio_write_failed, detail: trimmed, raw: payload_string},
+              metadata_from_message(port, %{raw: payload_string})
+            )
+
+            {:error, {:codex_stdio_write_failed, trimmed}}
+
+          protocol_message_candidate?(payload_string) ->
+            emit_message(
+              on_message,
+              :malformed,
+              %{
+                payload: payload_string,
+                raw: payload_string
+              },
+              metadata_from_message(port, %{raw: payload_string})
+            )
+
+            receive_loop(
+              port,
+              on_message,
+              timeout_ms,
+              "",
+              tool_executor,
+              auto_approve_requests,
+              approval_context,
+              turn_stream_state
+            )
+
+          true ->
+            receive_loop(
+              port,
+              on_message,
+              timeout_ms,
+              "",
+              tool_executor,
+              auto_approve_requests,
+              approval_context,
+              turn_stream_state
+            )
+        end
     end
   end
 
@@ -3255,6 +3286,13 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> to_string()
     |> String.trim_leading()
     |> String.starts_with?("{")
+  end
+
+  defp codex_stdio_write_failed?(data) do
+    text = to_string(data)
+
+    String.contains?(text, "codex_app_server_transport::transport::stdio") and
+      String.contains?(text, "Failed to write to stdout")
   end
 
   defp issue_context(%{id: issue_id, identifier: identifier}) do

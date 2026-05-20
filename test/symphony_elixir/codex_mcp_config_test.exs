@@ -28,8 +28,27 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
 
     assert config =~ "[mcp_servers.symphony]"
     assert config =~ ~s(command = "/tmp/symphony-mcp-shim")
-    assert config =~ ~s("--session", "session-token")
+    assert config =~ ~s(args = ["--socket", "/tmp/symphony-mcp.sock"])
+    assert config =~ ~s(env = { SYMPHONY_MCP_SESSION_TOKEN = "session-token" })
+    refute config =~ "--session"
     refute config =~ "host-secret"
+  end
+
+  test "implicit symphony MCP server can target loopback TCP without putting the token in argv" do
+    session =
+      @mcp_session
+      |> Map.put(:transport, :tcp)
+      |> Map.put(:socket_path, nil)
+      |> Map.put(:tcp_host, "127.0.0.1")
+      |> Map.put(:tcp_port, 58_213)
+
+    assert {:ok, config} =
+             McpConfig.build_config(settings!(%{inherit: "none"}), session, nil, session.shim_path, host_codex_home: nil)
+
+    assert config =~ ~s(args = ["--tcp-host", "127.0.0.1", "--tcp-port", "58213"])
+    assert config =~ ~s(env = { SYMPHONY_MCP_SESSION_TOKEN = "session-token" })
+    refute config =~ "--socket"
+    refute config =~ "--session"
   end
 
   test "allowlist inheritance copies only matching host MCP blocks" do
@@ -119,13 +138,14 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     refute config =~ "/host/context.js"
   end
 
-  test "write_home symlinks auth.json without copying credential contents" do
+  test "write_home symlinks auth.json without copying credential contents and copies cloud requirements cache" do
     test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-home-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(test_root) end)
     host_codex_home = Path.join(test_root, "host-codex")
     generated_home = Path.join(test_root, "generated-codex-home")
     File.mkdir_p!(host_codex_home)
     File.write!(Path.join(host_codex_home, "auth.json"), "credential contents are not read")
+    File.write!(Path.join(host_codex_home, "cloud-requirements-cache.json"), ~s({"cached":true}))
 
     assert {:ok, runtime_home} =
              McpConfig.write_home(settings!(%{inherit: "none"}), @mcp_session,
@@ -136,6 +156,11 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     assert runtime_home.home_path == generated_home
     assert File.read!(runtime_home.config_path) =~ "[mcp_servers.symphony]"
     assert File.read_link!(Path.join(generated_home, "auth.json")) == Path.join(host_codex_home, "auth.json")
+
+    cache_path = Path.join(generated_home, "cloud-requirements-cache.json")
+    assert File.read!(cache_path) == ~s({"cached":true})
+    assert {:ok, cache_stat} = File.lstat(cache_path)
+    refute cache_stat.type == :symlink
   end
 
   test "write_home cleans up generated home when setup fails" do
@@ -156,6 +181,25 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     refute File.exists?(generated_home)
   end
 
+  test "write_home cleans up generated home when cloud requirements cache copy fails" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-cloud-cache-fail-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    host_codex_home = Path.join(test_root, "host-codex")
+    generated_home = Path.join(test_root, "generated-codex-home")
+    cache_path = Path.join(host_codex_home, "cloud-requirements-cache.json")
+
+    File.mkdir_p!(cache_path)
+
+    assert {:error, {:codex_cloud_requirements_cache_copy_failed, ^cache_path, :eisdir}} =
+             McpConfig.write_home(settings!(%{inherit: "none"}), @mcp_session,
+               home_path: generated_home,
+               host_codex_home: host_codex_home
+             )
+
+    refute File.exists?(generated_home)
+  end
+
   test "write_home skips auth.json symlink when host file is missing" do
     test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-auth-missing-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(test_root) end)
@@ -171,6 +215,7 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
              )
 
     refute File.exists?(Path.join(runtime_home.home_path, "auth.json"))
+    refute File.exists?(Path.join(runtime_home.home_path, "cloud-requirements-cache.json"))
     assert File.read!(runtime_home.config_path) =~ "[mcp_servers.symphony]"
   end
 

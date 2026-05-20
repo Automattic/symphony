@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Ci, as: CiConfig
   alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
   alias SymphonyElixir.Secret
@@ -2373,6 +2374,140 @@ defmodule SymphonyElixir.CoreTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "agent runner compacts oversized Codex first-turn prompts before app-server send" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-compact-prompt-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      capture_path = Path.join(test_root, "turn-start.json")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-compact\"}}}'
+            ;;
+          4)
+            printf '%s\\n' "$line" > #{capture_path}
+            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-compact\",\"status\":\"inProgress\",\"items\":[]}}}'
+            printf '%s\\n' '{\"method\":\"turn/completed\"}'
+            exit 0
+            ;;
+          *)
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        agent_command: "#{codex_binary} app-server",
+        prompt: String.duplicate("workflow detail\n", 1_000)
+      )
+
+      issue = %Issue{
+        id: "issue-compact-prompt",
+        identifier: "S-100",
+        title: "Compact oversized prompt",
+        description: String.duplicate("issue detail\n", 2_000),
+        state: "In Progress",
+        url: "https://example.org/issues/S-100",
+        labels: ["backend"],
+        comments: [
+          %{author: "Reviewer", body: String.duplicate("comment detail\n", 1_000), created_at: nil}
+        ]
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_enricher: no_op_issue_enricher()
+               )
+
+      turn_start = File.read!(capture_path)
+
+      assert turn_start =~ "linear_get_current_issue"
+      assert turn_start =~ ~s(linear_get_comments` with `{\\"limit\\": 5})
+      refute turn_start =~ "workflow detail"
+      refute turn_start =~ "issue detail"
+      refute turn_start =~ "comment detail"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner does not compact oversized Claude first-turn prompts" do
+    {:ok, claude_settings} =
+      Schema.parse(%{
+        agent: %{
+          kind: "claude",
+          command: "claude"
+        }
+      })
+
+    {:ok, codex_settings} =
+      Schema.parse(%{
+        agent: %{
+          kind: "codex",
+          command: "codex app-server"
+        }
+      })
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      prompt: String.duplicate("workflow detail\n", 1_000)
+    )
+
+    issue = %Issue{
+      id: "issue-claude-no-compact",
+      identifier: "S-CLAUDE-NO-COMPACT",
+      title: "Claude oversized prompt regression",
+      description: String.duplicate("issue detail\n", 2_000),
+      state: "In Progress",
+      url: "https://example.org/issues/S-CLAUDE-NO-COMPACT",
+      labels: ["backend"],
+      comments: [
+        %{author: "Reviewer", body: String.duplicate("comment detail\n", 1_000), created_at: nil}
+      ]
+    }
+
+    claude_prompt = AgentRunner.build_first_turn_prompt(issue, settings: claude_settings)
+    codex_prompt = AgentRunner.build_first_turn_prompt(issue, settings: codex_settings)
+
+    # Claude keeps the full rendered prompt regardless of size — the compact bootstrap is
+    # Codex-only because Claude's transport doesn't share the Codex stdio soft limit.
+    assert byte_size(claude_prompt) > 12_000
+    assert claude_prompt =~ "workflow detail"
+    refute claude_prompt =~ "linear_get_current_issue"
+
+    # Codex still uses the compact bootstrap so the comparison locks in both branches of the gate.
+    assert codex_prompt =~ "linear_get_current_issue"
+    refute codex_prompt =~ "workflow detail"
   end
 
   test "agent runner forwards timestamped codex updates to recipient" do

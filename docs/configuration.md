@@ -343,12 +343,18 @@ An optional outer-sandbox wrapper using `@anthropic-ai/sandbox-runtime`.
   is needed.
 - With SRT enabled, Symphony sends Codex an `externalSandbox` turn policy so SRT owns command
   sandbox enforcement (avoids nesting `sandbox-exec` inside `sandbox-exec`).
+- With SRT enabled, Symphony exposes its implicit local MCP server on a random `127.0.0.1`
+  loopback TCP port instead of a Unix socket, because SRT's macOS profile blocks sandboxed Unix
+  socket connects. The MCP server still requires the per-session token before accepting messages.
 - Symphony emits `enableWeakerNestedSandbox: true` for Linux/Docker compatibility.
   `enable_weaker_network_isolation` maps directly to the same SRT setting; keep it `false`
   unless required.
 - Symphony generates the temporary settings file from `agent.network_access`,
   `workspace.sandbox.allow_read_paths`, the issue workspace, linked-worktree Git metadata roots,
   and the shared sensitive-path deny lists. The file is removed when the session stops.
+- Shell startup files such as `~/.zshrc`, `~/.zshenv`, and `~/.bash_profile` are in both the
+  read-deny and write-deny lists. Codex may log a non-fatal PATH update warning when those writes
+  are blocked; Symphony does not grant access to silence that warning.
 - `agent.network_access.mode: open` is **rejected** with SRT (no unrestricted domain wildcard).
   Use `allowlist` or `block`.
 - **Local only:** remote SSH workers reject `kind: srt` because the temp settings file is
@@ -387,10 +393,17 @@ A set var substitutes the value; an empty var drops the entry; a missing var kee
 
 - **Codex:** Symphony writes a fresh `CODEX_HOME` per session containing a generated `config.toml`
   (symphony + inherited + declared servers) and a symlink to the operator's `~/.codex/auth.json`
-  when present (skipped with a warning if missing). The generated path is added to the sandbox
-  filesystem deny-read list so the agent cannot read its own `auth.json`/`config.toml`/`AGENTS.md`.
-  Remote workers also receive a per-session `/tmp/symphony-codex-home-<id>` directory; Symphony
-  tears both down at session stop.
+  when present (skipped with a warning if missing). If the operator has a Codex
+  `cloud-requirements-cache.json`, Symphony copies it into the temporary home so Codex can load
+  workspace-managed policy requirements without writing back to the host cache. The generated path
+  is added to the sandbox filesystem deny-read list so the agent cannot read its own
+  `auth.json`/`config.toml`/`AGENTS.md`. Remote workers also receive a per-session
+  `/tmp/symphony-codex-home-<id>` directory; Symphony tears both down at session stop.
+- **Codex prompt transport:** when the fully rendered first-turn prompt is larger than Symphony's
+  app-server stdio soft limit, Symphony sends a compact bootstrap prompt instead. The compact
+  prompt keeps the hard security rules and directs Codex to load issue details through scoped
+  `linear_*` tools, preventing large echoed `userMessage` events from wedging the app-server
+  stdout stream.
 - **Codex remote workers:** `inherit: allowlist` and `inherit: all` are rejected (Symphony only
   reads the orchestrator's host config). Declare servers explicitly under `servers`.
 - **Claude:** `inherit: allowlist` reads only the top-level `mcpServers` map in

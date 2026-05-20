@@ -15,9 +15,12 @@ defmodule SymphonyElixir.McpServer do
 
   @type session :: %{
           id: String.t(),
-          socket_path: Path.t(),
-          socket_dir: Path.t(),
+          transport: :unix | :tcp,
+          socket_path: Path.t() | nil,
+          socket_dir: Path.t() | nil,
           remote_socket_path: Path.t() | nil,
+          tcp_host: String.t() | nil,
+          tcp_port: pos_integer() | nil,
           token: String.t(),
           shim_path: Path.t()
         }
@@ -69,11 +72,11 @@ defmodule SymphonyElixir.McpServer do
     id = token()
 
     case open_and_secure_socket(opts, id) do
-      {:ok, socket_dir, socket_path, listen_socket} ->
+      {:ok, socket_dir, socket_path, listen_socket, endpoint} ->
         session_token = token()
         server = self()
         {acceptor_pid, acceptor_ref} = spawn_acceptor(server, listen_socket)
-        remote_socket_path = compute_remote_socket_path(id, opts)
+        remote_socket_path = compute_remote_socket_path(id, opts, endpoint)
 
         session = %{
           context: context,
@@ -87,9 +90,12 @@ defmodule SymphonyElixir.McpServer do
 
         reply = %{
           id: id,
+          transport: endpoint.transport,
           socket_dir: socket_dir,
           socket_path: socket_path,
           remote_socket_path: remote_socket_path,
+          tcp_host: Map.get(endpoint, :tcp_host),
+          tcp_port: Map.get(endpoint, :tcp_port),
           token: session_token,
           shim_path: shim_path(opts)
         }
@@ -221,17 +227,52 @@ defmodule SymphonyElixir.McpServer do
   end
 
   defp open_and_secure_socket(opts, id) do
+    case Keyword.get(opts, :transport, :unix) do
+      :tcp -> open_tcp_listen_socket()
+      _transport -> open_unix_listen_socket(opts, id)
+    end
+  end
+
+  defp open_unix_listen_socket(opts, id) do
     with {:ok, socket_dir, socket_path} <- session_socket_paths(opts, id),
          :ok <- prepare_socket_dir(socket_dir),
          {:ok, listen_socket} <- open_listen_socket(socket_path) do
       case File.chmod(socket_path, 0o600) do
         :ok ->
-          {:ok, socket_dir, socket_path, listen_socket}
+          {:ok, socket_dir, socket_path, listen_socket, %{transport: :unix}}
 
         {:error, reason} ->
           tear_down_socket(socket_dir, socket_path, listen_socket)
           {:error, {:mcp_socket_chmod_failed, reason}}
       end
+    end
+  end
+
+  defp open_tcp_listen_socket do
+    case :socket.open(:inet, :stream) do
+      {:ok, socket} ->
+        case bind_tcp_listen_socket(socket) do
+          {:ok, port} ->
+            {:ok, nil, nil, socket, %{transport: :tcp, tcp_host: "127.0.0.1", tcp_port: port}}
+
+          {:error, reason} ->
+            close_socket(socket)
+            {:error, {:mcp_tcp_socket_open_failed, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:mcp_tcp_socket_open_failed, reason}}
+    end
+  end
+
+  defp bind_tcp_listen_socket(socket) do
+    with :ok <- :socket.bind(socket, %{family: :inet, addr: {127, 0, 0, 1}, port: 0}),
+         :ok <- :socket.listen(socket),
+         {:ok, %{port: port}} <- :socket.sockname(socket) do
+      {:ok, port}
+    else
+      {:error, reason} -> {:error, reason}
+      other -> {:error, other}
     end
   end
 
@@ -250,6 +291,8 @@ defmodule SymphonyElixir.McpServer do
     _ = remove_socket_file(socket_path)
     remove_socket_dir(socket_dir)
   end
+
+  defp remove_socket_file(nil), do: :ok
 
   defp remove_socket_file(path) do
     case File.rm(path) do
@@ -273,7 +316,9 @@ defmodule SymphonyElixir.McpServer do
     String.starts_with?(dir, "/tmp/symphony-mcp-")
   end
 
-  defp compute_remote_socket_path(id, opts) do
+  defp compute_remote_socket_path(_id, _opts, %{transport: :tcp}), do: nil
+
+  defp compute_remote_socket_path(id, opts, _endpoint) do
     case Keyword.get(opts, :worker_host) do
       worker when is_binary(worker) and worker != "" ->
         case Keyword.get(opts, :remote_socket_path) do

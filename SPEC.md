@@ -1285,7 +1285,10 @@ Important nuance:
 - After each normal turn completion, the worker re-checks the tracker issue state.
 - If the issue is still in an active state, the worker SHOULD start another turn on the same live
   coding-agent thread in the same workspace, up to `agent.max_turns`.
-- The first turn SHOULD use the full rendered task prompt.
+- The first turn SHOULD use the full rendered task prompt. Implementations MAY use a compact
+  bootstrap prompt when the target agent transport cannot safely carry the full rendered prompt as a
+  single startup message, provided the compact prompt preserves hard security rules and directs the
+  agent to load scoped issue details through trusted tools.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
 - Once the worker exits normally, the orchestrator still schedules a short continuation retry
@@ -1632,8 +1635,8 @@ Current Elixir sandbox behavior:
   `~/.claude/file-history`, `/etc/sudoers`, `/private/etc/sudoers`, `/var/root`, `~/.aws`,
   `~/.gnupg`, `~/Library/Application Support`, `~/Library/Keychains`,
   `~/Library/Preferences`, `~/.docker`, `~/.netrc`, `~/.git-credentials`, `~/.npmrc`,
-  `~/.cargo/credentials`, `~/.config/op`, `~/.config/gcloud`, `~/.azure`, `~/.kube`, and shell or
-  REPL history files.
+  `~/.cargo/credentials`, `~/.config/op`, `~/.config/gcloud`, `~/.azure`, `~/.kube`, shell
+  startup files, and shell or REPL history files.
 - Shared write denies protect workflow and runtime guardrail files such as `WORKFLOW.md`,
   `symphony.yml`, `symphony.local.yml`, `.claude/settings.json`, `.git`, `mise.toml`,
   `.tool-versions`, shell startup files, `~/.gitconfig`, and macOS launch agent roots.
@@ -1646,6 +1649,8 @@ Current Elixir sandbox behavior:
   best-effort as described in Section 5.4.9.
 - SRT sandbox settings allow Codex to write its runtime state directory under `~/.codex`, but
   deny-write the sensitive/static Codex files `auth.json`, `config.toml`, and `AGENTS.md`.
+  Shell startup files are also read-denied and write-denied; non-fatal PATH update warnings from
+  Codex MUST NOT be resolved by granting access to those files.
 - Sensitive-path detection for command/audit safeguards also treats mounted volumes, admin paths,
   selected Codex runtime files, common credential basenames, `.env*`, `*.pem`, and `*.key` as
   sensitive.
@@ -1691,10 +1696,15 @@ Notes:
   `agent.sandbox_runtime.kind: srt`, the local command is wrapped as
   `<srt command> --settings <temporary-settings.json> <agent.command>`. Codex remote launch runs
   the configured command after `cd <workspace>` over SSH stdio.
+- Codex local SRT launch uses a random `127.0.0.1` TCP listener for Symphony's implicit MCP server
+  instead of a Unix socket, because the SRT macOS profile denies sandboxed Unix socket connects.
+  The listener remains token-authenticated and bound to loopback only.
 - Codex launch preserves the configured command while injecting `--config` overrides for
   `default_permissions="workspace_write"` and the generated `permissions.workspace_write.*`
-  profile. Existing user-provided Codex args, such as model overrides before `app-server`, remain
-  present.
+  profile. Runtime launch paths render workspace-local filesystem entries with the validated
+  workspace path so current Codex versions do not have to rely on the legacy `:project_roots`
+  placeholder key, which current Codex CLI versions silently ignore.
+  Existing user-provided Codex args, such as model overrides before `app-server`, remain present.
 - Claude local launch parses `agent.command` with shell-like word splitting and runs Claude with
   `--output-format stream-json --print`, feeding prompt input over stdin from a private temporary
   file. Claude remote launch streams the prompt over SSH stdin into a remote `0600` temporary file
@@ -1731,6 +1741,10 @@ Startup MUST follow the configured adapter contract. Symphony additionally requi
 - Supply the absolute per-issue workspace path as the thread/turn working directory wherever the
   targeted protocol accepts cwd.
 - Start the first turn with the rendered issue prompt.
+- If the rendered first-turn prompt exceeds an implementation-defined safe transport size, the
+  implementation MAY send a compact bootstrap prompt that preserves hard security instructions,
+  references the current issue identifier, and instructs the agent to fetch issue description and
+  comments through scoped tracker tools before planning.
 - Start later in-worker continuation turns on the same live thread when the configured adapter
   exposes persistent thread/session context. Adapters without persistent continuation support SHOULD
   send continuation guidance and rely on workspace, workpad, and tracker state instead of assuming

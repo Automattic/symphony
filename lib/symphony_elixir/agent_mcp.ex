@@ -91,24 +91,39 @@ defmodule SymphonyElixir.AgentMcp do
     toml_table(["mcp_servers", name], entries)
   end
 
-  @spec symphony_claude_config(map(), Path.t(), Path.t()) :: map()
+  @spec symphony_claude_config(map(), Path.t() | nil, Path.t()) :: map()
   def symphony_claude_config(mcp_session, socket_path, shim_path) do
     %{
       "command" => shim_path,
-      "args" => ["--socket", socket_path, "--session", mcp_session.token],
+      "args" => symphony_shim_args(mcp_session, socket_path),
+      "env" => symphony_shim_env(mcp_session),
       "alwaysLoad" => true
     }
   end
 
-  @spec symphony_codex_toml_block(map(), Path.t(), Path.t()) :: String.t()
+  @spec symphony_codex_toml_block(map(), Path.t() | nil, Path.t()) :: String.t()
   def symphony_codex_toml_block(mcp_session, socket_path, shim_path) do
     toml_table(
       ["mcp_servers", "symphony"],
       [
         {"command", shim_path},
-        {"args", ["--socket", socket_path, "--session", mcp_session.token]}
+        {"args", symphony_shim_args(mcp_session, socket_path)},
+        {"env", symphony_shim_env(mcp_session)}
       ]
     )
+  end
+
+  defp symphony_shim_args(%{transport: :tcp, tcp_host: host, tcp_port: port}, _socket_path)
+       when is_binary(host) and is_integer(port) do
+    ["--tcp-host", host, "--tcp-port", Integer.to_string(port)]
+  end
+
+  defp symphony_shim_args(_mcp_session, socket_path) when is_binary(socket_path) do
+    ["--socket", socket_path]
+  end
+
+  defp symphony_shim_env(%{token: token}) when is_binary(token) do
+    %{"SYMPHONY_MCP_SESSION_TOKEN" => token}
   end
 
   @spec toml_table([String.t()], [{String.t(), term()}]) :: String.t()

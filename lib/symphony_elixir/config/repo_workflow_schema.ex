@@ -8,12 +8,13 @@ defmodule SymphonyElixir.Config.RepoWorkflowSchema do
   alias SymphonyElixir.Config.Schema
 
   @primary_key false
-  @allowed_keys ~w(hooks verification validation)
+  @allowed_keys ~w(hooks prompts verification validation)
 
   embedded_schema do
     field(:configured_paths, :map, virtual: true, default: %{})
     embeds_one(:hooks, Schema.Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:verification, Schema.Verification, on_replace: :update, defaults_to_struct: true)
+    field(:prompts, :map, default: %{})
     field(:validation, {:array, :string}, default: [])
   end
 
@@ -42,16 +43,36 @@ defmodule SymphonyElixir.Config.RepoWorkflowSchema do
 
     %{}
     |> maybe_put("hooks", configured_map(configured_paths, "hooks", &hooks_to_map(workflow.hooks, &1)))
+    |> maybe_put("prompts", workflow.prompts)
     |> maybe_put("verification", configured_map(configured_paths, "verification", &verification_to_map(workflow.verification, &1)))
     |> maybe_put("validation", workflow.validation)
   end
 
   defp changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [:validation], empty_values: [])
+    |> cast(attrs, [:prompts, :validation], empty_values: [])
     |> cast_embed(:hooks, with: &Schema.Hooks.changeset/2)
     |> cast_embed(:verification, with: &Schema.Verification.changeset/2)
+    |> validate_prompts()
     |> validate_string_list(:validation)
+  end
+
+  defp validate_prompts(changeset) do
+    validate_change(changeset, :prompts, fn :prompts, prompts ->
+      cond do
+        !is_map(prompts) ->
+          [prompts: "must be a map"]
+
+        Enum.any?(Map.keys(prompts), &(&1 not in ["issue", "pr"])) ->
+          [prompts: "supports only `issue` and `pr` keys"]
+
+        Enum.any?(prompts, fn {_key, value} -> not is_binary(value) end) ->
+          [prompts: "values must be strings"]
+
+        true ->
+          []
+      end
+    end)
   end
 
   defp reject_unknown_keys(config) do

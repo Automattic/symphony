@@ -19,13 +19,13 @@ Symphony reads two complementary files:
 | File | Purpose | Format |
 | --- | --- | --- |
 | `symphony.yml` | Operator config: tracker, polling, workspace, agent, gates, pollers, notifications, verification port range, and the list of supervised `repos:`. | Plain YAML, no `---` fences. |
-| `WORKFLOW.md` | Per-repo: agent prompt body plus repo-local `hooks` and verification dev-server overrides. One per entry under `repos:`, located at `<repo.path>/<repo.workflow>`. | YAML front matter between `---` lines, then the prompt template. |
+| `WORKFLOW.md` | Per-repo: issue prompt body plus optional `prompts.pr` PR-mode prompt, `hooks`, and verification dev-server overrides. One per entry under `repos:`, located at `<repo.path>/<repo.workflow>`. | YAML front matter between `---` lines, then the issue prompt template. |
 
 At dispatch time Symphony deep-merges `symphony.yml` with the primary repo's `WORKFLOW.md` front
 matter. `WORKFLOW.md` keys win for that repo, but only the keys it sets — a repo can override
 `verification.dev_server.start_cmd` without repeating the operator-owned port range. In practice,
-keep operator-wide concerns in `symphony.yml` and limit `WORKFLOW.md` to the prompt body,
-repo-local `hooks`, and repo-specific verification commands.
+keep operator-wide concerns in `symphony.yml` and limit `WORKFLOW.md` to the prompt body, optional
+`prompts.pr`, repo-local `hooks`, and repo-specific verification commands.
 
 ## Starting Symphony
 
@@ -64,6 +64,19 @@ retry-queue persistence:
 
 Exit codes: `0` success, `1` agent failure after bounded attempts, `2` config/validation error,
 `124` timeout.
+
+**Explicit PR mode** dispatches an existing pull request against a running Symphony node, using
+the optional `prompts.pr` front-matter template (or a built-in default):
+
+```bash
+./bin/symphony pr <url-or-number> --intent "address review comments"
+```
+
+For source checkouts, the equivalent task is:
+
+```bash
+mise exec -- mix symphony.pr <url-or-number> --intent "address review comments"
+```
 
 ### CLI flags
 
@@ -744,8 +757,10 @@ cache as an empty result so the other repos can continue dispatching.
 ## `WORKFLOW.md` reference
 
 Each `repos[]` entry has its own `WORKFLOW.md`, located at `<repo.path>/<repo.workflow>`. The file
-uses YAML front matter for repo-local configuration, plus a Markdown body used as the agent
-prompt.
+uses YAML front matter for repo-local configuration, plus a Markdown body used as the issue-mode
+agent prompt. The optional front-matter key `prompts.pr` defines the PR-mode prompt for explicit
+PR runs; that template receives the same common variables plus a `pr` object with `number`,
+`url`, `title`, `body`, `state`, `base_ref`, `head_ref`, and `intent`.
 
 ```md
 ---
@@ -756,6 +771,10 @@ hooks:
     pnpm install
   after_run: |
     pnpm dlx kill-port $SYMPHONY_VERIFICATION_PORT || true
+prompts:
+  pr: |
+    You are working on PR {{ pr.url }}.
+    Intent: {{ pr.intent }}
 verification:
   dev_server:
     start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
@@ -774,8 +793,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 
 - If the Markdown body is blank, Symphony uses a default prompt template containing the issue
   identifier, title, and body.
+- If `prompts.pr` is blank or absent, explicit PR runs use a built-in PR prompt. PR runs create
+  worktree workspaces from the PR head branch when `workspace.strategy: worktree`, push updates back
+  to the PR head branch, and do not create a new PR.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there along with any other setup.
+  `git clone ... .` there along with any other setup. Symphony sets `SYMPHONY_BRANCH` for
+  workspace hooks; explicit PR runs set it to the PR head branch so hook-based clone workspaces
+  can check out the correct ref.
 - Set `repos[].workspace.strategy: worktree` to create each issue workspace from that repo's
   existing local primary clone instead of cloning in `hooks.after_create`. Configure
   `repos[].workspace.repo` with the primary clone path; Symphony creates `auto/<issue-identifier>`

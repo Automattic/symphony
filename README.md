@@ -1,9 +1,9 @@
 # Symphony
 
-Symphony is an Elixir/OTP service that runs autonomous, isolated agent sessions on Linear issues so
-teams can manage the work, not the agents. It claims issues, creates per-issue workspaces, launches
-Codex or Claude against a repo-owned workflow prompt, recovers stalled runs, retries failures, and
-reports outcomes back to the tracker.
+Symphony is an Elixir/OTP service that runs autonomous, isolated agent sessions on Linear issues
+and existing GitHub pull requests so teams can manage the work, not the agents. It claims issues or
+accepts an explicit PR, creates isolated workspaces, launches Codex or Claude against a repo-owned
+workflow prompt, recovers stalled runs, retries failures, and reports outcomes back to the tracker.
 
 [Demo video](.github/media/symphony-demo.mp4)
 
@@ -17,13 +17,17 @@ reports outcomes back to the tracker.
 ## How It Works
 
 ```text
-Linear issue -> Symphony -> workspace -> agent -> pull request -> Linear status
+Linear issue or PR -> Symphony -> workspace -> agent -> pull request
 ```
 
 Symphony claims eligible Linear issues, creates a fresh workspace per issue, launches the configured
 agent against that repository's `WORKFLOW.md`, and keeps the run moving until there is a pull
 request with validation evidence. Failed runs are retried with backoff and stalled agents are
 detected and recovered, so long-running queues do not need constant operator supervision.
+
+Operators can also run Symphony directly on an existing PR via the CLI. PR runs create the workspace
+from the PR head branch, use a PR prompt branch when configured, push updates back to the PR head
+branch, and do not create a second pull request.
 
 During app-server sessions, Symphony also serves scoped client-side `linear_*` tools so repo skills
 can read and update only the current Linear issue through Symphony-controlled operations. If a
@@ -58,6 +62,8 @@ stops the active agent for that issue and cleans up matching workspaces.
 
 - **Operator controls** for pause, resume, and stop, persisted across restarts so dispatch state
   survives a deploy.
+- **PR-driven runs** from the CLI for review comments, failing CI, and conflict-fix workflows on
+  existing pull requests.
 - **Watchdog and retry recovery** for stalled or failed agent sessions.
 - **Durable run store** for run history, retry backoff, captured learnings, aggregate token totals,
   and notification dedupe markers.
@@ -191,6 +197,10 @@ Minimal `WORKFLOW.md`:
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
+prompts:
+  pr: |
+    You are working on PR {{ pr.url }}.
+    Intent: {{ pr.intent }}
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -202,6 +212,10 @@ Use {{ agent.workpad_heading }} as the tracking workpad comment header.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
+
+The Markdown body remains the issue prompt. `prompts.pr` is an optional PR-mode template rendered
+with `pr`, `issue`, `repo_key`, `agent`, `reviewer_comments`, and `ci_failure`; if omitted, Symphony
+uses a built-in PR prompt.
 
 The quality gate is disabled by default. To opt in, set `quality_gate.enabled: true` and provide
 `ANTHROPIC_API_KEY` or configure another provider/model under `quality_gate`.
@@ -223,13 +237,21 @@ The dashboard exposes dispatch controls at `/`:
 - `Stop` on a running issue terminates that issue's active agent session, records the run as
   `stopped`, and leaves the Linear issue state unchanged.
 
-If the dashboard is unavailable, use the mix task fallbacks against a named local Symphony node:
+Explicit PR runs are CLI-only for now. Use the mix task or release binary against a named local
+Symphony node:
 
 ```bash
 export SYMPHONY_NODE=symphony@127.0.0.1
 mise exec -- mix symphony.pause "deploy window"
 mise exec -- mix symphony.resume
 mise exec -- mix symphony.stop RSM-123
+mise exec -- mix symphony.pr 123 --intent "address review comments"
+```
+
+Release binaries expose the same PR entry point:
+
+```bash
+./bin/symphony pr 123 --intent "fix failing CI"
 ```
 
 ## Documentation

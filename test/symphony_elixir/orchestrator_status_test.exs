@@ -4413,6 +4413,47 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered == ""
   end
 
+  test "abnormal exit on a PR run does not schedule a Linear retry" do
+    issue = %Issue{
+      id: "pr:default:321",
+      identifier: "PR-321",
+      title: "Address review comments",
+      state: "In Progress",
+      run_kind: :pr,
+      repo_key: "default",
+      pull_request_url: "https://github.com/example/repo/pull/321",
+      pr_urls: ["https://github.com/example/repo/pull/321"]
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :PrRunAbnormalExitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: stop_process(pid)
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-pr-abnormal-exit"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        run_kind: :pr,
+        pull_request_url: issue.pull_request_url,
+        session_id: "thread-pr-abnormal"
+      })
+
+    put_running_run!(issue, run_id, started_at, %{session_id: "thread-pr-abnormal"})
+    put_running_entry(pid, issue, running_entry)
+
+    send(pid, {:DOWN, worker_ref, :process, worker_pid, :killed})
+
+    wait_for_orchestrator_state(pid, &(map_size(&1.running) == 0), 1_000)
+
+    completed_state = get_orchestrator_state(pid)
+    refute Map.has_key?(completed_state.retry_attempts, issue.id)
+  end
+
   defp put_budget_exhausted_run(attrs) do
     total_tokens = Map.fetch!(attrs, :total_tokens)
 

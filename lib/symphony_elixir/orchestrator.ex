@@ -142,6 +142,8 @@ defmodule SymphonyElixir.Orchestrator do
       quality_gate_comment_keys: quality_gate_comment_keys
     }
 
+    state = seed_watching_from_completed_run_metadata(state)
+
     mark_interrupted_runs(repo_key)
     tick_token = make_ref()
     send(self(), {:tick, tick_token})
@@ -490,13 +492,14 @@ defmodule SymphonyElixir.Orchestrator do
     case pr_run_entry?(running_entry) do
       true ->
         # PR runs are explicit operator dispatches keyed by a synthetic
-        # "pr:<repo>:<n>" id that has no Linear backing. Scheduling a retry
-        # would push the id through Tracker.fetch_issue_states_by_ids and
-        # mis-tag the audit trail; let the operator redispatch instead.
+        # "pr:<repo>:<n>" id that has no Linear backing. Scheduling a retry or
+        # tracking it for Linear watching would push the id through
+        # Tracker.fetch_issue_states_by_ids and mis-tag the audit trail; let the
+        # operator redispatch instead.
         Logger.warning("PR agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; PR runs are not retried")
 
         emit_run_failed(running_entry, error, nil)
-        remember_completed_run(state, issue_id, running_entry)
+        state
 
       false ->
         Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
@@ -1000,6 +1003,12 @@ defmodule SymphonyElixir.Orchestrator do
     select_worker_host(state, preferred_worker_host)
   end
 
+  @doc false
+  @spec seed_watching_for_test(State.t()) :: State.t()
+  def seed_watching_for_test(%State{} = state) do
+    seed_watching_from_completed_run_metadata(state)
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -1045,6 +1054,7 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
     |> MapSet.union(Map.keys(state.watching) |> MapSet.new())
     |> MapSet.to_list()
+    |> Enum.filter(&watchable_linear_issue_id?/1)
     |> Enum.reject(&Map.has_key?(state.retry_attempts, &1))
   end
 
@@ -3602,7 +3612,7 @@ defmodule SymphonyElixir.Orchestrator do
         runs
         |> Enum.filter(&(Map.get(&1, :status) in @watchable_run_statuses))
         |> Enum.reject(&(watch_closed_run?(&1) or Map.has_key?(retry_attempts, Map.get(&1, :issue_id))))
-        |> Enum.filter(&is_binary(Map.get(&1, :issue_id)))
+        |> Enum.filter(&(Map.get(&1, :issue_id) |> watchable_linear_issue_id?()))
         |> Enum.group_by(&Map.get(&1, :issue_id))
         |> Enum.reduce(%{}, fn {issue_id, issue_runs}, acc ->
           most_recent = List.first(issue_runs)
@@ -3611,6 +3621,8 @@ defmodule SymphonyElixir.Orchestrator do
             repo_key: Map.get(most_recent, :repo_key) || Config.repo_key_or_nil(),
             run_id: Map.get(most_recent, :run_id),
             identifier: Map.get(most_recent, :issue_identifier),
+            title: Map.get(most_recent, :title),
+            state: Map.get(most_recent, :last_observed_state) || Map.get(most_recent, :state),
             url: nil,
             pull_request_url: URLUtils.pull_request_url(most_recent),
             last_ran_at: Map.get(most_recent, :ended_at) || Map.get(most_recent, :started_at),
@@ -3637,6 +3649,39 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp hydrate_completed_run_metadata(_retry_attempts), do: %{}
+
+  defp seed_watching_from_completed_run_metadata(%State{} = state) do
+    active_states = active_state_set()
+    terminal_states = terminal_state_set()
+
+    Enum.reduce(state.completed_run_metadata, state, fn {issue_id, metadata}, state_acc ->
+      cond do
+        !watchable_linear_issue_id?(issue_id) ->
+          state_acc
+
+        Map.has_key?(state_acc.retry_attempts, issue_id) ->
+          state_acc
+
+        metadata |> Map.get(:state) |> watching_issue_state?(active_states, terminal_states) ->
+          put_watching_issue(state_acc, completed_metadata_issue(issue_id, metadata))
+
+        true ->
+          state_acc
+      end
+    end)
+  end
+
+  defp completed_metadata_issue(issue_id, metadata) when is_binary(issue_id) and is_map(metadata) do
+    %Issue{
+      id: issue_id,
+      repo_key: Map.get(metadata, :repo_key),
+      identifier: Map.get(metadata, :identifier),
+      title: Map.get(metadata, :title),
+      state: Map.get(metadata, :state),
+      url: URLUtils.present_url(Map.get(metadata, :url)),
+      pull_request_url: URLUtils.pull_request_url(metadata)
+    }
+  end
 
   defp watch_closed_run?(run) when is_map(run) do
     present_value?(Map.get(run, :watch_closed_at)) or present_value?(Map.get(run, :issue_completed_notified_at))
@@ -4596,11 +4641,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp remember_completed_run(%State{} = state, issue_id, running_entry) when is_binary(issue_id) do
-    %{
+    if watchable_linear_issue_id?(issue_id) do
+      %{
+        state
+        | completed: MapSet.put(state.completed, issue_id),
+          completed_run_metadata: Map.put(state.completed_run_metadata, issue_id, completed_run_metadata(running_entry))
+      }
+    else
       state
-      | completed: MapSet.put(state.completed, issue_id),
-        completed_run_metadata: Map.put(state.completed_run_metadata, issue_id, completed_run_metadata(running_entry))
-    }
+    end
   end
 
   defp remember_completed_run(state, _issue_id, _running_entry), do: state
@@ -4643,6 +4692,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp put_watching_issue(%State{} = state, %Issue{id: issue_id} = issue) when is_binary(issue_id) do
+    if watchable_linear_issue_id?(issue_id) do
+      do_put_watching_issue(state, issue_id, issue)
+    else
+      state
+    end
+  end
+
+  defp put_watching_issue(state, _issue), do: state
+
+  defp do_put_watching_issue(%State{} = state, issue_id, %Issue{} = issue) do
     completed_metadata = Map.get(state.completed_run_metadata, issue_id, %{})
     existing = Map.get(state.watching, issue_id, %{})
 
@@ -4678,7 +4737,9 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | watching: Map.put(state.watching, issue_id, watching_entry)}
   end
 
-  defp put_watching_issue(state, _issue), do: state
+  defp watchable_linear_issue_id?("pr:" <> _rest), do: false
+  defp watchable_linear_issue_id?(issue_id) when is_binary(issue_id), do: String.trim(issue_id) != ""
+  defp watchable_linear_issue_id?(_issue_id), do: false
 
   defp watching_repo_key(%State{} = state, issue, completed_metadata, existing) do
     issue_repo_key(issue) ||

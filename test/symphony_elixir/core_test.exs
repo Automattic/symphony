@@ -658,6 +658,69 @@ defmodule SymphonyElixir.CoreTest do
            } = Map.get(updated_state.watching, issue_id)
   end
 
+  test "seed_watching_for_test populates watching from completed_run_metadata" do
+    issue_id = "issue-seed-watch"
+    issue_identifier = "MT-558"
+    issue_url = "https://linear.app/example/issue/MT-558"
+    pull_request_url = "https://github.com/example/repo/pull/558"
+
+    completed_metadata = %{
+      issue_id => %{
+        identifier: issue_identifier,
+        title: "Awaiting review",
+        state: "In Review",
+        url: issue_url,
+        pull_request_url: pull_request_url,
+        last_ran_at: DateTime.utc_now(),
+        session_id: "session-seed",
+        started_at: DateTime.utc_now(),
+        last_event_at: DateTime.utc_now(),
+        turn_count: 2,
+        tokens: %{total_tokens: 100}
+      }
+    }
+
+    state = %Orchestrator.State{
+      repo_key: "default",
+      completed_run_metadata: completed_metadata,
+      watching: %{},
+      retry_attempts: %{}
+    }
+
+    seeded = Orchestrator.seed_watching_for_test(state)
+
+    assert Map.has_key?(seeded.watching, issue_id)
+
+    assert %{
+             identifier: ^issue_identifier,
+             title: "Awaiting review",
+             state: "In Review",
+             url: ^issue_url,
+             pull_request_url: ^pull_request_url
+           } = Map.get(seeded.watching, issue_id)
+  end
+
+  test "seed_watching_for_test skips entries with no persisted state" do
+    issue_id = "issue-no-state"
+
+    state = %Orchestrator.State{
+      repo_key: "default",
+      completed_run_metadata: %{
+        issue_id => %{
+          identifier: "MT-559",
+          state: nil,
+          last_ran_at: DateTime.utc_now()
+        }
+      },
+      watching: %{},
+      retry_attempts: %{}
+    }
+
+    seeded = Orchestrator.seed_watching_for_test(state)
+
+    refute Map.has_key?(seeded.watching, issue_id)
+  end
+
   test "terminal issue state stops running agent and cleans workspace" do
     test_root =
       Path.join(

@@ -19,48 +19,11 @@ defmodule SymphonyElixir.CLITest do
         set_logs_root_from_env: fn -> :ok end,
         set_server_host_override: fn _host -> :ok end,
         set_server_port_override: fn _port -> :ok end,
-        print_banner: fn -> :ok end,
         ensure_all_started: fn -> {:ok, [:symphony_elixir]} end,
         run_one_shot: fn _identifier, _opts -> {:ok, %{}} end
       },
       overrides
     )
-  end
-
-  test "prints the trust-model banner once before runtime configuration" do
-    parent = self()
-
-    deps =
-      base_deps(%{
-        print_banner: fn ->
-          send(parent, :banner_printed)
-          :ok
-        end,
-        file_regular?: fn _path ->
-          send(parent, :file_checked)
-          true
-        end,
-        ensure_all_started: fn ->
-          send(parent, :started)
-          {:ok, [:symphony_elixir]}
-        end
-      })
-
-    assert :ok = CLI.evaluate([], deps)
-
-    assert_received :banner_printed
-    assert_received :file_checked
-    assert_received :started
-  end
-
-  test "trust-model banner discloses the full preview/guardrails/credentials warning" do
-    banner = CLI.acknowledgement_banner()
-
-    assert banner =~ "Symphony is an engineering preview for operator-controlled, trusted environments."
-    assert banner =~ "Codex and Claude will run without the usual guardrails."
-    assert banner =~ "~/.codex/auth.json"
-    assert banner =~ "~/.claude/.credentials.json"
-    assert banner =~ "SymphonyElixir is not a supported product and is presented as-is."
   end
 
   test "legacy acknowledgement flag is silently accepted for backward compatibility" do
@@ -72,7 +35,7 @@ defmodule SymphonyElixir.CLITest do
     assert message =~ "Usage: symphony"
   end
 
-  test "init subcommand skips the banner and runtime startup" do
+  test "init subcommand skips runtime startup" do
     parent = self()
 
     deps =
@@ -80,10 +43,6 @@ defmodule SymphonyElixir.CLITest do
         init: fn args ->
           send(parent, {:init, args})
           {:ok, "Wrote /tmp/repo/symphony.yml"}
-        end,
-        print_banner: fn ->
-          send(parent, :banner_printed)
-          :ok
         end,
         file_regular?: fn _path ->
           send(parent, :file_checked)
@@ -102,7 +61,6 @@ defmodule SymphonyElixir.CLITest do
 
     assert output == "Wrote /tmp/repo/symphony.yml\n"
     assert_received {:init, ["--force"]}
-    refute_received :banner_printed
     refute_received :file_checked
     refute_received :started
   end

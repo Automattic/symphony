@@ -51,10 +51,6 @@ bootstrap/validation commands, asks one or two clarifying questions when needed,
 ./bin/symphony
 ```
 
-On startup, Symphony prints a trust-model banner to stderr summarizing the disclosure (engineering
-preview, runs without the usual guardrails, can read provider credential files). The banner is
-informational — it does not block startup or require acknowledgement.
-
 If `symphony.yml` is missing in the current directory and `--config` is not passed, Symphony exits
 with `Symphony config file not found: …`. Per-repo `WORKFLOW.md` files are resolved from
 `repos[]` entries; they are never passed on the command line.

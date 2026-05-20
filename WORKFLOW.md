@@ -71,54 +71,23 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: scoped Linear tools are available
+## Prerequisite: scoped Linear and GitHub tools are available
 
-The agent should be able to talk to Linear through the injected scoped `linear_*`
-tools. If none are present, stop and ask the user to configure Linear.
+Symphony injects scoped `linear_*` and `github_*` tools for the current issue.
+Consult your tool list for the full set — Claude sees them under the
+`mcp__symphony__` prefix (e.g., `mcp__symphony__linear_add_comment`), Codex
+sees the bare names. If no `linear_*` tools are present, stop and ask the user
+to configure Linear.
 
-Available scoped Linear tools:
+For PR operations on the current issue, use the scoped `github_*` tools rather
+than shelling out to `gh`. `Bash(gh:*)` is denied for some agent runtimes
+(notably Claude). The scoped tools always operate on the current issue's PR in
+the configured origin repo and accept no owner/repo/PR arguments — Symphony
+injects the scope server-side.
 
-- `linear_get_current_issue()`
-- `linear_get_subissues()`
-- `linear_get_parent_issue()`
-- `linear_get_comments(limit)`
-- `linear_get_related_issues()`
-- `linear_update_state(state_name_or_id)`
-- `linear_add_comment(body)`
-- `linear_update_comment(comment_id, body)` for comments created earlier by this run
-- `linear_delete_comment(comment_id)` for comments created earlier by this run
-- `linear_attach_url(url, title)` where `url` must use an allowed attachment host.
-  By default only exact `github.com` hosts are allowed; add explicit hosts with
-  `workspace.attachments.allowed_hosts` when needed.
-- `linear_attach_file(local_path, title, make_public)` where `local_path` must be inside the workspace. Uploads are private by default; pass `make_public: true` only for artifacts intentionally safe to expose through a world-readable Linear CDN URL, such as screenshots for a public-repo PR. Public uploads are restricted to configured image/PDF extensions by default (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.pdf`).
-
-Do not craft raw Linear GraphQL from prompts. If a required workflow needs a
-Linear operation outside this list, pause and record the gap instead of widening
-the prompt-facing API.
-
-## Prerequisite: scoped GitHub tools are available
-
-For PR operations on the current issue, use Symphony's scoped `github_*` tools
-rather than shelling out to `gh`. `Bash(gh:*)` is denied for some agent
-runtimes (notably Claude). The scoped tools always operate on the current
-issue's PR in the configured origin repo and accept no owner/repo/PR
-arguments — Symphony injects the scope server-side.
-
-Available scoped GitHub tools:
-
-- `github_get_pull_request()` — read the pull request for the current workspace branch.
-- `github_create_pull_request(title, body, draft)` — open a PR from the current
-  workspace branch to the origin repo's default branch. Routed through the
-  dependency-audit gate.
-- `github_update_pull_request_body(body)` — replace the PR body.
-- `github_add_pr_comment(body)` — add a top-level comment to the current PR.
-- `github_push_branch()` — push the current workspace branch to origin.
-- `github_get_pr_checks()` — read the status-check rollup for the current PR.
-- `github_list_pr_comments()` — read top-level comments on the current PR.
-- `github_list_pr_review_comments()` — read inline review comments on the current PR.
-- `github_list_pr_reviews()` — read review summaries and states for the current PR.
-- `github_get_failed_run_log()` — read a length-clamped failed-step log excerpt
-  for the latest failing GitHub Actions run on the current PR.
+Do not craft raw Linear GraphQL from prompts. If a required Linear or GitHub
+operation is outside the available tool set, pause and record the gap in the
+workpad instead of synthesising a `gh` call or widening the prompt-facing API.
 
 If a required GitHub operation is outside this list (for example: listing PR or
 listing PRs by branch or checking `gh` auth status), record the gap in the

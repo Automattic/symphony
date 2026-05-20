@@ -3,8 +3,6 @@
 defmodule SymphonyMcpShim do
   @moduledoc false
 
-  @chunk_size 65_536
-
   def main(args) do
     with {:ok, socket_path, token} <- parse_args(args),
          {:ok, socket} <- :socket.open(:local, :stream),
@@ -32,9 +30,12 @@ defmodule SymphonyMcpShim do
     wait_for_completion(socket)
   end
 
+  # MCP stdio transport is newline-delimited JSON: each message is one line.
+  # Read line-by-line so we forward each message as soon as Claude flushes it,
+  # rather than buffering until a fixed chunk size fills.
   defp stdin_to_socket(socket, parent) do
-    IO.binstream(:stdio, @chunk_size)
-    |> Enum.each(fn chunk -> :ok = :socket.send(socket, chunk) end)
+    IO.binstream(:stdio, :line)
+    |> Enum.each(fn line -> :ok = :socket.send(socket, line) end)
 
     shutdown_write(socket)
     send(parent, :stdin_done)

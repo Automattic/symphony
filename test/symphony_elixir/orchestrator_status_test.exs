@@ -5,6 +5,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   alias SymphonyElixir.Tracker.Memory, as: MemoryTracker
   alias SymphonyElixirWeb.ObservabilityPubSub
 
+  @snapshot_table :symphony_orchestrator_snapshot
+
   defmodule StopSessionAgent do
     @spec stop_session(map()) :: :ok
     def stop_session(%{recipient: recipient}) when is_pid(recipient) do
@@ -110,6 +112,55 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert Enum.all?(snapshots, &is_map/1)
     assert concurrent_elapsed_ms < 100
+  end
+
+  test "orchestrator publishes snapshots to ETS on configured cadence" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      observability_snapshot_publish_ms: 25
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :SnapshotPublisherOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    entry =
+      wait_for_snapshot_cache(
+        pid,
+        fn entry ->
+          is_map(entry.snapshot) and is_integer(entry.monotonic_ms) and is_integer(entry.system_ms)
+        end,
+        100
+      )
+
+    assert %{
+             snapshot: %{
+               running: [],
+               watching: [],
+               conflicts: [],
+               retrying: [],
+               polling: %{poll_interval_ms: poll_interval_ms}
+             },
+             monotonic_ms: monotonic_ms,
+             system_ms: system_ms
+           } = entry
+
+    assert is_integer(poll_interval_ms)
+    assert [{:current, snapshot, ^monotonic_ms, ^system_ms}] = :ets.lookup(@snapshot_table, :current)
+    assert snapshot == entry.snapshot
+
+    send(pid, :publish_snapshot)
+
+    wait_for_snapshot_cache(
+      pid,
+      fn next_entry -> next_entry.system_ms > system_ms end,
+      100
+    )
   end
 
   test "codex updates and snapshots stay responsive during quality gate evaluation" do
@@ -3602,19 +3653,31 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered =~ "http://127.0.0.1:4000/"
   end
 
-  test "status dashboard marks cached snapshot data as stale after a missed snapshot" do
+  test "status dashboard marks aged ETS snapshot data as stale and logs diagnostics once" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      observability_snapshot_publish_ms: 1_000
+    )
+
+    {:ok, orchestrator_pid} = Orchestrator.start_link()
     dashboard_name = Module.concat(__MODULE__, :StaleSnapshotDashboard)
     parent = self()
 
-    snapshot_data =
-      {:ok,
+    :ets.insert(
+      @snapshot_table,
+      {:current,
        %{
          running: [],
+         watching: [],
+         conflicts: [],
          retrying: [],
+         awaiting_clarification: [],
+         skipped: [],
          codex_totals: %{input_tokens: 120, output_tokens: 30, total_tokens: 150, seconds_running: 9},
          rate_limits: nil,
          polling: %{next_poll_in_ms: 5_000}
-       }}
+       }, System.monotonic_time(:millisecond) - 5_000, System.system_time(:millisecond) - 5_000}
+    )
 
     {:ok, dashboard_pid} =
       StatusDashboard.start_link(
@@ -3626,25 +3689,34 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       )
 
     on_exit(fn ->
+      if Process.alive?(orchestrator_pid) do
+        stop_process(orchestrator_pid)
+      end
+
       if Process.alive?(dashboard_pid) do
         stop_process(dashboard_pid)
       end
     end)
 
-    :sys.replace_state(dashboard_pid, fn state ->
-      %{state | last_successful_snapshot_data: snapshot_data}
-    end)
+    log =
+      capture_log(fn ->
+        StatusDashboard.notify_update(dashboard_name)
 
-    StatusDashboard.notify_update(dashboard_name)
+        assert_receive {:stale_dashboard_render, rendered}, 500
 
-    assert_receive {:stale_dashboard_render, rendered}, 500
+        plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
-    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+        assert plain =~ "Snapshot: stale 0m 5s (1 missed refresh, orchestrator mailbox "
+        assert plain =~ "No active agents"
+        assert plain =~ "Tokens: in 120 | out 30 | total 150"
+        refute plain =~ "Orchestrator snapshot unavailable"
 
-    assert plain =~ "Snapshot: stale (orchestrator refresh missed)"
-    assert plain =~ "No active agents"
-    assert plain =~ "Tokens: in 120 | out 30 | total 150"
-    refute plain =~ "Orchestrator snapshot unavailable"
+        StatusDashboard.notify_update(dashboard_name)
+        Process.sleep(25)
+      end)
+
+    assert log =~ "snapshot stale"
+    assert length(String.split(log, "snapshot stale")) == 2
   end
 
   test "status dashboard renders startup pending before the first snapshot grace expires" do
@@ -3735,6 +3807,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
               quality_gate_skipped_errors: previous_state.quality_gate_skipped_errors
           }
         end)
+
+        send(pid, :publish_snapshot)
       end
     end)
 
@@ -3785,6 +3859,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           quality_gate_skipped_errors: %{}
       }
     end)
+
+    send(orchestrator_pid, :publish_snapshot)
+
+    wait_for_snapshot_cache(
+      orchestrator_pid,
+      fn entry ->
+        entry.snapshot.awaiting_clarification
+        |> Enum.any?(&(&1.identifier == "MT-AWAIT-TERMINAL"))
+      end,
+      500
+    )
 
     dashboard_name = Module.concat(__MODULE__, :QualityGateDashboard)
     parent = self()
@@ -4681,6 +4766,34 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         Process.sleep(5)
         do_wait_for_snapshot(pid, predicate, deadline_ms)
       end
+    end
+  end
+
+  defp wait_for_snapshot_cache(pid, predicate, timeout_ms) when is_function(predicate, 1) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_snapshot_cache(pid, predicate, deadline_ms)
+  end
+
+  defp do_wait_for_snapshot_cache(pid, predicate, deadline_ms) do
+    case Orchestrator.snapshot_cache_entry(pid) do
+      {:ok, entry} ->
+        if predicate.(entry) do
+          entry
+        else
+          retry_wait_for_snapshot_cache(pid, predicate, deadline_ms, entry)
+        end
+
+      :missing ->
+        retry_wait_for_snapshot_cache(pid, predicate, deadline_ms, :missing)
+    end
+  end
+
+  defp retry_wait_for_snapshot_cache(pid, predicate, deadline_ms, last_seen) do
+    if System.monotonic_time(:millisecond) >= deadline_ms do
+      flunk("timed out waiting for orchestrator snapshot cache: #{inspect(last_seen)}")
+    else
+      Process.sleep(5)
+      do_wait_for_snapshot_cache(pid, predicate, deadline_ms)
     end
   end
 

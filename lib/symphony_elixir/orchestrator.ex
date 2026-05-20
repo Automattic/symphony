@@ -35,7 +35,10 @@ defmodule SymphonyElixir.Orchestrator do
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @default_transcript_buffer_size 200
+  @default_snapshot_publish_ms 500
   @stop_session_cleanup_timeout_ms 5_000
+  @snapshot_table :symphony_orchestrator_snapshot
+  @snapshot_key :current
   @repo_poll_cold_failure_warm_after 3
   @empty_codex_totals %{
     input_tokens: 0,
@@ -114,6 +117,7 @@ defmodule SymphonyElixir.Orchestrator do
     budget_day_started_on = Date.utc_today()
     budget_daily_used = hydrate_budget_daily_used(budget_day_started_on)
     budget_exhausted = hydrate_budget_exhausted()
+    :ok = ensure_snapshot_table()
 
     completed_run_metadata = hydrate_completed_run_metadata(retry_attempts)
 
@@ -145,6 +149,7 @@ defmodule SymphonyElixir.Orchestrator do
     mark_interrupted_runs(repo_key)
     tick_token = make_ref()
     send(self(), {:tick, tick_token})
+    schedule_snapshot_publish(config.observability.snapshot_publish_ms)
     state = %{state | tick_token: tick_token, next_poll_due_at_ms: now_ms}
     state = schedule_watchdog_tick(state, config.watchdog.tick_interval_ms)
 
@@ -173,6 +178,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
+  def handle_info(:publish_snapshot, state) do
+    publish_snapshot(state)
+    schedule_snapshot_publish(snapshot_publish_interval_ms())
+    {:noreply, state}
+  end
+
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
       when is_reference(tick_token) do
     state = refresh_runtime_config(state)
@@ -4105,6 +4116,35 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
+    case snapshot_cache_entry(server) do
+      {:ok, %{snapshot: snapshot}} ->
+        snapshot
+
+      :missing ->
+        snapshot_via_call(server, timeout)
+    end
+  end
+
+  @spec snapshot_cache_entry() ::
+          {:ok, %{snapshot: map(), monotonic_ms: integer(), system_ms: integer()}} | :missing
+  def snapshot_cache_entry, do: snapshot_cache_entry(__MODULE__)
+
+  @spec snapshot_cache_entry(GenServer.server()) ::
+          {:ok, %{snapshot: map(), monotonic_ms: integer(), system_ms: integer()}} | :missing
+  def snapshot_cache_entry(server) do
+    with {:ok, owner} <- snapshot_table_owner(),
+         true <- snapshot_owner_matches?(server, owner),
+         [{@snapshot_key, snapshot, monotonic_ms, system_ms}] <- :ets.lookup(@snapshot_table, @snapshot_key),
+         true <- is_map(snapshot) and is_integer(monotonic_ms) and is_integer(system_ms) do
+      {:ok, %{snapshot: snapshot, monotonic_ms: monotonic_ms, system_ms: system_ms}}
+    else
+      _ -> :missing
+    end
+  rescue
+    ArgumentError -> :missing
+  end
+
+  defp snapshot_via_call(server, timeout) do
     if server_available?(server) do
       try do
         GenServer.call(server, :snapshot, timeout)
@@ -4120,6 +4160,69 @@ defmodule SymphonyElixir.Orchestrator do
   defp server_available?(server) when is_pid(server), do: Process.alive?(server)
   defp server_available?(server) when is_atom(server), do: is_pid(Process.whereis(server))
   defp server_available?(_server), do: false
+
+  defp snapshot_table_owner do
+    case :ets.info(@snapshot_table, :owner) do
+      owner when is_pid(owner) -> {:ok, owner}
+      _ -> :missing
+    end
+  rescue
+    ArgumentError -> :missing
+  end
+
+  defp snapshot_owner_matches?(server, owner) when is_pid(server), do: server == owner
+  defp snapshot_owner_matches?(server, owner) when is_atom(server), do: Process.whereis(server) == owner
+  defp snapshot_owner_matches?(_server, _owner), do: false
+
+  defp ensure_snapshot_table do
+    case :ets.info(@snapshot_table, :owner) do
+      :undefined ->
+        :ets.new(@snapshot_table, [
+          :named_table,
+          :public,
+          read_concurrency: true
+        ])
+
+        :ok
+
+      owner when owner == self() ->
+        :ok
+
+      _owner ->
+        :ok
+    end
+  end
+
+  defp publish_snapshot(%State{} = state) do
+    with {:ok, owner} <- snapshot_table_owner(),
+         true <- owner == self() do
+      monotonic_ms = System.monotonic_time(:millisecond)
+      system_ms = System.system_time(:millisecond)
+      snapshot = build_snapshot(state, DateTime.utc_now(), monotonic_ms)
+      :ets.insert(@snapshot_table, {@snapshot_key, snapshot, monotonic_ms, system_ms})
+      :ok
+    else
+      _ -> :ok
+    end
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp schedule_snapshot_publish(delay_ms) when is_integer(delay_ms) and delay_ms > 0 do
+    Process.send_after(self(), :publish_snapshot, delay_ms)
+    :ok
+  end
+
+  defp schedule_snapshot_publish(_delay_ms), do: :ok
+
+  defp snapshot_publish_interval_ms do
+    Config.settings!().observability
+    |> Map.get(:snapshot_publish_ms, @default_snapshot_publish_ms)
+    |> case do
+      interval_ms when is_integer(interval_ms) and interval_ms > 0 -> interval_ms
+      _ -> @default_snapshot_publish_ms
+    end
+  end
 
   @impl true
   def handle_call({:pause_dispatch, reason}, _from, state) do
@@ -4203,11 +4306,29 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_call(:request_refresh, _from, state) do
+    now_ms = System.monotonic_time(:millisecond)
+    already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
+    coalesced = state.poll_check_in_progress == true or already_due?
+    state = if coalesced, do: state, else: schedule_tick(state, 0)
+
+    {:reply,
+     %{
+       queued: true,
+       coalesced: coalesced,
+       requested_at: DateTime.utc_now(),
+       operations: ["poll", "reconcile"]
+     }, state}
+  end
+
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
-    now = DateTime.utc_now()
-    now_ms = System.monotonic_time(:millisecond)
+    snapshot = build_snapshot(state, DateTime.utc_now(), System.monotonic_time(:millisecond))
 
+    {:reply, snapshot, state}
+  end
+
+  defp build_snapshot(%State{} = state, %DateTime{} = now, now_ms) when is_integer(now_ms) do
     running =
       state.running
       |> Enum.map(fn {issue_id, metadata} ->
@@ -4325,42 +4446,26 @@ defmodule SymphonyElixir.Orchestrator do
       |> QualityGate.awaiting_clarification_from_cache()
       |> Enum.map(&snapshot_awaiting_clarification_entry/1)
 
-    {:reply,
-     %{
-       running: running,
-       watching: watching,
-       conflicts: conflicts,
-       retrying: retrying,
-       awaiting_clarification: awaiting_clarification,
-       skipped: skipped,
-       run_history: persisted_run_history(state.repo_key),
-       codex_totals: state.codex_totals,
-       rate_limits: Map.get(state, :rate_limits),
-       pause: state.pause || unpaused_state(),
-       workspace_lifecycle: workspace_lifecycle_snapshot(state),
-       budget: budget_snapshot(state),
-       dispatch_state: dispatch_state_snapshot(state),
-       polling: %{
-         checking?: state.poll_check_in_progress == true,
-         next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
-         poll_interval_ms: state.poll_interval_ms
-       }
-     }, state}
-  end
-
-  def handle_call(:request_refresh, _from, state) do
-    now_ms = System.monotonic_time(:millisecond)
-    already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
-    coalesced = state.poll_check_in_progress == true or already_due?
-    state = if coalesced, do: state, else: schedule_tick(state, 0)
-
-    {:reply,
-     %{
-       queued: true,
-       coalesced: coalesced,
-       requested_at: DateTime.utc_now(),
-       operations: ["poll", "reconcile"]
-     }, state}
+    %{
+      running: running,
+      watching: watching,
+      conflicts: conflicts,
+      retrying: retrying,
+      awaiting_clarification: awaiting_clarification,
+      skipped: skipped,
+      run_history: persisted_run_history(state.repo_key),
+      codex_totals: state.codex_totals,
+      rate_limits: Map.get(state, :rate_limits),
+      pause: state.pause || unpaused_state(),
+      workspace_lifecycle: workspace_lifecycle_snapshot(state),
+      budget: budget_snapshot(state),
+      dispatch_state: dispatch_state_snapshot(state),
+      polling: %{
+        checking?: state.poll_check_in_progress == true,
+        next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
+        poll_interval_ms: state.poll_interval_ms
+      }
+    }
   end
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do

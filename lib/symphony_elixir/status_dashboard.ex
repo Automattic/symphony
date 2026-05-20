@@ -61,7 +61,9 @@ defmodule SymphonyElixir.StatusDashboard do
     :pending_content,
     :flush_timer_ref,
     :last_successful_snapshot_data,
-    :last_snapshot_fingerprint
+    :last_snapshot_fingerprint,
+    :snapshot_consecutive_misses,
+    :snapshot_stale?
   ]
 
   @type t :: %__MODULE__{
@@ -81,7 +83,9 @@ defmodule SymphonyElixir.StatusDashboard do
           pending_content: String.t() | nil,
           flush_timer_ref: reference() | nil,
           last_successful_snapshot_data: {:ok, map()} | nil,
-          last_snapshot_fingerprint: term() | nil
+          last_snapshot_fingerprint: term() | nil,
+          snapshot_consecutive_misses: non_neg_integer(),
+          snapshot_stale?: boolean()
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -135,7 +139,9 @@ defmodule SymphonyElixir.StatusDashboard do
        pending_content: nil,
        flush_timer_ref: nil,
        last_successful_snapshot_data: nil,
-       last_snapshot_fingerprint: nil
+       last_snapshot_fingerprint: nil,
+       snapshot_consecutive_misses: 0,
+       snapshot_stale?: false
      }}
   end
 
@@ -214,7 +220,13 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp maybe_render(state) do
     now_ms = System.monotonic_time(:millisecond)
-    {raw_snapshot_data, token_samples} = snapshot_with_samples(state.token_samples, now_ms)
+
+    {raw_snapshot_data, token_samples} =
+      snapshot_with_samples(
+        state.token_samples,
+        now_ms,
+        state.snapshot_consecutive_misses
+      )
 
     snapshot_data =
       snapshot_data_for_render(
@@ -226,6 +238,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
     state = Map.put(state, :token_samples, token_samples)
     state = maybe_store_successful_snapshot(state, raw_snapshot_data)
+    state = update_snapshot_staleness_state(state, raw_snapshot_data)
 
     current_tokens = snapshot_total_tokens(snapshot_data)
 
@@ -289,12 +302,30 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp maybe_store_successful_snapshot(state, _snapshot_data), do: state
 
+  defp update_snapshot_staleness_state(%__MODULE__{} = state, {:ok, %{snapshot_stale?: true} = snapshot}) do
+    if not state.snapshot_stale? do
+      Logger.warning("snapshot stale",
+        age_ms: Map.get(snapshot, :staleness_ms),
+        orchestrator_mailbox_len: Map.get(snapshot, :orchestrator_mailbox_len),
+        orchestrator_alive?: Map.get(snapshot, :orchestrator_alive?)
+      )
+    end
+
+    %{
+      state
+      | snapshot_stale?: true,
+        snapshot_consecutive_misses: Map.get(snapshot, :consecutive_misses, state.snapshot_consecutive_misses + 1)
+    }
+  end
+
+  defp update_snapshot_staleness_state(%__MODULE__{} = state, {:ok, _snapshot}) do
+    %{state | snapshot_stale?: false, snapshot_consecutive_misses: 0}
+  end
+
+  defp update_snapshot_staleness_state(%__MODULE__{} = state, _snapshot_data), do: state
+
   defp snapshot_data_for_render({:ok, _snapshot} = snapshot_data, _last_successful_snapshot_data, _started_at_ms, _now_ms),
     do: snapshot_data
-
-  defp snapshot_data_for_render(:error, {:ok, snapshot}, _started_at_ms, _now_ms) when is_map(snapshot) do
-    {:ok, Map.put(snapshot, :snapshot_stale?, true)}
-  end
 
   defp snapshot_data_for_render(:error, _last_successful_snapshot_data, started_at_ms, now_ms) do
     if startup_snapshot_pending?(started_at_ms, now_ms), do: :pending, else: :error
@@ -360,8 +391,8 @@ defmodule SymphonyElixir.StatusDashboard do
       %{state | pending_content: nil, flush_timer_ref: nil}
   end
 
-  defp snapshot_with_samples(token_samples, now_ms) do
-    case snapshot_payload() do
+  defp snapshot_with_samples(token_samples, now_ms, consecutive_misses) do
+    case snapshot_payload(consecutive_misses) do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         total_tokens = Map.get(codex_totals, :total_tokens, 0)
 
@@ -377,7 +408,12 @@ defmodule SymphonyElixir.StatusDashboard do
              rate_limits: Map.get(snapshot, :rate_limits),
              workspace_lifecycle: Map.get(snapshot, :workspace_lifecycle),
              dispatch_state: Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []}),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             snapshot_stale?: Map.get(snapshot, :snapshot_stale?, false),
+             staleness_ms: Map.get(snapshot, :staleness_ms),
+             consecutive_misses: Map.get(snapshot, :consecutive_misses, 0),
+             orchestrator_mailbox_len: Map.get(snapshot, :orchestrator_mailbox_len),
+             orchestrator_alive?: Map.get(snapshot, :orchestrator_alive?)
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
@@ -579,15 +615,52 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_workspace_lifecycle_lines(_lifecycle), do: []
 
-  defp format_snapshot_status_lines(%{snapshot_stale?: true}) do
+  defp format_snapshot_status_lines(%{snapshot_stale?: true} = snapshot) do
+    age = format_staleness_age(Map.get(snapshot, :staleness_ms))
+
+    details =
+      [
+        format_missed_refreshes(Map.get(snapshot, :consecutive_misses)),
+        format_mailbox_depth(Map.get(snapshot, :orchestrator_mailbox_len))
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(", ")
+
+    suffix =
+      case {age, details} do
+        {nil, ""} -> " (orchestrator refresh missed)"
+        {age, ""} -> " #{age}"
+        {nil, details} -> " (#{details})"
+        {age, details} -> " #{age} (#{details})"
+      end
+
     [
       colorize("│ Snapshot: ", @ansi_bold) <>
         colorize("stale", @ansi_yellow) <>
-        colorize(" (orchestrator refresh missed)", @ansi_gray)
+        colorize(suffix, @ansi_gray)
     ]
   end
 
   defp format_snapshot_status_lines(_snapshot), do: []
+
+  defp format_staleness_age(age_ms) when is_integer(age_ms) and age_ms >= 0 do
+    format_runtime_seconds(div(age_ms, 1_000))
+  end
+
+  defp format_staleness_age(_age_ms), do: nil
+
+  defp format_missed_refreshes(misses) when is_integer(misses) and misses > 0 do
+    suffix = if misses == 1, do: "missed refresh", else: "missed refreshes"
+    "#{misses} #{suffix}"
+  end
+
+  defp format_missed_refreshes(_misses), do: nil
+
+  defp format_mailbox_depth(mailbox_len) when is_integer(mailbox_len) and mailbox_len >= 0 do
+    "orchestrator mailbox #{mailbox_len}"
+  end
+
+  defp format_mailbox_depth(_mailbox_len), do: nil
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
@@ -708,34 +781,87 @@ defmodule SymphonyElixir.StatusDashboard do
   def dashboard_url_for_test(host, configured_port, bound_port),
     do: dashboard_url(host, configured_port, bound_port)
 
-  defp snapshot_payload do
-    if Process.whereis(Orchestrator) do
-      case Orchestrator.snapshot() do
-        %{
-          running: running,
-          retrying: retrying,
-          codex_totals: codex_totals
-        } = snapshot
-        when is_list(running) and is_list(retrying) ->
-          {:ok,
-           %{
-             running: running,
-             watching: Map.get(snapshot, :watching, []),
-             retrying: retrying,
-             awaiting_clarification: Map.get(snapshot, :awaiting_clarification, []),
-             skipped: Map.get(snapshot, :skipped, []),
-             codex_totals: codex_totals,
-             rate_limits: Map.get(snapshot, :rate_limits),
-             workspace_lifecycle: Map.get(snapshot, :workspace_lifecycle),
-             polling: Map.get(snapshot, :polling),
-             dispatch_state: Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []})
-           }}
+  defp snapshot_payload(consecutive_misses) do
+    case Orchestrator.snapshot_cache_entry() do
+      {:ok, %{snapshot: snapshot, system_ms: system_ms}} ->
+        age_ms = max(0, System.system_time(:millisecond) - system_ms)
+        stale_threshold_ms = snapshot_stale_threshold_ms()
+        stale? = age_ms > stale_threshold_ms
+        misses = if stale?, do: consecutive_misses + 1, else: 0
+        diagnostics = if stale?, do: orchestrator_diagnostics(), else: %{}
 
-        _ ->
-          :error
-      end
-    else
-      :error
+        snapshot =
+          snapshot
+          |> Map.put(:snapshot_stale?, stale?)
+          |> Map.put(:staleness_ms, if(stale?, do: age_ms, else: nil))
+          |> Map.put(:consecutive_misses, misses)
+          |> Map.merge(diagnostics)
+
+        normalize_snapshot_payload(snapshot)
+
+      :missing ->
+        :error
+    end
+  end
+
+  defp normalize_snapshot_payload(snapshot) do
+    case snapshot do
+      %{
+        running: running,
+        retrying: retrying,
+        codex_totals: codex_totals
+      } = snapshot
+      when is_list(running) and is_list(retrying) ->
+        {:ok,
+         %{
+           running: running,
+           watching: Map.get(snapshot, :watching, []),
+           retrying: retrying,
+           awaiting_clarification: Map.get(snapshot, :awaiting_clarification, []),
+           skipped: Map.get(snapshot, :skipped, []),
+           codex_totals: codex_totals,
+           rate_limits: Map.get(snapshot, :rate_limits),
+           workspace_lifecycle: Map.get(snapshot, :workspace_lifecycle),
+           polling: Map.get(snapshot, :polling),
+           dispatch_state: Map.get(snapshot, :dispatch_state, %{active?: true, blockers: []}),
+           snapshot_stale?: Map.get(snapshot, :snapshot_stale?, false),
+           staleness_ms: Map.get(snapshot, :staleness_ms),
+           consecutive_misses: Map.get(snapshot, :consecutive_misses, 0),
+           orchestrator_mailbox_len: Map.get(snapshot, :orchestrator_mailbox_len),
+           orchestrator_alive?: Map.get(snapshot, :orchestrator_alive?)
+         }}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp snapshot_stale_threshold_ms do
+    Config.settings!().observability
+    |> Map.get(:snapshot_publish_ms, 500)
+    |> case do
+      publish_ms when is_integer(publish_ms) and publish_ms > 0 -> publish_ms * 3
+      _ -> 1_500
+    end
+  end
+
+  defp orchestrator_diagnostics do
+    case Process.whereis(Orchestrator) do
+      pid when is_pid(pid) ->
+        %{
+          orchestrator_alive?: Process.alive?(pid),
+          orchestrator_mailbox_len: orchestrator_mailbox_len(pid)
+        }
+
+      _ ->
+        %{orchestrator_alive?: false, orchestrator_mailbox_len: nil}
+    end
+  end
+
+  defp orchestrator_mailbox_len(pid) when is_pid(pid) do
+    case Process.info(pid, :message_queue_len) do
+      {:message_queue_len, len} when is_integer(len) -> len
+      _ -> nil
     end
   end
 

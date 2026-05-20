@@ -1,5 +1,7 @@
 import Config
 
+config :logger, :default_formatter, metadata: [:age_ms, :orchestrator_mailbox_len, :orchestrator_alive?]
+
 config :phoenix, :json_library, Jason
 
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,

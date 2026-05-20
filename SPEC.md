@@ -873,6 +873,8 @@ Fields:
   - Default: `1000`.
 - `render_interval_ms` (positive integer)
   - Default: `16`.
+- `snapshot_publish_ms` (positive integer)
+  - Default: `500`.
 - `transcript_buffer_size` (non-negative integer)
   - Default: `200`.
 
@@ -1228,6 +1230,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `observability.dashboard_enabled`: boolean, default `true`
 - `observability.refresh_ms`: integer, default `1000`
 - `observability.render_interval_ms`: integer, default `16`
+- `observability.snapshot_publish_ms`: integer, default `500`
 - `observability.transcript_buffer_size`: integer, default `200`
 - `pr_review.mode`: `tracker` or `polling`, default `tracker`
 - `pr_review.cooldown_minutes`: polling-mode integer, default `10`

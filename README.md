@@ -110,7 +110,8 @@ workflow prompts that let coding agents work safely.
    ```
 
 The LiveView dashboard is available at `http://127.0.0.1:4000` by default when observability is
-enabled.
+enabled. Orchestrator snapshots are published to an ETS cache on a configurable
+`observability.snapshot_publish_ms` cadence so dashboard reads do not block the orchestration loop.
 
 The dashboard also exposes an Audit tab at `/audit`, with filters, per-record expansion, daily
 hash-chain verification, and NDJSON export. The same filtered audit stream is available from

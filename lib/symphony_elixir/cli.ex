@@ -5,6 +5,8 @@ defmodule SymphonyElixir.CLI do
 
   alias SymphonyElixir.Paths
 
+  # Retained so existing scripts (Docker, ops runbooks) that still pass the long
+  # flag keep parsing — its value is ignored.
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @burrito_args_module Burrito.Util.Args
   @service_switches [
@@ -150,8 +152,7 @@ defmodule SymphonyElixir.CLI do
   defp parse_and_configure(args, deps) do
     case OptionParser.parse(args, strict: @service_switches) do
       {opts, [], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- set_symphony_config(opts, deps),
+        with :ok <- set_symphony_config(opts, deps),
              :ok <- maybe_set_state_root(opts, deps),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_host(opts, deps) do
@@ -187,8 +188,7 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp configure_run(opts, deps) do
-    with :ok <- require_guardrails_acknowledgement(opts),
-         :ok <- deps.set_state_root_from_env.(),
+    with :ok <- deps.set_state_root_from_env.(),
          :ok <- deps.set_logs_root_from_env.(),
          :ok <- set_symphony_config(opts, deps),
          :ok <- maybe_set_state_root(opts, deps) do
@@ -306,50 +306,6 @@ defmodule SymphonyElixir.CLI do
         root -> :ok = setter.(Path.expand(root))
       end
     end)
-  end
-
-  defp require_guardrails_acknowledgement(opts) do
-    if Keyword.get(opts, @acknowledgement_switch, false) do
-      :ok
-    else
-      {:error, acknowledgement_banner()}
-    end
-  end
-
-  @spec acknowledgement_banner() :: String.t()
-  defp acknowledgement_banner do
-    lines = [
-      "Symphony is an engineering preview for operator-controlled, trusted environments.",
-      "Codex and Claude will run without the usual guardrails.",
-      "Agents can access provider runtime config files:",
-      "  ~/.codex/auth.json",
-      "  ~/.claude/.credentials.json",
-      "SymphonyElixir is not a supported product and is presented as-is.",
-      "To proceed, start with `--i-understand-that-this-will-be-running-without-the-usual-guardrails` CLI argument"
-    ]
-
-    width = Enum.max(Enum.map(lines, &String.length/1))
-    border = String.duplicate("─", width + 2)
-    top = "╭" <> border <> "╮"
-    bottom = "╰" <> border <> "╯"
-    spacer = "│ " <> String.duplicate(" ", width) <> " │"
-
-    content =
-      [
-        top,
-        spacer
-        | Enum.map(lines, fn line ->
-            "│ " <> String.pad_trailing(line, width) <> " │"
-          end)
-      ] ++ [spacer, bottom]
-
-    [
-      IO.ANSI.red(),
-      IO.ANSI.bright(),
-      Enum.join(content, "\n"),
-      IO.ANSI.reset()
-    ]
-    |> IO.iodata_to_binary()
   end
 
   defp set_logs_root(logs_root) do

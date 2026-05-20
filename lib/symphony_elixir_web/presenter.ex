@@ -174,6 +174,116 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  @spec review_agent_verdict_summary(map()) :: String.t() | nil
+  def review_agent_verdict_summary(event) when is_map(event) do
+    if review_agent_verdict_event?(event) do
+      payload = event_payload(event)
+      verdict = payload |> map_value(["verdict", :verdict]) |> verdict_text()
+      round = map_value(payload, ["round", :round])
+      max_iterations = map_value(payload, ["max_iterations", :max_iterations])
+      reason = payload |> map_value(["reason", :reason]) |> present_string()
+      comments = payload |> map_value(["comments", :comments]) |> normalize_comments()
+      tokens = payload |> map_value(["tokens", :tokens]) |> normalize_token_map()
+
+      [
+        "Reviewer verdict: #{verdict}",
+        review_agent_round_text(round, max_iterations),
+        review_agent_reason_text(reason, comments),
+        review_agent_comments_text(comments),
+        "tokens in=#{tokens.input_tokens} out=#{tokens.output_tokens} total=#{tokens.total_tokens}"
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" | ")
+    end
+  end
+
+  def review_agent_verdict_summary(_event), do: nil
+
+  @spec review_agent_verdict(map()) :: String.t() | nil
+  def review_agent_verdict(event) when is_map(event) do
+    if review_agent_verdict_event?(event) do
+      event
+      |> event_payload()
+      |> map_value(["verdict", :verdict])
+      |> verdict_value()
+    end
+  end
+
+  def review_agent_verdict(_event), do: nil
+
+  @spec review_agent_verdict_event?(map()) :: boolean()
+  def review_agent_verdict_event?(event) when is_map(event) do
+    map_value(event, ["event", :event]) in [:review_agent_verdict, "review_agent_verdict"]
+  end
+
+  def review_agent_verdict_event?(_event), do: false
+
+  defp event_payload(event) when is_map(event), do: map_value(event, ["payload", :payload]) || %{}
+
+  defp review_agent_round_text(round, max_iterations) when is_integer(round) and is_integer(max_iterations) do
+    "round #{round}/#{max_iterations}"
+  end
+
+  defp review_agent_round_text(_round, _max_iterations), do: nil
+
+  defp review_agent_reason_text(reason, _comments) when is_binary(reason), do: "reason: #{reason}"
+  defp review_agent_reason_text(_reason, [comment | _]) when is_binary(comment), do: "reason: #{comment}"
+  defp review_agent_reason_text(_reason, _comments), do: nil
+
+  defp review_agent_comments_text([]), do: "comments: 0"
+  defp review_agent_comments_text(comments) when is_list(comments), do: "comments: #{length(comments)}"
+
+  defp verdict_text(value) when is_atom(value), do: value |> Atom.to_string() |> String.replace("_", " ")
+  defp verdict_text(value) when is_binary(value), do: String.replace(value, "_", " ")
+  defp verdict_text(_value), do: "unknown"
+
+  defp verdict_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp verdict_value(value) when is_binary(value), do: value
+  defp verdict_value(_value), do: nil
+
+  defp normalize_comments(comments) when is_list(comments), do: Enum.filter(comments, &is_binary/1)
+  defp normalize_comments(_comments), do: []
+
+  defp normalize_token_map(tokens) when is_map(tokens) do
+    input_tokens = integer_map_value(tokens, :input_tokens)
+    cached_input_tokens = integer_map_value(tokens, :cached_input_tokens)
+    uncached_input_tokens = uncached_input_tokens(input_tokens, cached_input_tokens)
+
+    %{
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: integer_map_value(tokens, :uncached_input_tokens, uncached_input_tokens),
+      output_tokens: integer_map_value(tokens, :output_tokens),
+      total_tokens: integer_map_value(tokens, :total_tokens)
+    }
+  end
+
+  defp normalize_token_map(_tokens), do: normalize_token_map(%{})
+
+  defp integer_map_value(map, key, default \\ 0) do
+    string_key = Atom.to_string(key)
+
+    case Map.get(map, key, Map.get(map, string_key, default)) do
+      value when is_integer(value) -> value
+      _value -> default
+    end
+  end
+
+  defp present_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present_string(_value), do: nil
+
+  defp map_value(value, keys) when is_map(value) do
+    Enum.find_value(keys, fn key -> Map.get(value, key) end)
+  end
+
+  defp map_value(_value, _keys), do: nil
+
   defp audit_snapshot_context(orchestrator, snapshot_timeout_ms) do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
@@ -692,6 +802,9 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp running_transcript_payload(running, repo_key) do
+    tokens = transcript_tokens(running)
+    reviewer_tokens = transcript_reviewer_tokens(running)
+
     %{
       repo_key: Map.get(running, :repo_key) || repo_key,
       issue_id: running.issue_id,
@@ -701,12 +814,18 @@ defmodule SymphonyElixirWeb.Presenter do
       started_at: iso8601(running.started_at),
       last_event_at: iso8601(Map.get(running, :last_event_at) || running.last_codex_timestamp),
       turn_count: Map.get(running, :turn_count, 0),
-      tokens: transcript_tokens(running),
+      tokens: tokens,
+      executor_tokens: executor_tokens(tokens, reviewer_tokens),
+      reviewer_tokens: reviewer_tokens,
+      review_agent_enabled: review_agent_enabled?(running, reviewer_tokens),
       events: transcript_events(running)
     }
   end
 
   defp watching_transcript_payload(watching, repo_key) do
+    tokens = transcript_tokens(watching)
+    reviewer_tokens = transcript_reviewer_tokens(watching)
+
     %{
       repo_key: Map.get(watching, :repo_key) || repo_key,
       issue_id: watching.issue_id,
@@ -716,7 +835,10 @@ defmodule SymphonyElixirWeb.Presenter do
       started_at: iso8601(Map.get(watching, :started_at) || Map.get(watching, :last_ran_at)),
       last_event_at: iso8601(Map.get(watching, :last_event_at) || Map.get(watching, :last_ran_at)),
       turn_count: Map.get(watching, :turn_count, 0),
-      tokens: transcript_tokens(watching),
+      tokens: tokens,
+      executor_tokens: executor_tokens(tokens, reviewer_tokens),
+      reviewer_tokens: reviewer_tokens,
+      review_agent_enabled: review_agent_enabled?(watching, reviewer_tokens),
       events: transcript_events(watching)
     }
   end
@@ -745,6 +867,39 @@ defmodule SymphonyElixirWeb.Presenter do
       output_tokens: Map.get(entry, :codex_output_tokens, 0),
       total_tokens: Map.get(entry, :codex_total_tokens, 0)
     }
+  end
+
+  defp transcript_reviewer_tokens(%{reviewer_tokens: tokens}) when is_map(tokens), do: normalize_token_map(tokens)
+
+  defp transcript_reviewer_tokens(entry) when is_map(entry) do
+    input_tokens = Map.get(entry, :reviewer_input_tokens, 0)
+    cached_input_tokens = Map.get(entry, :reviewer_cached_input_tokens, 0)
+
+    %{
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: uncached_input_tokens(input_tokens, cached_input_tokens),
+      output_tokens: Map.get(entry, :reviewer_output_tokens, 0),
+      total_tokens: Map.get(entry, :reviewer_total_tokens, 0)
+    }
+  end
+
+  defp executor_tokens(tokens, reviewer_tokens) do
+    %{
+      input_tokens: subtract_token(tokens, reviewer_tokens, :input_tokens),
+      cached_input_tokens: subtract_token(tokens, reviewer_tokens, :cached_input_tokens),
+      uncached_input_tokens: subtract_token(tokens, reviewer_tokens, :uncached_input_tokens),
+      output_tokens: subtract_token(tokens, reviewer_tokens, :output_tokens),
+      total_tokens: subtract_token(tokens, reviewer_tokens, :total_tokens)
+    }
+  end
+
+  defp subtract_token(tokens, reviewer_tokens, key) do
+    max(Map.get(tokens, key, 0) - Map.get(reviewer_tokens, key, 0), 0)
+  end
+
+  defp review_agent_enabled?(entry, reviewer_tokens) do
+    Map.get(entry, :review_agent_enabled, false) == true or Map.get(reviewer_tokens, :total_tokens, 0) > 0
   end
 
   defp transcript_events(%{transcript_buffer: events}) when is_list(events), do: events

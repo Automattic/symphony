@@ -3146,8 +3146,6 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - CLI accepts `--config path-to-symphony.yml` to select an alternate operator config.
 - CLI defaults to `./symphony.yml` when `--config` is omitted.
 - CLI errors when the resolved `symphony.yml` (explicit or default) does not exist.
-- The Elixir CLI requires
-  `--i-understand-that-this-will-be-running-without-the-usual-guardrails` before startup.
 - CLI surfaces startup failure cleanly.
 - Service CLI exits with success when application starts and shuts down normally.
 - Service CLI exits nonzero when startup fails or the host process exits abnormally.

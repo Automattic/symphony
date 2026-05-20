@@ -154,7 +154,7 @@ when commands are ambiguous, writes `WORKFLOW.md`, and validates it with Symphon
 Run a single issue synchronously without starting the poll loop or dashboard:
 
 ```bash
-./bin/symphony run RSM-123 --timeout 30m --no-retry --i-understand-that-this-will-be-running-without-the-usual-guardrails
+./bin/symphony run RSM-123 --timeout 30m --no-retry
 ```
 
 One-shot runs use the same `symphony.yml` and repo `WORKFLOW.md` resolution as service mode, create

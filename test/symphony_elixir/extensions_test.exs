@@ -1004,7 +1004,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           {"tool-result", "tool-result"},
           {"session", "session"},
           {"error", "error"},
-          {"event", "event"}
+          {"event", "event"},
+          {"reviewer", "reviewer"}
         ] do
       assert dashboard_css =~
                ".transcript-list[data-filter-#{filter}=\"true\"] .transcript-event-#{class}"
@@ -2031,6 +2032,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(data-transcript-filter="session")
     assert html =~ ~s(data-transcript-filter="error")
     assert html =~ ~s(data-transcript-filter="event")
+    assert html =~ ~s(data-transcript-filter="reviewer")
     assert html =~ ~s(data-transcript-events)
     assert html =~ ~s(data-filter-active="true")
     assert html =~ ~s(data-filter-agent-text="true")
@@ -2092,6 +2094,120 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "transcript liveview renders reviewer phase chips and reviewer filter state" do
+    orchestrator_name = Module.concat(__MODULE__, :ReviewerTranscriptOrchestrator)
+
+    executor_event = %{
+      event: :agent_text,
+      agent_phase: :executor,
+      payload: %{
+        method: "agent_message_delta",
+        params: %{msg: %{content: "executor text"}}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    reviewer_event = %{
+      event: :agent_text,
+      agent_phase: :reviewer,
+      payload: %{
+        method: "agent_message_delta",
+        params: %{msg: %{content: "reviewer text"}}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    snapshot =
+      update_in(static_snapshot().running, fn [running] ->
+        [
+          running
+          |> Map.put(:review_agent_enabled, true)
+          |> Map.put(:reviewer_input_tokens, 3)
+          |> Map.put(:reviewer_output_tokens, 2)
+          |> Map.put(:reviewer_total_tokens, 5)
+          |> Map.put(:codex_input_tokens, 13)
+          |> Map.put(:codex_output_tokens, 7)
+          |> Map.put(:codex_total_tokens, 20)
+          |> Map.put(:transcript_buffer, [executor_event, reviewer_event])
+          |> Map.put(:transcript_buffer_size, 2)
+        ]
+      end)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript?filters=reviewer")
+
+    assert html =~ "executor text"
+    assert html =~ "reviewer text"
+    assert html =~ "transcript-event-reviewer"
+    assert html =~ "transcript-event-phase"
+    assert html =~ ">Reviewer</span>"
+    assert html =~ "Executor Tokens"
+    assert html =~ "Reviewer Tokens"
+    assert html =~ "Total Tokens"
+    assert html =~ ~r/>\s*15\s*<span class="muted">total/
+    assert html =~ ~r/>\s*5\s*<span class="muted">total/
+    assert html =~ ~r/>\s*20\s*<span class="muted">combined/
+    assert_filter_pressed(html, "reviewer", true)
+    assert_filter_attribute(html, "reviewer")
+    refute_filter_attribute(html, "agent-text")
+  end
+
+  test "transcript liveview renders review-agent verdict events" do
+    orchestrator_name = Module.concat(__MODULE__, :ReviewerVerdictTranscriptOrchestrator)
+
+    verdict_event = %{
+      event: :review_agent_verdict,
+      agent_phase: :reviewer,
+      payload: %{
+        verdict: :request_changes,
+        round: 2,
+        max_iterations: 1,
+        reason: "Tighten the regression coverage.",
+        comments: ["Tighten the regression coverage.", "Keep the UI filter stable."],
+        tokens: %{input_tokens: 8, cached_input_tokens: 3, uncached_input_tokens: 5, output_tokens: 4, total_tokens: 12}
+      },
+      timestamp: DateTime.utc_now()
+    }
+
+    snapshot =
+      update_in(static_snapshot().running, fn [running] ->
+        [
+          running
+          |> Map.put(:review_agent_enabled, true)
+          |> Map.put(:transcript_buffer, [verdict_event])
+          |> Map.put(:transcript_buffer_size, 1)
+        ]
+      end)
+
+    {:ok, _orchestrator_pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript?filters=event,reviewer")
+
+    assert html =~ "Reviewer verdict: request changes"
+    assert html =~ "round 2/1"
+    assert html =~ "reason: Tighten the regression coverage."
+    assert html =~ "comments: 2"
+    assert html =~ "tokens in=8 out=4 total=12"
+    assert html =~ "transcript-event-verdict-request-changes"
+    assert html =~ "request changes"
+    assert html =~ "Tighten the regression coverage."
+  end
+
   test "transcript liveview restores default filter state without query params" do
     orchestrator_name = Module.concat(__MODULE__, :DefaultTranscriptFilterOrchestrator)
 
@@ -2113,6 +2229,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_filter_pressed(html, "session", false)
     assert_filter_pressed(html, "error", true)
     assert_filter_pressed(html, "event", false)
+    assert_filter_pressed(html, "reviewer", false)
     assert_filter_attribute(html, "agent-text")
     assert_filter_attribute(html, "error")
     refute_filter_attribute(html, "event")
@@ -2139,6 +2256,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_filter_pressed(html, "session", false)
     assert_filter_pressed(html, "error", false)
     assert_filter_pressed(html, "event", true)
+    assert_filter_pressed(html, "reviewer", false)
     assert_filter_attribute(html, "tool-call")
     assert_filter_attribute(html, "event")
     refute_filter_attribute(html, "agent-text")
@@ -2167,6 +2285,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       assert_filter_pressed(html, "session", false)
       assert_filter_pressed(html, "error", false)
       assert_filter_pressed(html, "event", false)
+      assert_filter_pressed(html, "reviewer", false)
       refute html =~ ~s(data-filter-active="true")
       refute_filter_attribute(html, "agent-text")
       refute_filter_attribute(html, "error")
@@ -2192,6 +2311,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_filter_pressed(html, "agent-text", false)
     assert_filter_pressed(html, "error", true)
     assert_filter_pressed(html, "event", false)
+    assert_filter_pressed(html, "reviewer", false)
     assert_filter_attribute(html, "error")
     refute_filter_attribute(html, "agent-text")
     refute_filter_attribute(html, "event")

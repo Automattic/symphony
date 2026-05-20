@@ -1,71 +1,72 @@
 # Symphony Configuration Reference
 
-This is the full reference for Symphony's `symphony.yml` operator config, repo-local `WORKFLOW.md`
-front matter, startup flags, defaults, and supported values. For the shortest setup path, start with
-[`../README.md`](../README.md).
+Full reference for Symphony's `symphony.yml`, repo-local `WORKFLOW.md`, startup flags, defaults, and
+supported values. For the shortest setup path, start with [`../README.md`](../README.md).
 
-## Configuration files
+## Contents
+
+- [At a glance](#at-a-glance) — the two-file split and how merging works
+- [Starting Symphony](#starting-symphony) — `symphony init`, run modes, CLI flags, state and logs
+- [Codex vs Claude](#codex-vs-claude) — which agent supports which options
+- [`symphony.yml` reference](#symphonyyml-reference) — one section per top-level key
+- [`WORKFLOW.md` reference](#workflowmd-reference)
+- [Example configs](#example-configs)
+
+## At a glance
 
 Symphony reads two complementary files:
 
-- **`symphony.yml`** — operator config: tracker, polling, workspace, agent, gates, pollers,
-  notifications, verification port defaults, and the list of supervised repos (`repos:`). Plain
-  YAML, no `---` fences.
-- **`WORKFLOW.md`** — repo-local file containing the issue prompt body plus optional PR prompt
-  branches, per-repo `hooks`, and verification dev-server overrides. YAML front matter between two
-  `---` lines, then the issue prompt template. Each repo listed under
-  `repos:` has its own `WORKFLOW.md`, located at `<repo.path>/<repo.workflow>`.
+| File | Purpose | Format |
+| --- | --- | --- |
+| `symphony.yml` | Operator config: tracker, polling, workspace, agent, gates, pollers, notifications, verification port range, and the list of supervised `repos:`. | Plain YAML, no `---` fences. |
+| `WORKFLOW.md` | Per-repo: issue prompt body plus optional `prompts.pr` PR-mode prompt, `hooks`, and verification dev-server overrides. One per entry under `repos:`, located at `<repo.path>/<repo.workflow>`. | YAML front matter between `---` lines, then the issue prompt template. |
 
-The runtime settings used at dispatch time merge `symphony.yml` with the primary repo's
-`WORKFLOW.md` front matter; `WORKFLOW.md` keys override the matching `symphony.yml` keys for that
-repo. Nested maps are deep-merged, so a repo can override only
+At dispatch time Symphony deep-merges `symphony.yml` with the primary repo's `WORKFLOW.md` front
+matter. `WORKFLOW.md` keys win for that repo, but only the keys it sets — a repo can override
 `verification.dev_server.start_cmd` without repeating the operator-owned port range. In practice,
-leave operator-wide concerns in `symphony.yml` and keep `WORKFLOW.md` focused on the prompt body,
-optional `prompts.pr`, repo-local `hooks`, and repo-specific verification dev-server commands.
+keep operator-wide concerns in `symphony.yml` and limit `WORKFLOW.md` to the prompt body, optional
+`prompts.pr`, repo-local `hooks`, and repo-specific verification commands.
 
-## Startup
+## Starting Symphony
 
-For a new setup, create the operator config first:
+**Scaffold the operator config:**
 
 ```bash
 ./bin/symphony init
 ```
 
-`symphony init` scaffolds only `symphony.yml` and validates the generated YAML against Symphony's
-operator config schema before writing it. It does not create `WORKFLOW.md`, choose a language
-template, or guess validation commands. If `symphony.yml` already exists, the command refuses to
-overwrite it and prints a diff; pass `--force` only after reviewing that diff.
+`symphony init` writes only `symphony.yml` and validates it against Symphony's operator-config
+schema. It does not create `WORKFLOW.md`, choose a language template, or guess validation commands.
+If `symphony.yml` already exists, the command refuses to overwrite it and prints a diff; pass
+`--force` only after reviewing that diff.
 
-Then invoke the shared `symphony-init-workflow` skill from Codex or Claude inside each target
-repository. The skill reads repo manifests, scripts, and CI workflows to identify real bootstrap and
-validation commands, asks one or two clarifying questions only when the repo has multiple plausible
-gates, writes `WORKFLOW.md`, and validates it with the same parser Symphony uses at runtime.
+**Author `WORKFLOW.md`** by invoking the shared `symphony-init-workflow` skill from Codex or Claude
+inside each target repo. The skill reads manifests, scripts, and CI workflows to discover real
+bootstrap/validation commands, asks one or two clarifying questions when needed, writes
+`WORKFLOW.md`, and validates it with the same parser Symphony uses at runtime.
 
-Run `./bin/symphony` from a directory that contains `symphony.yml`:
+**Run the service** from a directory containing `symphony.yml`:
 
 ```bash
 ./bin/symphony
 ```
 
-If `symphony.yml` is missing in the current working directory and `--config` is not passed,
-Symphony exits with `Symphony config file not found: …`. Per-repo `WORKFLOW.md` files are
-resolved from each entry under `repos:` (`<repo.path>/<repo.workflow>`); they are never passed on
-the command line.
+If `symphony.yml` is missing in the current directory and `--config` is not passed, Symphony exits
+with `Symphony config file not found: …`. Per-repo `WORKFLOW.md` files are resolved from
+`repos[]` entries; they are never passed on the command line.
 
-Optional flags:
+**One-shot mode** runs a single issue and skips polling, dashboard, HTTP server, and durable
+retry-queue persistence:
 
-- `--config` selects an alternate operator config file (default: `./symphony.yml`). For example,
-  `./bin/symphony --config ./symphony.claude.yml` runs the same repos with the Claude runner
-  config. Ship multiple `symphony.*.yml` files side by side and switch between them with
-  `--config`.
-- `--state-root` tells Symphony to write durable state under a different directory. The default is
-  `~/Library/Application Support/symphony/`.
-- `--logs-root` tells Symphony to write the rotating application log under a different directory.
-  The default is `~/Library/Logs/symphony/`.
-- `--host` pins the Phoenix observability service to a specific host
-- `--port` pins the Phoenix observability service to a specific port
+```bash
+./bin/symphony run <issue-identifier> [--config path] [--timeout 30m] [--no-retry]
+```
 
-The release binary also supports an explicit PR entry point against a running Symphony node:
+Exit codes: `0` success, `1` agent failure after bounded attempts, `2` config/validation error,
+`124` timeout.
+
+**Explicit PR mode** dispatches an existing pull request against a running Symphony node, using
+the optional `prompts.pr` front-matter template (or a built-in default):
 
 ```bash
 ./bin/symphony pr <url-or-number> --intent "address review comments"
@@ -77,103 +78,89 @@ For source checkouts, the equivalent task is:
 mise exec -- mix symphony.pr <url-or-number> --intent "address review comments"
 ```
 
-The state root contains `run_store/`, `audit/`, `secret_key_base`, and for packaged releases,
-`erlang_cookie`. Override order is `--state-root`, `SYMPHONY_STATE_ROOT`, app env `:state_root`,
-then the macOS default. The release boot script creates `erlang_cookie` with owner-only
-permissions on first start and exports it as `RELEASE_COOKIE`; set `SYMPHONY_COOKIE` to override
-that persisted cookie explicitly. The old public cookie value `symphony` is refused. The logs root
-contains `symphony.log`; its override order is `--logs-root`, `SYMPHONY_LOGS_ROOT`, app env
-`:logs_root`, then the macOS default.
+### CLI flags
 
-Symphony keeps an OTP-native durable run store under the state root. It persists run history, retry
-queue entries, session metadata, captured learnings, and aggregate token totals so retry backoff and
-observability data survive process restarts. The same store persists the operator dispatch pause
-flag, including its reason and timestamp.
+| Flag | Purpose | Default |
+| --- | --- | --- |
+| `--config` | Alternate operator-config file. Ship multiple `symphony.*.yml` files side by side and switch between them. | `./symphony.yml` |
+| `--state-root` | Where Symphony writes durable state. | `~/Library/Application Support/symphony/` |
+| `--logs-root` | Where Symphony writes the rotating application log. | `~/Library/Logs/symphony/` |
+| `--host` | Pin the Phoenix observability service to a specific host. | ephemeral |
+| `--port` | Pin the Phoenix observability service to a specific port. | ephemeral |
 
-Audit events are append-only NDJSON files named `YYYY-MM-DD.ndjson` under the audit directory.
-Each record includes issue/run identifiers, event type, timestamp, event-specific side-effect
-details, and hash-chain fields for tamper checks. Use `mix symphony.audit ISSUE_ID --from
-YYYY-MM-DD --to YYYY-MM-DD --state-root /path/to/state-root` to print a chronological issue-scoped
-event stream.
+### State and logs
 
-## Workflow file shape
+The **state root** contains `run_store/`, `audit/`, `secret_key_base`, and (for packaged releases)
+`erlang_cookie`. Override order: `--state-root` → `SYMPHONY_STATE_ROOT` → app env `:state_root` →
+macOS default. The release boot script creates `erlang_cookie` with owner-only permissions on
+first start and exports it as `RELEASE_COOKIE`; set `SYMPHONY_COOKIE` to override it. The old
+public cookie value `symphony` is refused.
 
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-issue-mode agent prompt. Optional front matter key `prompts.pr` defines the PR-mode prompt used by
-explicit PR runs. The PR template receives the same common variables plus a `pr` object with
-`number`, `url`, `title`, `body`, `state`, `base_ref`, `head_ref`, and `intent`.
+The **logs root** contains `symphony.log`. Override order: `--logs-root` → `SYMPHONY_LOGS_ROOT`
+→ app env `:logs_root` → macOS default.
 
-PR review mode is controlled by the optional `pr_review` block. `tracker` is the default and
-preserves the existing human-driven review loop. In `polling` mode, Symphony starts a
-`PrReviewPoller` process that discovers in-review issues with attached GitHub PRs, records their
-PR URL and workspace path in the durable run store, waits `cooldown_minutes` before responding to
-requested changes or non-bot reviewer comments, moves approved or rework-requested issues back to
-`In Progress` for the orchestrator to dispatch through the normal run path, injects unaddressed
-reviewer comments into the first prompt, and removes tracked workspaces when PRs close or stay idle
-beyond `stale_days`. `cooldown_minutes`, `stale_days`, comment bot filters, and review follow-up
-flags are polling-only settings; polling mode defaults them to 10 minutes, 7 days, no ignored users,
-and no GitHub replies or review re-requests when omitted.
+The durable **run store** under the state root persists run history, retry queue, session metadata,
+captured learnings, aggregate token totals, and the operator dispatch pause flag (with reason and
+timestamp), so retry backoff and observability survive restarts.
 
-When an agent run completes successfully after opening a PR, Symphony treats a still-active issue as
-post-PR quiet unless new work arrived after the run. Quiet issues are moved to `In Review` and
-watched instead of being immediately re-dispatched. Re-dispatch still happens when the issue is
-manually updated after the last run, is moved to `Rework`, or has pending reviewer/CI context from
-the pollers.
+**Audit events** are append-only NDJSON files named `YYYY-MM-DD.ndjson` under the audit directory.
+Each record includes issue/run identifiers, event type, timestamp, side-effect details, and
+hash-chain fields for tamper checks. Inspect a single issue chronologically:
 
-CI polling is controlled by the optional `ci` block and is disabled by default. When
-`pr_review.mode: polling` and `ci.enabled: true` are both set, Symphony starts a `CiPoller` process
-that polls GitHub Actions status through `gh pr view --json statusCheckRollup`. Failed checks are
-rerun once with `gh run rerun --failed` by default before any agent dispatch. If the rerun also
-fails, Symphony stores a truncated failed-job log excerpt, emits a CI failure notification event,
-moves the Linear issue back to `In Progress`, and injects the CI failure context into the first
-agent prompt. After `ci.max_retries` dispatched attempts, Symphony transitions the issue to
-`ci.escalation_state` and emits a CI escalation notification event.
+```bash
+mix symphony.audit ISSUE_ID --from YYYY-MM-DD --to YYYY-MM-DD --state-root /path/to/state-root
+```
 
-Run learnings are controlled by the optional `learnings` block and are disabled by default. When
-`learnings.enabled: true` and `pr_review.mode: polling`, a merged tracked PR triggers one LLM
-reflection call through the same Anthropic/OpenAI provider modules used by the quality gate. Valid
-JSON responses write up to `max_per_run` records with an evidence quote into the durable run store,
-pruned by `max_total_per_repo` per repository. Phase 1 is capture-only: learnings appear read-only
-at `/learnings` and are not injected into agent prompts. Provider API keys are read from
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+## Codex vs Claude
 
-## `repos` (list)
+Symphony supports two agent runtimes, configured by `agent.kind: codex | claude`. Most config
+applies to both, but a handful of options are runtime-specific. Use this table when picking
+between them or when porting a config across runtimes.
 
-Each entry under `repos:` declares a repository that Symphony supervises in this process. At
-least one entry is required.
+| Concern | Codex | Claude |
+| --- | --- | --- |
+| `agent.command` parsing | Shell-string. `$VAR` expansion happens in the launched shell. | Split into executable arguments before launch; no shell expansion. |
+| Native sandbox (`agent.thread_sandbox`, `agent.turn_sandbox_policy`) | Supported. Defaults applied automatically (see [`agent`](#agent)). | Not used. |
+| `agent.approval_policy` | Supported, with safer defaults injected. | Not used. |
+| `agent.network_access` mode | Controls Codex's sandbox network switch and thread-level allow map. | Not enforced by Claude itself; declare network policy through the Claude command. |
+| `agent.sandbox_runtime` (outer SRT wrapper) | Supported (`kind: srt`). | Not supported. |
+| `workspace.sandbox.allow_read_paths` | Fully effective (rendered into Codex sandbox + SRT). | Adapter does not currently pass these entries through. Treat as Codex-effective. |
+| `agent.mcp.inherit: all` | Inherits every host MCP server. | Rejected — only `none` and `allowlist` are accepted. |
+| `agent.mcp.inherit: allowlist` source | Operator host runtime config. Rejected on remote SSH workers. | Only the top-level `mcpServers` map in `~/.claude.json`; plugin MCP, project `.mcp.json`, and `.claude/settings.json` enable/disable state are not layered in. |
+| MCP transports | Must be `stdio`. HTTP/SSE with `codex` in `runtimes` is rejected. | `stdio`, `http`, `sse`. Typical HTTP usage: `runtimes: ["claude"]`. |
+| Continuation turns (`agent.max_turns`) | Reuses one app-server `threadId` across turns. | Re-launches `claude --print --output-format stream-json` per turn; continuation is workspace + prompt driven, no Symphony-managed resume id. |
+| Token budget enforcement (`agent.max_tokens_*`) | Most complete: app-server token events feed Symphony's structured path. | Best-effort until Claude usage events are normalized the same way. |
 
-Per-repo fields:
+The rest of `symphony.yml` (tracker, repos, workspace lifecycle, quality_gate, review_agent,
+pr_review, ci, learnings, notifications, watchdog, dependencies, verification, github,
+observability) behaves the same regardless of `agent.kind`.
 
-- `name` (string, REQUIRED) — unique identifier. Surfaced as `<repo_key>` in dashboard URLs.
-- `workflow` (string, default `WORKFLOW.md`) — path to that repo's `WORKFLOW.md`. Relative paths
-  resolve from the directory containing `symphony.yml` unless legacy `path` is set.
-- `base_branch` (string, OPTIONAL) — integration branch used as the comparison base for pre-push
-  reviewer-agent source material, for example `develop`. Bare branch names, `origin/<branch>`, and
-  `refs/heads/<branch>` are all accepted and resolved against the `origin` remote. When omitted or
-  blank, reviewer agent uses `origin/HEAD` when available and falls back to `origin/main`.
-- `path` (string, OPTIONAL) — legacy checkout path used only as the base for relative `workflow`
-  paths. `~` is expanded.
-- `workspace` (object, OPTIONAL) — per-repo workspace population settings:
-  - `strategy` (`clone` or `worktree`) — overrides the global workspace strategy for this repo.
-  - `repo` (string) — primary clone path when `strategy: worktree`.
-  - `fetch_before_dispatch` (boolean) — defaults to the global value, otherwise `true`.
-- `team` (string, OPTIONAL) — Linear team key/ID for that repo's candidate query.
-- `projects` (list of strings, OPTIONAL) — Linear project names or slugs.
-- `labels` (list of strings, OPTIONAL) — Linear label names. AND semantics across the list for
-  repo routes.
-- `assignee` (string, OPTIONAL) — Linear user ID, or `me` to use the API token's viewer.
-- `default` (boolean, default `false`) — at most one repo across the list may be marked as
-  default. The default repo acts as the fallback when an issue does not match any other repo's
-  selectors and is also used to resolve the operator-wide primary `WORKFLOW.md` at boot.
+## `symphony.yml` reference
 
-Validation:
+One section per top-level key. Keys not shown use their defaults.
 
-- Names must be unique.
-- At most one repo may set `default: true`.
-- Repo routing rules cannot be identical across repos, and a single team cannot have two
-  unscoped (catch-all) repos. Symphony refuses to start with a routing-rules error otherwise.
+### `tracker`
 
-Example multi-repo config:
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY   # optional; reads LINEAR_API_KEY when unset or $LINEAR_API_KEY
+  assignee: me               # optional; or a Linear user ID, or $LINEAR_ASSIGNEE
+  project_slug: my-project   # optional
+  team: ENG                  # optional
+  labels: [backend]          # optional
+```
+
+- `api_key` reads `LINEAR_API_KEY` from the environment when unset or when value is
+  `$LINEAR_API_KEY`.
+- `assignee` reads `LINEAR_ASSIGNEE` the same way. `me` resolves to the API token's viewer. Unset
+  means all active issues in scope are eligible.
+- For Linear trackers, **set at least one** of `project_slug`, `team`, `labels` here, or rely on
+  repo-level selectors under `repos[]`. The filters combine server-side.
+
+### `repos`
+
+Required. Each entry declares a repository this Symphony process supervises.
 
 ```yaml
 repos:
@@ -198,82 +185,410 @@ repos:
     default: true
 ```
 
-When an issue matches more than one repo's selectors it is placed in a conflict bucket and
-excluded from dispatch. Tighten overlapping selectors to resolve.
+Per-repo fields:
 
-## Full example
+| Field | Required | Notes |
+| --- | --- | --- |
+| `name` | yes | Unique. Surfaced as `<repo_key>` in dashboard URLs. |
+| `workflow` | no (default `WORKFLOW.md`) | Path to that repo's `WORKFLOW.md`. Relative paths resolve from the directory containing `symphony.yml` unless legacy `path` is set. |
+| `base_branch` | no | Integration branch used as the comparison base for review-agent diff context (e.g. `develop`). `origin/<branch>` and `refs/heads/<branch>` are accepted. When omitted, the reviewer uses `origin/HEAD`, falling back to `origin/main`. |
+| `path` | no | Legacy checkout path used only as the base for relative `workflow` paths. `~` is expanded. |
+| `workspace.strategy` | no | `clone` or `worktree`. Overrides the global default for this repo. |
+| `workspace.repo` | no | Primary clone path when `strategy: worktree`. |
+| `workspace.fetch_before_dispatch` | no | Defaults to the global value, otherwise `true`. |
+| `team` | no | Linear team key/ID for this repo's candidate query. |
+| `projects` | no | Linear project names or slugs. |
+| `labels` | no | Linear label names. AND semantics across the list. |
+| `assignee` | no | Linear user ID, or `me`. |
+| `default` | no (default `false`) | At most one repo may set `default: true`. The default repo is the fallback when an issue does not match any other repo's selectors, and resolves the operator-wide primary `WORKFLOW.md` at boot. |
 
-`symphony.yml`:
+A repo that omits a selector (`team`, `projects`, `labels`, `assignee`) inherits the matching
+tracker-level value.
+
+**Routing validation:**
+
+- Names must be unique.
+- At most one repo may set `default: true`.
+- Routing rules cannot be identical across repos, and a single team cannot have two unscoped
+  (catch-all) repos.
+- Issues matched by two or more repos go into a **conflict bucket** and are excluded from
+  dispatch until selectors are tightened.
+
+### `workspace`
 
 ```yaml
-tracker:
-  kind: linear
-  project_slug: "..."
-  assignee: null
 workspace:
   root: ~/code/workspaces
   sandbox:
-    # Optional read overrides for default-denied credential/config paths that
-    # a specific repo legitimately needs, such as private package registries.
-    allow_read_paths: []
-github:
-  # Optional GitHub Enterprise hosts accepted for PR URLs and repo URLs.
-  enterprise_hosts: []
-  # Maximum bytes returned by github_get_failed_run_log() before truncation.
-  failed_run_log_max_bytes: 65536
-verification:
-  enabled: true
-  port_allocation:
-    range: [4000, 4099]
+    allow_read_paths: []      # advanced; see below
+  lifecycle:
+    max_age_days: 14
+    gc_interval_ms: 3600000
+    min_free_bytes: 10737418240
+    orphan_action: log        # log | delete | trash
+    trash_dir: .trash
+```
+
+**Lifecycle:**
+
+- `max_age_days` (default `14`) removes local workspaces older than that age on startup and every
+  `gc_interval_ms`. Running workspaces are skipped, even if the issue is non-terminal.
+- `min_free_bytes` (unset by default): when set, Symphony checks free space on `workspace.root`
+  before starting new dispatches and pauses with a dashboard reason if any configured workspace
+  host is below the threshold or cannot be checked.
+- **Orphan sweep** on startup scans `workspace.root` for directories that do not match active or
+  terminal tracker issues, or persisted run/retry records. `orphan_action` chooses `log` (default),
+  `delete`, or `trash` (move under `trash_dir`).
+
+**SSH workers:** `workspace.root` and `repos[].workspace.repo` are interpreted on the worker host.
+Each worker host needs its own primary clone per worktree-backed repo; Symphony surfaces a
+workspace error if one is missing.
+
+**`workspace.sandbox.allow_read_paths`** is an advanced escape hatch for paths that are denied by
+Symphony's default credential read-deny list but are required by the agent runtime for legitimate
+repo work — exact sandbox paths such as `~/.npmrc`, `~/.cargo/credentials`, or a narrow SSH state
+file like `~/.ssh/known_hosts`.
+
+> **Runtime support:** fully effective for Codex (rendered as read-only filesystem access; for SRT
+> also emitted as explicit `allowRead` carve-outs). The current Claude adapter does **not** pass
+> these entries into its temporary settings, so treat this list as Codex-effective until that gap
+> is closed. Do not use it for agent runtime credential stores under `~/.codex` or `~/.claude`:
+> Symphony keeps `~/.codex/auth.json`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md` in the
+> managed deny list even if listed here.
+
+### `agent`
+
+The most option-dense block. Many fields are runtime-specific; see [Codex vs Claude](#codex-vs-claude).
+
+```yaml
 agent:
-  kind: codex
+  kind: codex                          # or: claude
+  command: codex app-server            # Codex shell-string; Claude split-args
   max_concurrent_agents: 10
   max_turns: 20
-  # Defaults shown; raise the numbers as needed or set either key to null to disable that cap.
-  # max_tokens_per_issue: 500000
-  # max_tokens_per_day: 5000000
-  command: codex app-server
+  command_timeout_ms: 600000
+  max_tokens_per_issue: 500000         # null to disable
+  max_tokens_per_day: 5000000          # null to disable
   network_access:
-    mode: allowlist
+    mode: allowlist                    # allowlist | open | block
     allowed_domains: []
     denied_domains: []
-  sandbox_runtime:
-    # Optional Codex-only outer sandbox wrapper. Use kind: srt when the
-    # @anthropic-ai/sandbox-runtime `srt` command is installed for the agent.
-    kind: none
+  sandbox_runtime:                     # Codex-only outer SRT wrapper
+    kind: none                         # or: srt
     command: srt
     enable_weaker_network_isolation: false
+  mcp:
+    inherit: none                      # none | allowlist | all (all = Codex only)
+    allowed_servers: []
+    servers: {}
+```
+
+**Concurrency and turns:**
+
+- `max_concurrent_agents` is the global dispatch cap.
+- `max_turns` (default `20`) caps how many back-to-back turns Symphony will run in a single worker
+  invocation when a turn completes but the issue is still active. Codex reuses one `threadId`
+  across these turns; Claude relaunches per turn (workspace + prompt provide continuation).
+- `command_timeout_ms` (default `600000`, i.e. 10 min) caps a single shell command. Set `0` to
+  disable.
+
+**Token budgets:**
+
+- `max_tokens_per_issue` (default `500000`) and `max_tokens_per_day` (default `5000000`,
+  UTC-aligned) are guardrails. Raise either to a larger positive integer, or set to `null` to
+  disable.
+- The per-issue cap stops only the over-budget issue without retrying; the daily cap pauses new
+  dispatch for the day while already-running agents continue.
+- Codex app-server reporting feeds the structured event path most completely; **Claude is
+  best-effort** until its usage events are normalized. Symphony warns if a budget is active with
+  a command that may not report token usage.
+- The dashboard surfaces daily usage, daily remaining headroom, and per-issue usage. Cached vs
+  fresh input tokens are distinguished when the agent reports them.
+
+**Network access:**
+
+| `mode` | Behavior |
+| --- | --- |
+| `allowlist` (default) | Codex sandbox network switch on, with a thread-level allow map: Symphony built-in dev domains + `allowed_domains` − `denied_domains`. |
+| `open` | Codex sandbox network switch on without a Symphony-managed overlay (broad `networkAccess: true`). Rejected when SRT is enabled. |
+| `block` | Codex sandbox network switch off (`networkAccess: false`). |
+
+`denied_domains` always wins over built-in and user-provided `allowed_domains`.
+
+#### Codex-specific: sandbox
+
+These keys are Codex-only and use safer defaults when omitted:
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `agent.approval_policy` | `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` | String values supported by the local Codex schema: `untrusted`, `on-failure`, `on-request`, `auto_approve_all`. Object-form `reject` is the Codex default in Symphony. The wire value `never` is **not** supported here; use `auto_approve_all` for unattended mode. |
+| `agent.thread_sandbox` | `workspace-write` | Supported values: `read-only`, `workspace-write`, `danger-full-access`. |
+| `agent.turn_sandbox_policy` | `workspaceWrite` rooted at the issue workspace | When set explicitly, Symphony still ensures the issue workspace stays in `writableRoots`, and adds the `.git` directory plus Git's `--git-dir` and `--git-common-dir` (so branch/commit/fetch/push work for clones and linked worktrees). Other policy fields depend on the targeted Codex app-server version. |
+| `agent.network_access.mode` | `allowlist` | See table above. |
+| `agent.sandbox_runtime.kind` | `none` | Optional outer SRT wrapper. |
+
+Codex native `workspace-write` sandboxing is the default compatibility path. Symphony injects a
+managed permission profile containing the sensitive read-deny list, but current Codex versions can
+either fail shell execution when only that profile is used or drop it when legacy thread/turn
+sandbox fields are sent. **Treat native Codex deny-list enforcement as best-effort** unless your
+Codex runtime has been verified with a shell-execution probe. Use `sandbox_runtime.kind: srt` when
+deny rules must be enforced while shell commands remain available.
+
+#### Codex-specific: `sandbox_runtime: srt`
+
+An optional outer-sandbox wrapper using `@anthropic-ai/sandbox-runtime`.
+
+- `kind: srt` wraps the launch as `srt --settings <temp-settings.json> <agent.command-with-codex-config>`.
+- `command` defaults to `srt`; can be a shell-like string when a wrapper such as `mise exec -- srt`
+  is needed.
+- With SRT enabled, Symphony sends Codex an `externalSandbox` turn policy so SRT owns command
+  sandbox enforcement (avoids nesting `sandbox-exec` inside `sandbox-exec`).
+- Symphony emits `enableWeakerNestedSandbox: true` for Linux/Docker compatibility.
+  `enable_weaker_network_isolation` maps directly to the same SRT setting; keep it `false`
+  unless required.
+- Symphony generates the temporary settings file from `agent.network_access`,
+  `workspace.sandbox.allow_read_paths`, the issue workspace, linked-worktree Git metadata roots,
+  and the shared sensitive-path deny lists. The file is removed when the session stops.
+- `agent.network_access.mode: open` is **rejected** with SRT (no unrestricted domain wildcard).
+  Use `allowlist` or `block`.
+- **Local only:** remote SSH workers reject `kind: srt` because the temp settings file is
+  generated on the orchestrator host.
+- SRT wraps the entire Codex process tree, so it cannot distinguish Codex's own credential reads
+  from commands launched beneath Codex. Treat this as an additional OS guardrail, not a complete
+  credential isolation boundary.
+
+#### `agent.mcp`
+
+Controls which MCP servers the agent can reach. Symphony always exposes its built-in `symphony`
+MCP server; every other server is gated by this section.
+
+| Key | Description |
+| --- | --- |
+| `inherit` (default `none`) | `none` ignores the host runtime config. `allowlist` inherits servers named in `allowed_servers` (requires non-empty list). `all` inherits every host server except `symphony` — **Codex only**, rejected for Claude. |
+| `allowed_servers` | Only meaningful with `inherit: allowlist`. Setting it with `none` or `all` is rejected. |
+| `servers` | Map of `name → declaration`. Reserved name: `symphony`. |
+
+Per-server declaration:
+
+| Key | Type | Notes |
+| --- | --- | --- |
+| `transport` | string, default `stdio` | `stdio` \| `http` \| `sse`. **`http`/`sse` with `codex` in `runtimes` is rejected.** |
+| `command`, `args`, `env` | strings / list / map | Required for `stdio`. `env` is a map of string keys/values. |
+| `url`, `headers` | string / map | Required for `http` and `sse`. |
+| `runtimes` | list, default `["claude", "codex"]` | Restricts which runtimes the server is published to. `runtimes: ["claude"]` is the typical way to expose HTTP/SSE MCP to Claude without violating Codex's stdio invariant. |
+
+**Env-var expansion** in `env` and `headers`: a value that is exactly `$NAME` (where `NAME` matches
+`[A-Za-z_][A-Za-z0-9_]*`) is resolved from the orchestrator's environment at config-load time.
+A set var substitutes the value; an empty var drops the entry; a missing var keeps the literal
+`$NAME` (so misconfigurations surface at the MCP server's own startup). Embedded references
+(`"Bearer $TOKEN"`) are **not** expanded — use a whole-value reference or pre-compose the literal.
+
+**Runtime-specific wiring:**
+
+- **Codex:** Symphony writes a fresh `CODEX_HOME` per session containing a generated `config.toml`
+  (symphony + inherited + declared servers) and a symlink to the operator's `~/.codex/auth.json`
+  when present (skipped with a warning if missing). The generated path is added to the sandbox
+  filesystem deny-read list so the agent cannot read its own `auth.json`/`config.toml`/`AGENTS.md`.
+  Remote workers also receive a per-session `/tmp/symphony-codex-home-<id>` directory; Symphony
+  tears both down at session stop.
+- **Codex remote workers:** `inherit: allowlist` and `inherit: all` are rejected (Symphony only
+  reads the orchestrator's host config). Declare servers explicitly under `servers`.
+- **Claude:** `inherit: allowlist` reads only the top-level `mcpServers` map in
+  `~/.claude.json`. Plugin MCP (`~/.claude/plugins/*/.mcp.json`), project `.mcp.json`, and
+  `.claude/settings.json` enable/disable semantics are excluded. Declare those servers explicitly
+  when needed.
+
+Example: Claude with one allow-listed inherited server, plus stdio and HTTP servers:
+
+```yaml
+agent:
+  kind: claude
+  command: claude --model claude-opus-4-7 --dangerously-skip-permissions
+  mcp:
+    inherit: allowlist
+    allowed_servers: [playwright]   # from ~/.claude.json's top-level mcpServers
+    servers:
+      filesystem:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/Projects"]
+        runtimes: [claude]
+
+      docs:
+        transport: http
+        url: https://docs.example/mcp
+        headers:
+          Authorization: $DOCS_MCP_BEARER
+        runtimes: [claude]          # http/sse + codex is rejected
+
+      github:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-github"]
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: $GITHUB_TOKEN
+        runtimes: [claude]
+```
+
+### `review_agent`
+
+```yaml
 review_agent:
-  enabled: false
-  # When enabled, kind and command are required and may match or differ from agent.
-  # kind: codex
-  # command: codex app-server
-  # max_iterations: 1
+  enabled: true
+  kind: codex                  # or: claude
+  command: codex app-server
+  max_iterations: 1
+```
+
+Optional executor + reviewer run shape. Disabled by default; with the block absent, runs keep the
+single-agent shape.
+
+- When enabled, `kind` and `command` are required and may match or differ from `agent`.
+- `max_iterations` (default `1`) controls how many `request_changes` correction passes are allowed
+  before Symphony blocks the run with the reviewer's latest reason.
+- The reviewer is told to stop before push, runs in the same workspace with read-only Linear and
+  GitHub tools, and must return a structured JSON verdict. `approve` injects a push handoff
+  prompt; `request_changes` injects reviewer comments into one more executor pass while
+  `max_iterations` allows it; `block` fails the worker run without pushing.
+- Reviewer token usage is tracked separately from total run token usage for observability.
+- Linear/GitHub write tools are hidden from MCP listings and rejected if called directly.
+- **Size `agent.max_turns` accordingly:** it budgets every reviewer-driven continuation turn. With
+  `review_agent.enabled: true`, set it to at least `2 + 2 * review_agent.max_iterations` to cover
+  the executor turn, each correction round, and the final push handoff. If too low, Symphony
+  stops the run before the reviewer can hand off, leaving the workspace committed but unpushed.
+
+### `quality_gate`
+
+```yaml
+quality_gate:
+  enabled: true
+  provider: anthropic              # or: openai
+  model: claude-haiku-4-5-20251001
+  pass_threshold: 6                # 1-10; scores >= this dispatch
+  clarification_floor: 4           # optional; scores 4..(pass_threshold-1) ask for clarification
+  max_clarification_rounds: 2      # optional; default 2
+  on_error: pass                   # or: skip
+```
+
+Disabled by default. When enabled, Symphony scores each candidate issue with an LLM before
+queuing for dispatch:
+
+- Scores **≥ `pass_threshold`** dispatch.
+- Scores **`clarification_floor` through `pass_threshold − 1`** are held in Linear with a
+  deterministic clarification comment and surface in the dashboard's `Awaiting clarification`
+  section.
+- Scores **below `clarification_floor`** are skipped for the session, surfaced in the dashboard's
+  `Skipped` section, and a Linear comment explains the score and how to re-queue.
+
+Notes:
+
+- API keys come from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — never from `WORKFLOW.md`.
+- `min_score` is still accepted for legacy configs: when `pass_threshold` is unset, Symphony
+  treats `min_score` as the pass threshold and leaves clarification disabled unless
+  `clarification_floor` is explicitly set.
+- Scores are cached per issue keyed by Linear's `updated_at` plus non-quality-gate comment
+  activity, so an operator reply invalidates the cache. Symphony's own quality-gate comments do
+  not invalidate the cache by themselves.
+- Clarification comments are posted once per issue/comment-activity key. After
+  `max_clarification_rounds` the issue is skipped with a comment naming the cap. A clarified
+  issue that later passes is dispatched on the next poll.
+- `on_error: pass` (default) lets an issue qualify when the LLM call fails. `on_error: skip` is
+  stricter: failure skips the cycle and retries on the next poll. Neither mode updates the cache
+  on failure.
+
+### `pr_review`
+
+```yaml
 pr_review:
-  mode: tracker
-  # The following keys are polling-mode only and are ignored while mode is tracker.
-  # mode: polling
+  mode: tracker                  # default; preserves the human-driven review loop
+  # mode: polling                # opt in to PrReviewPoller
+  # cooldown_minutes: 10
+  # stale_days: 7
   # auto_reply: false
   # auto_request_review: false
   # github_user: null
   # bot_users: []
+```
+
+In `tracker` mode (default), Symphony reacts only to Linear state moves. In **`polling` mode**,
+Symphony starts a `PrReviewPoller` process that:
+
+- Discovers in-review issues with attached GitHub PRs and records PR URL and workspace in the run
+  store.
+- Waits `cooldown_minutes` (default `10`) before responding to requested changes or non-bot
+  reviewer comments.
+- Moves approved or rework-requested issues back to `In Progress` for normal dispatch.
+- Injects unaddressed reviewer comments into the first prompt.
+- Removes tracked workspaces when PRs close or stay idle beyond `stale_days` (default `7`).
+
+`cooldown_minutes`, `stale_days`, `bot_users`, `auto_reply`, and `auto_request_review` are
+polling-only — they default to 10 minutes, 7 days, no ignored users, no GitHub replies, and no
+review re-requests when omitted.
+
+**Post-PR quiet handling:** when a run completes successfully after opening a PR and the issue is
+still active without new work arriving since the run, Symphony moves it to `In Review` and watches
+instead of immediately re-dispatching. Re-dispatch still happens on manual updates after the last
+run, transitions to `Rework`, or pending reviewer/CI context from pollers.
+
+### `ci`
+
+```yaml
 ci:
   enabled: false
-  # poll_interval_ms: 30000
+  # poll_interval_ms: 30000   # default: falls back to polling.interval_ms
   # log_excerpt_lines: 200
   # flaky_retry: true
   # max_retries: 3
   # escalation_state: In Review
-watchdog:
-  enabled: true
-  tick_interval_ms: 60000
-  no_progress_threshold_ms: 600000
+```
+
+Disabled by default. Requires `pr_review.mode: polling`. When `enabled: true` Symphony starts a
+`CiPoller` that polls GitHub Actions via `gh pr view --json statusCheckRollup`:
+
+- Failed checks are rerun once with `gh run rerun --failed` (when `flaky_retry: true`) before any
+  agent dispatch.
+- If the rerun also fails, Symphony stores a truncated failed-job log excerpt, emits a CI failure
+  notification, moves the Linear issue back to `In Progress`, and injects the CI failure context
+  into the first agent prompt.
+- After `max_retries` dispatched attempts, the issue moves to `escalation_state` and emits a CI
+  escalation notification.
+
+### `learnings`
+
+```yaml
 learnings:
   enabled: false
   provider: anthropic
   model: claude-haiku-4-5-20251001
   max_total_per_repo: 500
   max_per_run: 3
+```
+
+Disabled by default. Requires `pr_review.mode: polling`. When enabled, a merged tracked PR
+triggers one LLM reflection call (same Anthropic/OpenAI provider modules as `quality_gate`).
+Valid JSON responses write up to `max_per_run` records (each with an evidence quote) into the
+durable run store, pruned by `max_total_per_repo` per repository.
+
+Phase 1 is **capture-only**: learnings appear read-only at `/learnings` and are not injected into
+agent prompts. Provider API keys come from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+
+### `watchdog`
+
+```yaml
+watchdog:
+  enabled: true
+  tick_interval_ms: 60000
+  no_progress_threshold_ms: 600000
+```
+
+Enabled by default. Protects running agent sessions from silent no-progress stalls. The watchdog
+checks every `tick_interval_ms` (default `60000`) and compares the current time with the latest
+transcript event timestamp. When no event has arrived for `no_progress_threshold_ms` (default
+`600000`, i.e. 10 minutes), Symphony stops the agent session, runs `hooks.after_run`, records the
+run as timed out, emits `run_stuck`, and schedules a retry through the normal queue/backoff. Set
+`enabled: false` to keep the timer active while disabling automatic termination.
+
+### `notifications`
+
+```yaml
 notifications:
   enabled: false
   # redact_titles: true
@@ -286,30 +601,141 @@ notifications:
   #     events: [run_failed, run_stuck, budget_exceeded, ci_failed, ci_escalated]
   #     headers:
   #       Authorization: $NOTIFY_AUTH_HEADER
-quality_gate:
-  enabled: true
-  provider: anthropic           # or: openai
-  model: claude-haiku-4-5-20251001
-  pass_threshold: 6             # >= this score, issues dispatch
-  clarification_floor: 4        # 4..5 asks Linear clarification questions
-  max_clarification_rounds: 2   # then skip until the description is updated
-  on_error: pass                # or: skip
+```
+
+Disabled by default. When enabled, Symphony emits semantic lifecycle events to Slack incoming
+webhooks and generic JSON webhooks without blocking the orchestrator.
+
+Supported v1 events: `pr_opened`, `awaiting_review`, `run_failed`, `run_stuck`, `issue_completed`,
+`budget_exceeded`, `dependency_pending_approval`, `reviewer_commented`, `rework_pushed`,
+`ci_failed`, `ci_escalated`.
+
+- Per-channel `events` filters limit delivery; omitting `events` sends all supported events to
+  that channel.
+- `redact_titles: true` suppresses issue and PR titles while preserving identifiers and URLs.
+- `webhook_url`, `url`, and `headers.*` values expand `$VAR` from the process environment at
+  startup, so configs can ship a literal `$SLACK_WEBHOOK_URL` placeholder in source control and
+  resolve it from the operator's shell.
+- **Idempotent across restarts:** Symphony persists per-run markers in the durable run store, so
+  events like `pr_opened`, `awaiting_review`, and `issue_completed` are not re-emitted for runs
+  that already reached those milestones.
+
+### `dependencies`
+
+```yaml
 dependencies:
   allow_registries: []
   allow_git_sources: []
   allow_path_sources: []
-repos:
-  - name: my-repo
-    workflow: ./WORKFLOW.md
 ```
 
-`./WORKFLOW.md`:
+Optional. Extends the built-in dependency-source trust defaults used by the direct-manifest audit.
+All three lists are additive allow-lists; anything outside the built-ins and these lists is held
+for review when a manifest change introduces it.
+
+### `verification`
+
+```yaml
+verification:
+  enabled: true
+  port_allocation:
+    range: [4000, 4099]
+```
+
+Optional. Disabled by default. Process-wide defaults (`enabled`, `port_allocation.range`) live in
+`symphony.yml`; per-repo `verification.dev_server` commands live in that repo's `WORKFLOW.md`
+front matter.
+
+When verification is enabled for a repo, Symphony allocates one port per dispatched issue from
+the effective range (default `[4000, 4099]`) and exposes it as `SYMPHONY_VERIFICATION_PORT` to
+`hooks.before_run`, `hooks.after_run`, and the supervised `verification.dev_server.start_cmd`.
+Symphony does **not** set `PORT` — wire the value explicitly for the tool you run, e.g.
+`PORT=$SYMPHONY_VERIFICATION_PORT pnpm dev`, `pnpm dev --port $SYMPHONY_VERIFICATION_PORT`, or
+`PORT=$SYMPHONY_VERIFICATION_PORT mix phx.server`.
+
+The port range is global to the Symphony process (including SSH worker pools); size it for total
+concurrently dispatched verification runs, not per-worker-host concurrency.
+
+When `verification.dev_server.start_cmd` is set in `WORKFLOW.md`, Symphony starts it in the issue
+workspace after `hooks.before_run` and before the first agent turn, polls `health_check_url` until
+HTTP 200 or `health_timeout_ms`, then stops the process group with `stop_signal` and escalates to
+SIGKILL after `stop_timeout_ms`.
+
+> The supervised path requires `python3` or `python` on the host so Symphony can call `setsid()`
+> before executing the shell command; without Python, verification startup fails with
+> `verification_failed` before any agent turn runs. A hook-started dev server still works but is
+> outside Symphony's supervision and health gate — such hook scripts must manage their own
+> backgrounding and cleanup.
+
+### `github`
+
+```yaml
+github:
+  enterprise_hosts: []
+  failed_run_log_max_bytes: 65536
+```
+
+- `enterprise_hosts` is an exact host allowlist for GitHub Enterprise PR and repo URLs.
+  `github.com` and `www.github.com` are always accepted; other GitHub-like hostnames are ignored
+  unless listed here.
+- `failed_run_log_max_bytes` (default `65536`) caps the failed-step log excerpt returned by the
+  scoped `github_get_failed_run_log()` MCP tool.
+- **SSH workers:** scoped Linear and GitHub PR API operations exposed through brokered dynamic
+  tools run in the orchestrator with orchestrator credentials. During Codex session setup,
+  Symphony discovers the remote workspace's `origin` URL and current branch over SSH and uses that
+  scope for `github_get_pull_request`, `github_create_pull_request`,
+  `github_update_pull_request_body`, `github_add_pr_comment`, and `github_get_pr_checks`. Git push
+  is separate: `github_push_branch` is **not** brokered for SSH workers and returns an unsupported
+  error.
+
+### `observability` and `server`
+
+```yaml
+server:
+  port: 0                                 # 0 = ephemeral; or pass --port
+observability:
+  dashboard_enabled: true
+  transcript_buffer_size: 200
+```
+
+- The Phoenix LiveView dashboard, transcript view, and JSON API start by default on an ephemeral
+  local port. Set `server.port` or pass CLI `--port` to pin the port.
+- Set `observability.dashboard_enabled: false` to keep the default observability service off
+  unless `--port` is supplied for that run.
+- The service exposes `/`, `/repos/<repo_key>/issues/<issue_identifier>/transcript`,
+  `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`. The state endpoint
+  includes recent durable run history when available.
+- `observability.transcript_buffer_size` (default `200`) controls how many recent Codex events
+  each running issue keeps for transcript replay. When a completed run moves into Watching, that
+  final buffer is retained for the watched issue until the watch closes.
+
+### Polling
+
+Repo polls are staggered over `polling.interval_ms`. With 10 repos and `interval_ms: 5000`, the
+orchestrator wakes about every 500 ms, but each healthy repo is still queried once per 5000 ms.
+Dispatchable candidates remain empty until every repo cache has warmed at least once, so
+conflicts can be detected across staggered results. If a warmed repo poll fails, Symphony logs
+the error, reuses that repo's cached issues, and retries the repo after the full polling
+interval. If a repo keeps failing before it ever warms, three consecutive cold failures mark its
+cache as an empty result so the other repos can continue dispatching.
+
+## `WORKFLOW.md` reference
+
+Each `repos[]` entry has its own `WORKFLOW.md`, located at `<repo.path>/<repo.workflow>`. The file
+uses YAML front matter for repo-local configuration, plus a Markdown body used as the issue-mode
+agent prompt. The optional front-matter key `prompts.pr` defines the PR-mode prompt for explicit
+PR runs; that template receives the same common variables plus a `pr` object with `number`,
+`url`, `title`, `body`, `state`, `base_ref`, `head_ref`, and `intent`.
 
 ```md
 ---
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
+  before_run: |
+    pnpm install
+  after_run: |
+    pnpm dlx kill-port $SYMPHONY_VERIFICATION_PORT || true
 prompts:
   pr: |
     You are working on PR {{ pr.url }}.
@@ -330,342 +756,105 @@ Use {{ agent.workpad_heading }} as the tracking workpad comment header.
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
 
-## Reference notes
-
-- If a value is missing, defaults are used.
-- `quality_gate` is disabled by default. Set `quality_gate.enabled: true` to opt in; the defaults
-  are `provider: anthropic`, `model: claude-haiku-4-5-20251001`, threshold `6`, and
-  `on_error: pass`.
-- For Linear trackers, `project_slug` is optional when another scoping filter is set. Configure at
-  least one of `project_slug`, `team`, or `labels`; these filters are combined server-side. Example:
-  `team: "RSM"` with `labels: ["backend", "infra"]`.
-- `repos:` is required and must contain at least one entry. See the [`repos` schema](#repos-list)
-  above for fields, validation, and a multi-repo example. Per-repo selectors (`team`, `projects`,
-  `labels`, `assignee`) drive that repo's Linear candidate query; a repo that omits one of these
-  inherits the corresponding tracker-level value (`tracker.project_slug`, `tracker.team`,
-  `tracker.labels`, `tracker.assignee`). Issues returned by two or more repo queries are placed
-  in the conflict bucket and excluded from dispatch.
-- Repo polls are staggered over `polling.interval_ms`. With 10 repos and `interval_ms: 5000`, the
-  orchestrator wakes about every 500ms, but each healthy repo is still queried once per 5000ms.
-  Dispatchable candidates remain empty until every repo cache has warmed at least once, so conflicts
-  can be detected across staggered results. If a warmed repo poll fails, Symphony logs the error,
-  reuses that repo's cached issues, and retries that repo after the full polling interval. If a repo
-  keeps failing before it ever warms, three consecutive cold failures mark its cache as an empty
-  result so the other repos can continue dispatching.
-- The service CLI takes no positional arguments. Once `symphony.yml` loads, each repo's
-  `<path>/<workflow>` is the source of truth Symphony dispatches against. The dashboard transcript
-  URL embeds the repo `name` as `<repo_key>` —
-  `/repos/<repo_key>/issues/<issue_identifier>/transcript`.
-- One-shot CLI mode is available as
-  `./bin/symphony run <issue-identifier> [--config path] [--timeout 30m] [--no-retry]`.
-  It keeps the same explicit guardrail acknowledgement flag as service mode, resolves the issue
-  through the configured tracker and repo routes, starts only the runtime pieces needed for one
-  agent run, writes durable run history, and skips the polling loop, dashboard, HTTP server, and
-  durable retry-queue persistence. Exit codes are `0` for success, `1` for agent failure after
-  bounded one-shot attempts, `2` for configuration/validation errors, and `124` for timeout.
-- Safer Codex defaults are used when policy fields are omitted:
-  - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
-  - `agent.thread_sandbox` defaults to `workspace-write` for Codex.
-  - `agent.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace for Codex.
-  - `agent.network_access.mode` defaults to `allowlist`.
-  - `agent.sandbox_runtime.kind` defaults to `none`.
-- `workspace.sandbox.allow_read_paths` is an advanced escape hatch for paths that are denied by
-  Symphony's default credential read-deny list but are required by the agent runtime for legitimate
-  repository work. Entries are exact sandbox paths such as `~/.npmrc`, `~/.cargo/credentials`, or
-  a narrow SSH state file such as `~/.ssh/known_hosts`. For Codex they are rendered as read-only
-  filesystem access instead of `none`; for SRT they are also emitted as explicit `allowRead`
-  carve-outs so narrow files can be re-allowed inside denied directories. The shared sandbox
-  helper can render the same deny-list subtraction for Claude, but the current Claude adapter does
-  not pass these entries into its temporary settings, so treat this as Codex-effective until that
-  adapter gap is closed. Do not use it for the agent runtime credential stores under `~/.codex` or
-  `~/.claude`; Symphony keeps `~/.codex/auth.json`, `~/.codex/config.toml`, and
-  `~/.codex/AGENTS.md` in the managed Codex profile's deny list even if those paths are listed
-  here, subject to the native Codex enforcement limitations below.
-- Supported `agent.approval_policy` values depend on the targeted Codex app-server version. In the
-  current local Codex schema, string values include:
-  - `untrusted`: Codex can work inside the configured sandbox, but asks before commands outside its
-    trusted set.
-  - `on-failure`: Codex runs inside the configured sandbox and asks for approval when sandboxed
-    execution fails and it needs to retry outside the sandbox boundary.
-  - `on-request`: Codex works inside the configured sandbox by default and asks when it explicitly
-    needs to cross a sandbox or policy boundary.
-  - `auto_approve_all`: Symphony's explicit unattended mode. Symphony forwards Codex's wire value
-    for "never ask" and auto-approves permission, tool, and MCP elicitation requests.
-  Object-form `reject` is also supported and is the Codex default in Symphony; it automatically
-  rejects the configured approval prompt categories instead of letting the agent cross those
-  boundaries. The Codex-facing string `never` is not supported in Symphony config; use
-  `auto_approve_all` when unattended auto-approval is intended.
-- Codex native `workspace-write` sandboxing is the default compatibility path. Symphony still
-  injects a managed permission profile containing the sensitive read-deny list, but current Codex
-  app-server versions can either fail shell execution when only that profile is used or drop the
-  injected profile when legacy thread/turn sandbox fields are sent. Treat native Codex deny-list
-  enforcement as best-effort unless the targeted Codex runtime has been verified with a shell
-  execution probe. Use `agent.sandbox_runtime.kind: srt` when those deny rules must be enforced
-  while shell commands remain available.
-- Supported `agent.thread_sandbox` values for Codex: `read-only`, `workspace-write`,
-  `danger-full-access`.
-- Supported `agent.network_access.mode` values:
-  - `allowlist`: enables the Codex sandbox network switch and sends a thread-level
-    `config.experimental_network` allow map built from Symphony's built-in dev domains plus
-    `allowed_domains` minus `denied_domains`.
-  - `open`: enables the Codex sandbox network switch without a Symphony-managed domain overlay,
-    matching the previous broad `networkAccess: true` behavior.
-  - `block`: disables the Codex sandbox network switch, matching `networkAccess: false`.
-  `denied_domains` always takes precedence over built-in and user-provided `allowed_domains`.
-- `agent.sandbox_runtime` is a Codex-only optional outer sandbox wrapper:
-  - `kind: none` keeps the current launch path.
-  - `kind: srt` wraps local Codex launch as
-    `srt --settings <temporary-settings.json> <agent.command-with-codex-config>`.
-  - `command` defaults to `srt` and may be a shell-like command string when a wrapper such as
-    `mise exec -- srt` is required.
-  - When SRT is enabled, Symphony sends Codex an `externalSandbox` turn policy so the SRT wrapper
-    owns command sandbox enforcement. This avoids nesting Codex's macOS `sandbox-exec` inside SRT's
-    macOS `sandbox-exec`.
-  - Symphony still emits SRT's `enableWeakerNestedSandbox: true` setting for Linux/Docker
-    compatibility.
-  - `enable_weaker_network_isolation` maps directly to the same sandbox-runtime setting. Keep it
-    `false` unless the host environment requires that compatibility mode.
-  - Symphony generates the temporary settings file from `agent.network_access`,
-    `workspace.sandbox.allow_read_paths`, the current issue workspace, linked-worktree Git metadata
-    roots, and the shared sensitive path deny lists. The generated SRT policy denies reads for
-    credential/config paths, allows writes to the issue workspace, discovered Git metadata roots,
-    and temp directories, protects the same workflow/config files from writes, and allows Codex to
-    write its own runtime state under `~/.codex` while deny-writing sensitive/static Codex files
-    such as `auth.json`, `config.toml`, and `AGENTS.md`. Symphony removes the
-    temporary settings file when the Codex session stops.
-  - `agent.network_access.mode: open` is rejected with SRT because sandbox-runtime does not support
-    an unrestricted domain wildcard. Use `allowlist` or `block`.
-  - SRT support is local-only today. Remote SSH workers reject `kind: srt` at launch time because
-    the temporary settings file is generated on the orchestrator host.
-  - SRT wraps the whole Codex process tree, so it cannot distinguish Codex's own credential reads
-    from commands launched beneath Codex. Treat this as an additional OS guardrail, not a complete
-    credential isolation boundary.
-- `agent.mcp` controls which MCP servers the agent can reach. Symphony always exposes its built-in
-  `symphony` MCP server for tool execution; every other server is gated by this section.
-  - `agent.mcp.inherit` (default `none`) decides whether MCP servers declared in the operator's
-    host runtime config are pulled into the agent's isolated config:
-    - `none`: ignore the host runtime config entirely. The agent only sees servers declared under
-      `agent.mcp.servers` plus the implicit `symphony` server.
-    - `allowlist`: only inherit servers whose names appear in `agent.mcp.allowed_servers`. Requires
-      `allowed_servers` to be non-empty. For Claude, Symphony reads only the top-level
-      `mcpServers` map from the operator's user-scope `~/.claude.json`.
-    - `all`: inherit every host MCP server (except `symphony`, which Symphony always owns).
-      Supported for Codex; rejected for Claude because Symphony's Claude adapter intentionally does
-      not layer plugin MCP, project `.mcp.json`, or `.claude/settings.json` enable/disable state in
-      v1.
-  - `agent.mcp.allowed_servers` is only meaningful with `inherit: allowlist`. Setting it with
-    `inherit: none` or `inherit: all` is rejected by config validation to prevent silently
-    discarded allowlists.
-  - `agent.mcp.servers` is a map of server name → declaration. Reserved name: `symphony` (rejected
-    by validation). Each declaration accepts:
-    - `transport` (string, default `stdio`). Supported values: `stdio`, `http`, `sse`. Codex MCP
-      servers MUST use `stdio` — declaring `http` or `sse` with `codex` in `runtimes` is rejected
-      by config validation.
-    - `command`, `args`, `env` — required for `stdio`. `env` is a map of string keys/values.
-    - `url`, `headers` — required for `http` and `sse`.
-    - `runtimes` (default `["claude", "codex"]`) selects which agent runtimes the server is
-      published to. Declaring `runtimes: ["claude"]` on an `http`/`sse` server is the typical way
-      to expose HTTP MCP to Claude without breaking the Codex stdio invariant.
-  - For Codex, Symphony writes a fresh `CODEX_HOME` per session containing a generated
-    `config.toml` (symphony + inherited + declared servers) and a symlink to the operator's
-    `~/.codex/auth.json` when present (skipped with a warning if missing). The generated path is
-    added to the sandbox filesystem deny-read list so the agent cannot read its own
-    `auth.json`/`config.toml`/`AGENTS.md`. Remote workers also receive a per-session
-    `/tmp/symphony-codex-home-<id>` directory; Symphony tears both down at session stop.
-  - For remote Codex workers, `inherit: allowlist` and `inherit: all` are rejected because
-    Symphony only locally reads the orchestrator's host config. Declare the needed servers
-    explicitly under `agent.mcp.servers` when running against a remote worker.
-  - For Claude, `inherit: allowlist` is bounded to the single user-scope `~/.claude.json` file.
-    Plugin MCP (`~/.claude/plugins/*/.mcp.json`), project `.mcp.json`, and `.claude/settings.json`
-    user/project/local enable-disable semantics are excluded. Declare those servers explicitly under
-    `agent.mcp.servers` when the agent needs them.
-  - Values in `env` and `headers` that are exactly `$NAME` (where `NAME` matches
-    `[A-Za-z_][A-Za-z0-9_]*`) are resolved from the orchestrator's process environment at
-    config-load time: a set env var substitutes the value, an empty env var drops the entry,
-    and a missing env var keeps the literal `$NAME` so misconfigurations surface at the MCP
-    server's own startup. Embedded references (e.g. `"Bearer $TOKEN"`) are not expanded —
-    use a whole-value reference or pre-compose the literal value.
-  - Example: declaring a stdio filesystem server, an HTTP docs server with a secret header,
-    and a stdio GitHub server that pulls its token from the operator environment:
-
-    ```yaml
-    agent:
-      kind: claude
-      command: claude --model claude-opus-4-7 --dangerously-skip-permissions
-      mcp:
-        inherit: allowlist
-        allowed_servers: [playwright] # read from ~/.claude.json's top-level mcpServers
-        servers:
-          filesystem:
-            transport: stdio      # default; can be omitted
-            command: npx
-            args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/Projects"]
-            runtimes: [claude]    # default ["claude","codex"]; narrow when the server is Claude-only
-
-          docs:
-            transport: http
-            url: https://docs.example/mcp
-            headers:
-              Authorization: $DOCS_MCP_BEARER     # resolved from orchestrator env at load time
-            runtimes: [claude]    # http/sse + codex is rejected by validation
-
-          github:
-            transport: stdio
-            command: npx
-            args: ["-y", "@modelcontextprotocol/server-github"]
-            env:
-              GITHUB_PERSONAL_ACCESS_TOKEN: $GITHUB_TOKEN
-            runtimes: [claude]
-    ```
-- `agent.command_timeout_ms` caps a single shell command even when it keeps streaming output.
-  Default: `600000` (10 minutes). Set `0` to disable this command-level guard.
-- When `agent.turn_sandbox_policy` is set explicitly for Codex, Symphony forwards the configured
-  map to Codex, but for `workspaceWrite` policies it ensures the current issue workspace stays in
-  `writableRoots` at runtime when a workspace path is available. Symphony always includes the
-  issue workspace `.git` path. For local Git checkouts, Symphony asks Git for the actual
-  `--git-dir` and `--git-common-dir` and includes those roots too, so branch, commit, fetch, and
-  push operations can update metadata for both regular clones and linked worktrees. When those
-  roots cannot be discovered, a worktree-backed repo falls back to its configured primary clone
-  `.git` metadata root. Symphony prepends these managed roots before any
-  `writableRoots` already present in the configured policy, and deduplicates the combined list.
-  Compatibility for the remaining fields still depends on the targeted Codex app-server version
-  rather than local Symphony validation. For known Codex policies with a boolean `networkAccess`
-  field, `agent.network_access` controls that field.
-- `agent.max_turns` caps how many back-to-back agent turns Symphony will run in a single worker
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-  Codex starts one app-server thread per worker run and reuses that `threadId` for continuation
-  turns. The current Claude adapter launches Claude Code as a CLI `--print --output-format
-  stream-json` turn with prompt input provided over stdin from a private temporary file, and it does
-  not pass a Symphony-managed resume/thread id between continuation turns. Claude continuation
-  depends on workspace, workpad, Linear state, and the continuation prompt rather than model-thread
-  history.
-- `agent.max_tokens_per_issue` and `agent.max_tokens_per_day` are token budget guardrails. Defaults
-  are `500000` tokens per issue and `5000000` tokens per UTC day, so workflows have finite caps even
-  when these keys are omitted. Raise either value by setting a larger positive integer, or set either
-  key to `null` to disable that specific cap intentionally. The per-issue limit stops only the
-  over-budget issue without retrying; the daily limit pauses new dispatch for the UTC day while
-  allowing already-running agents to continue. Budget enforcement depends on coding-agent token
-  reporting being normalized into Symphony's structured event path. Codex app-server token reporting
-  currently provides the most complete budget and dashboard accounting path; non-Codex commands, and
-  the current Claude adapter in particular, should be treated as best-effort for token budget
-  enforcement until their usage events are normalized the same way. Symphony warns if either budget
-  is active with a command that may not report token usage. Per-issue exhausted runs are rehydrated
-  from run history across restarts while the current limit still applies; raising or disabling the
-  per-issue limit lets the issue dispatch again. The dashboard shows daily usage and remaining daily
-  budget, and active session rows show per-issue token usage with remaining headroom. Token displays
-  include cached and uncached input when the agent reports cached input tokens, so large gross totals
-  can be distinguished from fresh context.
-- `review_agent` enables an executor + reviewer run shape. It is disabled by default. When enabled,
-  Symphony injects prompt guidance telling the executor to stop before push, runs a second app-server
-  agent in the same workspace with read-only Linear/GitHub tools, and requires a structured reviewer
-  JSON verdict. `approve` injects a push handoff prompt, `request_changes` injects reviewer comments
-  into one more executor pass while `max_iterations` allows it, and `block` fails the worker run
-  without pushing. Reviewer token usage is tracked separately from total run token usage for
-  observability.
-- `github.enterprise_hosts` is an exact host allowlist for GitHub Enterprise PR and repository
-  URLs. `github.com` and `www.github.com` are always accepted; other GitHub-like hostnames are
-  ignored unless listed here.
-- `github.failed_run_log_max_bytes` caps the failed-step log excerpt returned by the scoped
-  `github_get_failed_run_log()` MCP tool. Default: `65536`.
-- `watchdog` is enabled by default and protects running agent sessions from silent no-progress
-  stalls. It checks running agents every `watchdog.tick_interval_ms` (default: `60000`) and
-  compares the current time with the latest transcript event timestamp. When no event has arrived
-  for `watchdog.no_progress_threshold_ms` (default: `600000`), Symphony stops the agent session,
-  runs `hooks.after_run`, records the run as timed out, emits `run_stuck`, and schedules a retry
-  through the normal retry queue/backoff. Set `watchdog.enabled: false` to keep the timer active
-  while disabling automatic termination.
-- The optional `ci` block is disabled by default. `poll_interval_ms` falls back to
-  `polling.interval_ms` when omitted, `log_excerpt_lines` defaults to 200, `flaky_retry` defaults
-  to true, `max_retries` defaults to 3, and `escalation_state` defaults to `In Review`.
-- The optional `dependencies` block extends the built-in dependency source trust defaults used by
-  the direct-manifest audit. `allow_registries`, `allow_git_sources`, and `allow_path_sources` are
-  additive allow-lists; anything outside the built-ins and these lists is held for review when a
-  manifest change introduces it.
-- The optional `notifications` block is disabled by default. When enabled, Symphony emits semantic
-  lifecycle events to configured Slack incoming webhooks and generic JSON webhooks without blocking
-  the orchestrator. Supported v1 events are `pr_opened`, `awaiting_review`, `run_failed`,
-  `run_stuck`, `issue_completed`, `budget_exceeded`, `dependency_pending_approval`,
-  `reviewer_commented`, `rework_pushed`, `ci_failed`, and `ci_escalated`. Per-channel `events`
-  filters limit delivery; omitting `events` sends all supported events to that channel.
-  `redact_titles: true` suppresses issue and PR titles while preserving identifiers and URLs.
-  `notifications.channels[].webhook_url`, `url`, and
-  `headers.*` values expand `$VAR` from the process environment at startup, so a config can ship a
-  literal `$SLACK_WEBHOOK_URL` placeholder in source control and resolve it from the operator's
-  shell.
-- Lifecycle notification emission is idempotent across restarts. Symphony persists per-run markers
-  in the durable run store, so events such as `pr_opened`, `awaiting_review`, and `issue_completed`
-  are not re-emitted for runs that already reached those milestones.
-- If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
+- If the Markdown body is blank, Symphony uses a default prompt template containing the issue
   identifier, title, and body.
 - If `prompts.pr` is blank or absent, explicit PR runs use a built-in PR prompt. PR runs create
   worktree workspaces from the PR head branch when `workspace.strategy: worktree`, push updates back
   to the PR head branch, and do not create a new PR.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need. Symphony sets
-  `SYMPHONY_BRANCH` for workspace hooks; explicit PR runs set it to the PR head branch so
-  hook-based clone workspaces can check out the correct ref.
+  `git clone ... .` there along with any other setup. Symphony sets `SYMPHONY_BRANCH` for
+  workspace hooks; explicit PR runs set it to the PR head branch so hook-based clone workspaces
+  can check out the correct ref.
 - Set `repos[].workspace.strategy: worktree` to create each issue workspace from that repo's
   existing local primary clone instead of cloning in `hooks.after_create`. Configure
-  `repos[].workspace.repo` with that primary clone path; Symphony creates
-  `auto/<issue-identifier>` branches with `git worktree add`, fetches `origin` before dispatch by
-  default, and removes worktree workspaces with `git worktree remove --force` during cleanup.
-- With SSH workers, `workspace.root` and `repos[].workspace.repo` are both interpreted on the worker
-  host. Each worker host needs its own primary clone per worktree-backed repo; Symphony surfaces a
-  workspace error if it is missing.
-- For SSH workers, scoped Linear operations and GitHub PR API operations exposed through brokered
-  dynamic tools run in the orchestrator with orchestrator credentials. During Codex session setup,
-  Symphony discovers the remote workspace's `origin` URL and current branch over SSH and uses that
-  captured scope for `github_get_pull_request`, `github_create_pull_request`,
-  `github_update_pull_request_body`, `github_add_pr_comment`, and `github_get_pr_checks`. Git push
-  is separate: `github_push_branch` is not brokered for SSH workers and returns an unsupported
-  error.
-- `workspace.lifecycle.max_age_days` defaults to `14` and removes local workspaces older than that
-  age on startup and then every `workspace.lifecycle.gc_interval_ms` milliseconds while Symphony is
-  running. The age GC skips currently running workspaces, but does not require the associated issue
-  to be terminal.
-- `workspace.lifecycle.min_free_bytes` is unset by default. When set to a positive integer,
-  Symphony checks free space on `workspace.root` before starting new dispatches and pauses dispatch
-  with a dashboard/status reason if any configured workspace host is below the threshold or cannot
-  be checked.
-- Startup orphan sweep scans `workspace.root` for directories that do not match active/terminal
-  tracker issues or persisted run/retry records. `workspace.lifecycle.orphan_action` defaults to
-  `log`; set it to `delete` to remove orphans or `trash` to move them under
-  `workspace.lifecycle.trash_dir` (default `.trash`).
+  `repos[].workspace.repo` with the primary clone path; Symphony creates `auto/<issue-identifier>`
+  branches with `git worktree add`, fetches `origin` before dispatch by default, and removes
+  worktree workspaces with `git worktree remove --force` during cleanup.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- Optional `verification` orchestration is disabled by default. Put process-wide defaults such as
-  `verification.enabled` and `verification.port_allocation.range` in `symphony.yml`; put
-  repo-specific `verification.dev_server` commands in that repo's `WORKFLOW.md` front matter.
-  When verification is enabled for a repo, Symphony allocates one port per dispatched issue from
-  the effective `verification.port_allocation.range` (default `[4000, 4099]`) and exposes it as
-  `SYMPHONY_VERIFICATION_PORT` to `hooks.before_run`, `hooks.after_run`, and the supervised
-  `verification.dev_server.start_cmd`. Symphony does not set `PORT`; wire the value explicitly for
-  the tool you run, for example `PORT=$SYMPHONY_VERIFICATION_PORT pnpm dev`,
-  `pnpm dev --port $SYMPHONY_VERIFICATION_PORT`, or
-  `PORT=$SYMPHONY_VERIFICATION_PORT mix phx.server`. The port range is global to the Symphony
-  process, including SSH worker pools; size it for total concurrently dispatched verification runs,
-  not per-worker-host concurrency.
-- When `verification.dev_server.start_cmd` is set, Symphony starts it in the issue workspace after
-  `hooks.before_run` and before the first agent turn, polls `health_check_url` until HTTP 200 or
-  `health_timeout_ms`, then stops the process group with `stop_signal` and escalates to SIGKILL
-  after `stop_timeout_ms`. The supervised path requires `python3` or `python` on the host so
-  Symphony can call `setsid()` before executing the shell command; without Python, verification
-  startup fails with `verification_failed` before any agent turn runs. A hook-started dev server
-  still works, but it is outside Symphony's supervision and health gate; such hook scripts must
-  manage their own backgrounding and cleanup.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
-- Set `tracker.assignee` to a Linear user ID, or `me` to use the current API token's Linear viewer,
-  when you want one Symphony process to pick up only issues assigned to that user. If unset, all
-  active issues in the configured Linear scope are eligible. `tracker.assignee` reads from
-  `LINEAR_ASSIGNEE` when unset or when value is `$LINEAR_ASSIGNEE`.
-- `tracker.project_slug` is optional. Linear tracker configs must set at least one of
-  `tracker.project_slug`, `tracker.team`, a non-empty `tracker.labels` list, or repo-level
-  `team`, `projects`, `labels`, or `assignee` selectors.
-- For path values, `~` is expanded to the home directory.
-- For env-backed path values, use `$VAR`. `workspace.root` and `repos[].workspace.repo` resolve
-  `$VAR` before path handling. For Codex, `agent.command` stays a shell command string and any
-  `$VAR` expansion there happens in the launched shell; Claude Code commands are split into
-  executable arguments before launch.
+- **Boot-time validation:** if `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony
+  does not boot. If a later reload fails, Symphony keeps running with the last known good
+  workflow and logs the reload error until the file is fixed.
+
+## Example configs
+
+### Full `symphony.yml` with most blocks
+
+```yaml
+tracker:
+  kind: linear
+  project_slug: "..."
+  assignee: null
+workspace:
+  root: ~/code/workspaces
+  sandbox:
+    allow_read_paths: []
+github:
+  enterprise_hosts: []
+  failed_run_log_max_bytes: 65536
+verification:
+  enabled: true
+  port_allocation:
+    range: [4000, 4099]
+agent:
+  kind: codex
+  max_concurrent_agents: 10
+  max_turns: 20
+  command: codex app-server
+  # max_tokens_per_issue: 500000
+  # max_tokens_per_day: 5000000
+  network_access:
+    mode: allowlist
+    allowed_domains: []
+    denied_domains: []
+  sandbox_runtime:
+    kind: none
+    command: srt
+    enable_weaker_network_isolation: false
+review_agent:
+  enabled: false
+  # kind: codex
+  # command: codex app-server
+  # max_iterations: 1
+pr_review:
+  mode: tracker
+ci:
+  enabled: false
+watchdog:
+  enabled: true
+  tick_interval_ms: 60000
+  no_progress_threshold_ms: 600000
+learnings:
+  enabled: false
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  max_total_per_repo: 500
+  max_per_run: 3
+notifications:
+  enabled: false
+quality_gate:
+  enabled: true
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  pass_threshold: 6
+  clarification_floor: 4
+  max_clarification_rounds: 2
+  on_error: pass
+dependencies:
+  allow_registries: []
+  allow_git_sources: []
+  allow_path_sources: []
+repos:
+  - name: my-repo
+    workflow: ./WORKFLOW.md
+```
+
+### Env-driven values
+
+`~` expands to the home directory. For env-backed path values, use `$VAR`. `workspace.root` and
+`repos[].workspace.repo` resolve `$VAR` before path handling. For Codex, `agent.command` stays a
+shell-command string and any `$VAR` expansion there happens in the launched shell; Claude
+commands are split into executable arguments before launch.
 
 ```yaml
 tracker:
@@ -687,82 +876,3 @@ repos:
       strategy: worktree
       repo: $SOURCE_REPO_PATH
 ```
-
-- If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
-- If a later reload fails, Symphony keeps running with the last known good workflow and logs the
-  reload error until the file is fixed.
-- `observability.transcript_buffer_size` controls how many recent Codex events each running issue
-  keeps for transcript replay. When a completed run moves into Watching, that final buffer is
-  retained for the watched issue until the watch closes. Default: `200`.
-- The Phoenix LiveView dashboard, transcript view, and JSON API start by default on an ephemeral
-  local port. Set `server.port` or pass CLI `--port` to pin the port. Set
-  `observability.dashboard_enabled: false` to keep the default observability service off unless
-  `--port` is supplied for that run. The service exposes `/`,
-  `/repos/<repo_key>/issues/<issue_identifier>/transcript`, `/api/v1/state`,
-  `/api/v1/<issue_identifier>`, and `/api/v1/refresh`. The state endpoint includes recent durable
-  run history when available.
-
-## Quality gate
-
-The `quality_gate` settings score each candidate issue with an LLM before it is queued for dispatch.
-The gate is disabled by default; set `enabled: true` to opt in to the Anthropic scorer. Issues that
-score at or above `pass_threshold` dispatch. Issues below
-`clarification_floor` are skipped for the session, surfaced in the dashboard's `Skipped` section,
-and a Linear comment is posted explaining the score and how to re-queue. When
-`clarification_floor` is set, scores from `clarification_floor` through `pass_threshold - 1` are
-held in Linear with a deterministic clarification comment instead of being dispatched. They also
-appear in the dashboard's `Awaiting clarification` section.
-
-```yaml
-quality_gate:
-  enabled: true
-  provider: anthropic           # or: openai
-  model: claude-haiku-4-5-20251001
-  pass_threshold: 6             # 1-10; scores >= this dispatch
-  clarification_floor: 4        # optional; scores 4..5 ask for clarification
-  max_clarification_rounds: 2   # optional; default 2
-  on_error: pass                # or: skip
-```
-
-- API keys are read from the environment (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`); they are never
-  read from `WORKFLOW.md`.
-- Leave `enabled: false` (the default) to dispatch raw issues without LLM scoring.
-- `min_score` is still accepted for existing configs. When `pass_threshold` is unset, Symphony
-  treats `min_score` as the pass threshold and leaves clarification disabled unless
-  `clarification_floor` is explicitly set.
-- Scores are cached per issue keyed by Linear's `updated_at` plus non-quality-gate comment
-  activity, so an operator reply invalidates the cache and the next poll re-scores with the reply in
-  context. Symphony's own quality-gate comments do not invalidate the cache by themselves.
-- Clarification comments are posted once per issue/comment-activity key. If the operator replies
-  and the issue still scores in the clarification band, Symphony asks again until
-  `max_clarification_rounds` is reached; after that it skips with a comment naming the cap. If a
-  clarified issue later passes, it is dispatched on the next poll.
-- `on_error: pass` (default) lets an issue qualify when the LLM call fails, so a failing provider
-  does not block dispatch. `on_error: skip` is stricter: when the LLM call fails, the issue is
-  skipped for the cycle and retried on the next poll. In both cases the cache is not updated on
-  failure, so a transient outage automatically retries.
-## Review Agent
-
-The optional `review_agent` block runs a second configured coding agent after the executor finishes
-its pre-push work. The reviewer sees issue context, the repo workflow prompt, and the committed diff,
-then must return only a JSON object with `verdict`, `comments`, and `reason` fields.
-
-```yaml
-review_agent:
-  enabled: true
-  kind: codex
-  command: codex app-server
-  max_iterations: 1
-```
-
-- `enabled` defaults to `false`; with the block absent, runs keep the existing single-agent shape.
-- `kind` is `codex` or `claude`, and `command` is required when enabled.
-- `max_iterations` defaults to `1` and controls how many `request_changes` correction passes are
-  allowed before Symphony blocks the run with the latest reviewer reason.
-- Reviewer sessions reuse the executor workspace checkout and receive read-only scoped tool lists.
-  Linear/GitHub write tools are hidden from MCP listings and rejected if called directly.
-  Reviewer token usage is stored separately while the aggregate run total remains budget-visible.
-- `agent.max_turns` budgets every reviewer-driven continuation turn. With `review_agent.enabled: true`,
-  size it to cover the executor turn, each correction round, and the final push handoff — i.e. at
-  least `2 + 2 * review_agent.max_iterations`. If `agent.max_turns` is too low Symphony stops the run
-  before the reviewer can hand off, leaving the workspace committed but unpushed.

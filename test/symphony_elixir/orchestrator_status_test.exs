@@ -3002,6 +3002,82 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                    100
   end
 
+  test "orchestrator skips synthetic PR runs when hydrating watching issues from run history" do
+    issue_id = "issue-watch-real"
+    issue_identifier = "MT-WATCH-REAL"
+    synthetic_issue_id = "pr:symphony:29"
+    ended_at = DateTime.add(DateTime.utc_now(), -600, :second)
+    started_at = DateTime.add(ended_at, -120, :second)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Done", "Canceled"]
+    )
+
+    :ok = RunStore.clear()
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: Config.repo_key!(),
+               run_id: "run-watch-real",
+               issue_id: issue_id,
+               issue_identifier: issue_identifier,
+               title: "Real watched issue",
+               state: "In Progress",
+               status: "success",
+               attempt: 1,
+               started_at: started_at,
+               ended_at: ended_at,
+               error: nil
+             })
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: Config.repo_key!(),
+               run_id: "run-pr-synthetic",
+               issue_id: synthetic_issue_id,
+               issue_identifier: "PR-29",
+               title: "Synthetic PR run",
+               state: "In Progress",
+               status: "success",
+               attempt: 1,
+               started_at: started_at,
+               ended_at: ended_at,
+               error: nil,
+               pull_request_url: "https://github.com/example/repo/pull/29"
+             })
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Real watched issue",
+        state: "In Review",
+        url: "https://linear.app/example/issue/MT-WATCH-REAL"
+      }
+    ])
+
+    orchestrator_name = Module.concat(__MODULE__, :WatchHydrateSyntheticPrOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: stop_process(pid)
+    end)
+
+    state = get_orchestrator_state(pid)
+    assert Map.has_key?(state.completed_run_metadata, issue_id)
+    refute Map.has_key?(state.completed_run_metadata, synthetic_issue_id)
+
+    send(pid, :run_poll_cycle)
+
+    assert %{watching: [%{issue_id: ^issue_id, identifier: ^issue_identifier}]} =
+             wait_for_snapshot(pid, fn
+               %{watching: [%{issue_id: ^issue_id}]} -> true
+               _ -> false
+             end)
+  end
+
   test "orchestrator persists terminal notification markers across restarts" do
     issue_id = "issue-terminal-restart"
     issue_identifier = "MT-DONE-R"
@@ -4593,6 +4669,49 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered == ""
   end
 
+  test "normal exit on a PR run does not track Linear watching metadata" do
+    issue = %Issue{
+      id: "pr:default:320",
+      identifier: "PR-320",
+      title: "Address review comments",
+      state: "In Progress",
+      run_kind: :pr,
+      repo_key: "default",
+      pull_request_url: "https://github.com/example/repo/pull/320",
+      pr_urls: ["https://github.com/example/repo/pull/320"]
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :PrRunNormalExitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: stop_process(pid)
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-pr-normal-exit"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        run_kind: :pr,
+        pull_request_url: issue.pull_request_url,
+        session_id: "thread-pr-normal"
+      })
+
+    put_running_run!(issue, run_id, started_at, %{session_id: "thread-pr-normal"})
+    put_running_entry(pid, issue, running_entry)
+
+    send(pid, {:DOWN, worker_ref, :process, worker_pid, :normal})
+
+    completed_state = wait_for_orchestrator_state(pid, &(map_size(&1.running) == 0), 1_000)
+    refute Map.has_key?(completed_state.retry_attempts, issue.id)
+    refute Map.has_key?(completed_state.completed_run_metadata, issue.id)
+    refute MapSet.member?(completed_state.completed, issue.id)
+
+    send(worker_pid, :finish)
+  end
+
   test "abnormal exit on a PR run does not schedule a Linear retry" do
     issue = %Issue{
       id: "pr:default:321",
@@ -4632,6 +4751,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     completed_state = get_orchestrator_state(pid)
     refute Map.has_key?(completed_state.retry_attempts, issue.id)
+    refute Map.has_key?(completed_state.completed_run_metadata, issue.id)
+    refute MapSet.member?(completed_state.completed, issue.id)
+
+    send(worker_pid, :finish)
   end
 
   defp put_budget_exhausted_run(attrs) do

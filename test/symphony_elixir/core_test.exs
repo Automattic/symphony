@@ -601,6 +601,126 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "non-active issue state immediately appears in watching map" do
+    issue_id = "issue-watching-handoff"
+    issue_identifier = "MT-557"
+    issue_url = "https://linear.app/example/issue/MT-557"
+    pull_request_url = "https://github.com/example/repo/pull/557"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Closed", "Cancelled"]
+    )
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    state = %Orchestrator.State{
+      repo_key: "default",
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: issue_identifier,
+          issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: issue_identifier,
+      state: "In Review",
+      title: "Awaiting review",
+      url: issue_url,
+      pull_request_url: pull_request_url,
+      labels: []
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    assert Map.has_key?(updated_state.watching, issue_id)
+
+    assert %{
+             identifier: ^issue_identifier,
+             state: "In Review",
+             url: ^issue_url,
+             pull_request_url: ^pull_request_url
+           } = Map.get(updated_state.watching, issue_id)
+  end
+
+  test "seed_watching_for_test populates watching from completed_run_metadata" do
+    issue_id = "issue-seed-watch"
+    issue_identifier = "MT-558"
+    issue_url = "https://linear.app/example/issue/MT-558"
+    pull_request_url = "https://github.com/example/repo/pull/558"
+
+    completed_metadata = %{
+      issue_id => %{
+        identifier: issue_identifier,
+        title: "Awaiting review",
+        state: "In Review",
+        url: issue_url,
+        pull_request_url: pull_request_url,
+        last_ran_at: DateTime.utc_now(),
+        session_id: "session-seed",
+        started_at: DateTime.utc_now(),
+        last_event_at: DateTime.utc_now(),
+        turn_count: 2,
+        tokens: %{total_tokens: 100}
+      }
+    }
+
+    state = %Orchestrator.State{
+      repo_key: "default",
+      completed_run_metadata: completed_metadata,
+      watching: %{},
+      retry_attempts: %{}
+    }
+
+    seeded = Orchestrator.seed_watching_for_test(state)
+
+    assert Map.has_key?(seeded.watching, issue_id)
+
+    assert %{
+             identifier: ^issue_identifier,
+             title: "Awaiting review",
+             state: "In Review",
+             url: ^issue_url,
+             pull_request_url: ^pull_request_url
+           } = Map.get(seeded.watching, issue_id)
+  end
+
+  test "seed_watching_for_test skips entries with no persisted state" do
+    issue_id = "issue-no-state"
+
+    state = %Orchestrator.State{
+      repo_key: "default",
+      completed_run_metadata: %{
+        issue_id => %{
+          identifier: "MT-559",
+          state: nil,
+          last_ran_at: DateTime.utc_now()
+        }
+      },
+      watching: %{},
+      retry_attempts: %{}
+    }
+
+    seeded = Orchestrator.seed_watching_for_test(state)
+
+    refute Map.has_key?(seeded.watching, issue_id)
+  end
+
   test "terminal issue state stops running agent and cleans workspace" do
     test_root =
       Path.join(

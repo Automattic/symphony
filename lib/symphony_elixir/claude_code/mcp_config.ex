@@ -25,7 +25,6 @@ defmodule SymphonyElixir.ClaudeCode.McpConfig do
 
       raw_servers
       |> Enum.filter(fn {name, _server} -> name != "symphony" and MapSet.member?(allowed_names, name) end)
-      |> Enum.sort_by(fn {name, _server} -> name end)
       |> normalize_inherited_servers(host_claude_json_path)
     end
   end

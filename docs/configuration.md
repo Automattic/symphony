@@ -451,7 +451,7 @@ Title: {{ issue.title }} Body: {{ issue.description }}
       command: claude --model claude-opus-4-7 --dangerously-skip-permissions
       mcp:
         inherit: allowlist
-        allowed_servers: [filesystem, github] # inherited from ~/.claude.json for Claude
+        allowed_servers: [playwright] # read from ~/.claude.json's top-level mcpServers
         servers:
           filesystem:
             transport: stdio      # default; can be omitted

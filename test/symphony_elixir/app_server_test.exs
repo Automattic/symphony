@@ -1282,6 +1282,215 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server srt wrapper keeps clone workspace .git/objects writable for git add" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-srt-clone-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SRTCLONE")
+      source_repo = Path.join(test_root, "source")
+      codex_binary = Path.join(test_root, "fake-codex")
+      srt_binary = Path.join(test_root, "fake-srt")
+      trace_file = Path.join(test_root, "codex-srt-clone.trace")
+      settings_copy = Path.join(test_root, "srt-settings-clone-copy.json")
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(source_repo)
+
+      assert {_output, 0} = System.cmd("git", ["init", "-b", "main"], cd: source_repo, stderr_to_stdout: true)
+      assert {_output, 0} = System.cmd("git", ["config", "user.name", "Test User"], cd: source_repo)
+      assert {_output, 0} = System.cmd("git", ["config", "user.email", "test@example.com"], cd: source_repo)
+      File.write!(Path.join(source_repo, "README.md"), "clone\n")
+      assert {_output, 0} = System.cmd("git", ["add", "README.md"], cd: source_repo)
+      assert {_output, 0} = System.cmd("git", ["commit", "-m", "initial"], cd: source_repo, stderr_to_stdout: true)
+
+      assert {_output, 0} = System.cmd("git", ["clone", source_repo, workspace], stderr_to_stdout: true)
+
+      assert {git_dir_output, 0} =
+               System.cmd("git", ["-C", workspace, "rev-parse", "--path-format=absolute", "--git-dir"], stderr_to_stdout: true)
+
+      assert {git_common_dir_output, 0} =
+               System.cmd("git", ["-C", workspace, "rev-parse", "--path-format=absolute", "--git-common-dir"], stderr_to_stdout: true)
+
+      git_dir = String.trim(git_dir_output)
+      git_common_dir = String.trim(git_common_dir_output)
+
+      assert git_dir == git_common_dir,
+             "expected clone workspace git_dir and git_common_dir to be identical; test setup may have regressed"
+
+      File.write!(srt_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      settings_copy="#{settings_copy}"
+      settings_path=""
+
+      printf 'SRT_ARGV:%s\\n' "$*" >> "$trace_file"
+
+      if [ "${1-}" = "--settings" ]; then
+        settings_path="$2"
+        shift 2
+      fi
+
+      printf 'SRT_SETTINGS:%s\\n' "$settings_path" >> "$trace_file"
+      cp "$settings_path" "$settings_copy"
+      exec "$@"
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      printf 'CODEX_ARGV:%s\\n' "$*" >> "$trace_file"
+
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$_line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-srt-clone"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-srt-clone","status":"inProgress","items":[]}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(srt_binary, 0o755)
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_sandbox_runtime: %{
+          kind: "srt",
+          command: srt_binary
+        }
+      )
+
+      issue = %Issue{
+        id: "issue-srt-clone",
+        identifier: "MT-SRTCLONE",
+        title: "Validate srt clone wrapper",
+        description: "Ensure clone workspaces can write .git/objects under SRT",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-SRTCLONE",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Validate srt clone wrapper", issue)
+
+      settings = settings_copy |> File.read!() |> Jason.decode!()
+
+      refute Path.join(git_dir, "objects") in settings["filesystem"]["denyWrite"],
+             ".git/objects must be writable for clone workspaces so git add can stage blobs"
+
+      assert Path.join(git_dir, "config") in settings["filesystem"]["denyWrite"]
+      assert Path.join(git_dir, "config.worktree") in settings["filesystem"]["denyWrite"]
+      assert Path.join(git_dir, "hooks") in settings["filesystem"]["denyWrite"]
+      assert Path.join(git_dir, "info") in settings["filesystem"]["denyWrite"]
+      assert Path.join(git_dir, "packed-refs") in settings["filesystem"]["denyWrite"]
+      assert Path.join([git_dir, "worktrees", "*", "config"]) in settings["filesystem"]["denyWrite"]
+      assert Path.join([git_dir, "worktrees", "*", "config.worktree"]) in settings["filesystem"]["denyWrite"]
+
+      assert git_dir in settings["filesystem"]["allowWrite"]
+      assert git_common_dir in settings["filesystem"]["allowWrite"]
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  describe "git_metadata_deny_write_paths/2" do
+    test "clone workspace .git keeps objects writable while denying high-risk metadata" do
+      workspace = "/workspaces/MT-CLONE"
+      git_dir = "/workspaces/MT-CLONE/.git"
+
+      denies = AppServer.git_metadata_deny_write_paths(git_dir, workspace)
+
+      refute Path.join(git_dir, "objects") in denies
+      assert Path.join(git_dir, "config") in denies
+      assert Path.join(git_dir, "config.worktree") in denies
+      assert Path.join(git_dir, "hooks") in denies
+      assert Path.join(git_dir, "info") in denies
+      assert Path.join(git_dir, "packed-refs") in denies
+      assert Path.join([git_dir, "worktrees", "*", "config"]) in denies
+      assert Path.join([git_dir, "worktrees", "*", "config.worktree"]) in denies
+    end
+
+    test "linked worktree common dir denies objects and high-risk metadata" do
+      workspace = "/workspaces/MT-LINKED"
+      common_dir = "/source/.git"
+
+      denies = AppServer.git_metadata_deny_write_paths(common_dir, workspace)
+
+      assert Path.join(common_dir, "objects") in denies
+      assert Path.join(common_dir, "config") in denies
+      assert Path.join(common_dir, "config.worktree") in denies
+      assert Path.join(common_dir, "hooks") in denies
+      assert Path.join(common_dir, "info") in denies
+      assert Path.join(common_dir, "packed-refs") in denies
+      assert Path.join([common_dir, "worktrees", "*", "config"]) in denies
+      assert Path.join([common_dir, "worktrees", "*", "config.worktree"]) in denies
+    end
+
+    test "linked worktree per-issue git_dir under common dir denies objects" do
+      workspace = "/workspaces/MT-LINKED"
+      worktree_git_dir = "/source/.git/worktrees/MT-LINKED"
+
+      denies = AppServer.git_metadata_deny_write_paths(worktree_git_dir, workspace)
+
+      assert Path.join(worktree_git_dir, "objects") in denies
+      assert Path.join(worktree_git_dir, "config") in denies
+      assert Path.join(worktree_git_dir, "hooks") in denies
+      assert Path.join(worktree_git_dir, "info") in denies
+      assert Path.join(worktree_git_dir, "packed-refs") in denies
+    end
+
+    test "paths without .git segment yield no deny entries" do
+      assert AppServer.git_metadata_deny_write_paths("/workspaces/MT-1", "/workspaces/MT-1") == []
+      assert AppServer.git_metadata_deny_write_paths("/some/other/path", "/workspaces/MT-1") == []
+    end
+
+    test "workspace prefix match is strict and ignores partial path components" do
+      workspace = "/workspaces/MT-1"
+      neighbor_git_dir = "/workspaces/MT-1-suffix/.git"
+
+      denies = AppServer.git_metadata_deny_write_paths(neighbor_git_dir, workspace)
+
+      assert Path.join(neighbor_git_dir, "objects") in denies
+    end
+
+    test "trailing slash on workspace does not affect the inside-workspace check" do
+      workspace = "/workspaces/MT-1/"
+      git_dir = "/workspaces/MT-1/.git"
+
+      denies = AppServer.git_metadata_deny_write_paths(git_dir, workspace)
+
+      refute Path.join(git_dir, "objects") in denies
+      assert Path.join(git_dir, "config") in denies
+    end
+
+    test "non-string inputs yield no deny entries" do
+      assert AppServer.git_metadata_deny_write_paths(:not_a_path, "/workspaces/MT-1") == []
+      assert AppServer.git_metadata_deny_write_paths("/workspaces/MT-1/.git", nil) == []
+    end
+  end
+
   test "app server rejects srt sandbox runtime for remote workers" do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_sandbox_runtime: %{kind: "srt"}

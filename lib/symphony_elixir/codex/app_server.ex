@@ -727,33 +727,50 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp srt_workspace_deny_write_paths(settings, workspace) do
     settings
     |> srt_workspace_write_paths(workspace)
-    |> Enum.flat_map(&git_metadata_deny_write_paths/1)
+    |> Enum.flat_map(&git_metadata_deny_write_paths(&1, workspace))
   end
 
-  defp git_metadata_deny_write_paths(path) when is_binary(path) do
-    path
-    |> Path.split()
-    |> Enum.any?(&(&1 == ".git"))
-    |> case do
-      true ->
-        [
-          "config",
-          "config.worktree",
-          "hooks",
-          "info",
-          "objects",
-          "packed-refs",
-          Path.join(["worktrees", "*", "config"]),
-          Path.join(["worktrees", "*", "config.worktree"])
-        ]
-        |> Enum.map(&Path.join(path, &1))
+  # Git stages blob objects under `<git_dir>/objects` before updating the index, so a blanket
+  # deny on `objects` blocks `git add`/`git commit`. Clone workspaces keep their object DB inside
+  # the per-issue workspace; linked worktrees share an external common object DB outside the
+  # workspace. We only deny `objects` writes when the metadata root lives outside the per-issue
+  # workspace so clone staging works while the shared linked-worktree DB stays read-only.
+  @doc false
+  @spec git_metadata_deny_write_paths(Path.t() | term(), Path.t() | term()) :: [Path.t()]
+  def git_metadata_deny_write_paths(path, workspace) when is_binary(path) and is_binary(workspace) do
+    if Enum.any?(Path.split(path), &(&1 == ".git")) do
+      base_entries = [
+        "config",
+        "config.worktree",
+        "hooks",
+        "info",
+        "packed-refs",
+        Path.join(["worktrees", "*", "config"]),
+        Path.join(["worktrees", "*", "config.worktree"])
+      ]
 
-      false ->
-        []
+      entries =
+        if git_metadata_root_inside_workspace?(path, workspace) do
+          base_entries
+        else
+          base_entries ++ ["objects"]
+        end
+
+      Enum.map(entries, &Path.join(path, &1))
+    else
+      []
     end
   end
 
-  defp git_metadata_deny_write_paths(_path), do: []
+  def git_metadata_deny_write_paths(_path, _workspace), do: []
+
+  defp git_metadata_root_inside_workspace?(path, workspace)
+       when is_binary(path) and is_binary(workspace) and workspace != "" do
+    workspace = String.trim_trailing(workspace, "/")
+    path == workspace or String.starts_with?(path, workspace <> "/")
+  end
+
+  defp git_metadata_root_inside_workspace?(_path, _workspace), do: false
 
   defp inject_config_overrides(command, overrides) do
     case shell_words(command) do

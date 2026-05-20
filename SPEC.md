@@ -3144,6 +3144,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 ### 17.7 CLI and Host Lifecycle
 
 - Service CLI takes no positional arguments. Repo workflow paths are read only from `symphony.yml`.
+- CLI accepts a `symphony init [--force]` subcommand that scaffolds a deterministic
+  `symphony.yml`, refuses to overwrite an existing file without `--force`, and exits without
+  starting the runtime.
 - CLI accepts `--config path-to-symphony.yml` to select an alternate operator config.
 - CLI defaults to `./symphony.yml` when `--config` is omitted.
 - CLI errors when the resolved `symphony.yml` (explicit or default) does not exist.

@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CLITest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureIO
+
   alias SymphonyElixir.CLI
 
   @ack_flag "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
@@ -9,6 +11,7 @@ defmodule SymphonyElixir.CLITest do
     Map.merge(
       %{
         file_regular?: fn _path -> true end,
+        init: fn _args -> {:ok, "Wrote symphony.yml"} end,
         set_symphony_file_path: fn _path -> :ok end,
         set_state_root: fn _path -> :ok end,
         set_state_root_from_env: fn -> :ok end,
@@ -58,6 +61,52 @@ defmodule SymphonyElixir.CLITest do
   test "rejects unknown positional arguments" do
     assert {:error, message} = CLI.evaluate([@ack_flag, "WORKFLOW.md"], base_deps())
     assert message =~ "Usage: symphony"
+  end
+
+  test "runs init without guardrails acknowledgement or runtime startup" do
+    parent = self()
+
+    deps =
+      base_deps(%{
+        init: fn args ->
+          send(parent, {:init, args})
+          {:ok, "Wrote /tmp/repo/symphony.yml"}
+        end,
+        file_regular?: fn _path ->
+          send(parent, :file_checked)
+          true
+        end,
+        ensure_all_started: fn ->
+          send(parent, :started)
+          {:ok, [:symphony_elixir]}
+        end
+      })
+
+    output =
+      capture_io(fn ->
+        assert {:halt, 0} = CLI.evaluate(["init", "--force"], deps)
+      end)
+
+    assert output == "Wrote /tmp/repo/symphony.yml\n"
+    assert_received {:init, ["--force"]}
+    refute_received :file_checked
+    refute_received :started
+  end
+
+  test "surfaces init errors verbatim without starting the runtime" do
+    parent = self()
+
+    deps =
+      base_deps(%{
+        init: fn _args -> {:error, "symphony.yml already exists"} end,
+        ensure_all_started: fn ->
+          send(parent, :started)
+          {:ok, [:symphony_elixir]}
+        end
+      })
+
+    assert {:error, "symphony.yml already exists"} = CLI.evaluate(["init"], deps)
+    refute_received :started
   end
 
   test "runs one-shot mode with issue identifier and parsed options" do

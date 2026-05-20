@@ -1,6 +1,16 @@
 import Config
 
-config :logger, :default_formatter, metadata: [:age_ms, :orchestrator_mailbox_len, :orchestrator_alive?]
+config :logger, :default_formatter,
+  metadata: [
+    :issue_id,
+    :issue_identifier,
+    :session_id,
+    :age_ms,
+    :orchestrator_mailbox_len,
+    :orchestrator_alive?,
+    :existing_owner,
+    :self
+  ]
 
 config :phoenix, :json_library, Jason
 

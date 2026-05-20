@@ -60,7 +60,6 @@ defmodule SymphonyElixir.StatusDashboard do
     :last_rendered_at_ms,
     :pending_content,
     :flush_timer_ref,
-    :last_successful_snapshot_data,
     :last_snapshot_fingerprint,
     :snapshot_consecutive_misses,
     :snapshot_stale?
@@ -82,7 +81,6 @@ defmodule SymphonyElixir.StatusDashboard do
           last_rendered_at_ms: integer() | nil,
           pending_content: String.t() | nil,
           flush_timer_ref: reference() | nil,
-          last_successful_snapshot_data: {:ok, map()} | nil,
           last_snapshot_fingerprint: term() | nil,
           snapshot_consecutive_misses: non_neg_integer(),
           snapshot_stale?: boolean()
@@ -138,7 +136,6 @@ defmodule SymphonyElixir.StatusDashboard do
        last_rendered_at_ms: nil,
        pending_content: nil,
        flush_timer_ref: nil,
-       last_successful_snapshot_data: nil,
        last_snapshot_fingerprint: nil,
        snapshot_consecutive_misses: 0,
        snapshot_stale?: false
@@ -228,16 +225,9 @@ defmodule SymphonyElixir.StatusDashboard do
         state.snapshot_consecutive_misses
       )
 
-    snapshot_data =
-      snapshot_data_for_render(
-        raw_snapshot_data,
-        state.last_successful_snapshot_data,
-        state.started_at_ms,
-        now_ms
-      )
+    snapshot_data = snapshot_data_for_render(raw_snapshot_data, state.started_at_ms, now_ms)
 
     state = Map.put(state, :token_samples, token_samples)
-    state = maybe_store_successful_snapshot(state, raw_snapshot_data)
     state = update_snapshot_staleness_state(state, raw_snapshot_data)
 
     current_tokens = snapshot_total_tokens(snapshot_data)
@@ -296,12 +286,6 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
-  defp maybe_store_successful_snapshot(state, {:ok, _snapshot} = snapshot_data) do
-    Map.put(state, :last_successful_snapshot_data, snapshot_data)
-  end
-
-  defp maybe_store_successful_snapshot(state, _snapshot_data), do: state
-
   defp update_snapshot_staleness_state(%__MODULE__{} = state, {:ok, %{snapshot_stale?: true} = snapshot}) do
     if not state.snapshot_stale? do
       Logger.warning("snapshot stale",
@@ -324,10 +308,9 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp update_snapshot_staleness_state(%__MODULE__{} = state, _snapshot_data), do: state
 
-  defp snapshot_data_for_render({:ok, _snapshot} = snapshot_data, _last_successful_snapshot_data, _started_at_ms, _now_ms),
-    do: snapshot_data
+  defp snapshot_data_for_render({:ok, _snapshot} = snapshot_data, _started_at_ms, _now_ms), do: snapshot_data
 
-  defp snapshot_data_for_render(:error, _last_successful_snapshot_data, started_at_ms, now_ms) do
+  defp snapshot_data_for_render(:error, started_at_ms, now_ms) do
     if startup_snapshot_pending?(started_at_ms, now_ms), do: :pending, else: :error
   end
 

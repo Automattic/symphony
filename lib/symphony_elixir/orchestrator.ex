@@ -4188,7 +4188,12 @@ defmodule SymphonyElixir.Orchestrator do
       owner when owner == self() ->
         :ok
 
-      _owner ->
+      owner ->
+        Logger.warning("snapshot table owned by another process",
+          existing_owner: inspect(owner),
+          self: inspect(self())
+        )
+
         :ok
     end
   end

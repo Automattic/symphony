@@ -1032,6 +1032,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         state
         |> terminate_running_issue(issue.id, false, track_completed_run: true)
+        |> put_watching_issue(issue)
         |> maybe_emit_awaiting_review(issue, running_entry)
     end
   end

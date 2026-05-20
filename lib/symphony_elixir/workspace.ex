@@ -250,8 +250,13 @@ defmodule SymphonyElixir.Workspace do
     cond do
       File.dir?(workspace) ->
         case registered_worktree?(repo, workspace) do
-          true -> {:ok, false}
-          false -> {:error, {:workspace_not_registered_worktree, workspace}}
+          true ->
+            with :ok <- reset_worktree_to_base_ref(workspace, base_ref) do
+              {:ok, false}
+            end
+
+          false ->
+            {:error, {:workspace_not_registered_worktree, workspace}}
         end
 
       File.exists?(workspace) ->
@@ -261,6 +266,15 @@ defmodule SymphonyElixir.Workspace do
       true ->
         add_local_worktree(repo, workspace, branch, base_ref)
     end
+  end
+
+  # PR runs pass an explicit base_ref (e.g. "origin/<head>") so a redispatch sees
+  # the latest PR head. Issue runs pass nil and keep the existing worktree state.
+  defp reset_worktree_to_base_ref(_workspace, nil), do: :ok
+  defp reset_worktree_to_base_ref(_workspace, ""), do: :ok
+
+  defp reset_worktree_to_base_ref(workspace, base_ref) when is_binary(base_ref) do
+    run_git(workspace, ["reset", "--hard", base_ref])
   end
 
   defp add_local_worktree(repo, workspace, branch, base_ref) do

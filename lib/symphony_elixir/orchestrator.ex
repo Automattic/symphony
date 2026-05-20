@@ -449,20 +449,7 @@ defmodule SymphonyElixir.Orchestrator do
               handle_normal_agent_exit(state, issue_id, running_entry, session_id)
 
             _ ->
-              error = "agent exited: #{inspect(reason)}"
-              persist_run_completion(running_entry, terminal_status_for_reason(reason), error)
-              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
-
-              next_attempt = next_retry_attempt_from_running(running_entry)
-              emit_run_failed(running_entry, error, next_attempt)
-
-              schedule_issue_retry(state, issue_id, next_attempt, %{
-                repo_key: running_entry_repo_key(running_entry),
-                identifier: running_entry.identifier,
-                error: error,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              handle_abnormal_agent_exit(state, issue_id, running_entry, session_id, reason)
           end
 
         notify_dashboard()
@@ -488,6 +475,37 @@ defmodule SymphonyElixir.Orchestrator do
           repo_key: running_entry_repo_key(running_entry),
           identifier: running_entry.identifier,
           delay_type: :continuation,
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
+        })
+    end
+  end
+
+  defp handle_abnormal_agent_exit(%State{} = state, issue_id, running_entry, session_id, reason) do
+    error = "agent exited: #{inspect(reason)}"
+    persist_run_completion(running_entry, terminal_status_for_reason(reason), error)
+
+    case pr_run_entry?(running_entry) do
+      true ->
+        # PR runs are explicit operator dispatches keyed by a synthetic
+        # "pr:<repo>:<n>" id that has no Linear backing. Scheduling a retry
+        # would push the id through Tracker.fetch_issue_states_by_ids and
+        # mis-tag the audit trail; let the operator redispatch instead.
+        Logger.warning("PR agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; PR runs are not retried")
+
+        emit_run_failed(running_entry, error, nil)
+        remember_completed_run(state, issue_id, running_entry)
+
+      false ->
+        Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+
+        next_attempt = next_retry_attempt_from_running(running_entry)
+        emit_run_failed(running_entry, error, next_attempt)
+
+        schedule_issue_retry(state, issue_id, next_attempt, %{
+          repo_key: running_entry_repo_key(running_entry),
+          identifier: running_entry.identifier,
+          error: error,
           worker_host: Map.get(running_entry, :worker_host),
           workspace_path: Map.get(running_entry, :workspace_path)
         })
@@ -1238,17 +1256,20 @@ defmodule SymphonyElixir.Orchestrator do
       Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
 
       next_attempt = next_retry_attempt_from_running(running_entry)
+      error = "stalled for #{elapsed_ms}ms without codex activity"
 
-      state
-      |> terminate_running_issue(issue_id, false,
-        status: "timeout",
-        error: "stalled for #{elapsed_ms}ms without codex activity"
-      )
-      |> schedule_issue_retry(issue_id, next_attempt, %{
-        repo_key: running_entry_repo_key(running_entry),
-        identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
-      })
+      state =
+        terminate_running_issue(state, issue_id, false, status: "timeout", error: error)
+
+      if pr_run_entry?(running_entry) do
+        state
+      else
+        schedule_issue_retry(state, issue_id, next_attempt, %{
+          repo_key: running_entry_repo_key(running_entry),
+          identifier: identifier,
+          error: error
+        })
+      end
     else
       state
     end
@@ -1343,22 +1364,27 @@ defmodule SymphonyElixir.Orchestrator do
 
     emit_run_stuck(running_entry, elapsed_ms, next_attempt)
 
-    state
-    |> terminate_running_issue(issue_id, false,
-      status: "timeout",
-      error: error,
-      stop_agent_session: true,
-      run_after_run_hook: true
-    )
-    |> schedule_issue_retry(issue_id, next_attempt, %{
-      repo_key: running_entry_repo_key(running_entry),
-      identifier: identifier,
-      error: error,
-      reason: :stuck,
-      elapsed_ms: elapsed_ms,
-      worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
-    })
+    state =
+      terminate_running_issue(state, issue_id, false,
+        status: "timeout",
+        error: error,
+        stop_agent_session: true,
+        run_after_run_hook: true
+      )
+
+    if pr_run_entry?(running_entry) do
+      state
+    else
+      schedule_issue_retry(state, issue_id, next_attempt, %{
+        repo_key: running_entry_repo_key(running_entry),
+        identifier: identifier,
+        error: error,
+        reason: :stuck,
+        elapsed_ms: elapsed_ms,
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path)
+      })
+    end
   end
 
   defp terminate_task(pid) when is_pid(pid) do

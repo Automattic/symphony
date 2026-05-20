@@ -78,21 +78,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply, reload_after_control(socket, result)}
   end
 
-  def handle_event("run-pr", %{"pr" => params}, socket) do
-    target = params |> Map.get("target", "") |> String.trim()
-    intent = params |> Map.get("intent", "") |> String.trim()
-
-    result =
-      if target == "" do
-        {:error, :missing_pr_target}
-      else
-        pr_opts = if intent == "", do: [], else: [intent: intent]
-        SymphonyElixir.Orchestrator.dispatch_pr(orchestrator(), target, pr_opts)
-      end
-
-    {:noreply, reload_after_control(socket, result)}
-  end
-
   def handle_event("filter-repo", %{"repo" => repo_filter}, socket) do
     repo_filter = normalize_repo_filter(repo_filter, socket.assigns.payload)
 
@@ -224,20 +209,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </label>
           </form>
           <span :if={@dashboard_refreshing?} class="dashboard-refresh-status">Updating...</span>
-        </section>
-
-        <section class="dashboard-filter-card">
-          <form phx-submit="run-pr" class="dashboard-pr-run-form">
-            <label class="dashboard-filter-field">
-              <span>Run on PR</span>
-              <input name="pr[target]" type="text" placeholder="URL or number" aria-label="Pull request URL or number" />
-            </label>
-            <label class="dashboard-filter-field dashboard-pr-intent-field">
-              <span>Intent</span>
-              <input name="pr[intent]" type="text" placeholder="address review comments" aria-label="PR run intent" />
-            </label>
-            <button type="submit" class="secondary">Run</button>
-          </form>
         </section>
 
         <section class="metric-grid dashboard-metrics">

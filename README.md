@@ -25,9 +25,9 @@ agent against that repository's `WORKFLOW.md`, and keeps the run moving until th
 request with validation evidence. Failed runs are retried with backoff and stalled agents are
 detected and recovered, so long-running queues do not need constant operator supervision.
 
-Operators can also run Symphony directly on an existing PR from the dashboard or CLI. PR runs create
-the workspace from the PR head branch, use a PR prompt branch when configured, push updates back to
-the PR head branch, and do not create a second pull request.
+Operators can also run Symphony directly on an existing PR via the CLI. PR runs create the workspace
+from the PR head branch, use a PR prompt branch when configured, push updates back to the PR head
+branch, and do not create a second pull request.
 
 During app-server sessions, Symphony also serves scoped client-side `linear_*` tools so repo skills
 can read and update only the current Linear issue through Symphony-controlled operations. If a
@@ -62,8 +62,8 @@ stops the active agent for that issue and cleans up matching workspaces.
 
 - **Operator controls** for pause, resume, and stop, persisted across restarts so dispatch state
   survives a deploy.
-- **PR-driven runs** from the dashboard or CLI for review comments, failing CI, and conflict-fix
-  workflows on existing pull requests.
+- **PR-driven runs** from the CLI for review comments, failing CI, and conflict-fix workflows on
+  existing pull requests.
 - **Watchdog and retry recovery** for stalled or failed agent sessions.
 - **Durable run store** for run history, retry backoff, captured learnings, aggregate token totals,
   and notification dedupe markers.
@@ -199,9 +199,9 @@ The dashboard exposes dispatch controls at `/`:
 - `Resume Dispatch` clears the persisted pause flag.
 - `Stop` on a running issue terminates that issue's active agent session, records the run as
   `stopped`, and leaves the Linear issue state unchanged.
-- `Run on PR` starts an explicit PR run from a PR URL or number plus an optional free-text intent.
 
-If the dashboard is unavailable, use the mix task fallbacks against a named local Symphony node:
+Explicit PR runs are CLI-only for now. Use the mix task or release binary against a named local
+Symphony node:
 
 ```bash
 export SYMPHONY_NODE=symphony@127.0.0.1

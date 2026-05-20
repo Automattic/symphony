@@ -121,6 +121,31 @@ defmodule SymphonyElixir.PrRunTest do
     end
   end
 
+  test "treats null or missing headRepository as cross-repo without crashing" do
+    {root, primary_repo} = init_primary_repo!()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo
+      )
+
+      for head_repo <- [nil, %{}, %{"nameWithOwner" => nil}] do
+        pr = valid_pr() |> Map.put("headRepository", head_repo)
+
+        assert {:error, {:unsupported_cross_repo_pr, nil, "example/repo"}} =
+                 PrRun.resolve("123", gh_runner: pr_payload_runner(pr))
+      end
+
+      pr_without_key = Map.delete(valid_pr(), "headRepository")
+
+      assert {:error, {:unsupported_cross_repo_pr, nil, "example/repo"}} =
+               PrRun.resolve("123", gh_runner: pr_payload_runner(pr_without_key))
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "requires essential pull request fields" do
     {root, primary_repo} = init_primary_repo!()
 

@@ -217,6 +217,60 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "redispatch resets reused PR worktree to latest origin head" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-pr-redispatch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      origin_repo = Path.join(test_root, "origin.git")
+      peer_repo = Path.join(test_root, "peer")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo, origin_repo)
+
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+      git!(peer_repo, ["checkout", "-b", "feature/pr-redispatch"])
+      File.write!(Path.join(peer_repo, "pr.txt"), "initial pr head\n")
+      git!(peer_repo, ["add", "pr.txt"])
+      git!(peer_repo, ["commit", "-m", "initial pr head"])
+      git!(peer_repo, ["push", "origin", "feature/pr-redispatch"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo
+      )
+
+      issue = %Issue{
+        identifier: "PR-77",
+        workspace_branch: "feature/pr-redispatch",
+        workspace_base_ref: "origin/feature/pr-redispatch"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "pr.txt")) == "initial pr head\n"
+      first_sha = String.trim(git!(workspace, ["rev-parse", "HEAD"]))
+
+      File.write!(Path.join(peer_repo, "pr.txt"), "advanced pr head\n")
+      git!(peer_repo, ["add", "pr.txt"])
+      git!(peer_repo, ["commit", "-m", "advance pr head"])
+      git!(peer_repo, ["push", "origin", "feature/pr-redispatch"])
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "pr.txt")) == "advanced pr head\n"
+      second_sha = String.trim(git!(workspace, ["rev-parse", "HEAD"]))
+      assert first_sha != second_sha
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "feature/pr-redispatch"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "after_create hook receives PR workspace branch for clone-style workspaces" do
     test_root =
       Path.join(

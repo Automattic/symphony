@@ -71,9 +71,10 @@ defmodule SymphonyElixir.PrRun do
 
   defp validate_same_repo_pr(pr, origin_repo) do
     head_repo =
-      pr
-      |> Map.get("headRepository", %{})
-      |> Map.get("nameWithOwner")
+      case Map.get(pr, "headRepository") do
+        %{"nameWithOwner" => name} -> name
+        _ -> nil
+      end
 
     if Repo.same?(head_repo, origin_repo) do
       :ok

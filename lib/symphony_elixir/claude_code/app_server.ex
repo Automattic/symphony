@@ -176,7 +176,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     do: {:session_started, session_id}
 
   defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line) do
-    case extract_assistant_events(message) do
+    events = extract_assistant_events(message) ++ extract_assistant_usage_events(message)
+
+    case events do
       [] -> {:notification, "assistant message"}
       [event] -> event
       events -> {:multi, events}
@@ -281,6 +283,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       payload: %{
         method: "turn/completed",
         usage: result
+      }
+    }
+  end
+
+  def event_to_update({:token_usage, cumulative}) when is_map(cumulative) do
+    %{
+      event: :token_count,
+      timestamp: DateTime.utc_now(),
+      usage: cumulative,
+      payload: %{
+        method: "token_count",
+        usage: cumulative
       }
     }
   end
@@ -1105,6 +1119,26 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     acc |> Map.merge(result) |> Map.put(:turn_completed, true)
   end
 
+  defp apply_event({:token_usage_delta, delta}, on_message, acc) do
+    input = Map.get(acc, :input_tokens, 0) + Map.get(delta, :input_tokens, 0)
+    output = Map.get(acc, :output_tokens, 0) + Map.get(delta, :output_tokens, 0)
+    cached = Map.get(acc, :cached_input_tokens, 0) + Map.get(delta, :cached_input_tokens, 0)
+
+    cumulative = %{
+      input_tokens: input,
+      cached_input_tokens: cached,
+      output_tokens: output,
+      total_tokens: input + output
+    }
+
+    on_message.({:token_usage, cumulative})
+
+    acc
+    |> Map.put(:input_tokens, input)
+    |> Map.put(:output_tokens, output)
+    |> Map.put(:cached_input_tokens, cached)
+  end
+
   defp apply_event({:turn_failed, reason}, on_message, acc) do
     on_message.({:turn_failed, reason})
     %{acc | turn_failed: reason}
@@ -1147,6 +1181,22 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp extract_assistant_events(_), do: []
+
+  defp extract_assistant_usage_events(%{"usage" => usage}) when is_map(usage) do
+    input = token_count(usage, "input_tokens", 0)
+    output = token_count(usage, "output_tokens", 0)
+    cached = token_count(usage, "cache_read_input_tokens", 0)
+
+    if input + output + cached > 0 do
+      [
+        {:token_usage_delta, %{input_tokens: input, output_tokens: output, cached_input_tokens: cached}}
+      ]
+    else
+      []
+    end
+  end
+
+  defp extract_assistant_usage_events(_), do: []
 
   defp assistant_block_event(%{"type" => "text", "text" => text}) when is_binary(text),
     do: [{:agent_text, text}]

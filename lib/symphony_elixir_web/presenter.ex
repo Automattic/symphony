@@ -334,11 +334,13 @@ defmodule SymphonyElixirWeb.Presenter do
   defp running_entry_payload(entry) do
     %{
       repo_key: Map.get(entry, :repo_key),
+      run_kind: Map.get(entry, :run_kind),
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       title: Map.get(entry, :title),
       state: entry.state,
       url: URLUtils.present_url(Map.get(entry, :url)),
+      pull_request_url: URLUtils.pull_request_url(entry),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,

@@ -25,6 +25,11 @@ defmodule SymphonyElixir.ControlClient do
     call(:stop_running, [issue_id_or_identifier], opts)
   end
 
+  @spec dispatch_pr(String.t(), keyword(), keyword()) :: control_result()
+  def dispatch_pr(target, pr_opts \\ [], opts \\ []) when is_binary(target) and is_list(pr_opts) and is_list(opts) do
+    call(:dispatch_pr, [target, pr_opts], opts)
+  end
+
   @spec call(atom(), [term()], keyword()) :: control_result()
   def call(function, args, opts \\ []) when is_atom(function) and is_list(args) do
     if Keyword.get(opts, :prefer_local?, true) and Process.whereis(Orchestrator) do

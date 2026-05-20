@@ -17,8 +17,9 @@ implementations.
 ## 1. Problem Statement
 
 Symphony is a long-running automation service that continuously reads work from an issue tracker
-(Linear in this specification version), creates an isolated workspace for each issue, and runs a
-coding agent session for that issue inside the workspace.
+(Linear in this specification version), accepts explicit operator requests for existing pull
+requests, creates an isolated workspace for each run, and runs a coding agent session inside the
+workspace.
 
 The service solves four operational problems:
 
@@ -46,6 +47,7 @@ Important boundary:
 ### 2.1 Goals
 
 - Poll the issue tracker on a fixed cadence and dispatch work with bounded concurrency.
+- Accept explicit PR dispatch requests without going through tracker candidate polling.
 - Maintain a single authoritative orchestrator state for dispatch, retries, and reconciliation.
 - Create deterministic per-issue workspaces and preserve them across runs.
 - Stop active runs when issue state changes make them ineligible.
@@ -94,11 +96,13 @@ Important boundary:
    - Owns the poll tick.
    - Owns the in-memory runtime state.
    - Decides which issues to dispatch, retry, stop, or release.
+   - Dispatches explicit PR runs from PR metadata and bypasses tracker polling for those runs.
    - Tracks session metrics and retry queue state.
 
 5. `Workspace Manager`
    - Maps issue identifiers to workspace paths.
    - Ensures per-issue workspace directories exist.
+   - For PR runs using worktrees, creates the workspace from the PR head branch/ref.
    - Runs workspace lifecycle hooks.
    - Cleans workspaces for terminal issues.
 
@@ -364,7 +368,7 @@ The current Elixir implementation splits service configuration across two files:
   command/runtime settings, observability, pollers, notification settings, gates, and the
   supervised `repos:` list.
 - `WORKFLOW.md` is repo-local policy. It is Markdown with optional YAML front matter and owns the
-  prompt template plus repo-local front matter keys.
+  issue prompt body plus optional mode-specific prompt branches in repo-local front matter.
 
 ### 5.1 File Discovery and Path Resolution
 
@@ -440,11 +444,12 @@ Parsing rules:
 Returned workflow object:
 
 - `config`: normalized repo-local front matter map.
-- `prompt_template`: trimmed Markdown body.
+- `prompt_template`: trimmed Markdown body used for issue runs.
 
 Allowed repo-local front matter keys:
 
 - `hooks`
+- `prompts`
 - `verification`
 - `validation`
 
@@ -971,7 +976,8 @@ Fields:
 
 ### 5.5 Prompt Template Contract
 
-The Markdown body of `WORKFLOW.md` is the per-issue prompt template.
+The Markdown body of `WORKFLOW.md` is the per-issue prompt template. Repo-local front matter MAY
+also define `prompts.pr` as a PR-mode prompt template for explicit PR runs.
 
 Rendering requirements:
 
@@ -983,6 +989,10 @@ Template input variables:
 
 - `issue` (object)
   - Includes all normalized issue fields, including labels and blockers.
+- `pr` (object)
+  - Present for PR-mode runs.
+  - Includes normalized PR fields such as `number`, `url`, `title`, `body`, `state`, `base_ref`,
+    `head_ref`, and operator `intent`.
 - `attempt` (integer or null)
   - `null`/absent on first attempt.
   - Integer on retry or continuation run.
@@ -1003,6 +1013,9 @@ Fallback prompt behavior:
 
 - If the workflow prompt body is empty, the runtime MAY use a minimal default prompt
   (`You are working on an issue from Linear.`).
+- If a PR run is dispatched and `prompts.pr` is absent or blank, the runtime MAY use a built-in PR
+  prompt that treats PR fields as untrusted data and instructs the agent to push to the PR head
+  branch without creating a new PR.
 - Workflow file read/parse failures are configuration/validation errors and SHOULD NOT silently fall
   back to a prompt.
 

@@ -11,9 +11,9 @@ Symphony reads two complementary files:
 - **`symphony.yml`** — operator config: tracker, polling, workspace, agent, gates, pollers,
   notifications, verification port defaults, and the list of supervised repos (`repos:`). Plain
   YAML, no `---` fences.
-- **`WORKFLOW.md`** — repo-local file containing the agent prompt body plus per-repo `hooks` and
-  verification dev-server overrides. YAML front matter between two `---` lines, then the prompt
-  template. Each repo listed under
+- **`WORKFLOW.md`** — repo-local file containing the issue prompt body plus optional PR prompt
+  branches, per-repo `hooks`, and verification dev-server overrides. YAML front matter between two
+  `---` lines, then the issue prompt template. Each repo listed under
   `repos:` has its own `WORKFLOW.md`, located at `<repo.path>/<repo.workflow>`.
 
 The runtime settings used at dispatch time merge `symphony.yml` with the primary repo's
@@ -21,7 +21,7 @@ The runtime settings used at dispatch time merge `symphony.yml` with the primary
 repo. Nested maps are deep-merged, so a repo can override only
 `verification.dev_server.start_cmd` without repeating the operator-owned port range. In practice,
 leave operator-wide concerns in `symphony.yml` and keep `WORKFLOW.md` focused on the prompt body,
-repo-local `hooks`, and repo-specific verification dev-server commands.
+optional `prompts.pr`, repo-local `hooks`, and repo-specific verification dev-server commands.
 
 ## Startup
 
@@ -65,6 +65,18 @@ Optional flags:
 - `--host` pins the Phoenix observability service to a specific host
 - `--port` pins the Phoenix observability service to a specific port
 
+The release binary also supports an explicit PR entry point against a running Symphony node:
+
+```bash
+./bin/symphony pr <url-or-number> --intent "address review comments"
+```
+
+For source checkouts, the equivalent task is:
+
+```bash
+mise exec -- mix symphony.pr <url-or-number> --intent "address review comments"
+```
+
 The state root contains `run_store/`, `audit/`, `secret_key_base`, and for packaged releases,
 `erlang_cookie`. Override order is `--state-root`, `SYMPHONY_STATE_ROOT`, app env `:state_root`,
 then the macOS default. The release boot script creates `erlang_cookie` with owner-only
@@ -87,7 +99,9 @@ event stream.
 ## Workflow file shape
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+issue-mode agent prompt. Optional front matter key `prompts.pr` defines the PR-mode prompt used by
+explicit PR runs. The PR template receives the same common variables plus a `pr` object with
+`number`, `url`, `title`, `body`, `state`, `base_ref`, `head_ref`, and `intent`.
 
 PR review mode is controlled by the optional `pr_review` block. `tracker` is the default and
 preserves the existing human-driven review loop. In `polling` mode, Symphony starts a
@@ -296,6 +310,10 @@ repos:
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
+prompts:
+  pr: |
+    You are working on PR {{ pr.url }}.
+    Intent: {{ pr.intent }}
 verification:
   dev_server:
     start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
@@ -579,8 +597,13 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   are not re-emitted for runs that already reached those milestones.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
+- If `prompts.pr` is blank or absent, explicit PR runs use a built-in PR prompt. PR runs create
+  worktree workspaces from the PR head branch when `workspace.strategy: worktree`, push updates back
+  to the PR head branch, and do not create a new PR.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
+  `git clone ... .` there, along with any other setup commands you need. Symphony sets
+  `SYMPHONY_BRANCH` for workspace hooks; explicit PR runs set it to the PR head branch so
+  hook-based clone workspaces can check out the correct ref.
 - Set `repos[].workspace.strategy: worktree` to create each issue workspace from that repo's
   existing local primary clone instead of cloning in `hooks.after_create`. Configure
   `repos[].workspace.repo` with that primary clone path; Symphony creates

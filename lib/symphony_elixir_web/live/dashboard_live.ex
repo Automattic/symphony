@@ -312,6 +312,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           <span class="issue-id" title={entry.title}><%= entry.issue_identifier %></span>
                         <% end %>
                         <.repo_chip repo={repo_label(entry)} />
+                        <span :if={entry.run_kind == :pr || entry.run_kind == "pr"} class="repo-chip repo-chip-pr">
+                          <span class="repo-chip-text">PR</span>
+                        </span>
                       </div>
                     </td>
                     <td>
@@ -364,6 +367,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td class="links-cell">
                       <div class="link-actions">
+                        <a :if={entry.pull_request_url} class="action-pill" href={entry.pull_request_url} target="_blank" rel="noreferrer">PR</a>
                         <a class="action-pill" href={transcript_path(entry)}>Transcript</a>
                         <a class="action-pill" href={audit_path(entry)}>Audit</a>
                         <a class="action-pill" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>

@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
     Config,
     Notifications,
     PrReviewPoller,
+    PrRun,
     Quality,
     QualityGate,
     RunStore,
@@ -445,41 +446,71 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           case reason do
             :normal ->
-              persist_run_completion(running_entry, "success", nil)
-              complete_pr_review_comment_cursor(issue_id)
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
-
-              state
-              |> complete_issue(issue_id, running_entry)
-              |> schedule_issue_retry(issue_id, 1, %{
-                repo_key: running_entry_repo_key(running_entry),
-                identifier: running_entry.identifier,
-                title: running_entry_title(running_entry),
-                delay_type: :continuation,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              handle_normal_agent_exit(state, issue_id, running_entry, session_id)
 
             _ ->
-              error = "agent exited: #{inspect(reason)}"
-              persist_run_completion(running_entry, terminal_status_for_reason(reason), error)
-              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
-
-              next_attempt = next_retry_attempt_from_running(running_entry)
-              emit_run_failed(running_entry, error, next_attempt)
-
-              schedule_issue_retry(state, issue_id, next_attempt, %{
-                repo_key: running_entry_repo_key(running_entry),
-                identifier: running_entry.identifier,
-                title: running_entry_title(running_entry),
-                error: error,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              handle_abnormal_agent_exit(state, issue_id, running_entry, session_id, reason)
           end
 
         notify_dashboard()
         {:noreply, state}
+    end
+  end
+
+  defp handle_normal_agent_exit(%State{} = state, issue_id, running_entry, session_id) do
+    persist_run_completion(running_entry, "success", nil)
+
+    case pr_run_entry?(running_entry) do
+      true ->
+        Logger.info("PR agent task completed for issue_id=#{issue_id} session_id=#{session_id}; no Linear continuation scheduled")
+        remember_completed_run(state, issue_id, running_entry)
+
+      false ->
+        complete_pr_review_comment_cursor(issue_id)
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+        state
+        |> complete_issue(issue_id, running_entry)
+        |> schedule_issue_retry(issue_id, 1, %{
+          repo_key: running_entry_repo_key(running_entry),
+          identifier: running_entry.identifier,
+          title: running_entry_title(running_entry),
+          delay_type: :continuation,
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
+        })
+    end
+  end
+
+  defp handle_abnormal_agent_exit(%State{} = state, issue_id, running_entry, session_id, reason) do
+    error = "agent exited: #{inspect(reason)}"
+    persist_run_completion(running_entry, terminal_status_for_reason(reason), error)
+
+    case pr_run_entry?(running_entry) do
+      true ->
+        # PR runs are explicit operator dispatches keyed by a synthetic
+        # "pr:<repo>:<n>" id that has no Linear backing. Scheduling a retry
+        # would push the id through Tracker.fetch_issue_states_by_ids and
+        # mis-tag the audit trail; let the operator redispatch instead.
+        Logger.warning("PR agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; PR runs are not retried")
+
+        emit_run_failed(running_entry, error, nil)
+        remember_completed_run(state, issue_id, running_entry)
+
+      false ->
+        Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+
+        next_attempt = next_retry_attempt_from_running(running_entry)
+        emit_run_failed(running_entry, error, next_attempt)
+
+        schedule_issue_retry(state, issue_id, next_attempt, %{
+          repo_key: running_entry_repo_key(running_entry),
+          identifier: running_entry.identifier,
+          title: running_entry_title(running_entry),
+          error: error,
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
+        })
     end
   end
 
@@ -1227,18 +1258,21 @@ defmodule SymphonyElixir.Orchestrator do
       Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
 
       next_attempt = next_retry_attempt_from_running(running_entry)
+      error = "stalled for #{elapsed_ms}ms without codex activity"
 
-      state
-      |> terminate_running_issue(issue_id, false,
-        status: "timeout",
-        error: "stalled for #{elapsed_ms}ms without codex activity"
-      )
-      |> schedule_issue_retry(issue_id, next_attempt, %{
-        repo_key: running_entry_repo_key(running_entry),
-        identifier: identifier,
-        title: running_entry_title(running_entry),
-        error: "stalled for #{elapsed_ms}ms without codex activity"
-      })
+      state =
+        terminate_running_issue(state, issue_id, false, status: "timeout", error: error)
+
+      if pr_run_entry?(running_entry) do
+        state
+      else
+        schedule_issue_retry(state, issue_id, next_attempt, %{
+          repo_key: running_entry_repo_key(running_entry),
+          identifier: identifier,
+          title: running_entry_title(running_entry),
+          error: error
+        })
+      end
     else
       state
     end
@@ -1333,23 +1367,28 @@ defmodule SymphonyElixir.Orchestrator do
 
     emit_run_stuck(running_entry, elapsed_ms, next_attempt)
 
-    state
-    |> terminate_running_issue(issue_id, false,
-      status: "timeout",
-      error: error,
-      stop_agent_session: true,
-      run_after_run_hook: true
-    )
-    |> schedule_issue_retry(issue_id, next_attempt, %{
-      repo_key: running_entry_repo_key(running_entry),
-      identifier: identifier,
-      title: running_entry_title(running_entry),
-      error: error,
-      reason: :stuck,
-      elapsed_ms: elapsed_ms,
-      worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
-    })
+    state =
+      terminate_running_issue(state, issue_id, false,
+        status: "timeout",
+        error: error,
+        stop_agent_session: true,
+        run_after_run_hook: true
+      )
+
+    if pr_run_entry?(running_entry) do
+      state
+    else
+      schedule_issue_retry(state, issue_id, next_attempt, %{
+        repo_key: running_entry_repo_key(running_entry),
+        identifier: identifier,
+        title: running_entry_title(running_entry),
+        error: error,
+        reason: :stuck,
+        elapsed_ms: elapsed_ms,
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path)
+      })
+    end
   end
 
   defp terminate_task(pid) when is_pid(pid) do
@@ -2072,6 +2111,93 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp do_dispatch_pr(%State{} = state, target, opts) when is_binary(target) and is_list(opts) do
+    cond do
+      operator_paused?(state) ->
+        {:error, :dispatch_paused, state}
+
+      workspace_quota_paused?(state) ->
+        {:error, workspace_quota_error(state), state}
+
+      true ->
+        with :ok <- Config.validate!(),
+             {:ok, %{issue: issue, pr: pr, repo_key: repo_key}} <- PrRun.resolve(target, opts),
+             :ok <- ensure_pr_dispatch_available(state, issue),
+             worker_host <- select_worker_host(state, Keyword.get(opts, :worker_host)),
+             :ok <- ensure_worker_available(worker_host),
+             {:ok, state} <- spawn_pr_on_worker_host(state, issue, pr, worker_host, repo_key) do
+          {:ok,
+           %{
+             issue_id: issue.id,
+             identifier: issue.identifier,
+             pull_request_url: issue.pull_request_url,
+             repo_key: repo_key,
+             worker_host: worker_host
+           }, state}
+        else
+          {:error, reason} -> {:error, reason, state}
+        end
+    end
+  end
+
+  defp do_dispatch_pr(state, _target, _opts), do: {:error, :invalid_pr_target, state}
+
+  defp ensure_pr_dispatch_available(%State{} = state, %Issue{id: issue_id} = issue) do
+    cond do
+      Map.has_key?(state.running, issue_id) ->
+        {:error, :pr_run_already_running}
+
+      !dispatch_slots_available?(issue, state) ->
+        {:error, :no_available_orchestrator_slots}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp ensure_worker_available(:no_worker_capacity), do: {:error, :no_worker_capacity}
+  defp ensure_worker_available(_worker_host), do: :ok
+
+  defp spawn_pr_on_worker_host(%State{} = state, issue, pr, worker_host, repo_key) do
+    run_id = new_run_id(issue.id)
+    settings = Config.settings_for_repo!(repo_key)
+
+    case Verification.allocate_for_dispatch(issue, run_id, worker_host,
+           repo_key: repo_key,
+           settings: settings
+         ) do
+      {:ok, verification} ->
+        runner_opts = [
+          prompt_mode: :pr,
+          pr_context: Map.get(issue, :pr_context) || pr,
+          issue_state_fetcher: fn _ids -> {:ok, []} end
+        ]
+
+        running_attrs = %{
+          run_kind: :pr,
+          pr_context: Map.get(issue, :pr_context) || pr,
+          pull_request_url: issue.pull_request_url
+        }
+
+        next_state =
+          spawn_allocated_agent_on_worker_host(state, issue, %{
+            attempt: nil,
+            recipient: self(),
+            worker_host: worker_host,
+            run_id: run_id,
+            verification: verification,
+            repo_key: repo_key,
+            runner_opts: runner_opts,
+            running_attrs: running_attrs
+          })
+
+        {:ok, next_state}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, repo_key) do
     recipient = self()
 
@@ -2130,14 +2256,39 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_allocated_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, run_id, verification, repo_key) do
+    spawn_allocated_agent_on_worker_host(state, issue, %{
+      attempt: attempt,
+      recipient: recipient,
+      worker_host: worker_host,
+      run_id: run_id,
+      verification: verification,
+      repo_key: repo_key,
+      runner_opts: [],
+      running_attrs: %{}
+    })
+  end
+
+  defp spawn_allocated_agent_on_worker_host(%State{} = state, issue, dispatch) do
+    attempt = Map.fetch!(dispatch, :attempt)
+    recipient = Map.fetch!(dispatch, :recipient)
+    worker_host = Map.fetch!(dispatch, :worker_host)
+    run_id = Map.fetch!(dispatch, :run_id)
+    verification = Map.fetch!(dispatch, :verification)
+    repo_key = Map.fetch!(dispatch, :repo_key)
+    runner_opts = Map.get(dispatch, :runner_opts, [])
+    running_attrs = Map.get(dispatch, :running_attrs, %{})
+
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient,
-             attempt: attempt,
-             repo_key: repo_key,
-             worker_host: worker_host,
-             run_id: run_id,
-             verification: verification
-           )
+           opts =
+             [
+               attempt: attempt,
+               repo_key: repo_key,
+               worker_host: worker_host,
+               run_id: run_id,
+               verification: verification
+             ] ++ runner_opts
+
+           AgentRunner.run(issue, recipient, opts)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -2145,43 +2296,45 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
-        running_entry = %{
-          pid: pid,
-          ref: ref,
-          run_id: run_id,
-          repo_key: repo_key,
-          identifier: issue.identifier,
-          issue: issue,
-          worker_host: worker_host,
-          verification: verification,
-          workspace_path: nil,
-          session_id: nil,
-          transcript_path: nil,
-          transcript_buffer: :queue.new(),
-          transcript_buffer_size: 0,
-          last_codex_message: nil,
-          last_codex_timestamp: nil,
-          last_codex_event: nil,
-          last_event_at: started_at,
-          codex_app_server_pid: nil,
-          agent_module: nil,
-          agent_session: nil,
-          codex_input_tokens: 0,
-          codex_cached_input_tokens: 0,
-          codex_output_tokens: 0,
-          codex_total_tokens: 0,
-          reviewer_input_tokens: 0,
-          reviewer_cached_input_tokens: 0,
-          reviewer_output_tokens: 0,
-          reviewer_total_tokens: 0,
-          codex_last_reported_input_tokens: 0,
-          codex_last_reported_cached_input_tokens: 0,
-          codex_last_reported_output_tokens: 0,
-          codex_last_reported_total_tokens: 0,
-          turn_count: 0,
-          retry_attempt: normalize_retry_attempt(attempt),
-          started_at: started_at
-        }
+        running_entry =
+          %{
+            pid: pid,
+            ref: ref,
+            run_id: run_id,
+            repo_key: repo_key,
+            identifier: issue.identifier,
+            issue: issue,
+            worker_host: worker_host,
+            verification: verification,
+            workspace_path: nil,
+            session_id: nil,
+            transcript_path: nil,
+            transcript_buffer: :queue.new(),
+            transcript_buffer_size: 0,
+            last_codex_message: nil,
+            last_codex_timestamp: nil,
+            last_codex_event: nil,
+            last_event_at: started_at,
+            codex_app_server_pid: nil,
+            agent_module: nil,
+            agent_session: nil,
+            codex_input_tokens: 0,
+            codex_cached_input_tokens: 0,
+            codex_output_tokens: 0,
+            codex_total_tokens: 0,
+            reviewer_input_tokens: 0,
+            reviewer_cached_input_tokens: 0,
+            reviewer_output_tokens: 0,
+            reviewer_total_tokens: 0,
+            codex_last_reported_input_tokens: 0,
+            codex_last_reported_cached_input_tokens: 0,
+            codex_last_reported_output_tokens: 0,
+            codex_last_reported_total_tokens: 0,
+            turn_count: 0,
+            retry_attempt: normalize_retry_attempt(attempt),
+            started_at: started_at
+          }
+          |> Map.merge(running_attrs)
 
         persist_run_start(issue, running_entry, attempt)
         state = delete_persisted_retry(state, issue.id, repo_key)
@@ -3088,6 +3241,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp running_entry_repo_key(%{repo_key: repo_key}) when is_binary(repo_key), do: repo_key
   defp running_entry_repo_key(_running_entry), do: nil
 
+  defp pr_run_entry?(%{run_kind: :pr}), do: true
+  defp pr_run_entry?(%{run_kind: "pr"}), do: true
+  defp pr_run_entry?(%{issue: %Issue{run_kind: :pr}}), do: true
+  defp pr_run_entry?(%{issue: %Issue{run_kind: "pr"}}), do: true
+  defp pr_run_entry?(_running_entry), do: false
+
   defp dispatch_repo_key(%State{} = state, %Issue{} = issue), do: issue_repo_key(issue) || state.repo_key
   defp dispatch_repo_key(%State{} = state, _issue), do: state.repo_key
 
@@ -3891,6 +4050,22 @@ defmodule SymphonyElixir.Orchestrator do
 
   def stop_running(_server, _issue_id_or_identifier), do: {:error, :invalid_issue_id}
 
+  @spec dispatch_pr(String.t(), keyword()) :: {:ok, map()} | :unavailable | {:error, term()}
+  def dispatch_pr(target, opts \\ []) do
+    dispatch_pr(__MODULE__, target, opts)
+  end
+
+  @spec dispatch_pr(GenServer.server(), String.t(), keyword()) :: {:ok, map()} | :unavailable | {:error, term()}
+  def dispatch_pr(server, target, opts) when is_binary(target) and is_list(opts) do
+    if server_available?(server) do
+      GenServer.call(server, {:dispatch_pr, target, opts})
+    else
+      :unavailable
+    end
+  end
+
+  def dispatch_pr(_server, _target, _opts), do: {:error, :invalid_pr_target}
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -3951,6 +4126,19 @@ defmodule SymphonyElixir.Orchestrator do
     {:reply, state.pause || unpaused_state(), state}
   end
 
+  def handle_call({:dispatch_pr, target, opts}, _from, state) do
+    state = refresh_runtime_config(state)
+
+    case do_dispatch_pr(state, target, opts) do
+      {:ok, result, next_state} ->
+        notify_dashboard()
+        {:reply, {:ok, result}, next_state}
+
+      {:error, reason, next_state} ->
+        {:reply, {:error, reason}, next_state}
+    end
+  end
+
   def handle_call({:stop_running, issue_id_or_identifier}, _from, state) do
     case find_running_issue(state.running, issue_id_or_identifier) do
       {issue_id, running_entry} ->
@@ -3992,10 +4180,12 @@ defmodule SymphonyElixir.Orchestrator do
         %{
           issue_id: issue_id,
           repo_key: Map.get(metadata, :repo_key),
+          run_kind: Map.get(metadata, :run_kind) || Map.get(metadata.issue, :run_kind),
           identifier: metadata.identifier,
           title: running_entry_title(metadata),
           state: metadata.issue.state,
           url: issue_url(metadata.issue),
+          pull_request_url: URLUtils.pull_request_url(metadata) || URLUtils.pull_request_url(metadata.issue),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: Map.get(metadata, :session_id),

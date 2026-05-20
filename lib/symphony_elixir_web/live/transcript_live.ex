@@ -12,7 +12,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   @raw_limit 2_400
   @summary_limit 600
-  @filter_kinds ["agent-text", "tool-call", "tool-result", "session", "error", "event"]
+  @filter_kinds ["agent-text", "tool-call", "tool-result", "session", "error", "event", "reviewer"]
   @default_active_filters MapSet.new(["agent-text", "error"])
   @error_messages %{
     issue_not_found: "No running issue matched this identifier.",
@@ -100,7 +100,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     last_progress = socket.assigns.last_command_progress_entry
 
     cond do
-      kind == "agent-text" and not is_nil(last) ->
+      kind == "agent-text" and same_agent_phase?(last, event) ->
         new_text = agent_text(event) || ""
         merged = %{last | summary: last.summary <> new_text}
 
@@ -110,7 +110,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
          |> assign(:last_command_progress_entry, nil)
          |> stream_insert(:events, merged)}
 
-      command_progress_event?(event) and not is_nil(last_progress) ->
+      command_progress_event?(event) and same_agent_phase?(last_progress, event) ->
         merged = merge_command_progress_entry(last_progress, event)
 
         {:noreply,
@@ -171,10 +171,26 @@ defmodule SymphonyElixirWeb.TranscriptLive do
           </article>
 
           <article class="metric-card">
-            <p class="metric-label">Tokens</p>
+            <p class="metric-label"><%= if @issue.review_agent_enabled, do: "Executor Tokens", else: "Tokens" %></p>
+            <p class="metric-detail numeric">
+              <%= format_int(token_total(@issue, :executor_tokens, :tokens)) %>
+              <span class="muted">total</span>
+            </p>
+          </article>
+
+          <article :if={@issue.review_agent_enabled} class="metric-card">
+            <p class="metric-label">Reviewer Tokens</p>
+            <p class="metric-detail numeric">
+              <%= format_int(token_total(@issue, :reviewer_tokens, :tokens)) %>
+              <span class="muted">total</span>
+            </p>
+          </article>
+
+          <article :if={@issue.review_agent_enabled} class="metric-card">
+            <p class="metric-label">Total Tokens</p>
             <p class="metric-detail numeric">
               <%= format_int(@issue.tokens.total_tokens) %>
-              <span class="muted">total</span>
+              <span class="muted">combined</span>
             </p>
           </article>
         </section>
@@ -225,7 +241,11 @@ defmodule SymphonyElixirWeb.TranscriptLive do
             <article
               :for={{dom_id, entry} <- @streams.events}
               id={dom_id}
-              class={"transcript-event transcript-event-#{entry.kind}"}
+              class={[
+                "transcript-event",
+                "transcript-event-#{entry.kind}",
+                entry.phase == "reviewer" && "transcript-event-reviewer"
+              ]}
             >
               <div class="transcript-event-rail">
                 <span class="transcript-event-index numeric"><%= entry.sequence %></span>
@@ -234,6 +254,10 @@ defmodule SymphonyElixirWeb.TranscriptLive do
               <div class="transcript-event-body">
                 <div class="transcript-event-header">
                   <span class="transcript-event-kind"><%= entry.label %></span>
+                  <span :if={entry.phase == "reviewer"} class="transcript-event-phase">Reviewer</span>
+                  <span :if={entry.verdict} class={"transcript-event-verdict transcript-event-verdict-#{String.replace(entry.verdict, "_", "-")}"}>
+                    <%= String.replace(entry.verdict, "_", " ") %>
+                  </span>
                   <span :if={entry.name not in ["notification", "unknown"]} class="transcript-event-name"><%= entry.name %></span>
                   <span :if={entry.timestamp} class="muted mono numeric"><%= entry.timestamp %></span>
                 </div>
@@ -256,15 +280,22 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   defp transcript_entry(event, sequence) do
     kind = event_kind(event)
     progress_count = command_progress_dot_count(event)
+    phase = agent_phase(event)
+    verdict = Presenter.review_agent_verdict(event)
 
     %{
       id: "event-#{sequence}",
       sequence: sequence,
       kind: kind,
       label: event_label(kind),
+      phase: phase,
+      verdict: verdict,
       name: event_name(event),
       timestamp: event_timestamp(event),
-      summary: progress_summary(progress_count) || event_summary(event, kind),
+      summary:
+        progress_summary(progress_count) ||
+          Presenter.review_agent_verdict_summary(event) ||
+          event_summary(event, kind),
       progress_count: progress_count,
       raw: event |> inspect(pretty: true, limit: :infinity) |> truncate(@raw_limit)
     }
@@ -301,6 +332,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   defp event_label("tool-result"), do: "Tool result"
   defp event_label("session"), do: "Session"
   defp event_label("error"), do: "Error"
+  defp event_label("reviewer"), do: "Reviewer"
   defp event_label(_kind), do: "Event"
 
   defp active_filters(%{"filters" => value}), do: parse_filters(value)
@@ -478,6 +510,21 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     map_value(item, ["type", :type])
   end
 
+  defp agent_phase(event) do
+    event
+    |> map_value(["agent_phase", :agent_phase])
+    |> normalize_agent_phase()
+  end
+
+  defp normalize_agent_phase(:reviewer), do: "reviewer"
+  defp normalize_agent_phase("reviewer"), do: "reviewer"
+  defp normalize_agent_phase(:executor), do: "executor"
+  defp normalize_agent_phase("executor"), do: "executor"
+  defp normalize_agent_phase(_phase), do: nil
+
+  defp same_agent_phase?(nil, _event), do: false
+  defp same_agent_phase?(entry, event), do: Map.get(entry, :phase) == agent_phase(event)
+
   defp tool_name(event) do
     tool_params(event)
     |> case do
@@ -588,6 +635,12 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   defp format_int(_value), do: "n/a"
 
+  defp token_total(issue, primary_key, fallback_key) do
+    issue
+    |> Map.get(primary_key, Map.get(issue, fallback_key, %{}))
+    |> Map.get(:total_tokens)
+  end
+
   defp map_path(value, []), do: value
 
   defp map_path(value, [key | rest]) when is_map(value) do
@@ -616,7 +669,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     kind = event_kind(event)
 
     cond do
-      kind == "agent-text" and not is_nil(last_agent) ->
+      kind == "agent-text" and same_agent_phase?(last_agent, event) ->
         new_text = agent_text(event) || ""
         merged = %{last_agent | summary: last_agent.summary <> new_text}
         {[merged | tl(acc_rev)], merged, nil, seq}
@@ -625,7 +678,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
         entry = transcript_entry(event, seq)
         {[entry | acc_rev], entry, nil, seq + 1}
 
-      command_progress_event?(event) and not is_nil(last_progress) ->
+      command_progress_event?(event) and same_agent_phase?(last_progress, event) ->
         merged = merge_command_progress_entry(last_progress, event)
         {[merged | tl(acc_rev)], nil, merged, seq}
 

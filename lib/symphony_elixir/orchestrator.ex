@@ -388,6 +388,7 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       running_entry ->
+        update = maybe_put_review_agent_verdict_tokens(update, running_entry)
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
         audit_agent_update(updated_running_entry, update, token_delta)
         maybe_emit_pr_opened(running_entry, updated_running_entry)
@@ -2326,6 +2327,7 @@ defmodule SymphonyElixir.Orchestrator do
             reviewer_cached_input_tokens: 0,
             reviewer_output_tokens: 0,
             reviewer_total_tokens: 0,
+            review_agent_enabled: review_agent_enabled_for_repo(repo_key),
             codex_last_reported_input_tokens: 0,
             codex_last_reported_cached_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
@@ -2885,7 +2887,30 @@ defmodule SymphonyElixir.Orchestrator do
     state.completed_run_metadata
     |> Map.get(issue_id, %{})
     |> Map.merge(lifecycle_source_metadata(source))
+    |> maybe_merge_lifecycle_run_store_metadata(issue_id)
     |> Map.put_new(:repo_key, state.repo_key)
+  end
+
+  defp maybe_merge_lifecycle_run_store_metadata(%{run_id: run_id} = metadata, _issue_id) when is_binary(run_id), do: metadata
+
+  defp maybe_merge_lifecycle_run_store_metadata(metadata, issue_id) do
+    issue_id
+    |> lifecycle_run_store_metadata()
+    |> Map.merge(metadata)
+  end
+
+  @watchable_run_statuses ["success", "stopped"]
+
+  defp lifecycle_run_store_metadata(issue_id) when is_binary(issue_id) do
+    case RunStore.list_all_runs(500) do
+      runs when is_list(runs) ->
+        runs
+        |> Enum.find(&(Map.get(&1, :issue_id) == issue_id and Map.get(&1, :status) in @watchable_run_statuses))
+        |> lifecycle_source_metadata()
+
+      _ ->
+        %{}
+    end
   end
 
   defp lifecycle_source_metadata(source) when is_map(source) do
@@ -3570,8 +3595,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp hydrate_retry_attempt(_retry, retry_attempts, claimed, _now, _now_ms), do: {retry_attempts, claimed}
 
-  @watchable_run_statuses ["success", "stopped"]
-
   defp hydrate_completed_run_metadata(retry_attempts) when is_map(retry_attempts) do
     case RunStore.list_all_runs(500) do
       runs when is_list(runs) ->
@@ -3950,6 +3973,17 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  defp review_agent_enabled?(%{review_agent: %{enabled: true}}), do: true
+  defp review_agent_enabled?(_settings), do: false
+
+  defp review_agent_enabled_for_repo(repo_key) do
+    repo_key
+    |> Config.settings_for_repo!()
+    |> review_agent_enabled?()
+  rescue
+    _ -> false
+  end
+
   defp verification_port(%{verification: %{port: port}}) when is_integer(port), do: port
   defp verification_port(_running_entry), do: nil
 
@@ -4199,6 +4233,7 @@ defmodule SymphonyElixir.Orchestrator do
           reviewer_cached_input_tokens: Map.get(metadata, :reviewer_cached_input_tokens, 0),
           reviewer_output_tokens: Map.get(metadata, :reviewer_output_tokens, 0),
           reviewer_total_tokens: Map.get(metadata, :reviewer_total_tokens, 0),
+          review_agent_enabled: Map.get(metadata, :review_agent_enabled, false),
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
@@ -4392,6 +4427,21 @@ defmodule SymphonyElixir.Orchestrator do
     %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
   end
 
+  defp maybe_put_review_agent_verdict_tokens(%{event: event} = update, running_entry)
+       when event in [:review_agent_verdict, "review_agent_verdict"] and is_map(running_entry) do
+    payload =
+      update
+      |> Map.get(:payload, %{})
+      |> put_map_value(:tokens, reviewer_tokens(running_entry))
+
+    Map.put(update, :payload, payload)
+  end
+
+  defp maybe_put_review_agent_verdict_tokens(update, _running_entry), do: update
+
+  defp put_map_value(map, key, value) when is_map(map), do: Map.put(map, key, value)
+  defp put_map_value(_map, key, value), do: %{key => value}
+
   defp append_transcript_event(_queue, _size, _event, limit) when not is_integer(limit) or limit <= 0,
     do: {:queue.new(), 0}
 
@@ -4584,6 +4634,7 @@ defmodule SymphonyElixir.Orchestrator do
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
       reviewer_tokens: reviewer_tokens(running_entry),
+      review_agent_enabled: Map.get(running_entry, :review_agent_enabled, false),
       transcript_path: Map.get(running_entry, :transcript_path),
       transcript_buffer: transcript_buffer_list(running_entry),
       transcript_buffer_size: transcript_buffer_size(running_entry)
@@ -4616,6 +4667,8 @@ defmodule SymphonyElixir.Orchestrator do
       last_event_at: watching_metadata(:last_event_at, completed_metadata, existing),
       turn_count: watching_metadata(:turn_count, completed_metadata, existing, 0),
       tokens: watching_metadata(:tokens, completed_metadata, existing, %{}),
+      reviewer_tokens: watching_metadata(:reviewer_tokens, completed_metadata, existing, %{}),
+      review_agent_enabled: watching_metadata(:review_agent_enabled, completed_metadata, existing, false),
       transcript_path: watching_metadata(:transcript_path, completed_metadata, existing),
       transcript_buffer: watching_metadata(:transcript_buffer, completed_metadata, existing, []),
       transcript_buffer_size: watching_metadata(:transcript_buffer_size, completed_metadata, existing, 0)

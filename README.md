@@ -139,6 +139,16 @@ After editing `symphony.yml`, invoke the shared `symphony-init-workflow` skill f
 inside the target repository. The skill inspects repo files and CI scripts, asks for clarification
 when commands are ambiguous, writes `WORKFLOW.md`, and validates it with Symphony's runtime parser.
 
+Run a single issue synchronously without starting the poll loop or dashboard:
+
+```bash
+./bin/symphony run RSM-123 --timeout 30m --no-retry --i-understand-that-this-will-be-running-without-the-usual-guardrails
+```
+
+One-shot runs use the same `symphony.yml` and repo `WORKFLOW.md` resolution as service mode, create
+the normal isolated workspace, write durable run history, and exit when the issue run succeeds,
+fails, or times out.
+
 Pass `--config` to point at a different operator config:
 
 ```bash

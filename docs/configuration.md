@@ -332,10 +332,17 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   reuses that repo's cached issues, and retries that repo after the full polling interval. If a repo
   keeps failing before it ever warms, three consecutive cold failures mark its cache as an empty
   result so the other repos can continue dispatching.
-- The CLI takes no positional arguments. Once `symphony.yml` loads, each repo's
+- The service CLI takes no positional arguments. Once `symphony.yml` loads, each repo's
   `<path>/<workflow>` is the source of truth Symphony dispatches against. The dashboard transcript
   URL embeds the repo `name` as `<repo_key>` —
   `/repos/<repo_key>/issues/<issue_identifier>/transcript`.
+- One-shot CLI mode is available as
+  `./bin/symphony run <issue-identifier> [--config path] [--timeout 30m] [--no-retry]`.
+  It keeps the same explicit guardrail acknowledgement flag as service mode, resolves the issue
+  through the configured tracker and repo routes, starts only the runtime pieces needed for one
+  agent run, writes durable run history, and skips the polling loop, dashboard, HTTP server, and
+  durable retry-queue persistence. Exit codes are `0` for success, `1` for agent failure after
+  bounded one-shot attempts, `2` for configuration/validation errors, and `124` for timeout.
 - Safer Codex defaults are used when policy fields are omitted:
   - `agent.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}` for Codex.
   - `agent.thread_sandbox` defaults to `workspace-write` for Codex.

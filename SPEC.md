@@ -3117,18 +3117,32 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.7 CLI and Host Lifecycle
 
-- Runtime CLI takes no positional arguments. Repo workflow paths are read only from `symphony.yml`.
+- Service CLI takes no positional arguments. Repo workflow paths are read only from `symphony.yml`.
 - CLI accepts a `symphony init [--force]` subcommand that scaffolds a deterministic
   `symphony.yml`, refuses to overwrite an existing file without `--force`, and exits without
   starting the runtime.
-- CLI accepts `--config path-to-symphony.yml` to select an alternate operator config
-- CLI defaults to `./symphony.yml` when `--config` is omitted
-- CLI errors when the resolved `symphony.yml` (explicit or default) does not exist
+- CLI accepts `--config path-to-symphony.yml` to select an alternate operator config.
+- CLI defaults to `./symphony.yml` when `--config` is omitted.
+- CLI errors when the resolved `symphony.yml` (explicit or default) does not exist.
 - The Elixir CLI requires
   `--i-understand-that-this-will-be-running-without-the-usual-guardrails` before startup.
-- CLI surfaces startup failure cleanly
-- CLI exits with success when application starts and shuts down normally
-- CLI exits nonzero when startup fails or the host process exits abnormally
+- CLI surfaces startup failure cleanly.
+- Service CLI exits with success when application starts and shuts down normally.
+- Service CLI exits nonzero when startup fails or the host process exits abnormally.
+- One-shot CLI mode is `symphony run <issue-identifier> [--config path] [--timeout duration] [--no-retry]`.
+- One-shot mode loads `symphony.yml` and the matched repo `WORKFLOW.md` through the normal config
+  and repo-route resolution path, resolves the issue through the tracker, and runs exactly one
+  synchronous issue lifecycle.
+- One-shot mode starts only the runtime dependencies needed by the agent path, durable run store,
+  scoped tools, and verification support. It MUST NOT start the polling loop, HTTP server,
+  dashboard, PR review poller, CI poller, or durable retry-queue dispatch loop.
+- One-shot mode writes durable run history records with the same core fields as orchestrator-owned
+  runs. It does not persist retry queue rows between attempts.
+- One-shot failure retries use the same exponential backoff formula capped by
+  `agent.max_retry_backoff_ms`, but are bounded within the process lifetime so exhausted retries can
+  return an exit code.
+- One-shot exit codes are `0` for successful run completion, `1` for agent failure after bounded
+  retries, `2` for configuration or validation errors, and `124` for timeout.
 
 ### 17.8 Real Integration Profile (RECOMMENDED)
 

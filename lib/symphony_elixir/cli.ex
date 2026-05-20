@@ -7,7 +7,7 @@ defmodule SymphonyElixir.CLI do
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
   @burrito_args_module Burrito.Util.Args
-  @switches [
+  @service_switches [
     {@acknowledgement_switch, :boolean},
     config: :string,
     host: :string,
@@ -15,10 +15,23 @@ defmodule SymphonyElixir.CLI do
     port: :integer,
     state_root: :string
   ]
+  @run_switches [
+    {@acknowledgement_switch, :boolean},
+    config: :string,
+    logs_root: :string,
+    no_retry: :boolean,
+    state_root: :string,
+    timeout: :string
+  ]
   @default_symphony_file "symphony.yml"
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
-  @type evaluation_result :: :ok | :halt | {:error, String.t()}
+  @type one_shot_result ::
+          {:ok, map()}
+          | {:error, term()}
+          | {:config_error, term()}
+          | {:timeout, term()}
+
   @type deps :: %{
           file_regular?: (String.t() -> boolean()),
           init: ([String.t()] -> SymphonyElixir.Init.result()),
@@ -29,7 +42,8 @@ defmodule SymphonyElixir.CLI do
           set_logs_root_from_env: (-> :ok | {:error, term()}),
           set_server_host_override: (String.t() | nil -> :ok | {:error, term()}),
           set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
-          ensure_all_started: (-> ensure_started_result())
+          ensure_all_started: (-> ensure_started_result()),
+          run_one_shot: (String.t(), keyword() -> one_shot_result())
         }
 
   @spec main([String.t()]) :: no_return()
@@ -38,8 +52,12 @@ defmodule SymphonyElixir.CLI do
       :ok ->
         wait_for_shutdown()
 
-      :halt ->
-        System.halt(0)
+      {:halt, code} ->
+        System.halt(code)
+
+      {:error, message, code} ->
+        IO.puts(:stderr, message)
+        System.halt(code)
 
       {:error, message} ->
         IO.puts(:stderr, message)
@@ -47,24 +65,31 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
-  @spec evaluate([String.t()]) :: evaluation_result()
-  def evaluate(args), do: evaluate(args, runtime_deps())
+  @spec evaluate([String.t()], deps()) ::
+          :ok | {:halt, non_neg_integer()} | {:error, String.t()} | {:error, String.t(), non_neg_integer()}
+  def evaluate(args, deps \\ runtime_deps()) do
+    case args do
+      ["init" | init_args] ->
+        evaluate_init(init_args, deps)
 
-  @spec evaluate([String.t()], deps()) :: evaluation_result()
-  def evaluate(["init" | args], deps) do
-    case deps.init.(args) do
-      {:ok, message} ->
-        IO.puts(message)
-        :halt
+      ["run" | run_args] ->
+        evaluate_run(run_args, deps)
 
-      {:error, message} ->
-        {:error, message}
+      _args ->
+        with :ok <- configure(args, deps) do
+          start_runtime(deps)
+        end
     end
   end
 
-  def evaluate(args, deps) do
-    with :ok <- configure(args, deps) do
-      start_runtime(deps)
+  defp evaluate_init(args, deps) do
+    case deps.init.(args) do
+      {:ok, message} ->
+        IO.puts(message)
+        {:halt, 0}
+
+      {:error, message} ->
+        {:error, message}
     end
   end
 
@@ -95,7 +120,7 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp parse_and_configure(args, deps) do
-    case OptionParser.parse(args, strict: @switches) do
+    case OptionParser.parse(args, strict: @service_switches) do
       {opts, [], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
              :ok <- set_symphony_config(opts, deps),
@@ -110,6 +135,85 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  defp evaluate_run(args, deps) do
+    with {:ok, issue_identifier, opts} <- parse_run_args(args),
+         :ok <- validate_run_timeout(opts),
+         :ok <- configure_run(opts, deps) do
+      issue_identifier
+      |> deps.run_one_shot.(run_options(opts))
+      |> one_shot_result()
+    end
+  end
+
+  defp parse_run_args(args) do
+    case OptionParser.parse(args, strict: @run_switches) do
+      {opts, [issue_identifier], []} ->
+        case String.trim(issue_identifier) do
+          "" -> {:error, run_usage_message(), 2}
+          issue_identifier -> {:ok, issue_identifier, opts}
+        end
+
+      _ ->
+        {:error, run_usage_message(), 2}
+    end
+  end
+
+  defp configure_run(opts, deps) do
+    with :ok <- require_guardrails_acknowledgement(opts),
+         :ok <- deps.set_state_root_from_env.(),
+         :ok <- deps.set_logs_root_from_env.(),
+         :ok <- set_symphony_config(opts, deps),
+         :ok <- maybe_set_state_root(opts, deps) do
+      maybe_set_logs_root(opts, deps)
+    else
+      {:error, message} -> {:error, message, 2}
+    end
+  end
+
+  defp run_options(opts) do
+    [
+      timeout_ms: parse_timeout_ms(Keyword.get(opts, :timeout)),
+      no_retry: Keyword.get(opts, :no_retry, false)
+    ]
+  end
+
+  defp validate_run_timeout(opts) do
+    case parse_timeout_ms(Keyword.get(opts, :timeout)) do
+      :invalid -> {:error, "Invalid --timeout value. Use an integer optionally followed by ms, s, m, or h.", 2}
+      _timeout_ms -> :ok
+    end
+  end
+
+  defp parse_timeout_ms(nil), do: nil
+
+  defp parse_timeout_ms(raw) when is_binary(raw) do
+    raw = String.trim(raw)
+
+    case Regex.run(~r/^(\d+)(ms|s|m|h)?$/, raw) do
+      [_, amount, unit] ->
+        amount = String.to_integer(amount)
+
+        case unit do
+          "ms" -> amount
+          "s" -> amount * 1_000
+          "m" -> amount * 60_000
+          "h" -> amount * 3_600_000
+          "" -> amount
+        end
+
+      _ ->
+        :invalid
+    end
+  end
+
+  defp parse_timeout_ms(_raw), do: :invalid
+
+  defp one_shot_result({:ok, _result}), do: {:halt, 0}
+  defp one_shot_result({:timeout, _reason}), do: {:halt, 124}
+  defp one_shot_result({:config_error, reason}), do: {:error, "Configuration error: #{inspect(reason)}", 2}
+  defp one_shot_result({:error, reason}), do: {:error, "One-shot run failed: #{inspect(reason)}", 1}
+  defp one_shot_result(other), do: {:error, "One-shot run failed: #{inspect(other)}", 1}
+
   defp start_runtime(deps) do
     case deps.ensure_all_started.() do
       {:ok, _started_apps} ->
@@ -122,7 +226,14 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony init [--force]\n       symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]"
+    "Usage: symphony init [--force]\n" <>
+      "       symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]\n" <>
+      "       symphony run <issue-identifier> [--config <path-to-symphony.yml>] [--timeout <duration>] [--no-retry] [--state-root <path>] [--logs-root <path>]"
+  end
+
+  @spec run_usage_message() :: String.t()
+  defp run_usage_message do
+    "Usage: symphony run <issue-identifier> [--config <path-to-symphony.yml>] [--timeout <duration>] [--no-retry] [--state-root <path>] [--logs-root <path>]"
   end
 
   @spec runtime_deps() :: deps()
@@ -137,7 +248,8 @@ defmodule SymphonyElixir.CLI do
       set_logs_root_from_env: &Paths.set_logs_root_from_env/0,
       set_server_host_override: &set_server_host_override/1,
       set_server_port_override: &set_server_port_override/1,
-      ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end
+      ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end,
+      run_one_shot: &SymphonyElixir.OneShot.run/2
     }
   end
 

@@ -26,6 +26,21 @@ defmodule SymphonyElixir.Tracker.Memory do
     {:ok, Enum.filter(issue_entries(), &Resolver.matches?(&1, repo))}
   end
 
+  @spec fetch_issue_by_identifier(String.t()) :: {:ok, Issue.t()} | {:error, term()}
+  def fetch_issue_by_identifier(identifier) when is_binary(identifier) do
+    maybe_sleep(:memory_tracker_fetch_states_sleep_ms)
+
+    issue =
+      Enum.find(issue_entries(), fn %Issue{id: id, identifier: issue_identifier} ->
+        identifier in [id, issue_identifier]
+      end)
+
+    case issue do
+      %Issue{} = issue -> {:ok, issue}
+      nil -> {:error, :issue_not_found}
+    end
+  end
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) do
     maybe_sleep(:memory_tracker_fetch_states_sleep_ms)

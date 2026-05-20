@@ -24,6 +24,8 @@ defmodule SymphonyMcpShim do
     with {:ok, addr} <- parse_tcp_host(host),
          {:ok, port} <- parse_tcp_port(port) do
       parse_args(rest, {:tcp, addr, port})
+    else
+      {:error, reason} -> {:error, {:invalid_tcp_endpoint_args, reason}}
     end
   end
 

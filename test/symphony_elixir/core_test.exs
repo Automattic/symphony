@@ -1,5 +1,6 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Ci, as: CiConfig
   alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
   alias SymphonyElixir.Secret
@@ -2459,6 +2460,54 @@ defmodule SymphonyElixir.CoreTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "agent runner does not compact oversized Claude first-turn prompts" do
+    {:ok, claude_settings} =
+      Schema.parse(%{
+        agent: %{
+          kind: "claude",
+          command: "claude"
+        }
+      })
+
+    {:ok, codex_settings} =
+      Schema.parse(%{
+        agent: %{
+          kind: "codex",
+          command: "codex app-server"
+        }
+      })
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      prompt: String.duplicate("workflow detail\n", 1_000)
+    )
+
+    issue = %Issue{
+      id: "issue-claude-no-compact",
+      identifier: "S-CLAUDE-NO-COMPACT",
+      title: "Claude oversized prompt regression",
+      description: String.duplicate("issue detail\n", 2_000),
+      state: "In Progress",
+      url: "https://example.org/issues/S-CLAUDE-NO-COMPACT",
+      labels: ["backend"],
+      comments: [
+        %{author: "Reviewer", body: String.duplicate("comment detail\n", 1_000), created_at: nil}
+      ]
+    }
+
+    claude_prompt = AgentRunner.build_first_turn_prompt(issue, settings: claude_settings)
+    codex_prompt = AgentRunner.build_first_turn_prompt(issue, settings: codex_settings)
+
+    # Claude keeps the full rendered prompt regardless of size — the compact bootstrap is
+    # Codex-only because Claude's transport doesn't share the Codex stdio soft limit.
+    assert byte_size(claude_prompt) > 12_000
+    assert claude_prompt =~ "workflow detail"
+    refute claude_prompt =~ "linear_get_current_issue"
+
+    # Codex still uses the compact bootstrap so the comparison locks in both branches of the gate.
+    assert codex_prompt =~ "linear_get_current_issue"
+    refute codex_prompt =~ "workflow detail"
   end
 
   test "agent runner forwards timestamped codex updates to recipient" do

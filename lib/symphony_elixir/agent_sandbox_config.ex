@@ -1,4 +1,6 @@
 defmodule SymphonyElixir.AgentSandboxConfig do
+  require Logger
+
   @moduledoc """
   Shared sandbox defaults for agent runtimes.
 
@@ -19,7 +21,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
       (operator-authored Claude Code prompts / subagents / hooks)
     * `/etc/sudoers`, `/private/etc/sudoers`, `/var/root` (macOS admin/root state)
     * `~/Library/Application Support`, `~/Library/Keychains`, `~/Library/Preferences` (macOS app data)
-    * shell startup and REPL/history files
+    * shell startup files (e.g. `~/.zshrc`, `~/.bash_profile`) and shell/REPL history files
 
   Codex command sandboxing additionally denies reads of selected runtime
   files under `~/.codex` while leaving the parent Codex process able to
@@ -339,9 +341,16 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
   defp canonical_absolute_path_variants(path) do
     case SymphonyElixir.PathSafety.canonicalize(path) do
-      {:ok, canonical_path} when canonical_path != path -> [canonical_path]
-      {:ok, _canonical_path} -> []
-      {:error, _reason} -> []
+      {:ok, canonical_path} when canonical_path != path ->
+        [canonical_path]
+
+      {:ok, _canonical_path} ->
+        []
+
+      {:error, reason} ->
+        Logger.warning("SRT allow-write path canonicalization failed; using original path only path=#{path} reason=#{inspect(reason)}")
+
+        []
     end
   end
 

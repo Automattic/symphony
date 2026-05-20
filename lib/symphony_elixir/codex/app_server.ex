@@ -1091,7 +1091,17 @@ defmodule SymphonyElixir.Codex.AppServer do
 
         cond do
           codex_stdio_write_failed?(payload_string) ->
-            {:error, {:codex_stdio_write_failed, String.trim(payload_string)}}
+            trimmed = String.trim(payload_string)
+            Logger.error("Codex app-server stdout write failed; aborting turn: #{trimmed}")
+
+            emit_message(
+              on_message,
+              :transport_failed,
+              %{reason: :codex_stdio_write_failed, detail: trimmed, raw: payload_string},
+              metadata_from_message(port, %{raw: payload_string})
+            )
+
+            {:error, {:codex_stdio_write_failed, trimmed}}
 
           protocol_message_candidate?(payload_string) ->
             emit_message(
@@ -3279,9 +3289,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp codex_stdio_write_failed?(data) do
-    data
-    |> to_string()
-    |> String.contains?("Failed to write to stdout")
+    text = to_string(data)
+
+    String.contains?(text, "codex_app_server_transport::transport::stdio") and
+      String.contains?(text, "Failed to write to stdout")
   end
 
   defp issue_context(%{id: issue_id, identifier: identifier}) do

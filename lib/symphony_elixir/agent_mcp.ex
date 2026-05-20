@@ -118,7 +118,9 @@ defmodule SymphonyElixir.AgentMcp do
     ["--tcp-host", host, "--tcp-port", Integer.to_string(port)]
   end
 
-  defp symphony_shim_args(_mcp_session, socket_path), do: ["--socket", socket_path]
+  defp symphony_shim_args(_mcp_session, socket_path) when is_binary(socket_path) do
+    ["--socket", socket_path]
+  end
 
   defp symphony_shim_env(%{token: token}) when is_binary(token) do
     %{"SYMPHONY_MCP_SESSION_TOKEN" => token}

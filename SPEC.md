@@ -1727,7 +1727,8 @@ Notes:
 - Codex launch preserves the configured command while injecting `--config` overrides for
   `default_permissions="workspace_write"` and the generated `permissions.workspace_write.*`
   profile. Runtime launch paths render workspace-local filesystem entries with the validated
-  workspace path so current Codex versions do not have to rely on ignored special path keys.
+  workspace path so current Codex versions do not have to rely on the legacy `:project_roots`
+  placeholder key, which current Codex CLI versions silently ignore.
   Existing user-provided Codex args, such as model overrides before `app-server`, remain present.
 - Claude local launch parses `agent.command` with shell-like word splitting and runs Claude with
   `--output-format stream-json --print`, feeding prompt input over stdin from a private temporary

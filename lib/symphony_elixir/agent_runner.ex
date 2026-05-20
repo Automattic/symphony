@@ -531,6 +531,15 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  # Exposed as a public seam so the agent-kind gating around compact-prompt fallback can be
+  # regression-tested without spinning up a full agent runtime. Internal callers go through
+  # `build_turn_prompt/4`.
+  @doc false
+  @spec build_first_turn_prompt(map(), keyword()) :: String.t()
+  def build_first_turn_prompt(issue, opts) do
+    build_turn_prompt(issue, opts, 1, Keyword.get(opts, :max_turns, 1))
+  end
+
   defp build_turn_prompt(issue, opts, 1, _max_turns) do
     prompt_opts =
       opts

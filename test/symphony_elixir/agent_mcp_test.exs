@@ -52,6 +52,25 @@ defmodule SymphonyElixir.AgentMcpTest do
     assert AgentMcp.claude_server_config(%Server{transport: "stdio", command: nil}) == %{}
   end
 
+  test "symphony Claude config rejects malformed :tcp session instead of emitting [\"--socket\", nil]" do
+    malformed_tcp_session = %{
+      id: "mcp-test",
+      transport: :tcp,
+      socket_path: nil,
+      tcp_host: "127.0.0.1",
+      tcp_port: nil,
+      token: "session-token"
+    }
+
+    assert_raise FunctionClauseError, fn ->
+      AgentMcp.symphony_claude_config(malformed_tcp_session, nil, "/tmp/shim")
+    end
+
+    assert_raise FunctionClauseError, fn ->
+      AgentMcp.symphony_codex_toml_block(malformed_tcp_session, nil, "/tmp/shim")
+    end
+  end
+
   test "Claude raw server config normalizes transport-specific entries" do
     assert AgentMcp.normalize_claude_server_config(%{
              "command" => "node",

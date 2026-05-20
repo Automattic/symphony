@@ -133,6 +133,8 @@ defmodule SymphonyElixir.Codex.McpConfig do
 
     case File.cp(source, destination) do
       :ok ->
+        # chmod errors bubble up unwrapped here to match the surrounding `File.chmod` callers in
+        # `write_home/3`; the failure mode is effectively unreachable for a file we just created.
         File.chmod(destination, 0o600)
 
       {:error, :enoent} ->

@@ -1007,13 +1007,20 @@ defmodule SymphonyElixir.AppServerTest do
       workspace = Path.join(workspace_root, "MT-1002")
       codex_binary = Path.join(test_root, "fake-codex")
       trace_file = Path.join(test_root, "codex-agent-runtime-env.trace")
+      codex_config_copy = Path.join(test_root, "codex-config-copy.toml")
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
       trace_file="#{trace_file}"
+      config_copy="#{codex_config_copy}"
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
       printf 'ENV:%s\\n' "$SYMPHONY_AGENT_RUNTIME" >> "$trace_file"
+
+      if [ -n "${CODEX_HOME:-}" ] && [ -f "$CODEX_HOME/config.toml" ]; then
+        cp "$CODEX_HOME/config.toml" "$config_copy"
+      fi
+
       count=0
 
       while IFS= read -r _line; do
@@ -1071,6 +1078,13 @@ defmodule SymphonyElixir.AppServerTest do
       assert trace =~ "\"github.com\"=\"allow\""
       assert trace =~ "\"api.openai.com\"=\"allow\""
       refute trace =~ "evil.example.com"
+
+      # Non-SRT local Codex must keep the implicit symphony MCP server on a Unix socket;
+      # only SRT-local launches switch to loopback TCP. Regression guard for mcp_transport/2.
+      codex_config = File.read!(codex_config_copy)
+      assert codex_config =~ ~s(args = ["--socket", )
+      refute codex_config =~ "--tcp-host"
+      refute codex_config =~ "--tcp-port"
     after
       File.rm_rf(test_root)
     end
@@ -3772,6 +3786,67 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert message =~ "Failed to write to stdout"
       assert message =~ "Resource temporarily unavailable"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server does not treat unrelated log lines mentioning stdout writes as transport failures" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stdout-benign-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-95")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-95"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-95","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '2026-05-20T09:14:16Z DEBUG codex_user_message: prior client report Failed to write to stdout resolved'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-stdout-benign",
+        identifier: "MT-95",
+        title: "Benign stdout mention",
+        description: "Ensure unrelated log lines that mention stdout writes do not abort the run",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-95",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Benign stdout mention", issue)
     after
       File.rm_rf(test_root)
     end

@@ -171,6 +171,18 @@ defmodule SymphonyElixir.ControlClientTest do
     assert_received {:posted, _url, _body, "from-env-token"}
   end
 
+  test "keeps unknown response keys as binaries so a hostile endpoint cannot exhaust the atom table" do
+    parent = self()
+    novel_key = "definitely_not_an_existing_atom_#{System.unique_integer([:positive])}"
+    body = %{"paused" => true, novel_key => "value"}
+
+    assert {:ok, result} = ControlClient.pause_dispatch("x", default_opts(parent, 200, body))
+
+    assert result[:paused] == true
+    assert result[novel_key] == "value"
+    assert_raise ArgumentError, fn -> String.to_existing_atom(novel_key) end
+  end
+
   test "falls back to ControlUrl/ControlToken persisted files when env is unset" do
     parent = self()
     File.mkdir_p!(Paths.state_root())

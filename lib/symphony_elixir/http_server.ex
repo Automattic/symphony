@@ -65,14 +65,32 @@ defmodule SymphonyElixir.HttpServer do
   end
 
   defp persist_control_url(host) do
-    with port when is_integer(port) <- bound_port(),
-         url = "http://#{normalize_host(host)}:#{port}",
-         :ok <- ControlUrl.persist(url) do
-      :ok
-    else
-      _ -> :ok
+    case bound_port() do
+      port when is_integer(port) ->
+        url = "http://#{discovery_host(host)}:#{port}"
+
+        case ControlUrl.persist(url) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("failed to persist control_url to #{inspect(ControlUrl.path())}: #{inspect(reason)}")
+            :ok
+        end
+
+      _ ->
+        Logger.warning("skipping control_url persist: Bandit has no bound port yet; CLI will fall back to the default URL")
+        :ok
     end
   end
+
+  # The control_url file is consumed by same-machine CLI clients. Wildcard bind
+  # addresses (0.0.0.0, ::) are not valid destinations, so rewrite them to a
+  # loopback equivalent. Remote callers should set SYMPHONY_CONTROL_URL.
+  defp discovery_host("0.0.0.0"), do: "127.0.0.1"
+  defp discovery_host("::"), do: "::1"
+  defp discovery_host("::0"), do: "::1"
+  defp discovery_host(host), do: normalize_host(host)
 
   @spec bound_port(term()) :: non_neg_integer() | nil
   def bound_port(_server \\ __MODULE__) do

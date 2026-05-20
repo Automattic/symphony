@@ -118,13 +118,23 @@ defmodule SymphonyElixir.ControlClient do
     end
   end
 
+  # Convert response keys to atoms only when the atom already exists in the BEAM —
+  # otherwise keep the binary key. Falls back to binary keys for anything we do
+  # not recognise so a misconfigured SYMPHONY_CONTROL_URL pointing at an arbitrary
+  # server cannot exhaust the atom table.
   defp atomize_keys(value) when is_map(value) do
     Map.new(value, fn
-      {k, v} when is_binary(k) -> {String.to_atom(k), atomize_keys(v)}
+      {k, v} when is_binary(k) -> {to_known_atom(k), atomize_keys(v)}
       {k, v} -> {k, atomize_keys(v)}
     end)
   end
 
   defp atomize_keys(value) when is_list(value), do: Enum.map(value, &atomize_keys/1)
   defp atomize_keys(value), do: value
+
+  defp to_known_atom(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> key
+  end
 end

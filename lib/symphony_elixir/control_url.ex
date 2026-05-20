@@ -7,9 +7,12 @@ defmodule SymphonyElixir.ControlUrl do
 
   alias SymphonyElixir.Paths
 
+  @spec path() :: Path.t()
+  def path, do: Paths.control_url_file()
+
   @spec persist(String.t()) :: :ok | {:error, term()}
   def persist(url) when is_binary(url) do
-    path = Paths.control_url_file()
+    path = path()
     dir = Path.dirname(path)
 
     with :ok <- File.mkdir_p(dir),
@@ -22,9 +25,7 @@ defmodule SymphonyElixir.ControlUrl do
 
   @spec read() :: String.t() | nil
   def read do
-    path = Paths.control_url_file()
-
-    with {:ok, contents} <- File.read(path),
+    with {:ok, contents} <- File.read(path()),
          url = String.trim(contents),
          true <- url != "" do
       url

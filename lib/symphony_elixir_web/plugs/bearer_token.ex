@@ -20,7 +20,7 @@ defmodule SymphonyElixirWeb.Plugs.BearerToken do
 
   @spec call(Conn.t(), keyword()) :: Conn.t()
   def call(%Conn{} = conn, opts) do
-    expected = opts |> Keyword.fetch!(:token) |> apply([])
+    expected = resolve_expected(Keyword.fetch!(opts, :token))
 
     case extract_bearer(conn) do
       {:ok, presented} ->
@@ -32,6 +32,32 @@ defmodule SymphonyElixirWeb.Plugs.BearerToken do
 
       :error ->
         reject(conn)
+    end
+  end
+
+  # Resolve the expected token. The default production resolver
+  # (`&ControlToken.current/0`) hits the state-root on disk, so cache its
+  # result for the BEAM's lifetime — the token is immutable per daemon run.
+  # Custom resolvers (tests, future rotation) stay dynamic.
+  defp resolve_expected(token) when is_binary(token), do: token
+
+  defp resolve_expected(resolver) when is_function(resolver, 0) do
+    if resolver == (&ControlToken.current/0) do
+      cached_default_token()
+    else
+      resolver.()
+    end
+  end
+
+  defp cached_default_token do
+    case :persistent_term.get(__MODULE__, :unresolved) do
+      :unresolved ->
+        token = ControlToken.current()
+        :persistent_term.put(__MODULE__, token)
+        token
+
+      cached ->
+        cached
     end
   end
 

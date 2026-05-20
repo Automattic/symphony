@@ -7,6 +7,8 @@ defmodule SymphonyElixirWeb.ControlApiController do
 
   use Phoenix.Controller, formats: [:json]
 
+  require Logger
+
   alias Plug.Conn
   alias SymphonyElixir.Orchestrator
   alias SymphonyElixirWeb.Endpoint
@@ -54,8 +56,10 @@ defmodule SymphonyElixirWeb.ControlApiController do
   defp respond(conn, {:error, reason}) when reason in [:invalid_issue_id, :invalid_pr_target],
     do: error_response(conn, 422, "invalid_request", Atom.to_string(reason))
 
-  defp respond(conn, {:error, reason}),
-    do: error_response(conn, 500, "orchestrator_error", inspect(reason))
+  defp respond(conn, {:error, reason}) do
+    Logger.error("control_api unexpected orchestrator error: #{inspect(reason)}")
+    error_response(conn, 500, "orchestrator_error", "Unexpected orchestrator error")
+  end
 
   defp error_response(conn, status, code, message) do
     conn

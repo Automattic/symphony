@@ -81,6 +81,15 @@ defmodule SymphonyElixir.HttpServerTest do
       refute is_nil(token)
       assert byte_size(token) > 0
     end
+
+    test "rewrites the IPv4 wildcard host to a loopback URL for local CLI discovery" do
+      System.put_env(@allow_remote_bind_env, "1")
+
+      start_supervised!({HttpServer, [host: "0.0.0.0", port: 0]})
+      port = HttpServer.bound_port()
+
+      assert ControlUrl.read() == "http://127.0.0.1:#{port}"
+    end
   end
 
   describe "migrate_legacy_secret_key_base/2" do

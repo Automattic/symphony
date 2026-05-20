@@ -17,6 +17,7 @@ defmodule SymphonyElixir.AgentRunner do
     Notifications,
     PromptBuilder,
     PrReviewPoller,
+    ReviewAgent,
     SelfReview,
     Tracker,
     URLUtils,
@@ -137,14 +138,20 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp send_codex_update(recipient, %Issue{id: issue_id}, message)
+  defp send_codex_update(recipient, issue, message), do: send_codex_update(recipient, issue, message, :executor)
+
+  defp send_codex_update(recipient, %Issue{id: issue_id}, message, phase)
        when is_binary(issue_id) and is_pid(recipient) do
     payload = SymphonyElixir.ClaudeCode.AppServer.event_to_update(message) || message
+    payload = maybe_put_agent_phase(payload, phase)
     send(recipient, {:codex_worker_update, issue_id, payload})
     :ok
   end
 
-  defp send_codex_update(_recipient, _issue, _message), do: :ok
+  defp send_codex_update(_recipient, _issue, _message, _phase), do: :ok
+
+  defp maybe_put_agent_phase(payload, phase) when is_map(payload), do: Map.put(payload, :agent_phase, phase)
+  defp maybe_put_agent_phase(payload, _phase), do: payload
 
   defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
@@ -209,6 +216,7 @@ defmodule SymphonyElixir.AgentRunner do
         issue_state_fetcher: issue_state_fetcher,
         worker_host: worker_host,
         self_review: initial_self_review_state(),
+        review_agent: initial_review_agent_state(),
         next_prompt: nil
       }
 
@@ -358,6 +366,21 @@ defmodule SymphonyElixir.AgentRunner do
   defp maybe_put_option(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp continue_active_issue(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns) do
+    case maybe_review_agent_next_turn(run_context, turn_number, max_turns) do
+      {:review_agent_turn, next_context} ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} with reviewer-agent guidance turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(agent_module, app_session, next_context, turn_number + 1, max_turns)
+
+      {:error, reason} ->
+        {:error, reason}
+
+      :normal_continuation ->
+        maybe_self_review_continuation(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns)
+    end
+  end
+
+  defp maybe_self_review_continuation(agent_module, app_session, run_context, refreshed_issue, turn_number, max_turns) do
     case maybe_self_review_next_turn(run_context, turn_number, max_turns) do
       {:self_review_turn, next_context} ->
         Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} with self-review guidance turn=#{turn_number}/#{max_turns}")
@@ -389,6 +412,88 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp initial_self_review_state, do: %{phase: :not_run, request_change_rounds: 0}
+  defp initial_review_agent_state, do: %{phase: :not_run, request_change_rounds: 0}
+
+  defp maybe_review_agent_next_turn(run_context, _turn_number, _max_turns) do
+    config = run_context.opts |> Keyword.fetch!(:settings) |> Map.fetch!(:review_agent)
+
+    if ReviewAgent.enabled?(config) do
+      review_agent_next_turn(run_context, config)
+    else
+      :normal_continuation
+    end
+  end
+
+  defp review_agent_next_turn(%{review_agent: %{phase: :complete}}, _config), do: :normal_continuation
+
+  defp review_agent_next_turn(%{review_agent: %{phase: phase}} = run_context, config)
+       when phase in [:not_run, :awaiting_correction] do
+    case evaluate_review_agent(run_context) do
+      {:ok, %{verdict: :approve} = result} ->
+        {:review_agent_turn,
+         %{
+           run_context
+           | review_agent: %{phase: :complete, request_change_rounds: review_agent_request_change_rounds(run_context)},
+             next_prompt: ReviewAgent.approval_prompt(result)
+         }}
+
+      {:ok, %{verdict: :request_changes} = result} ->
+        if review_agent_correction_round_available?(run_context, config) do
+          {:review_agent_turn,
+           %{
+             run_context
+             | review_agent: %{
+                 phase: :awaiting_correction,
+                 request_change_rounds: next_review_agent_request_change_round(run_context),
+                 comments: result.comments
+               },
+               next_prompt: ReviewAgent.request_changes_prompt(result)
+           }}
+        else
+          {:error, {:review_agent_blocked, "review_agent.max_iterations reached: #{ReviewAgent.block_reason(result)}"}}
+        end
+
+      {:ok, %{verdict: :block} = result} ->
+        {:error, {:review_agent_blocked, ReviewAgent.block_reason(result)}}
+
+      {:error, reason} ->
+        {:error, {:review_agent_failed, reason}}
+    end
+  end
+
+  defp review_agent_next_turn(_run_context, _config), do: :normal_continuation
+
+  defp review_agent_correction_round_available?(run_context, config) do
+    review_agent_request_change_rounds(run_context) < config.max_iterations
+  end
+
+  defp next_review_agent_request_change_round(run_context), do: review_agent_request_change_rounds(run_context) + 1
+
+  defp review_agent_request_change_rounds(%{review_agent: %{request_change_rounds: rounds}}) when is_integer(rounds), do: rounds
+  defp review_agent_request_change_rounds(_run_context), do: 0
+
+  defp evaluate_review_agent(%{
+         issue: issue,
+         workspace: workspace,
+         opts: opts,
+         worker_host: worker_host,
+         codex_update_recipient: codex_update_recipient
+       }) do
+    review_opts =
+      opts
+      |> Keyword.take([:repo_key, :run_id, :linear_comment_registry, :review_agent_module])
+      |> Keyword.put(:worker_host, worker_host)
+      |> maybe_put_option(:base_branch, self_review_base_branch(opts))
+      |> Keyword.put(:on_reviewer_message, reviewer_message_handler(codex_update_recipient, issue))
+      |> put_reviewer_comments(issue)
+      |> put_ci_failure(issue)
+
+    ReviewAgent.evaluate(issue, workspace, Keyword.fetch!(opts, :settings), review_opts)
+  end
+
+  defp reviewer_message_handler(recipient, issue) do
+    fn message -> send_codex_update(recipient, issue, message, :reviewer) end
+  end
 
   defp maybe_self_review_next_turn(run_context, turn_number, max_turns) do
     config = run_context.opts |> Keyword.fetch!(:settings) |> Map.fetch!(:self_review)

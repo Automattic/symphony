@@ -866,6 +866,97 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert completed_state.completed_run_metadata[issue_id].tokens.total_tokens == 17
   end
 
+  test "orchestrator accounts reviewer token usage separately while preserving totals" do
+    issue_id = "issue-reviewer-token-usage"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-REVIEW-TOKENS",
+      title: "Reviewer token usage test",
+      description: "Track reviewer usage separately",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-REVIEW-TOKENS"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ReviewerTokenUsageOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 0,
+      codex_cached_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      reviewer_input_tokens: 0,
+      reviewer_cached_input_tokens: 0,
+      reviewer_output_tokens: 0,
+      reviewer_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_cached_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    reviewer_usage = %{input_tokens: 8, cached_input_tokens: 3, output_tokens: 5, total_tokens: 13}
+
+    update =
+      {:turn_completed, reviewer_usage}
+      |> AppServer.event_to_update()
+      |> Map.put(:agent_phase, :reviewer)
+
+    send(pid, {:codex_worker_update, issue_id, update})
+
+    state = get_orchestrator_state(pid)
+    running = Map.fetch!(state.running, issue_id)
+
+    assert running.codex_input_tokens == 8
+    assert running.codex_cached_input_tokens == 3
+    assert running.codex_output_tokens == 5
+    assert running.codex_total_tokens == 13
+    assert running.reviewer_input_tokens == 8
+    assert running.reviewer_cached_input_tokens == 3
+    assert running.reviewer_output_tokens == 5
+    assert running.reviewer_total_tokens == 13
+    assert state.codex_totals.total_tokens == 13
+
+    send(pid, {:DOWN, process_ref, :process, self(), :normal})
+    completed_state = get_orchestrator_state(pid)
+
+    assert completed_state.completed_run_metadata[issue_id].tokens.total_tokens == 13
+
+    assert completed_state.completed_run_metadata[issue_id].reviewer_tokens == %{
+             input_tokens: 8,
+             cached_input_tokens: 3,
+             uncached_input_tokens: 5,
+             output_tokens: 5,
+             total_tokens: 13
+           }
+  end
+
   test "orchestrator snapshot tracks codex token-count cumulative usage payloads" do
     issue_id = "issue-token-count-snapshot"
 

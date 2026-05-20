@@ -541,6 +541,7 @@ defmodule SymphonyElixir.TestSupport do
           quality_gate: %{enabled: false},
           learnings: nil,
           self_review: nil,
+          review_agent: nil,
           dependencies: nil,
           notifications: nil,
           repos: nil,
@@ -610,6 +611,7 @@ defmodule SymphonyElixir.TestSupport do
     quality_gate = Keyword.get(config, :quality_gate)
     learnings = Keyword.get(config, :learnings)
     self_review = Keyword.get(config, :self_review)
+    review_agent = Keyword.get(config, :review_agent)
     dependencies = Keyword.get(config, :dependencies)
     notifications = Keyword.get(config, :notifications)
     repos = Keyword.get(config, :repos)
@@ -682,6 +684,7 @@ defmodule SymphonyElixir.TestSupport do
         quality_gate_yaml(quality_gate),
         learnings_yaml(learnings),
         self_review_yaml(self_review),
+        review_agent_yaml(review_agent),
         dependencies && "dependencies: #{yaml_value(dependencies)}",
         notifications_yaml(notifications),
         repos && "repos: #{yaml_value(repos)}",
@@ -922,6 +925,26 @@ defmodule SymphonyElixir.TestSupport do
     case fields do
       [] -> nil
       lines -> Enum.join(["self_review:" | lines], "\n")
+    end
+  end
+
+  defp review_agent_yaml(nil), do: nil
+
+  defp review_agent_yaml(opts) when is_list(opts) or is_map(opts) do
+    config = map_from(opts)
+
+    fields =
+      [
+        kv("enabled", Map.get(config, :enabled)),
+        kv("kind", Map.get(config, :kind)),
+        kv("command", Map.get(config, :command)),
+        kv("max_iterations", Map.get(config, :max_iterations))
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case fields do
+      [] -> nil
+      lines -> Enum.join(["review_agent:" | lines], "\n")
     end
   end
 

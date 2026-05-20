@@ -442,6 +442,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       workspace: workspace,
       command_security: command_security_context(workspace, worker_host),
       comment_registry: Keyword.get(opts, :linear_comment_registry),
+      tool_scope: Keyword.get(opts, :tool_scope),
       tool_opts: tool_opts(opts),
       dependency_gate: DependencyGate.build(workspace, issue, Keyword.get(opts, :settings), opts)
     }
@@ -473,7 +474,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp tool_opts(opts) do
     opts
-    |> Keyword.take([:linear_client, :upload_client, :gh_runner, :git_runner, :settings])
+    |> Keyword.take([:linear_client, :upload_client, :gh_runner, :git_runner, :settings, :tool_scope])
   end
 
   defp install_remote_shim(_mcp_session, nil), do: {:ok, nil}

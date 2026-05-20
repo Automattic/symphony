@@ -2170,6 +2170,10 @@ defmodule SymphonyElixir.Orchestrator do
           codex_cached_input_tokens: 0,
           codex_output_tokens: 0,
           codex_total_tokens: 0,
+          reviewer_input_tokens: 0,
+          reviewer_cached_input_tokens: 0,
+          reviewer_output_tokens: 0,
+          reviewer_total_tokens: 0,
           codex_last_reported_input_tokens: 0,
           codex_last_reported_cached_input_tokens: 0,
           codex_last_reported_output_tokens: 0,
@@ -3727,6 +3731,7 @@ defmodule SymphonyElixir.Orchestrator do
       codex_app_server_pid: Map.get(running_entry, :codex_app_server_pid),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
+      reviewer_tokens: reviewer_tokens(running_entry),
       transcript_buffer: transcript_buffer_list(running_entry),
       transcript_buffer_size: transcript_buffer_size(running_entry),
       runtime_seconds: 0,
@@ -3749,6 +3754,7 @@ defmodule SymphonyElixir.Orchestrator do
       codex_app_server_pid: Map.get(running_entry, :codex_app_server_pid),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
+      reviewer_tokens: reviewer_tokens(running_entry),
       transcript_buffer: transcript_buffer_list(running_entry),
       transcript_buffer_size: transcript_buffer_size(running_entry),
       runtime_seconds: running_seconds(Map.get(running_entry, :started_at), DateTime.utc_now()),
@@ -3769,6 +3775,19 @@ defmodule SymphonyElixir.Orchestrator do
       uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
       output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
       total_tokens: Map.get(running_entry, :codex_total_tokens, 0)
+    }
+  end
+
+  defp reviewer_tokens(running_entry) when is_map(running_entry) do
+    input_tokens = Map.get(running_entry, :reviewer_input_tokens, 0)
+    cached_input_tokens = Map.get(running_entry, :reviewer_cached_input_tokens, 0)
+
+    %{
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
+      output_tokens: Map.get(running_entry, :reviewer_output_tokens, 0),
+      total_tokens: Map.get(running_entry, :reviewer_total_tokens, 0)
     }
   end
 
@@ -3986,6 +4005,10 @@ defmodule SymphonyElixir.Orchestrator do
           codex_cached_input_tokens: Map.get(metadata, :codex_cached_input_tokens, 0),
           codex_output_tokens: Map.get(metadata, :codex_output_tokens, 0),
           codex_total_tokens: Map.get(metadata, :codex_total_tokens, 0),
+          reviewer_input_tokens: Map.get(metadata, :reviewer_input_tokens, 0),
+          reviewer_cached_input_tokens: Map.get(metadata, :reviewer_cached_input_tokens, 0),
+          reviewer_output_tokens: Map.get(metadata, :reviewer_output_tokens, 0),
+          reviewer_total_tokens: Map.get(metadata, :reviewer_total_tokens, 0),
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
@@ -4121,6 +4144,10 @@ defmodule SymphonyElixir.Orchestrator do
     codex_cached_input_tokens = Map.get(running_entry, :codex_cached_input_tokens, 0)
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    reviewer_input_tokens = Map.get(running_entry, :reviewer_input_tokens, 0)
+    reviewer_cached_input_tokens = Map.get(running_entry, :reviewer_cached_input_tokens, 0)
+    reviewer_output_tokens = Map.get(running_entry, :reviewer_output_tokens, 0)
+    reviewer_total_tokens = Map.get(running_entry, :reviewer_total_tokens, 0)
     codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
     transcript_path = Map.get(running_entry, :transcript_path)
     pull_request_url = URLUtils.pull_request_url(update) || URLUtils.pull_request_url(running_entry)
@@ -4129,6 +4156,7 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
+    reviewer_delta = reviewer_token_delta(update, token_delta)
 
     {transcript_buffer, transcript_buffer_size} =
       append_transcript_event(
@@ -4152,6 +4180,10 @@ defmodule SymphonyElixir.Orchestrator do
         codex_cached_input_tokens: codex_cached_input_tokens + token_delta.cached_input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
+        reviewer_input_tokens: reviewer_input_tokens + reviewer_delta.input_tokens,
+        reviewer_cached_input_tokens: reviewer_cached_input_tokens + reviewer_delta.cached_input_tokens,
+        reviewer_output_tokens: reviewer_output_tokens + reviewer_delta.output_tokens,
+        reviewer_total_tokens: reviewer_total_tokens + reviewer_delta.total_tokens,
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_cached_input_tokens: max(last_reported_cached_input, token_delta.cached_input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
@@ -4162,6 +4194,12 @@ defmodule SymphonyElixir.Orchestrator do
       }),
       token_delta
     }
+  end
+
+  defp reviewer_token_delta(%{agent_phase: :reviewer}, token_delta), do: token_delta
+
+  defp reviewer_token_delta(_update, _token_delta) do
+    %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
   end
 
   defp append_transcript_event(_queue, _size, _event, limit) when not is_integer(limit) or limit <= 0,
@@ -4355,6 +4393,7 @@ defmodule SymphonyElixir.Orchestrator do
       last_event_at: Map.get(running_entry, :last_event_at) || Map.get(running_entry, :last_codex_timestamp),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
+      reviewer_tokens: reviewer_tokens(running_entry),
       transcript_path: Map.get(running_entry, :transcript_path),
       transcript_buffer: transcript_buffer_list(running_entry),
       transcript_buffer_size: transcript_buffer_size(running_entry)

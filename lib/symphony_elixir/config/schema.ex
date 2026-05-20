@@ -1279,6 +1279,41 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule ReviewAgent do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @type t :: %__MODULE__{}
+
+    @primary_key false
+    @fields [:enabled, :kind, :command, :max_iterations]
+
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:kind, :string)
+      field(:command, :string)
+      field(:max_iterations, :integer, default: 1)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, @fields, empty_values: [])
+      |> validate_inclusion(:kind, ["codex", "claude"])
+      |> validate_number(:max_iterations, greater_than: 0)
+      |> validate_required_when_enabled()
+    end
+
+    defp validate_required_when_enabled(changeset) do
+      if get_field(changeset, :enabled) do
+        validate_required(changeset, [:kind, :command, :max_iterations], message: "is required when review_agent.enabled is true")
+      else
+        changeset
+      end
+    end
+  end
+
   defmodule Dependencies do
     @moduledoc false
     use Ecto.Schema
@@ -1519,6 +1554,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:quality_gate, QualityGate, on_replace: :update, defaults_to_struct: true)
     embeds_one(:learnings, Learnings, on_replace: :update, defaults_to_struct: true)
     embeds_one(:self_review, SelfReview, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:review_agent, ReviewAgent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:dependencies, Dependencies, on_replace: :update, defaults_to_struct: true)
     embeds_one(:notifications, Notifications, on_replace: :update, defaults_to_struct: true)
   end
@@ -1682,6 +1718,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:quality_gate, with: &QualityGate.changeset/2)
     |> cast_embed(:learnings, with: &Learnings.changeset/2)
     |> cast_embed(:self_review, with: &SelfReview.changeset/2)
+    |> cast_embed(:review_agent, with: &ReviewAgent.changeset/2)
     |> cast_embed(:dependencies, with: &Dependencies.changeset/2)
     |> cast_embed(:notifications, with: &Notifications.changeset/2)
   end

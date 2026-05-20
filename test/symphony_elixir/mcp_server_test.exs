@@ -68,6 +68,43 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
+  test "read-only tool scope hides and rejects Linear and GitHub write tools" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!(), tool_scope: :read_only},
+        server: server,
+        socket_path: socket_path(),
+        shim_path: "/tmp/shim"
+      )
+
+    socket = connect!(session.socket_path, session.token)
+
+    try do
+      response = request!(socket, 1, "tools/list")
+      tool_names = response["result"]["tools"] |> Enum.map(& &1["name"])
+
+      assert "linear_get_current_issue" in tool_names
+      assert "github_get_pr_checks" in tool_names
+      refute "linear_add_comment" in tool_names
+      refute "github_create_pull_request" in tool_names
+
+      response =
+        request!(socket, 2, "tools/call", %{
+          "name" => "linear_add_comment",
+          "arguments" => %{"body" => "not allowed"}
+        })
+
+      assert response["result"]["isError"]
+      [content] = response["result"]["content"]
+      assert content["text"] =~ "tool_scope_rejected"
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
   test "executes linear_add_comment through AgentTools.Linear" do
     server = unique_server()
     start_supervised!({McpServer, name: server})

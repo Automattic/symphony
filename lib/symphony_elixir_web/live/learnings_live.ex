@@ -33,6 +33,7 @@ defmodule SymphonyElixirWeb.LearningsLive do
 
           <div class="status-stack">
             <a class="action-pill hero-action" href="/">Dashboard</a>
+            <a class="action-pill hero-action" href="/audit">Audit</a>
             <a class="action-pill hero-action" href="/quality">Quality</a>
           </div>
         </div>

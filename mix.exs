@@ -58,6 +58,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Workflow,
           SymphonyElixir.WorkflowStore,
           SymphonyElixir.Workspace,
+          SymphonyElixirWeb.AuditController,
+          SymphonyElixirWeb.AuditLive,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,
@@ -73,9 +75,11 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.Router,
           SymphonyElixirWeb.Router.Helpers,
           Mix.Tasks.Symphony.Pause,
+          Mix.Tasks.Symphony.Init,
           Mix.Tasks.Symphony.Audit,
           Mix.Tasks.Symphony.Resume,
           Mix.Tasks.Symphony.Stop,
+          SymphonyElixir.Init,
           SymphonyElixir.AgentTools.Linear,
           SymphonyElixir.AgentTools.Linear.CommentRegistry
         ]

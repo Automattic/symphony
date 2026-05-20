@@ -56,7 +56,7 @@ stops the active agent for that issue and cleans up matching workspaces.
   single `symphony.yml`, with per-repo Linear selectors and conflict detection for issues that
   match more than one repo.
 - **LiveView dashboard** for active runs, watched issues, the retry queue, quality-gate state,
-  captured learnings, and per-issue transcripts.
+  captured learnings, per-issue transcripts, and the local audit timeline.
 
 ![Symphony Web dashboard screenshot](.github/media/elixir-screenshot-web.png)
 
@@ -88,22 +88,33 @@ workflow prompts that let coding agents work safely.
 
 1. Get a Linear personal token from Settings -> Security & access -> Personal API keys, and export
    it as `LINEAR_API_KEY`.
-2. Prepare each target repo with a `WORKFLOW.md`.
-3. List those repos under `repos:` in `symphony.yml`.
-4. Install the Elixir/Erlang toolchain with `mise`.
-5. Start Symphony from this repository root.
+2. Install the Elixir/Erlang toolchain and build Symphony:
 
-```bash
-cd symphony
-mise trust
-mise install
-mise exec -- mix setup
-mise exec -- mix build
-mise exec -- ./bin/symphony
-```
+   ```bash
+   cd symphony
+   mise trust
+   mise install
+   mise exec -- mix setup
+   mise exec -- mix build
+   ```
+
+3. Run `mise exec -- ./bin/symphony init` from the operator repo to scaffold `symphony.yml`, then
+   edit the deterministic operator fields such as tracker scope, agent command, workspace root, and
+   `repos:`.
+4. Invoke the `symphony-init-workflow` skill from Codex or Claude in each target repo so the agent
+   inspects the repo and writes a tailored `WORKFLOW.md`.
+5. Start Symphony from this repository root:
+
+   ```bash
+   mise exec -- ./bin/symphony
+   ```
 
 The LiveView dashboard is available at `http://127.0.0.1:4000` by default when observability is
 enabled.
+
+The dashboard also exposes an Audit tab at `/audit`, with filters, per-record expansion, daily
+hash-chain verification, and NDJSON export. The same filtered audit stream is available from
+`/api/v1/audit`.
 
 **Exposing the dashboard remotely.** The HTTP dashboard and `/api/v1/*` endpoints have no built-in
 authentication. Do not set `SYMPHONY_SERVER_HOST=0.0.0.0` directly. If you need remote access, keep
@@ -125,6 +136,20 @@ Start Symphony from a directory containing `symphony.yml`:
 ```bash
 ./bin/symphony
 ```
+
+For a new operator config, scaffold the deterministic YAML first:
+
+```bash
+./bin/symphony init
+```
+
+`symphony init` writes only `symphony.yml`; it does not create `WORKFLOW.md` or guess repository
+validation commands. If `symphony.yml` already exists, rerun with `--force` only after reviewing the
+printed diff.
+
+After editing `symphony.yml`, invoke the shared `symphony-init-workflow` skill from Codex or Claude
+inside the target repository. The skill inspects repo files and CI scripts, asks for clarification
+when commands are ambiguous, writes `WORKFLOW.md`, and validates it with Symphony's runtime parser.
 
 Run a single issue synchronously without starting the poll loop or dashboard:
 

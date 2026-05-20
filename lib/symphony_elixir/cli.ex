@@ -34,6 +34,7 @@ defmodule SymphonyElixir.CLI do
 
   @type deps :: %{
           file_regular?: (String.t() -> boolean()),
+          init: ([String.t()] -> SymphonyElixir.Init.result()),
           set_symphony_file_path: (String.t() -> :ok | {:error, term()}),
           set_state_root: (String.t() -> :ok | {:error, term()}),
           set_state_root_from_env: (-> :ok | {:error, term()}),
@@ -68,6 +69,9 @@ defmodule SymphonyElixir.CLI do
           :ok | {:halt, non_neg_integer()} | {:error, String.t()} | {:error, String.t(), non_neg_integer()}
   def evaluate(args, deps \\ runtime_deps()) do
     case args do
+      ["init" | init_args] ->
+        evaluate_init(init_args, deps)
+
       ["pr" | pr_args] ->
         dispatch_pr(pr_args)
 
@@ -78,6 +82,17 @@ defmodule SymphonyElixir.CLI do
         with :ok <- configure(args, deps) do
           start_runtime(deps)
         end
+    end
+  end
+
+  defp evaluate_init(args, deps) do
+    case deps.init.(args) do
+      {:ok, message} ->
+        IO.puts(message)
+        {:halt, 0}
+
+      {:error, message} ->
+        {:error, message}
     end
   end
 
@@ -239,7 +254,10 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]\n       symphony pr <url-or-number> [--intent \"address review comments\"]\n       symphony run <issue-identifier> [--config <path-to-symphony.yml>] [--timeout <duration>] [--no-retry] [--state-root <path>] [--logs-root <path>]"
+    "Usage: symphony init [--force]\n" <>
+      "       symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]\n" <>
+      "       symphony pr <url-or-number> [--intent \"address review comments\"]\n" <>
+      "       symphony run <issue-identifier> [--config <path-to-symphony.yml>] [--timeout <duration>] [--no-retry] [--state-root <path>] [--logs-root <path>]"
   end
 
   @spec run_usage_message() :: String.t()
@@ -251,6 +269,7 @@ defmodule SymphonyElixir.CLI do
   defp runtime_deps do
     %{
       file_regular?: &File.regular?/1,
+      init: &SymphonyElixir.Init.run/1,
       set_symphony_file_path: &SymphonyElixir.Workflow.set_symphony_file_path/1,
       set_state_root: &set_state_root/1,
       set_state_root_from_env: &Paths.set_state_root_from_env/0,

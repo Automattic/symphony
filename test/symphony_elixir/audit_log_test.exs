@@ -159,6 +159,75 @@ defmodule SymphonyElixir.AuditLogTest do
     assert Enum.map(events, & &1["sequence"]) == ["first", "second"]
   end
 
+  test "queries filtered redacted events as a stream", %{audit_dir: audit_dir} do
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "default",
+                 issue_id: "issue-1",
+                 issue_identifier: "RSM-1",
+                 run_id: "run-1",
+                 timestamp: ~U[2026-05-07 09:00:00Z],
+                 event_type: "tool_call",
+                 args: %{"api_key" => @linear_secret}
+               },
+               dir: audit_dir
+             )
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 repo_key: "other",
+                 issue_id: "issue-2",
+                 issue_identifier: "RSM-2",
+                 run_id: "run-2",
+                 timestamp: ~U[2026-05-07 10:00:00Z],
+                 event_type: "file_change",
+                 paths: ["lib/example.ex"]
+               },
+               dir: audit_dir
+             )
+
+    assert {:ok, stream} =
+             AuditLog.query(%{
+               "issue" => "RSM-1",
+               "repo" => "default",
+               "type" => "tool_call",
+               "from" => "2026-05-07",
+               "to" => "2026-05-07",
+               "dir" => audit_dir
+             })
+
+    assert [%{"issue_id" => "issue-1", "args" => %{"api_key" => "[REDACTED]"}}] = Enum.to_list(stream)
+  end
+
+  test "query supports date and record-hash cursor pagination", %{audit_dir: audit_dir} do
+    for sequence <- 1..3 do
+      assert :ok =
+               AuditLog.record(
+                 %{
+                   issue_id: "issue-1",
+                   timestamp: ~U[2026-05-07 09:00:00Z],
+                   event_type: "tool_call",
+                   sequence: sequence
+                 },
+                 dir: audit_dir
+               )
+    end
+
+    assert {:ok, first_page} =
+             AuditLog.query(issue_id: "issue-1", from: "2026-05-07", to: "2026-05-07", limit: 2, dir: audit_dir)
+
+    [first, second] = Enum.to_list(first_page)
+    cursor = "#{second["date"]}:#{second["record_hash"]}"
+
+    assert {:ok, second_page} =
+             AuditLog.query(issue_id: "issue-1", from: "2026-05-07", to: "2026-05-07", cursor: cursor, dir: audit_dir)
+
+    assert [%{"sequence" => 3}] = Enum.to_list(second_page)
+    assert first["sequence"] == 1
+  end
+
   test "records refused agent actions", %{audit_dir: audit_dir} do
     issue = %Issue{id: "issue-refused", identifier: "RSM-3010"}
 
@@ -206,6 +275,104 @@ defmodule SymphonyElixir.AuditLogTest do
     File.write!(path, tampered)
 
     assert {:error, {:hash_mismatch, 1}} = AuditLog.verify_file(path)
+  end
+
+  test "verify_chain returns ok for a clean day and break record after tamper", %{audit_dir: audit_dir} do
+    timestamp = ~U[2026-05-07 12:00:00Z]
+
+    assert :ok =
+             AuditLog.record(
+               %{issue_id: "issue-1", run_id: "run-1", timestamp: timestamp, event_type: "tool_call"},
+               dir: audit_dir
+             )
+
+    assert :ok =
+             AuditLog.record(
+               %{issue_id: "issue-1", run_id: "run-1", timestamp: timestamp, event_type: "file_change"},
+               dir: audit_dir
+             )
+
+    path = Path.join(audit_dir, "2026-05-07.ndjson")
+    [first_line, second_line] = path |> File.read!() |> String.split("\n", trim: true)
+    second = Jason.decode!(second_line)
+    second_record_hash = second["record_hash"]
+
+    assert :ok = AuditLog.verify_chain(~D[2026-05-07], dir: audit_dir)
+
+    tampered_second =
+      second
+      |> Map.put("previous_hash", "tampered")
+      |> Jason.encode!()
+
+    File.write!(path, Enum.join([first_line, tampered_second], "\n") <> "\n")
+
+    assert {:error, {:chain_break, %{line: 2, record_hash: ^second_record_hash}}} =
+             AuditLog.verify_chain("2026-05-07", dir: audit_dir)
+  end
+
+  test "verify_chain reports invalid_date for non-parseable input", %{audit_dir: audit_dir} do
+    assert {:error, :invalid_date} = AuditLog.verify_chain("not-a-date", dir: audit_dir)
+  end
+
+  test "verify_chain returns ok when the daily file does not exist", %{audit_dir: audit_dir} do
+    assert :ok = AuditLog.verify_chain(~D[2099-01-01], dir: audit_dir)
+  end
+
+  test "query/1 rejects malformed cursors", %{audit_dir: audit_dir} do
+    assert {:error, :invalid_cursor} =
+             AuditLog.query(cursor: "bad", from: "2026-05-07", to: "2026-05-07", dir: audit_dir)
+
+    assert {:error, :invalid_cursor} =
+             AuditLog.query(cursor: 42, from: "2026-05-07", to: "2026-05-07", dir: audit_dir)
+  end
+
+  test "query/1 rejects malformed since timestamps", %{audit_dir: audit_dir} do
+    assert {:error, :invalid_since} =
+             AuditLog.query(since: "not-a-timestamp", from: "2026-05-07", to: "2026-05-07", dir: audit_dir)
+  end
+
+  test "query/1 cursor positioning is preserved when filters change", %{audit_dir: audit_dir} do
+    for sequence <- 1..3 do
+      assert :ok =
+               AuditLog.record(
+                 %{
+                   issue_id: "issue-1",
+                   repo_key: "default",
+                   timestamp: ~U[2026-05-07 09:00:00Z],
+                   event_type: "tool_call",
+                   sequence: sequence
+                 },
+                 dir: audit_dir
+               )
+    end
+
+    assert :ok =
+             AuditLog.record(
+               %{
+                 issue_id: "issue-2",
+                 repo_key: "other",
+                 timestamp: ~U[2026-05-07 09:00:00Z],
+                 event_type: "tool_call",
+                 sequence: 99
+               },
+               dir: audit_dir
+             )
+
+    {:ok, page} = AuditLog.query(from: "2026-05-07", to: "2026-05-07", limit: 2, dir: audit_dir)
+    [_first, second] = Enum.to_list(page)
+    cursor = "#{second["date"]}:#{second["record_hash"]}"
+
+    # Reuse the cursor with a tighter filter that excludes the cursor record's repo.
+    {:ok, next_page} =
+      AuditLog.query(
+        from: "2026-05-07",
+        to: "2026-05-07",
+        cursor: cursor,
+        repo: "other",
+        dir: audit_dir
+      )
+
+    assert [%{"sequence" => 99, "repo_key" => "other"}] = Enum.to_list(next_page)
   end
 
   test "records tool, Linear, file-change, PR, and token side-effect events", %{audit_dir: audit_dir} do

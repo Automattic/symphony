@@ -126,6 +126,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="hero-copy">
               Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
             </p>
+            <a class="action-pill" href="/audit">Audit</a>
             <a class="action-pill" href="/quality">Quality Dashboard →</a>
             <a class="action-pill" href="/learnings">Learnings →</a>
             <%= if !@payload[:error] && @payload.pause.paused do %>
@@ -368,6 +369,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <div class="link-actions">
                         <a :if={entry.pull_request_url} class="action-pill" href={entry.pull_request_url} target="_blank" rel="noreferrer">PR</a>
                         <a class="action-pill" href={transcript_path(entry)}>Transcript</a>
+                        <a class="action-pill" href={audit_path(entry)}>Audit</a>
                         <a class="action-pill" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                       </div>
                     </td>
@@ -450,6 +452,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           <a class="action-pill" href={entry.pull_request_url} target="_blank" rel="noreferrer">PR</a>
                         <% end %>
                         <a class="action-pill" href={transcript_path(entry)}>Transcript</a>
+                        <a class="action-pill" href={audit_path(entry)}>Audit</a>
                         <a class="action-pill" href={"/api/v1/#{entry.issue_identifier}"}>JSON</a>
                       </div>
                     </td>
@@ -1022,6 +1025,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp transcript_path(entry) do
     URLUtils.transcript_path(Map.get(entry, :repo_key) || current_repo_key(), Map.get(entry, :issue_identifier)) || "#"
+  end
+
+  defp audit_path(entry) do
+    params =
+      [
+        {"repo", Map.get(entry, :repo_key) || current_repo_key()},
+        {"issue", Map.get(entry, :issue_identifier)},
+        {"run_id", Map.get(entry, :run_id)}
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+
+    "/audit?" <> URI.encode_query(params)
   end
 
   defp current_repo_key, do: Config.repo_key_or_nil()

@@ -21,6 +21,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, [repo]}
     end
 
+    def fetch_issue_by_identifier(identifier) do
+      send(self(), {:fetch_issue_by_identifier_called, identifier})
+      {:ok, %SymphonyElixir.Linear.Issue{id: "issue-1", identifier: identifier}}
+    end
+
     def fetch_issues_by_states(states) do
       send(self(), {:fetch_issues_by_states_called, states})
       {:ok, states}
@@ -257,6 +262,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert Config.settings!().tracker.kind == "memory"
     assert SymphonyElixir.Tracker.adapter() == Memory
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_candidate_issues()
+    assert {:ok, ^issue} = SymphonyElixir.Tracker.fetch_issue_by_identifier("MT-1")
+    assert {:error, :issue_not_found} = SymphonyElixir.Tracker.fetch_issue_by_identifier("MT-404")
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issues_by_states([" in progress ", 42])
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert {:ok, ^issue} = SymphonyElixir.Tracker.enrich_issue(issue)
@@ -299,6 +306,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     repo = %{name: "web", team: "RSM"}
     assert {:ok, [^repo]} = Adapter.fetch_candidate_issues_for_repo(repo)
     assert_receive {:fetch_candidate_issues_for_repo_called, ^repo}
+
+    assert {:ok, %Issue{identifier: "RSM-1"}} = Adapter.fetch_issue_by_identifier("RSM-1")
+    assert_receive {:fetch_issue_by_identifier_called, "RSM-1"}
 
     assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
     assert_receive {:fetch_issues_by_states_called, ["Todo"]}
@@ -443,6 +453,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-http",
                  "repo_key" => "default",
                  "issue_identifier" => "MT-HTTP",
+                 "title" => nil,
                  "state" => "In Progress",
                  "url" => "https://linear.app/example/issue/MT-HTTP",
                  "run_kind" => nil,
@@ -471,6 +482,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-watch",
                  "repo_key" => "default",
                  "issue_identifier" => "MT-WATCH",
+                 "title" => nil,
                  "state" => "In Review",
                  "url" => "https://linear.app/example/issue/MT-WATCH",
                  "pull_request_url" => "https://github.com/example/repo/pull/123",
@@ -484,6 +496,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-retry",
                  "repo_key" => "default",
                  "issue_identifier" => "MT-RETRY",
+                 "title" => nil,
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",

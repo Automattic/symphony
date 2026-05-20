@@ -16,6 +16,30 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  defmodule ReviewAgentSequenceAppServer do
+    def start_session(workspace, opts) do
+      recipient = Application.fetch_env!(:symphony_elixir, :agent_runner_review_agent_recipient)
+      send(recipient, {:review_agent_start_session, workspace, opts})
+      {:ok, %{workspace: workspace, opts: opts}}
+    end
+
+    def run_turn(session, prompt, issue, opts) do
+      recipient = Application.fetch_env!(:symphony_elixir, :agent_runner_review_agent_recipient)
+      count = Application.get_env(:symphony_elixir, :agent_runner_review_agent_count, 0) + 1
+      Application.put_env(:symphony_elixir, :agent_runner_review_agent_count, count)
+      send(recipient, {:review_agent_call, count, session, prompt, issue, opts})
+
+      responses = Application.fetch_env!(:symphony_elixir, :agent_runner_review_agent_responses)
+      {:ok, %{result: Enum.at(responses, count - 1) || List.last(responses)}}
+    end
+
+    def stop_session(session) do
+      recipient = Application.fetch_env!(:symphony_elixir, :agent_runner_review_agent_recipient)
+      send(recipient, {:review_agent_stop_session, session})
+      :ok
+    end
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -1459,6 +1483,44 @@ defmodule SymphonyElixir.CoreTest do
 
   test "fetch issues by states with empty state set is a no-op" do
     assert {:ok, []} = Client.fetch_issues_by_states([])
+  end
+
+  test "linear client fetches a single issue by identifier" do
+    graphql_fun = fn query, variables ->
+      send(self(), {:issue_query, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issue" => %{
+             "id" => "issue-1",
+             "identifier" => "RSM-1",
+             "title" => "Run one issue",
+             "description" => "Run this directly",
+             "priority" => 2,
+             "state" => %{"name" => "Todo"},
+             "team" => %{"key" => "RSM", "name" => "Radical Speed Month"},
+             "project" => %{"id" => "project-1", "name" => "Harness"},
+             "branchName" => "rsm-1-run-one-issue",
+             "url" => "https://linear.app/example/issue/RSM-1",
+             "attachments" => %{"nodes" => []},
+             "assignee" => %{"id" => "user-1"},
+             "labels" => %{"nodes" => [%{"name" => "backend"}]},
+             "comments" => %{"nodes" => []},
+             "inverseRelations" => %{"nodes" => []},
+             "createdAt" => "2026-05-20T00:00:00Z",
+             "updatedAt" => "2026-05-20T01:00:00Z"
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issue} = Client.fetch_issue_by_identifier_for_test("RSM-1", graphql_fun)
+
+    assert_receive {:issue_query, query, %{id: "RSM-1", relationFirst: 50, attachmentFirst: 20, commentLast: 20}}
+
+    assert query =~ "SymphonyLinearIssueByIdentifier"
+    assert %Issue{id: "issue-1", identifier: "RSM-1", state: "Todo", labels: ["backend"]} = issue
   end
 
   test "linear client enriches issue comments and linked issues" do
@@ -3057,6 +3119,134 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner review-agent approval injects a push handoff prompt" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-approve-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = self_review_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_self_review_fake_codex!(codex_binary, trace_file)
+      write_review_agent_workflow!(codex_binary, max_turns: 2)
+      put_review_agent_responses!([~s({"verdict":"approve","comments":[]})])
+
+      assert :ok =
+               AgentRunner.run(self_review_issue(), nil,
+                 workspace_path: repo,
+                 issue_state_fetcher: self_review_state_fetcher(self(), 2),
+                 issue_enricher: no_op_issue_enricher(),
+                 review_agent_module: ReviewAgentSequenceAppServer
+               )
+
+      assert_receive {:review_agent_start_session, ^repo, start_opts}
+      assert start_opts[:tool_scope] == :read_only
+      assert_receive {:review_agent_call, 1, _session, review_prompt, _issue, run_opts}
+      assert review_prompt =~ "Return ONLY one JSON object"
+      assert review_prompt =~ "Diff context:"
+      assert run_opts[:tool_scope] == :read_only
+      assert_receive {:review_agent_stop_session, _session}
+      refute_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}, 50
+
+      turn_texts = self_review_turn_texts!(trace_file)
+      assert length(turn_texts) == 2
+      assert Enum.at(turn_texts, 0) =~ "Review-agent gate:"
+      assert Enum.at(turn_texts, 1) =~ "Reviewer agent approved the committed diff"
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner review-agent request changes re-dispatches executor once before approval" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-request-changes-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = self_review_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_self_review_fake_codex!(codex_binary, trace_file)
+      write_review_agent_workflow!(codex_binary, max_turns: 3, max_iterations: 1)
+
+      put_review_agent_responses!([
+        ~s({"verdict":"request_changes","comments":["Tighten the regression coverage."]}),
+        ~s({"verdict":"approve","comments":[]})
+      ])
+
+      assert :ok =
+               AgentRunner.run(self_review_issue(), nil,
+                 workspace_path: repo,
+                 issue_state_fetcher: self_review_state_fetcher(self(), 3),
+                 issue_enricher: no_op_issue_enricher(),
+                 review_agent_module: ReviewAgentSequenceAppServer
+               )
+
+      assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+      refute_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}, 50
+
+      turn_texts = self_review_turn_texts!(trace_file)
+      assert length(turn_texts) == 3
+      assert Enum.at(turn_texts, 1) =~ "Reviewer agent requested changes"
+      assert Enum.at(turn_texts, 1) =~ "Tighten the regression coverage."
+      assert Enum.at(turn_texts, 2) =~ "Reviewer agent approved the committed diff"
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner blocks when review-agent max iterations is reached" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-max-iterations-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = self_review_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_self_review_fake_codex!(codex_binary, trace_file)
+      write_review_agent_workflow!(codex_binary, max_turns: 3, max_iterations: 1)
+
+      put_review_agent_responses!([
+        ~s({"verdict":"request_changes","comments":["First correction."]}),
+        ~s({"verdict":"request_changes","comments":["Still not acceptable."]})
+      ])
+
+      assert_raise RuntimeError, ~r/review_agent.max_iterations reached/, fn ->
+        AgentRunner.run(self_review_issue(), nil,
+          workspace_path: repo,
+          issue_state_fetcher: self_review_state_fetcher(self(), 4),
+          issue_enricher: no_op_issue_enricher(),
+          review_agent_module: ReviewAgentSequenceAppServer
+        )
+      end
+
+      assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+      refute_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}, 50
+
+      turn_texts = self_review_turn_texts!(trace_file)
+      assert length(turn_texts) == 2
+      refute Enum.any?(turn_texts, &String.contains?(&1, "Reviewer agent approved"))
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner stops continuing once agent.max_turns is reached" do
     test_root =
       Path.join(
@@ -3568,6 +3758,33 @@ defmodule SymphonyElixir.CoreTest do
       },
       prompt: Keyword.get(opts, :prompt, "Initial prompt {{ issue.identifier }}")
     )
+  end
+
+  defp write_review_agent_workflow!(codex_binary, opts) do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.dirname(codex_binary),
+      agent_command: "#{codex_binary} app-server",
+      max_turns: Keyword.fetch!(opts, :max_turns),
+      review_agent: %{
+        enabled: true,
+        kind: "codex",
+        command: "reviewer app-server",
+        max_iterations: Keyword.get(opts, :max_iterations, 1)
+      },
+      prompt: Keyword.get(opts, :prompt, "Initial prompt {{ issue.identifier }}")
+    )
+  end
+
+  defp put_review_agent_responses!(responses) when is_list(responses) do
+    Application.put_env(:symphony_elixir, :agent_runner_review_agent_recipient, self())
+    Application.put_env(:symphony_elixir, :agent_runner_review_agent_count, 0)
+    Application.put_env(:symphony_elixir, :agent_runner_review_agent_responses, responses)
+  end
+
+  defp clear_review_agent_env! do
+    Application.delete_env(:symphony_elixir, :agent_runner_review_agent_recipient)
+    Application.delete_env(:symphony_elixir, :agent_runner_review_agent_count)
+    Application.delete_env(:symphony_elixir, :agent_runner_review_agent_responses)
   end
 
   defp self_review_repos(nil), do: nil

@@ -76,23 +76,29 @@ defmodule SymphonyElixir.Codex.AppServer do
         settings,
         mcp_session,
         remote_socket_path,
-        remote_shim_path
+        remote_shim_path,
+        Keyword.get(opts, :tool_scope)
       )
     end
   end
 
-  defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
+  defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path, tool_scope) do
     case start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
       {:ok, port, launch_cleanup_paths, remote_codex_home} ->
+        launch_context = %{
+          cleanup_paths: launch_cleanup_paths,
+          mcp_session: mcp_session,
+          remote_shim_path: remote_shim_path,
+          remote_codex_home: remote_codex_home,
+          tool_scope: tool_scope
+        }
+
         initialize_started_port(
           port,
           workspace,
           worker_host,
           settings,
-          launch_cleanup_paths,
-          mcp_session,
-          remote_shim_path,
-          remote_codex_home
+          launch_context
         )
 
       {:error, reason} ->
@@ -107,14 +113,17 @@ defmodule SymphonyElixir.Codex.AppServer do
          workspace,
          worker_host,
          settings,
-         launch_cleanup_paths,
-         mcp_session,
-         remote_shim_path,
-         remote_codex_home
+         %{
+           cleanup_paths: launch_cleanup_paths,
+           mcp_session: mcp_session,
+           remote_shim_path: remote_shim_path,
+           remote_codex_home: remote_codex_home,
+           tool_scope: tool_scope
+         }
        ) do
     metadata = port_metadata(port, worker_host)
 
-    with {:ok, session_policies} <- session_policies(workspace, worker_host, settings),
+    with {:ok, session_policies} <- session_policies(workspace, worker_host, settings, tool_scope),
          {:ok, thread_id} <- do_start_session(port, workspace, session_policies, settings) do
       {:ok,
        %{
@@ -483,6 +492,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       workspace: workspace,
       command_security: command_security_context(workspace, worker_host),
       comment_registry: Keyword.get(opts, :linear_comment_registry),
+      tool_scope: Keyword.get(opts, :tool_scope),
       tool_opts: tool_opts(opts),
       dependency_gate: DependencyGate.build(workspace, issue, Keyword.get(opts, :settings), opts)
     }
@@ -514,7 +524,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp tool_opts(opts) do
     opts
-    |> Keyword.take([:linear_client, :upload_client, :gh_runner, :git_runner, :settings])
+    |> Keyword.take([:linear_client, :upload_client, :gh_runner, :git_runner, :settings, :tool_scope])
   end
 
   defp install_remote_shim(_mcp_session, nil), do: {:ok, nil}
@@ -865,12 +875,16 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp session_policies(workspace, nil, settings) do
-    Config.codex_runtime_settings(settings, workspace, [])
+  defp session_policies(workspace, nil, settings, tool_scope) do
+    with {:ok, policies} <- Config.codex_runtime_settings(settings, workspace, []) do
+      {:ok, Map.put(policies, :tool_scope, tool_scope)}
+    end
   end
 
-  defp session_policies(workspace, worker_host, settings) when is_binary(worker_host) do
-    Config.codex_runtime_settings(settings, workspace, remote: true)
+  defp session_policies(workspace, worker_host, settings, tool_scope) when is_binary(worker_host) do
+    with {:ok, policies} <- Config.codex_runtime_settings(settings, workspace, remote: true) do
+      {:ok, Map.put(policies, :tool_scope, tool_scope)}
+    end
   end
 
   defp do_start_session(port, workspace, session_policies, settings) do
@@ -886,7 +900,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          %{
            approval_policy: approval_policy,
            thread_sandbox: thread_sandbox,
-           thread_config: thread_config
+           thread_config: thread_config,
+           tool_scope: tool_scope
          },
          settings
        ) do
@@ -895,7 +910,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         "approvalPolicy" => approval_policy,
         "sandbox" => thread_sandbox,
         "cwd" => workspace,
-        "dynamicTools" => DynamicTool.tool_specs()
+        "dynamicTools" => DynamicTool.tool_specs(tool_scope)
       }
       |> maybe_put_thread_config(thread_config)
 

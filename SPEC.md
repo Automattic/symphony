@@ -422,6 +422,7 @@ Top-level keys accepted by the Elixir implementation:
 - `quality_gate`
 - `learnings`
 - `self_review`
+- `review_agent`
 - `notifications`
 - `repos`
 - `dispatch` (alias for selected `agent` settings)
@@ -950,7 +951,26 @@ Fields:
 
 Compatibility note: legacy `self_review.diff_max_lines` and `self_review.max_rounds` config entries are ignored.
 
-#### 5.4.18 `notifications` (object)
+#### 5.4.18 `review_agent` (object)
+
+Fields:
+
+- `enabled` (boolean)
+  - Default: `false`.
+- `kind` (`codex` or `claude`)
+  - REQUIRED when `enabled` is true.
+- `command` (string)
+  - REQUIRED when `enabled` is true.
+- `max_iterations` (positive integer)
+  - Default: `1`.
+
+When enabled, Symphony SHOULD run an executor + reviewer flow in the same workspace. The executor
+SHOULD stop before pushing, the reviewer SHOULD receive issue context plus the committed diff, and
+the reviewer MUST return a structured verdict of `approve`, `request_changes`, or `block`. Reviewer
+sessions SHOULD expose only read-only scoped Linear/GitHub tools. Reviewer token usage SHOULD be
+tracked separately from the aggregate run token total.
+
+#### 5.4.19 `notifications` (object)
 
 Fields:
 
@@ -1240,6 +1260,10 @@ not require recognizing or validating extension fields unless that extension is 
 - `self_review.enabled`: boolean, default `false`
 - `self_review.provider`: `anthropic` or `openai`, default `anthropic`
 - `self_review.model`: string, default `claude-haiku-4-5-20251001`
+- `review_agent.enabled`: boolean, default `false`
+- `review_agent.kind`: `codex` or `claude`, required when enabled
+- `review_agent.command`: string, required when enabled
+- `review_agent.max_iterations`: integer, default `1`
 - `notifications.enabled`: boolean, default `false`
 - `notifications.redact_titles`: boolean, default `false`
 - `notifications.channels`: list of Slack/webhook channel configs, default `[]`
@@ -2159,6 +2183,8 @@ Token accounting rules:
 - Do not treat generic `usage` maps as cumulative totals unless the event type defines them that
   way.
 - Accumulate aggregate totals in orchestrator state.
+- When a reviewer-agent phase is enabled, count reviewer token deltas in the aggregate run total and
+  also expose reviewer-specific token totals separately for dashboards and run metadata.
 
 Runtime accounting:
 
@@ -3130,15 +3156,29 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.7 CLI and Host Lifecycle
 
-- CLI takes no positional arguments. Repo workflow paths are read only from `symphony.yml`.
-- CLI accepts `--config path-to-symphony.yml` to select an alternate operator config
-- CLI defaults to `./symphony.yml` when `--config` is omitted
-- CLI errors when the resolved `symphony.yml` (explicit or default) does not exist
+- Service CLI takes no positional arguments. Repo workflow paths are read only from `symphony.yml`.
+- CLI accepts `--config path-to-symphony.yml` to select an alternate operator config.
+- CLI defaults to `./symphony.yml` when `--config` is omitted.
+- CLI errors when the resolved `symphony.yml` (explicit or default) does not exist.
 - The Elixir CLI requires
   `--i-understand-that-this-will-be-running-without-the-usual-guardrails` before startup.
-- CLI surfaces startup failure cleanly
-- CLI exits with success when application starts and shuts down normally
-- CLI exits nonzero when startup fails or the host process exits abnormally
+- CLI surfaces startup failure cleanly.
+- Service CLI exits with success when application starts and shuts down normally.
+- Service CLI exits nonzero when startup fails or the host process exits abnormally.
+- One-shot CLI mode is `symphony run <issue-identifier> [--config path] [--timeout duration] [--no-retry]`.
+- One-shot mode loads `symphony.yml` and the matched repo `WORKFLOW.md` through the normal config
+  and repo-route resolution path, resolves the issue through the tracker, and runs exactly one
+  synchronous issue lifecycle.
+- One-shot mode starts only the runtime dependencies needed by the agent path, durable run store,
+  scoped tools, and verification support. It MUST NOT start the polling loop, HTTP server,
+  dashboard, PR review poller, CI poller, or durable retry-queue dispatch loop.
+- One-shot mode writes durable run history records with the same core fields as orchestrator-owned
+  runs. It does not persist retry queue rows between attempts.
+- One-shot failure retries use the same exponential backoff formula capped by
+  `agent.max_retry_backoff_ms`, but are bounded within the process lifetime so exhausted retries can
+  return an exit code.
+- One-shot exit codes are `0` for successful run completion, `1` for agent failure after bounded
+  retries, `2` for configuration or validation errors, and `124` for timeout.
 
 ### 17.8 Real Integration Profile (RECOMMENDED)
 

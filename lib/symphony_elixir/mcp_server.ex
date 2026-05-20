@@ -498,8 +498,8 @@ defmodule SymphonyElixir.McpServer do
 
   defp handle_payload(%{"method" => "notifications/" <> _rest}, _context), do: nil
 
-  defp handle_payload(%{"id" => id, "method" => "tools/list"}, _context) do
-    response(id, %{"tools" => tool_specs()})
+  defp handle_payload(%{"id" => id, "method" => "tools/list"}, context) do
+    response(id, %{"tools" => tool_specs_for_context(context)})
   end
 
   defp handle_payload(%{"id" => id, "method" => "tools/call", "params" => params}, context) do
@@ -540,9 +540,13 @@ defmodule SymphonyElixir.McpServer do
       issue_id: Map.get(context, :issue_id),
       workspace: Map.get(context, :workspace),
       command_security: Map.get(context, :command_security) || %{},
-      comment_registry: Map.get(context, :comment_registry)
+      comment_registry: Map.get(context, :comment_registry),
+      tool_scope: Map.get(context, :tool_scope)
     )
   end
+
+  defp tool_specs_for_context(%{tool_scope: scope}), do: DynamicTool.tool_specs(scope)
+  defp tool_specs_for_context(_context), do: tool_specs()
 
   defp execute_tool(tool, arguments, context) do
     case DependencyGate.evaluate_pr_create_tool(tool, Map.get(context, :dependency_gate)) do

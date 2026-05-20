@@ -474,6 +474,7 @@ defmodule SymphonyElixir.Orchestrator do
         |> schedule_issue_retry(issue_id, 1, %{
           repo_key: running_entry_repo_key(running_entry),
           identifier: running_entry.identifier,
+          title: running_entry_title(running_entry),
           delay_type: :continuation,
           worker_host: Map.get(running_entry, :worker_host),
           workspace_path: Map.get(running_entry, :workspace_path)
@@ -505,6 +506,7 @@ defmodule SymphonyElixir.Orchestrator do
         schedule_issue_retry(state, issue_id, next_attempt, %{
           repo_key: running_entry_repo_key(running_entry),
           identifier: running_entry.identifier,
+          title: running_entry_title(running_entry),
           error: error,
           worker_host: Map.get(running_entry, :worker_host),
           workspace_path: Map.get(running_entry, :workspace_path)
@@ -1267,6 +1269,7 @@ defmodule SymphonyElixir.Orchestrator do
         schedule_issue_retry(state, issue_id, next_attempt, %{
           repo_key: running_entry_repo_key(running_entry),
           identifier: identifier,
+          title: running_entry_title(running_entry),
           error: error
         })
       end
@@ -1378,6 +1381,7 @@ defmodule SymphonyElixir.Orchestrator do
       schedule_issue_retry(state, issue_id, next_attempt, %{
         repo_key: running_entry_repo_key(running_entry),
         identifier: identifier,
+        title: running_entry_title(running_entry),
         error: error,
         reason: :stuck,
         elapsed_ms: elapsed_ms,
@@ -1440,6 +1444,7 @@ defmodule SymphonyElixir.Orchestrator do
       attempt,
       Map.merge(metadata, %{
         identifier: issue.identifier,
+        title: issue.title,
         error: "quality gate task already in flight; deferred"
       })
     )
@@ -1551,7 +1556,11 @@ defmodule SymphonyElixir.Orchestrator do
         state,
         issue.id,
         attempt,
-        Map.merge(metadata, %{identifier: issue.identifier, error: "quality gate task failed: #{inspect(reason)}"})
+        Map.merge(metadata, %{
+          identifier: issue.identifier,
+          title: issue.title,
+          error: "quality gate task failed: #{inspect(reason)}"
+        })
       )
 
     notify_dashboard()
@@ -1753,6 +1762,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id: entry.issue_id,
       repo_key: Map.get(entry, :repo_key),
       identifier: entry.identifier,
+      title: Map.get(entry, :title),
       url: URLUtils.present_url(entry.url),
       score: Map.get(entry, :score),
       reason: Map.get(entry, :reason),
@@ -1767,6 +1777,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id: entry.issue_id,
       repo_key: Map.get(entry, :repo_key),
       identifier: entry.identifier,
+      title: Map.get(entry, :title),
       url: URLUtils.present_url(entry.url),
       score: Map.get(entry, :score),
       reason: Map.get(entry, :reason),
@@ -1802,6 +1813,7 @@ defmodule SymphonyElixir.Orchestrator do
       attempt,
       Map.merge(metadata, %{
         identifier: issue.identifier,
+        title: issue.title,
         error: "dispatch readiness task already in flight; deferred"
       })
     )
@@ -1869,7 +1881,7 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.warning("Retry dispatch readiness failed for #{issue_context(issue)} reason=#{inspect(reason)}")
 
     state =
-      schedule_issue_retry(state, issue.id, attempt, Map.merge(metadata, %{identifier: issue.identifier, error: "dispatch readiness failed: #{inspect(reason)}"}))
+      schedule_issue_retry(state, issue.id, attempt, Map.merge(metadata, %{identifier: issue.identifier, title: issue.title, error: "dispatch readiness failed: #{inspect(reason)}"}))
 
     notify_dashboard()
     state
@@ -2225,6 +2237,7 @@ defmodule SymphonyElixir.Orchestrator do
         schedule_issue_retry(state, issue.id, retry_attempt(attempt), %{
           repo_key: repo_key,
           identifier: issue.identifier,
+          title: issue.title,
           error: "verification port allocation exhausted",
           worker_host: worker_host
         })
@@ -2235,6 +2248,7 @@ defmodule SymphonyElixir.Orchestrator do
         schedule_issue_retry(state, issue.id, retry_attempt(attempt), %{
           repo_key: repo_key,
           identifier: issue.identifier,
+          title: issue.title,
           error: "verification port allocation failed: #{inspect(reason)}",
           worker_host: worker_host
         })
@@ -2308,6 +2322,10 @@ defmodule SymphonyElixir.Orchestrator do
             codex_cached_input_tokens: 0,
             codex_output_tokens: 0,
             codex_total_tokens: 0,
+            reviewer_input_tokens: 0,
+            reviewer_cached_input_tokens: 0,
+            reviewer_output_tokens: 0,
+            reviewer_total_tokens: 0,
             codex_last_reported_input_tokens: 0,
             codex_last_reported_cached_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
@@ -2340,6 +2358,7 @@ defmodule SymphonyElixir.Orchestrator do
         schedule_issue_retry(state, issue.id, next_attempt, %{
           repo_key: repo_key,
           identifier: issue.identifier,
+          title: issue.title,
           error: "failed to spawn agent: #{inspect(reason)}",
           worker_host: worker_host
         })
@@ -2390,6 +2409,7 @@ defmodule SymphonyElixir.Orchestrator do
     delay_ms = retry_delay(next_attempt, metadata)
     old_timer = Map.get(previous_retry, :timer_ref)
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
+    title = pick_retry_title(state, issue_id, previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
@@ -2405,6 +2425,7 @@ defmodule SymphonyElixir.Orchestrator do
       repo_key: repo_key,
       issue_id: issue_id,
       identifier: identifier,
+      title: title,
       attempt: next_attempt,
       due_at: DateTime.add(DateTime.utc_now(), delay_ms, :millisecond),
       error: error,
@@ -2431,6 +2452,7 @@ defmodule SymphonyElixir.Orchestrator do
             retry_token: retry_token,
             due_at_ms: due_at_ms,
             identifier: identifier,
+            title: title,
             error: error,
             worker_host: worker_host,
             workspace_path: workspace_path,
@@ -2446,6 +2468,7 @@ defmodule SymphonyElixir.Orchestrator do
       %{attempt: attempt, retry_token: ^retry_token} = retry_entry ->
         metadata = %{
           identifier: Map.get(retry_entry, :identifier),
+          title: Map.get(retry_entry, :title),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
@@ -2588,6 +2611,7 @@ defmodule SymphonyElixir.Orchestrator do
            attempt,
            Map.merge(metadata, %{
              identifier: issue.identifier,
+             title: issue.title,
              error: "failed to move post-PR issue to #{@post_pr_review_state}: #{inspect(reason)}"
            })
          )}
@@ -3013,6 +3037,7 @@ defmodule SymphonyElixir.Orchestrator do
           attempt,
           Map.merge(metadata, %{
             identifier: issue.identifier,
+            title: issue.title,
             error: "dispatch paused by operator"
           })
         )
@@ -3026,6 +3051,7 @@ defmodule SymphonyElixir.Orchestrator do
           attempt,
           Map.merge(metadata, %{
             identifier: issue.identifier,
+            title: issue.title,
             error: workspace_quota_error(state)
           })
         )
@@ -3044,6 +3070,7 @@ defmodule SymphonyElixir.Orchestrator do
           attempt + 1,
           Map.merge(metadata, %{
             identifier: issue.identifier,
+            title: issue.title,
             error: "no available orchestrator slots"
           })
         )
@@ -3081,6 +3108,24 @@ defmodule SymphonyElixir.Orchestrator do
   defp pick_retry_identifier(issue_id, previous_retry, metadata) do
     metadata[:identifier] || Map.get(previous_retry, :identifier) || issue_id
   end
+
+  defp pick_retry_title(%State{} = state, issue_id, previous_retry, metadata) do
+    metadata[:title] ||
+      Map.get(previous_retry, :title) ||
+      running_entry_title(Map.get(state.running, issue_id)) ||
+      Map.get(state.completed_run_metadata, issue_id, %{}) |> Map.get(:title) ||
+      Map.get(state.watching, issue_id, %{}) |> Map.get(:title) ||
+      conflict_issue_title(state, issue_id)
+  end
+
+  defp conflict_issue_title(%State{conflicts: conflicts}, issue_id) when is_map(conflicts) do
+    case Map.get(conflicts, issue_id) do
+      %Issue{title: title} -> title
+      _ -> nil
+    end
+  end
+
+  defp conflict_issue_title(_state, _issue_id), do: nil
 
   defp pick_retry_error(previous_retry, metadata) do
     metadata[:error] || Map.get(previous_retry, :error)
@@ -3512,6 +3557,7 @@ defmodule SymphonyElixir.Orchestrator do
       retry_token: retry_token,
       due_at_ms: now_ms + delay_ms,
       identifier: Map.get(retry, :identifier) || issue_id,
+      title: Map.get(retry, :title),
       error: Map.get(retry, :error),
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path),
@@ -3844,6 +3890,7 @@ defmodule SymphonyElixir.Orchestrator do
       codex_app_server_pid: Map.get(running_entry, :codex_app_server_pid),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
+      reviewer_tokens: reviewer_tokens(running_entry),
       transcript_buffer: transcript_buffer_list(running_entry),
       transcript_buffer_size: transcript_buffer_size(running_entry),
       runtime_seconds: 0,
@@ -3866,6 +3913,7 @@ defmodule SymphonyElixir.Orchestrator do
       codex_app_server_pid: Map.get(running_entry, :codex_app_server_pid),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
+      reviewer_tokens: reviewer_tokens(running_entry),
       transcript_buffer: transcript_buffer_list(running_entry),
       transcript_buffer_size: transcript_buffer_size(running_entry),
       runtime_seconds: running_seconds(Map.get(running_entry, :started_at), DateTime.utc_now()),
@@ -3886,6 +3934,19 @@ defmodule SymphonyElixir.Orchestrator do
       uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
       output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
       total_tokens: Map.get(running_entry, :codex_total_tokens, 0)
+    }
+  end
+
+  defp reviewer_tokens(running_entry) when is_map(running_entry) do
+    input_tokens = Map.get(running_entry, :reviewer_input_tokens, 0)
+    cached_input_tokens = Map.get(running_entry, :reviewer_cached_input_tokens, 0)
+
+    %{
+      input_tokens: input_tokens,
+      cached_input_tokens: cached_input_tokens,
+      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
+      output_tokens: Map.get(running_entry, :reviewer_output_tokens, 0),
+      total_tokens: Map.get(running_entry, :reviewer_total_tokens, 0)
     }
   end
 
@@ -4121,6 +4182,7 @@ defmodule SymphonyElixir.Orchestrator do
           repo_key: Map.get(metadata, :repo_key),
           run_kind: Map.get(metadata, :run_kind) || Map.get(metadata.issue, :run_kind),
           identifier: metadata.identifier,
+          title: running_entry_title(metadata),
           state: metadata.issue.state,
           url: issue_url(metadata.issue),
           pull_request_url: URLUtils.pull_request_url(metadata) || URLUtils.pull_request_url(metadata.issue),
@@ -4133,6 +4195,10 @@ defmodule SymphonyElixir.Orchestrator do
           codex_cached_input_tokens: Map.get(metadata, :codex_cached_input_tokens, 0),
           codex_output_tokens: Map.get(metadata, :codex_output_tokens, 0),
           codex_total_tokens: Map.get(metadata, :codex_total_tokens, 0),
+          reviewer_input_tokens: Map.get(metadata, :reviewer_input_tokens, 0),
+          reviewer_cached_input_tokens: Map.get(metadata, :reviewer_cached_input_tokens, 0),
+          reviewer_output_tokens: Map.get(metadata, :reviewer_output_tokens, 0),
+          reviewer_total_tokens: Map.get(metadata, :reviewer_total_tokens, 0),
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
@@ -4154,6 +4220,7 @@ defmodule SymphonyElixir.Orchestrator do
           attempt: attempt,
           due_in_ms: max(0, due_at_ms - now_ms),
           identifier: Map.get(retry, :identifier),
+          title: Map.get(retry, :title),
           error: Map.get(retry, :error),
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path),
@@ -4171,6 +4238,7 @@ defmodule SymphonyElixir.Orchestrator do
           issue_id: issue_id,
           repo_key: Map.get(watching_entry, :repo_key) || state.repo_key,
           identifier: Map.get(watching_entry, :identifier),
+          title: Map.get(watching_entry, :title),
           state: Map.get(watching_entry, :state),
           url: URLUtils.present_url(Map.get(watching_entry, :url)),
           pull_request_url: URLUtils.pull_request_url(watching_entry),
@@ -4194,6 +4262,7 @@ defmodule SymphonyElixir.Orchestrator do
         %{
           issue_id: issue.id,
           identifier: issue.identifier,
+          title: issue.title,
           state: "Conflict",
           linear_state: issue.state,
           url: issue_url(issue),
@@ -4265,6 +4334,10 @@ defmodule SymphonyElixir.Orchestrator do
     codex_cached_input_tokens = Map.get(running_entry, :codex_cached_input_tokens, 0)
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
+    reviewer_input_tokens = Map.get(running_entry, :reviewer_input_tokens, 0)
+    reviewer_cached_input_tokens = Map.get(running_entry, :reviewer_cached_input_tokens, 0)
+    reviewer_output_tokens = Map.get(running_entry, :reviewer_output_tokens, 0)
+    reviewer_total_tokens = Map.get(running_entry, :reviewer_total_tokens, 0)
     codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
     transcript_path = Map.get(running_entry, :transcript_path)
     pull_request_url = URLUtils.pull_request_url(update) || URLUtils.pull_request_url(running_entry)
@@ -4273,6 +4346,7 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
+    reviewer_delta = reviewer_token_delta(update, token_delta)
 
     {transcript_buffer, transcript_buffer_size} =
       append_transcript_event(
@@ -4296,6 +4370,10 @@ defmodule SymphonyElixir.Orchestrator do
         codex_cached_input_tokens: codex_cached_input_tokens + token_delta.cached_input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
         codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
+        reviewer_input_tokens: reviewer_input_tokens + reviewer_delta.input_tokens,
+        reviewer_cached_input_tokens: reviewer_cached_input_tokens + reviewer_delta.cached_input_tokens,
+        reviewer_output_tokens: reviewer_output_tokens + reviewer_delta.output_tokens,
+        reviewer_total_tokens: reviewer_total_tokens + reviewer_delta.total_tokens,
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_cached_input_tokens: max(last_reported_cached_input, token_delta.cached_input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
@@ -4306,6 +4384,12 @@ defmodule SymphonyElixir.Orchestrator do
       }),
       token_delta
     }
+  end
+
+  defp reviewer_token_delta(%{agent_phase: :reviewer}, token_delta), do: token_delta
+
+  defp reviewer_token_delta(_update, _token_delta) do
+    %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
   end
 
   defp append_transcript_event(_queue, _size, _event, limit) when not is_integer(limit) or limit <= 0,
@@ -4490,6 +4574,7 @@ defmodule SymphonyElixir.Orchestrator do
       repo_key: Map.get(running_entry, :repo_key),
       run_id: Map.get(running_entry, :run_id),
       identifier: Map.get(running_entry, :identifier) || issue_identifier(issue),
+      title: running_entry_title(running_entry),
       url: issue_url(issue),
       pull_request_url: URLUtils.pull_request_url(running_entry) || URLUtils.pull_request_url(issue),
       last_ran_at: DateTime.utc_now(),
@@ -4498,6 +4583,7 @@ defmodule SymphonyElixir.Orchestrator do
       last_event_at: Map.get(running_entry, :last_event_at) || Map.get(running_entry, :last_codex_timestamp),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: run_tokens(running_entry),
+      reviewer_tokens: reviewer_tokens(running_entry),
       transcript_path: Map.get(running_entry, :transcript_path),
       transcript_buffer: transcript_buffer_list(running_entry),
       transcript_buffer_size: transcript_buffer_size(running_entry)
@@ -4520,6 +4606,7 @@ defmodule SymphonyElixir.Orchestrator do
     watching_entry = %{
       repo_key: watching_repo_key(state, issue, completed_metadata, existing),
       identifier: watching_identifier(issue, issue_id, completed_metadata, existing),
+      title: watching_title(issue, completed_metadata, existing),
       state: issue.state,
       url: watching_url(issue, completed_metadata, existing),
       pull_request_url: watching_pull_request_url(issue, completed_metadata, existing),
@@ -4551,6 +4638,12 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(completed_metadata, :identifier) ||
       Map.get(existing, :identifier) ||
       issue_id
+  end
+
+  defp watching_title(%Issue{title: title}, completed_metadata, existing) do
+    title ||
+      Map.get(completed_metadata, :title) ||
+      Map.get(existing, :title)
   end
 
   defp watching_url(issue, completed_metadata, existing) do
@@ -4600,6 +4693,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp issue_identifier(%Issue{identifier: identifier}), do: identifier
   defp issue_identifier(_issue), do: nil
+
+  defp running_entry_title(entry) when is_map(entry) do
+    case Map.get(entry, :issue) do
+      %Issue{title: title} -> title
+      _ -> Map.get(entry, :title)
+    end
+  end
+
+  defp running_entry_title(_entry), do: nil
 
   defp issue_url(%Issue{url: url}), do: URLUtils.present_url(url)
   defp issue_url(_issue), do: nil

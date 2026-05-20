@@ -52,6 +52,33 @@ defmodule SymphonyElixir.AgentMcpTest do
     assert AgentMcp.claude_server_config(%Server{transport: "stdio", command: nil}) == %{}
   end
 
+  test "Claude raw server config normalizes transport-specific entries" do
+    assert AgentMcp.normalize_claude_server_config(%{
+             "command" => "node",
+             "args" => [],
+             "env" => %{"TOKEN" => "abc"}
+           }) == %{"command" => "node", "env" => %{"TOKEN" => "abc"}}
+
+    assert AgentMcp.normalize_claude_server_config(%{
+             "type" => "http",
+             "url" => "https://mcp.example/http",
+             "headers" => %{"Authorization" => "Bearer test"}
+           }) == %{
+             "type" => "http",
+             "url" => "https://mcp.example/http",
+             "headers" => %{"Authorization" => "Bearer test"}
+           }
+
+    assert AgentMcp.normalize_claude_server_config(%{
+             "type" => :custom,
+             custom: %{nested_key: "value"},
+             empty: []
+           }) == %{
+             "type" => :custom,
+             "custom" => %{"nested_key" => "value"}
+           }
+  end
+
   describe "env and headers $VAR expansion" do
     setup do
       System.put_env("SYMPHONY_TEST_MCP_TOKEN", "tok-123")

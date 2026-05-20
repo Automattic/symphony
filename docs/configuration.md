@@ -404,10 +404,12 @@ Title: {{ issue.title }} Body: {{ issue.description }}
     - `none`: ignore the host runtime config entirely. The agent only sees servers declared under
       `agent.mcp.servers` plus the implicit `symphony` server.
     - `allowlist`: only inherit servers whose names appear in `agent.mcp.allowed_servers`. Requires
-      `allowed_servers` to be non-empty.
+      `allowed_servers` to be non-empty. For Claude, Symphony reads only the top-level
+      `mcpServers` map from the operator's user-scope `~/.claude.json`.
     - `all`: inherit every host MCP server (except `symphony`, which Symphony always owns).
-      Supported for Codex; rejected for Claude because Symphony's Claude adapter does not safely
-      layer user/plugin MCP config in v1 — declare Claude MCP servers explicitly instead.
+      Supported for Codex; rejected for Claude because Symphony's Claude adapter intentionally does
+      not layer plugin MCP, project `.mcp.json`, or `.claude/settings.json` enable/disable state in
+      v1.
   - `agent.mcp.allowed_servers` is only meaningful with `inherit: allowlist`. Setting it with
     `inherit: none` or `inherit: all` is rejected by config validation to prevent silently
     discarded allowlists.
@@ -430,6 +432,10 @@ Title: {{ issue.title }} Body: {{ issue.description }}
   - For remote Codex workers, `inherit: allowlist` and `inherit: all` are rejected because
     Symphony only locally reads the orchestrator's host config. Declare the needed servers
     explicitly under `agent.mcp.servers` when running against a remote worker.
+  - For Claude, `inherit: allowlist` is bounded to the single user-scope `~/.claude.json` file.
+    Plugin MCP (`~/.claude/plugins/*/.mcp.json`), project `.mcp.json`, and `.claude/settings.json`
+    user/project/local enable-disable semantics are excluded. Declare those servers explicitly under
+    `agent.mcp.servers` when the agent needs them.
   - Values in `env` and `headers` that are exactly `$NAME` (where `NAME` matches
     `[A-Za-z_][A-Za-z0-9_]*`) are resolved from the orchestrator's process environment at
     config-load time: a set env var substitutes the value, an empty env var drops the entry,
@@ -444,7 +450,8 @@ Title: {{ issue.title }} Body: {{ issue.description }}
       kind: claude
       command: claude --model claude-opus-4-7 --dangerously-skip-permissions
       mcp:
-        # inherit: none           # default; only declared servers + the implicit symphony
+        inherit: allowlist
+        allowed_servers: [playwright] # read from ~/.claude.json's top-level mcpServers
         servers:
           filesystem:
             transport: stdio      # default; can be omitted

@@ -759,6 +759,218 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              RunStore.list_pr_reviews()
   end
 
+  test "dispatches merge conflicts with PR metadata for the next prompt" do
+    now = ~U[2026-05-01 09:00:00Z]
+    issue = in_review_issue(updated_at: now)
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(now,
+        mergeable: "CONFLICTING",
+        merge_state_status: "DIRTY",
+        head_ref_name: "auto/ACME-1780",
+        head_ref_oid: "head-sha",
+        base_ref_name: "main",
+        base_ref_oid: "base-sha"
+      )
+    )
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :conflict, "In Progress"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert [
+             %{
+               status: "conflict_requested",
+               last_action: "conflict",
+               conflict_retry_count: 1,
+               dispatched_conflict_keys: ["head-sha|base-sha"],
+               conflict_context: %{
+                 pr_url: "https://github.com/example/repo/pull/1780",
+                 head_ref: "auto/ACME-1780",
+                 head_sha: "head-sha",
+                 base_ref: "main",
+                 base_sha: "base-sha",
+                 conflict_key: "head-sha|base-sha",
+                 retry_count: 1,
+                 max_retries: 3
+               }
+             }
+           ] = RunStore.list_pr_reviews()
+
+    assert %{
+             head_ref: "auto/ACME-1780",
+             head_sha: "head-sha",
+             base_ref: "main",
+             base_sha: "base-sha",
+             conflict_key: "head-sha|base-sha"
+           } = PrReviewPoller.pending_pr_conflict("issue-1780")
+  end
+
+  test "deduplicates repeated polls of the same merge conflict" do
+    now = ~U[2026-05-01 09:00:00Z]
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      put_review(now, %{
+        status: "conflict_requested",
+        conflict_retry_count: 1,
+        dispatched_conflict_keys: ["head-sha|base-sha"],
+        last_conflict_key: "head-sha|base-sha",
+        conflict_context: %{
+          pr_url: "https://github.com/example/repo/pull/1780",
+          head_ref: "auto/ACME-1780",
+          head_sha: "head-sha",
+          base_ref: "main",
+          base_sha: "base-sha",
+          conflict_key: "head-sha|base-sha",
+          retry_count: 1,
+          max_retries: 3
+        }
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(now,
+        mergeable: "CONFLICTING",
+        head_ref_oid: "head-sha",
+        base_ref_oid: "base-sha"
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    refute_receive {:issue_state_update, _, _}, 50
+    assert [%{conflict_retry_count: 1, dispatched_conflict_keys: ["head-sha|base-sha"]}] = RunStore.list_pr_reviews()
+    assert %{conflict_key: "head-sha|base-sha"} = PrReviewPoller.pending_pr_conflict("issue-1780")
+  end
+
+  test "escalates new merge conflicts after the retry limit" do
+    now = ~U[2026-05-01 09:00:00Z]
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      put_review(now, %{
+        conflict_retry_count: 3,
+        dispatched_conflict_keys: ["old-head|base-sha"]
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(now,
+        mergeable: "CONFLICTING",
+        head_ref_oid: "new-head",
+        base_ref_oid: "base-sha"
+      )
+    )
+
+    assert {:ok, %{actions: [{:conflict_escalated, "issue-1780", 3}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    refute_receive {:issue_state_update, _, _}, 50
+
+    assert [
+             %{
+               status: "conflict_escalated",
+               conflict_retry_count: 3,
+               target_issue_state: "In Review",
+               error: "merge conflict retry limit reached"
+             }
+           ] = RunStore.list_pr_reviews()
+  end
+
+  test "does not dispatch merge conflicts while an agent run is active" do
+    now = ~U[2026-05-01 09:00:00Z]
+    issue = in_review_issue(updated_at: now)
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      issue.id => review_record(now)
+    })
+
+    Application.put_env(:symphony_elixir, :pr_review_test_runs, [
+      review_run(issue, "/tmp/workspaces/ACME-1780", now, %{status: "running"})
+    ])
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(now,
+        mergeable: "CONFLICTING",
+        head_ref_oid: "head-sha",
+        base_ref_oid: "base-sha"
+      )
+    )
+
+    assert {:ok, %{actions: [{:active_run, "issue-1780", :conflict}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               now: now
+             )
+
+    refute_receive {:issue_state_update, _, _}, 50
+    assert [%{status: "conflict_active_run"} = record] = StatefulRunStore.list_pr_reviews()
+    refute Map.has_key?(record, :conflict_retry_count)
+  end
+
+  test "clears merge conflict state when the PR becomes clean and skips cross-repo conflicts" do
+    now = ~U[2026-05-01 09:00:00Z]
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      put_review(now, %{
+        status: "conflict_requested",
+        conflict_retry_count: 1,
+        dispatched_conflict_keys: ["head-sha|base-sha"],
+        last_conflict_key: "head-sha|base-sha",
+        conflict_context: %{
+          head_sha: "head-sha",
+          base_sha: "base-sha",
+          conflict_key: "head-sha|base-sha"
+        }
+      })
+
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, mergeable: "MERGEABLE"))
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert [
+             %{
+               conflict_context: nil,
+               conflict_retry_count: 0,
+               dispatched_conflict_keys: [],
+               last_conflict_key: nil,
+               last_conflict_at: nil
+             }
+           ] = RunStore.list_pr_reviews()
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(now,
+        mergeable: "CONFLICTING",
+        is_cross_repository: true,
+        head_ref_oid: "fork-head",
+        base_ref_oid: "base-sha"
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    refute_receive {:issue_state_update, _, _}, 50
+  end
+
   test "defers state transitions while dispatch is paused and processes them on resume" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
@@ -2102,6 +2314,13 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       pr_description: Keyword.get(opts, :pr_description, "PR body"),
       state: Keyword.get(opts, :state, "OPEN"),
       review_decision: Keyword.get(opts, :review_decision),
+      mergeable: Keyword.get(opts, :mergeable),
+      merge_state_status: Keyword.get(opts, :merge_state_status),
+      head_ref_name: Keyword.get(opts, :head_ref_name),
+      head_ref_oid: Keyword.get(opts, :head_ref_oid),
+      base_ref_name: Keyword.get(opts, :base_ref_name),
+      base_ref_oid: Keyword.get(opts, :base_ref_oid),
+      is_cross_repository: Keyword.get(opts, :is_cross_repository, false),
       latest_activity_at: latest_activity_at,
       latest_review_activity_at: Keyword.get(opts, :latest_review_activity_at, latest_activity_at),
       comments: Keyword.get(opts, :comments, [])

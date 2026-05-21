@@ -15,8 +15,11 @@ defmodule SymphonyElixir.PrReviewPoller do
   @active_state "In Progress"
   @changes_requested "CHANGES_REQUESTED"
   @approved "APPROVED"
+  @conflicting_mergeable "CONFLICTING"
+  @dirty_merge_state "DIRTY"
   @closed_pr_states ["CLOSED"]
   @merged_pr_state "MERGED"
+  @conflict_max_retries 3
   @github_error_backoff_threshold 3
   @max_github_error_backoff_ms 300_000
 
@@ -105,6 +108,22 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp pending_reviewer_comments(_issue_id, _run_store, _repo_key, _now), do: []
+
+  @doc false
+  @spec pending_pr_conflict(String.t(), keyword()) :: map() | nil
+  def pending_pr_conflict(issue_id, opts \\ []) do
+    run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = repo_key_from_opts(opts)
+
+    with true <- is_binary(issue_id),
+         {:ok, reviews} <- list_pr_reviews(run_store, repo_key),
+         %{} = record <- Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)),
+         true <- conflict_prompt_pending?(record) do
+      normalize_conflict_context(Map.get(record, :conflict_context))
+    else
+      _ -> nil
+    end
+  end
 
   defp comments_from_review_record(reviews, issue_id, run_store, now) do
     case Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
@@ -394,7 +413,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp handle_activity(record, activity, settings, opts, now) do
     {attrs, latest_activity_at, unaddressed_comments} = review_activity_attrs(record, activity, settings, now)
 
-    case review_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
+    case review_action(record, activity, latest_activity_at, unaddressed_comments, settings, now) do
       :merged ->
         record
         |> maybe_capture_learnings(activity, settings, opts, now)
@@ -408,6 +427,9 @@ defmodule SymphonyElixir.PrReviewPoller do
 
       :review_comments ->
         maybe_transition_rework(record, attrs, settings, opts, now)
+
+      :conflict ->
+        maybe_transition_conflict(record, attrs, opts, now)
 
       :approved ->
         maybe_transition_merge(record, attrs, opts, now)
@@ -448,16 +470,39 @@ defmodule SymphonyElixir.PrReviewPoller do
         updated_at: now
       }
       |> maybe_put_pending_comments(record, unaddressed_comments)
+      |> maybe_put_conflict_attrs(record, activity, now)
 
     {attrs, latest_activity_at, unaddressed_comments}
   end
 
-  defp review_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
-    review_decision = normalize_decision(Map.get(activity, :review_decision))
-
+  defp review_action(record, activity, latest_activity_at, unaddressed_comments, settings, now) do
     cond do
       merged_pr_state?(Map.get(activity, :state)) -> :merged
       closed_pr_state?(Map.get(activity, :state)) -> :closed
+      true -> open_review_action(record, activity, latest_activity_at, unaddressed_comments, settings, now)
+    end
+  end
+
+  defp open_review_action(record, activity, latest_activity_at, unaddressed_comments, settings, now) do
+    case conflict_review_action(record, activity) do
+      nil -> reviewer_activity_action(activity, latest_activity_at, unaddressed_comments, settings, now)
+      action -> action
+    end
+  end
+
+  defp conflict_review_action(record, activity) do
+    cond do
+      not merge_conflict?(activity) -> nil
+      unsupported_cross_repo?(activity) -> :watching
+      conflict_key(activity) in string_list(Map.get(record, :dispatched_conflict_keys, [])) -> :watching
+      true -> :conflict
+    end
+  end
+
+  defp reviewer_activity_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
+    review_decision = normalize_decision(Map.get(activity, :review_decision))
+
+    cond do
       review_decision == @changes_requested -> :changes_requested
       review_decision == @approved -> :approved
       unaddressed_comments != [] -> :review_comments
@@ -465,6 +510,187 @@ defmodule SymphonyElixir.PrReviewPoller do
       true -> :watching
     end
   end
+
+  defp maybe_transition_conflict(record, attrs, opts, now) do
+    issue_id = Map.get(record, :issue_id)
+
+    cond do
+      active_agent_run?(issue_id, opts) ->
+        complete_review_update(opts, record, Map.merge(attrs, %{status: "conflict_active_run"}), {:active_run, issue_id, :conflict})
+
+      conflict_retry_count(record) >= @conflict_max_retries ->
+        complete_review_update(
+          opts,
+          record,
+          Map.merge(attrs, %{
+            status: "conflict_escalated",
+            error: "merge conflict retry limit reached",
+            target_issue_state: @in_review_state,
+            updated_at: now
+          }),
+          {:conflict_escalated, issue_id, @conflict_max_retries}
+        )
+
+      true ->
+        transition_issue_for_action(record, attrs, opts, now, "conflict")
+    end
+  end
+
+  defp maybe_put_conflict_attrs(attrs, record, activity, now) do
+    cond do
+      merge_conflict?(activity) and not unsupported_cross_repo?(activity) ->
+        context = conflict_context(record, activity, now)
+
+        attrs
+        |> Map.merge(conflict_record_attrs(activity))
+        |> Map.put(:conflict_context, context)
+        |> Map.put(:last_conflict_key, Map.fetch!(context, :conflict_key))
+        |> Map.put(:last_conflict_at, now)
+
+      conflict_state_present?(record) ->
+        attrs
+        |> Map.merge(conflict_record_attrs(activity))
+        |> clear_conflict_attrs()
+
+      true ->
+        Map.merge(attrs, conflict_record_attrs(activity))
+    end
+  end
+
+  defp clear_conflict_attrs(attrs) do
+    Map.merge(attrs, %{
+      conflict_context: nil,
+      conflict_retry_count: 0,
+      dispatched_conflict_keys: [],
+      last_conflict_key: nil,
+      last_conflict_at: nil
+    })
+  end
+
+  defp conflict_record_attrs(activity) do
+    %{
+      pr_url: Map.get(activity, :pr_url),
+      pr_title: Map.get(activity, :pr_title),
+      pr_state: Map.get(activity, :state),
+      mergeable: Map.get(activity, :mergeable),
+      merge_state_status: Map.get(activity, :merge_state_status),
+      head_ref_name: Map.get(activity, :head_ref_name),
+      head_ref_oid: Map.get(activity, :head_ref_oid),
+      base_ref_name: Map.get(activity, :base_ref_name),
+      base_ref_oid: Map.get(activity, :base_ref_oid),
+      is_cross_repository: Map.get(activity, :is_cross_repository)
+    }
+  end
+
+  defp conflict_context(record, activity, now) do
+    %{
+      pr_url: Map.get(activity, :pr_url) || Map.get(record, :pr_url),
+      pr_title: Map.get(activity, :pr_title) || Map.get(record, :pr_title),
+      pr_number: Map.get(activity, :pr_number),
+      head_ref: Map.get(activity, :head_ref_name),
+      head_sha: Map.get(activity, :head_ref_oid),
+      base_ref: Map.get(activity, :base_ref_name),
+      base_sha: Map.get(activity, :base_ref_oid),
+      mergeable: Map.get(activity, :mergeable),
+      merge_state_status: Map.get(activity, :merge_state_status),
+      conflict_key: conflict_key(activity),
+      observed_at: now,
+      retry_count: next_conflict_retry_count(record, activity),
+      max_retries: @conflict_max_retries
+    }
+  end
+
+  defp next_conflict_retry_count(record, activity) do
+    key = conflict_key(activity)
+    retry_count = conflict_retry_count(record)
+
+    if key in string_list(Map.get(record, :dispatched_conflict_keys, [])) do
+      max(retry_count, 1)
+    else
+      retry_count + 1
+    end
+  end
+
+  defp conflict_prompt_pending?(record) do
+    normalize_conflict_context(Map.get(record, :conflict_context)) != nil and
+      Map.get(record, :status) not in ["conflict_escalated", "cleanup_pending"]
+  end
+
+  defp normalize_conflict_context(context) when is_map(context) do
+    normalized = %{
+      pr_url: string_field(context, :pr_url),
+      pr_title: string_field(context, :pr_title),
+      pr_number: integer_field(context, :pr_number),
+      head_ref: string_field(context, :head_ref),
+      head_sha: string_field(context, :head_sha),
+      base_ref: string_field(context, :base_ref),
+      base_sha: string_field(context, :base_sha),
+      mergeable: string_field(context, :mergeable),
+      merge_state_status: string_field(context, :merge_state_status),
+      conflict_key: string_field(context, :conflict_key),
+      observed_at: datetime_field(context, :observed_at),
+      retry_count: non_negative_integer_field(context, :retry_count),
+      max_retries: positive_integer_field(context, :max_retries) || @conflict_max_retries
+    }
+
+    if Enum.all?([normalized.head_ref, normalized.head_sha, normalized.base_ref, normalized.base_sha, normalized.conflict_key], &is_nil/1) do
+      nil
+    else
+      normalized
+    end
+  end
+
+  defp normalize_conflict_context(_context), do: nil
+
+  defp merge_conflict?(activity) when is_map(activity) do
+    normalize_decision(Map.get(activity, :mergeable)) == @conflicting_mergeable or
+      normalize_decision(Map.get(activity, :merge_state_status)) == @dirty_merge_state
+  end
+
+  defp merge_conflict?(_activity), do: false
+
+  defp unsupported_cross_repo?(activity) when is_map(activity) do
+    Map.get(activity, :is_cross_repository) == true
+  end
+
+  defp unsupported_cross_repo?(_activity), do: false
+
+  defp conflict_key(activity) when is_map(activity) do
+    head = Map.get(activity, :head_ref_oid) || Map.get(activity, :head_ref_name) || "unknown-head"
+    base = Map.get(activity, :base_ref_oid) || Map.get(activity, :base_ref_name) || "unknown-base"
+
+    "#{head}|#{base}"
+  end
+
+  defp conflict_key(_activity), do: nil
+
+  defp conflict_state_present?(record) when is_map(record) do
+    Map.get(record, :conflict_context) not in [nil, %{}] or
+      Map.get(record, :last_conflict_key) not in [nil, ""] or
+      conflict_retry_count(record) > 0 or
+      string_list(Map.get(record, :dispatched_conflict_keys, [])) != []
+  end
+
+  defp conflict_state_present?(_record), do: false
+
+  defp conflict_retry_count(record) when is_map(record) do
+    case Map.get(record, :conflict_retry_count) do
+      value when is_integer(value) and value >= 0 -> value
+      _value -> 0
+    end
+  end
+
+  defp active_agent_run?(issue_id, opts) when is_binary(issue_id) do
+    run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_key = repo_key_from_opts(opts)
+
+    case list_runs(run_store, repo_key) do
+      {:ok, runs} -> Enum.any?(runs, &(Map.get(&1, :issue_id) == issue_id and Map.get(&1, :status) == "running"))
+      {:error, _reason} -> false
+    end
+  end
+
+  defp active_agent_run?(_issue_id, _opts), do: false
 
   defp maybe_transition_rework(record, attrs, settings, opts, now) do
     latest_activity_at = action_activity_at(attrs)
@@ -539,13 +765,7 @@ defmodule SymphonyElixir.PrReviewPoller do
     case update_review(
            opts,
            record,
-           Map.merge(attrs, %{
-             status: "#{action}_requested",
-             target_issue_state: @active_state,
-             last_action: action,
-             last_action_at: now,
-             updated_at: now
-           })
+           transition_action_attrs(record, attrs, action, now)
          ) do
       :ok ->
         maybe_emit_reviewer_commented(record, attrs, action, now)
@@ -575,6 +795,29 @@ defmodule SymphonyElixir.PrReviewPoller do
         {:state_transition_error_update_failed, Map.get(record, :issue_id), action_atom(action), reason, update_reason}
     end
   end
+
+  defp transition_action_attrs(record, attrs, action, now) do
+    attrs
+    |> Map.merge(%{
+      status: "#{action}_requested",
+      target_issue_state: @active_state,
+      last_action: action,
+      last_action_at: now,
+      updated_at: now
+    })
+    |> maybe_mark_conflict_dispatched(record, action)
+  end
+
+  defp maybe_mark_conflict_dispatched(attrs, record, "conflict") do
+    conflict_key = Map.get(attrs, :last_conflict_key)
+
+    attrs
+    |> Map.put(:conflict_retry_count, conflict_retry_count(record) + 1)
+    |> Map.put(:dispatched_conflict_keys, append_string(Map.get(record, :dispatched_conflict_keys, []), conflict_key))
+    |> Map.put(:error, nil)
+  end
+
+  defp maybe_mark_conflict_dispatched(attrs, _record, _action), do: attrs
 
   defp cleanup_review(record, opts, now, reason) do
     workspace = Keyword.get(opts, :workspace, Workspace)
@@ -1030,6 +1273,20 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp integer_field(map, key) when is_map(map) and is_atom(key) do
     case Map.get(map, key) || Map.get(map, to_string(key)) do
       value when is_integer(value) -> value
+      _value -> nil
+    end
+  end
+
+  defp non_negative_integer_field(map, key) when is_map(map) and is_atom(key) do
+    case integer_field(map, key) do
+      value when value >= 0 -> value
+      _value -> 0
+    end
+  end
+
+  defp positive_integer_field(map, key) when is_map(map) and is_atom(key) do
+    case integer_field(map, key) do
+      value when value > 0 -> value
       _value -> nil
     end
   end
@@ -1663,6 +1920,24 @@ defmodule SymphonyElixir.PrReviewPoller do
     }
   end
 
+  defp append_string(values, value) when is_binary(value) and value != "" do
+    values
+    |> string_list()
+    |> Kernel.++([value])
+    |> Enum.uniq()
+  end
+
+  defp append_string(values, _value), do: string_list(values)
+
+  defp string_list(values) when is_list(values) do
+    values
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp string_list(_values), do: []
+
   defp github_error_backoff_ms(consecutive_errors, opts) do
     exponent = max(consecutive_errors - @github_error_backoff_threshold, 0)
 
@@ -1681,6 +1956,7 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp action_atom("rework"), do: :rework
   defp action_atom("merge"), do: :merge
+  defp action_atom("conflict"), do: :conflict
 
   defp schedule_poll(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
     if is_reference(state.timer_ref) do

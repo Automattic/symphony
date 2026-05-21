@@ -25,6 +25,13 @@ defmodule SymphonyElixir.GitHub.PullRequest do
           pr_description: String.t() | nil,
           state: String.t() | nil,
           review_decision: String.t() | nil,
+          mergeable: String.t() | nil,
+          merge_state_status: String.t() | nil,
+          head_ref_name: String.t() | nil,
+          base_ref_name: String.t() | nil,
+          head_ref_oid: String.t() | nil,
+          base_ref_oid: String.t() | nil,
+          is_cross_repository: boolean() | nil,
           latest_activity_at: DateTime.t() | nil,
           latest_review_activity_at: DateTime.t() | nil,
           comments: [comment()]
@@ -262,6 +269,13 @@ defmodule SymphonyElixir.GitHub.PullRequest do
          pr_description: Map.get(pr, "body"),
          state: Map.get(pr, "state"),
          review_decision: Map.get(pr, "reviewDecision"),
+         mergeable: normalize_id(Map.get(pr, "mergeable")),
+         merge_state_status: normalize_id(Map.get(pr, "mergeStateStatus")),
+         head_ref_name: normalize_id(Map.get(pr, "headRefName")),
+         base_ref_name: normalize_id(Map.get(pr, "baseRefName")),
+         head_ref_oid: normalize_id(Map.get(pr, "headRefOid")),
+         base_ref_oid: normalize_id(Map.get(pr, "baseRefOid")),
+         is_cross_repository: Map.get(pr, "isCrossRepository"),
          latest_activity_at: latest_activity_at,
          latest_review_activity_at: latest_review_activity_at,
          comments: comments
@@ -306,7 +320,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       "view",
       pr_url,
       "--json",
-      "number,state,reviewDecision,updatedAt,comments,reviews,title,body,url"
+      "number,state,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,headRefOid,baseRefOid,isCrossRepository,updatedAt,comments,reviews,title,body,url"
     ]
 
     with {:ok, output} <- run_gh(args, opts),

@@ -567,6 +567,7 @@ defmodule SymphonyElixir.AgentRunner do
       opts
       |> put_reviewer_comments(issue)
       |> put_ci_failure(issue)
+      |> put_pr_conflict(issue)
 
     prompt = PromptBuilder.build_prompt(issue, prompt_opts)
     maybe_compact_codex_initial_prompt(prompt, issue, prompt_opts)
@@ -693,6 +694,20 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp pending_ci_failure(_issue), do: nil
 
+  defp put_pr_conflict(opts, issue) when is_list(opts) do
+    if Keyword.has_key?(opts, :pr_conflict) do
+      opts
+    else
+      Keyword.put(opts, :pr_conflict, pending_pr_conflict(issue))
+    end
+  end
+
+  defp pending_pr_conflict(%Issue{id: issue_id}) when is_binary(issue_id) do
+    PrReviewPoller.pending_pr_conflict(issue_id)
+  end
+
+  defp pending_pr_conflict(_issue), do: nil
+
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher, opts) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
@@ -725,7 +740,8 @@ defmodule SymphonyElixir.AgentRunner do
       active_issue_state?(refreshed_issue.state) and
         !rework_state?(refreshed_issue.state) and
         pending_reviewer_comments(refreshed_issue) == [] and
-        is_nil(pending_ci_failure(refreshed_issue))
+        is_nil(pending_ci_failure(refreshed_issue)) and
+        is_nil(pending_pr_conflict(refreshed_issue))
     else
       false
     end

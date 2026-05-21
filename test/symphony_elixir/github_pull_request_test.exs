@@ -24,7 +24,9 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
 
     runner = fn
       ["pr", "view", ^pr_url, "--json", fields], opts ->
-        assert fields == "number,state,reviewDecision,updatedAt,comments,reviews,title,body,url"
+        assert fields ==
+                 "number,state,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,headRefOid,baseRefOid,isCrossRepository,updatedAt,comments,reviews,title,body,url"
+
         assert opts[:stderr_to_stdout]
 
         {Jason.encode!(%{
@@ -33,6 +35,13 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
            "body" => "PR body",
            "state" => "OPEN",
            "reviewDecision" => "APPROVED",
+           "mergeable" => "CONFLICTING",
+           "mergeStateStatus" => "DIRTY",
+           "headRefName" => "feature/review-polling",
+           "baseRefName" => "main",
+           "headRefOid" => "head-sha",
+           "baseRefOid" => "base-sha",
+           "isCrossRepository" => false,
            "updatedAt" => "2026-05-01T10:00:00Z",
            "comments" => [],
            "reviews" => [
@@ -73,6 +82,13 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert activity.pr_description == "PR body"
     assert activity.state == "OPEN"
     assert activity.review_decision == "APPROVED"
+    assert activity.mergeable == "CONFLICTING"
+    assert activity.merge_state_status == "DIRTY"
+    assert activity.head_ref_name == "feature/review-polling"
+    assert activity.base_ref_name == "main"
+    assert activity.head_ref_oid == "head-sha"
+    assert activity.base_ref_oid == "base-sha"
+    assert activity.is_cross_repository == false
     assert activity.latest_activity_at == ~U[2026-05-01 10:00:00Z]
     assert activity.latest_review_activity_at == ~U[2026-05-01 09:05:00Z]
     assert Enum.map(activity.comments, & &1.kind) == ["review", "inline_comment"]

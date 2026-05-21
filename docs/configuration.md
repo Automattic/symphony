@@ -548,6 +548,10 @@ Symphony starts a `PrReviewPoller` process that:
   reviewer comments.
 - Moves approved or rework-requested issues back to `In Progress` for normal dispatch.
 - Injects unaddressed reviewer comments into the first prompt.
+- Detects GitHub merge conflict signals (`mergeable: CONFLICTING` or
+  `mergeStateStatus: DIRTY`), deduplicates by head/base identity, moves the issue back to
+  `In Progress`, and injects conflict-resolution context into the next prompt. Conflict
+  resolution stays agent-owned; the poller does not choose merge sides.
 - Removes tracked workspaces when PRs close or stay idle beyond `stale_days` (default `7`).
 
 `cooldown_minutes`, `stale_days`, `bot_users`, `auto_reply`, and `auto_request_review` are

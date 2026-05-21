@@ -2265,6 +2265,46 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Commit SHA: unknown"
   end
 
+  test "prompt builder injects merge conflict instructions and metadata" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "MT-706",
+      title: "Resolve conflict",
+      description: "PR is dirty",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-706",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        pr_conflict: %{
+          pr_url: "https://github.com/example/repo/pull/706",
+          pr_title: "Ship conflict fix",
+          head_ref: "auto/MT-706",
+          head_sha: "head-sha",
+          base_ref: "main",
+          base_sha: "base-sha",
+          mergeable: "CONFLICTING",
+          merge_state_status: "DIRTY",
+          conflict_key: "head-sha|base-sha",
+          observed_at: ~U[2026-05-01 09:00:00Z],
+          retry_count: 2,
+          max_retries: 3
+        }
+      )
+
+    assert prompt =~ "PR merge conflict:"
+    assert prompt =~ "BEGIN UNTRUSTED PR CONFLICT"
+    assert prompt =~ "Head branch: auto/MT-706"
+    assert prompt =~ "Base branch: main"
+    assert prompt =~ "Conflict key: head-sha|base-sha"
+    assert prompt =~ "Attempt: 2 of 3"
+    assert prompt =~ "merge it into the head branch"
+    assert prompt =~ "END UNTRUSTED PR CONFLICT"
+  end
+
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
 

@@ -2439,6 +2439,7 @@ defmodule SymphonyElixir.Orchestrator do
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
     reason = metadata[:reason] || Map.get(previous_retry, :reason)
     elapsed_ms = metadata[:elapsed_ms] || Map.get(previous_retry, :elapsed_ms)
+    delay_type = retry_delay_type(metadata)
     repo_key = retry_repo_key(state, metadata, previous_retry)
 
     if is_reference(old_timer) do
@@ -2457,6 +2458,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: workspace_path,
       reason: reason,
       elapsed_ms: elapsed_ms,
+      delay_type: delay_type,
       updated_at: DateTime.utc_now()
     })
 
@@ -2482,6 +2484,7 @@ defmodule SymphonyElixir.Orchestrator do
             workspace_path: workspace_path,
             reason: reason,
             elapsed_ms: elapsed_ms,
+            delay_type: delay_type,
             repo_key: repo_key
           })
     }
@@ -3130,12 +3133,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation and attempt == 1 do
+    if retry_delay_type(metadata) == :continuation and attempt == 1 do
       @continuation_retry_delay_ms
     else
       failure_retry_delay(attempt)
     end
   end
+
+  defp retry_delay_type(%{delay_type: :continuation}), do: :continuation
+  defp retry_delay_type(%{delay_type: "continuation"}), do: :continuation
+  defp retry_delay_type(_metadata), do: nil
 
   defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
@@ -3609,7 +3616,8 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path),
       reason: Map.get(retry, :reason),
-      elapsed_ms: Map.get(retry, :elapsed_ms)
+      elapsed_ms: Map.get(retry, :elapsed_ms),
+      delay_type: retry_delay_type(retry)
     }
 
     {Map.put(retry_attempts, issue_id, retry_entry), MapSet.put(claimed, issue_id)}
@@ -4432,7 +4440,8 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path),
           reason: Map.get(retry, :reason),
-          elapsed_ms: Map.get(retry, :elapsed_ms)
+          elapsed_ms: Map.get(retry, :elapsed_ms),
+          delay_type: retry_delay_type(retry)
         }
       end)
 

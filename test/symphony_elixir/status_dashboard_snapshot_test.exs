@@ -164,6 +164,30 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("backoff_queue", render_snapshot(snapshot_data, 15.4))
   end
 
+  test "dashboard renders continuation retries as follow-up checks" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [
+           retry_entry(%{identifier: "MT-CHECK", due_in_ms: 900, error: nil, delay_type: :continuation}),
+           retry_entry(%{identifier: "MT-BACK", due_in_ms: 3_900, error: "agent exited: :boom"})
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "Follow-up checks"
+    assert rendered =~ "state check"
+
+    [before_backoff, backoff_and_after] = String.split(rendered, "Backoff queue", parts: 2)
+    assert before_backoff =~ "MT-CHECK"
+    refute backoff_and_after =~ "MT-CHECK"
+    assert backoff_and_after =~ "MT-BACK"
+  end
+
   test "snapshot fixture: watching issues" do
     snapshot_data =
       {:ok,

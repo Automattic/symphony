@@ -431,9 +431,11 @@ defmodule SymphonyElixir.StatusDashboard do
         running_to_watching_spacer = if(running == [], do: [], else: ["│"])
         watching_url_width = watching_url_width(terminal_columns_override)
         watching_rows = format_watching_rows(watching, watching_url_width)
-        watching_to_backoff_spacer = if(watching == [], do: [], else: ["│"])
-        backoff_rows = format_retry_rows(retrying)
-        backoff_to_awaiting_spacer = if(retrying == [], do: [], else: ["│"])
+        {follow_up_checks, backoff_retries} = split_retry_rows_by_delay_type(retrying)
+        follow_up_section = format_follow_up_section(follow_up_checks, watching)
+        backoff_leading_spacer = backoff_leading_spacer(watching, follow_up_checks)
+        backoff_rows = format_retry_rows(backoff_retries)
+        backoff_to_awaiting_spacer = if(backoff_retries == [], do: [], else: ["│"])
         awaiting_rows = format_awaiting_clarification_rows(awaiting_clarification, watching_url_width)
         awaiting_to_skipped_spacer = if(awaiting_clarification == [], do: [], else: ["│"])
         skipped_rows = format_skipped_rows(skipped)
@@ -478,7 +480,8 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_watching_spacer ++
            [colorize("├─ Watching", @ansi_bold), "│"] ++
            watching_rows ++
-           watching_to_backoff_spacer ++
+           follow_up_section ++
+           backoff_leading_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
            backoff_to_awaiting_spacer ++
@@ -1137,14 +1140,64 @@ defmodule SymphonyElixir.StatusDashboard do
   @spec tps_graph_for_test([{integer(), integer()}], integer(), integer()) :: String.t()
   def tps_graph_for_test(samples, now_ms, current_tokens), do: tps_graph(samples, now_ms, current_tokens)
 
+  defp split_retry_rows_by_delay_type(retrying) when is_list(retrying) do
+    Enum.split_with(retrying, &continuation_retry?/1)
+  end
+
+  defp split_retry_rows_by_delay_type(_retrying), do: {[], []}
+
+  defp continuation_retry?(retry_entry) do
+    map_value(retry_entry, [:delay_type, "delay_type"]) in [:continuation, "continuation"]
+  end
+
+  defp format_follow_up_section([], _watching), do: []
+
+  defp format_follow_up_section(follow_up_checks, watching) do
+    leading_spacer = if(watching == [], do: [], else: ["│"])
+
+    leading_spacer ++
+      [colorize("├─ Follow-up checks", @ansi_bold), "│"] ++
+      format_follow_up_rows(follow_up_checks)
+  end
+
+  defp backoff_leading_spacer(_watching, [_check | _checks]), do: ["│"]
+  defp backoff_leading_spacer([_watching | _watching_rest], []), do: ["│"]
+  defp backoff_leading_spacer(_watching, _checks), do: []
+
+  defp format_follow_up_rows(follow_up_checks) do
+    follow_up_checks
+    |> Enum.sort_by(&retry_due_in_ms/1)
+    |> Enum.map(&format_follow_up_summary/1)
+  end
+
+  defp format_follow_up_summary(retry_entry) do
+    issue_id = map_value(retry_entry, [:issue_id, "issue_id"]) || "unknown"
+    identifier = map_value(retry_entry, [:identifier, "identifier"]) || issue_id
+    due_in_ms = retry_due_in_ms(retry_entry)
+
+    "│  #{colorize("↻", @ansi_orange)} " <>
+      colorize("#{identifier}", @ansi_cyan) <>
+      " " <>
+      colorize("state check", @ansi_yellow) <>
+      colorize(" in ", @ansi_dim) <>
+      colorize(next_in_words(due_in_ms), @ansi_cyan)
+  end
+
   defp format_retry_rows(retrying) do
     if retrying == [] do
       ["│  " <> colorize("No queued retries", @ansi_gray)]
     else
       retrying
-      |> Enum.sort_by(& &1.due_in_ms)
+      |> Enum.sort_by(&retry_due_in_ms/1)
       |> Enum.map_join(", ", &format_retry_summary/1)
       |> String.split(", ")
+    end
+  end
+
+  defp retry_due_in_ms(retry_entry) do
+    case map_value(retry_entry, [:due_in_ms, "due_in_ms"]) do
+      due_in_ms when is_integer(due_in_ms) -> due_in_ms
+      _ -> 0
     end
   end
 

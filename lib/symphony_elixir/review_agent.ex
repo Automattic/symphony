@@ -49,7 +49,8 @@ defmodule SymphonyElixir.ReviewAgent do
   def parse_response(""), do: {:error, {:malformed_review_agent_response, :empty_response}}
 
   def parse_response(text) when is_binary(text) do
-    with {:ok, json} <- isolate_json_object(text),
+    with :ok <- reject_runtime_error_response(text),
+         {:ok, json} <- isolate_json_object(text),
          {:ok, decoded} <- Jason.decode(json),
          {:ok, verdict} <- coerce_verdict(Map.get(decoded, "verdict")),
          {:ok, comments} <- coerce_comments(Map.get(decoded, "comments")),
@@ -57,6 +58,7 @@ defmodule SymphonyElixir.ReviewAgent do
          {:ok, result} <- validate_result(%{verdict: verdict, comments: comments, reason: reason}) do
       {:ok, compact_result(result)}
     else
+      {:error, {:review_agent_runtime_error, _raw} = reason} -> {:error, reason}
       {:error, %Jason.DecodeError{} = reason} -> {:error, {:malformed_review_agent_response, {:invalid_json, reason}}}
       {:error, reason} -> {:error, {:malformed_review_agent_response, reason}}
     end
@@ -209,21 +211,41 @@ defmodule SymphonyElixir.ReviewAgent do
   defp response_payload(result, collector) do
     primary = result |> response_text() |> String.trim()
     messages = drain_collected_messages(collector, [])
+    message_output = messages |> Enum.map_join("", &message_text/1) |> String.trim()
 
     combined =
-      [primary, Enum.map_join(messages, "", &message_text/1)]
+      [primary, message_output]
       |> Enum.join("\n")
       |> String.trim()
 
-    %{primary: primary, combined: combined}
+    %{primary: primary, messages: message_output, combined: combined}
+  end
+
+  defp pick_review_response(%{primary: primary, messages: messages, combined: combined}) do
+    [primary, messages, combined]
+    |> Enum.uniq()
+    |> Enum.reject(&(&1 == ""))
+    |> parse_first_review_response(nil)
   end
 
   defp pick_review_response(%{primary: primary, combined: combined}) do
-    case parse_response(primary) do
+    pick_review_response(%{primary: primary, messages: "", combined: combined})
+  end
+
+  defp parse_first_review_response([], nil), do: parse_response("")
+  defp parse_first_review_response([], fallback), do: fallback
+
+  defp parse_first_review_response([text | rest], fallback) do
+    case parse_response(text) do
       {:ok, _result} = ok -> ok
-      {:error, _reason} -> parse_response(combined)
+      {:error, reason} -> parse_first_review_response(rest, preferred_parse_error(fallback, {:error, reason}))
     end
   end
+
+  defp preferred_parse_error(nil, error), do: error
+  defp preferred_parse_error({:error, {:review_agent_runtime_error, _raw}} = fallback, _error), do: fallback
+  defp preferred_parse_error(_fallback, {:error, {:review_agent_runtime_error, _raw}} = error), do: error
+  defp preferred_parse_error(fallback, _error), do: fallback
 
   defp drain_collected_messages(collector, acc) when is_pid(collector) do
     receive do
@@ -325,6 +347,15 @@ defmodule SymphonyElixir.ReviewAgent do
     end
   end
 
+  defp reject_runtime_error_response(text) do
+    text
+    |> String.trim()
+    |> runtime_error_response()
+  end
+
+  defp runtime_error_response("{:error," <> _rest = text), do: {:error, {:review_agent_runtime_error, text}}
+  defp runtime_error_response(_text), do: :ok
+
   defp isolate_json_object(text) do
     text
     |> String.replace(~r/```(?:json)?\s*/i, "")
@@ -332,14 +363,57 @@ defmodule SymphonyElixir.ReviewAgent do
     |> String.trim()
     |> case do
       "" -> {:error, :empty_response}
-      cleaned -> cleaned |> extract_object() |> then(&if(is_nil(&1), do: {:error, :no_json_object}, else: {:ok, &1}))
+      cleaned -> select_review_json_object(cleaned)
     end
   end
 
-  defp extract_object(text) do
-    case :binary.match(text, "{") do
-      :nomatch -> nil
-      {start, _len} -> scan_object(text, start, start, 0, false, false)
+  defp select_review_json_object(text) do
+    candidates = extract_objects(text)
+
+    cond do
+      candidates == [] ->
+        {:error, :no_json_object}
+
+      candidate = Enum.find(candidates, &review_json_object?/1) ->
+        {:ok, candidate}
+
+      candidate = Enum.find(candidates, &decodable_json_object?/1) ->
+        {:ok, candidate}
+
+      true ->
+        {:ok, List.first(candidates)}
+    end
+  end
+
+  defp review_json_object?(candidate) do
+    case Jason.decode(candidate) do
+      {:ok, %{"verdict" => _verdict}} -> true
+      _other -> false
+    end
+  end
+
+  defp decodable_json_object?(candidate) do
+    match?({:ok, _decoded}, Jason.decode(candidate))
+  end
+
+  defp extract_objects(text), do: extract_objects(text, 0, [])
+
+  defp extract_objects(text, offset, acc) when offset >= byte_size(text), do: Enum.reverse(acc)
+
+  defp extract_objects(text, offset, acc) do
+    remaining = byte_size(text) - offset
+
+    case text |> binary_part(offset, remaining) |> :binary.match("{") do
+      :nomatch ->
+        Enum.reverse(acc)
+
+      {relative_start, _len} ->
+        start = offset + relative_start
+
+        case scan_object(text, start, start, 0, false, false) do
+          {candidate, end_index} -> extract_objects(text, end_index + 1, [candidate | acc])
+          nil -> extract_objects(text, start + 1, acc)
+        end
     end
   end
 
@@ -367,7 +441,7 @@ defmodule SymphonyElixir.ReviewAgent do
     do: scan_object(text, start, index + 1, depth + 1, false, false)
 
   defp scan_object_byte(?}, text, start, index, 1, false, _escape?),
-    do: :binary.part(text, start, index - start + 1)
+    do: {:binary.part(text, start, index - start + 1), index}
 
   defp scan_object_byte(?}, text, start, index, depth, false, _escape?),
     do: scan_object(text, start, index + 1, depth - 1, false, false)

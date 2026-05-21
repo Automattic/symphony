@@ -221,7 +221,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp event_payload(event) when is_map(event), do: map_value(event, ["payload", :payload]) || %{}
 
   defp review_agent_round_text(round, max_iterations) when is_integer(round) and is_integer(max_iterations) do
-    "round #{round}/#{max_iterations}"
+    "review #{round} of #{max_iterations + 1}"
   end
 
   defp review_agent_round_text(_round, _max_iterations), do: nil

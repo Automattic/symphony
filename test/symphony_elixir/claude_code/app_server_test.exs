@@ -2367,8 +2367,103 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
             assert result.output_tokens == 2
           end)
 
-        assert log =~ "turn_completed before non-zero exit"
+        assert log =~ "terminal result before non-zero exit"
       after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns exit_status when claude exits non-zero before emitting a terminal result" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-nonzero-before-result-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-EARLYEXIT")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' 'some error output'
+        exit 7
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        session = local_session(workspace, test_root)
+
+        assert {:error, {:exit_status, 7}} = AppServer.run_turn(session, "do the thing", %{}, [])
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "returns turn_failed when terminal error result is emitted while a tool subprocess keeps the cli alive" do
+      Application.put_env(:symphony_elixir, :claude_post_completion_grace_ms, 50)
+      on_exit(fn -> Application.delete_env(:symphony_elixir, :claude_post_completion_grace_ms) end)
+
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-failed-lingering-#{System.unique_integer([:positive])}"
+        )
+
+      sleep_pid_file = Path.join(test_root, "sleep.pid")
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-FAILED-LINGER")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-failed-linger","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"result","subtype":"error","error":"claude api error","session_id":"sess-failed-linger"}'
+        sleep 30 &
+        sleep_pid=$!
+        printf '%s' "$sleep_pid" > "#{sleep_pid_file}"
+        wait "$sleep_pid"
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_turn_timeout_ms: 10_000
+        )
+
+        session = local_session(workspace, test_root)
+
+        start = System.monotonic_time(:millisecond)
+
+        log =
+          capture_log(fn ->
+            assert {:error, {:turn_failed, "claude api error"}} =
+                     AppServer.run_turn(session, "do the thing", %{}, [])
+          end)
+
+        elapsed = System.monotonic_time(:millisecond) - start
+        assert elapsed < 5_000, "expected fast finalize after grace, elapsed=#{elapsed}ms"
+        assert log =~ "turn_completed_without_process_exit"
+      after
+        if File.exists?(sleep_pid_file) do
+          sleep_pid = sleep_pid_file |> File.read!() |> String.trim()
+          _ = System.cmd("kill", ["-KILL", sleep_pid], stderr_to_stdout: true)
+        end
+
         File.rm_rf(test_root)
       end
     end

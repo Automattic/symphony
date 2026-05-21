@@ -14,12 +14,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @agent_runtime_env AgentEnv.runtime_marker_name()
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @port_line_bytes 1_048_576
-  # Grace window after a successful `result`/`turn_completed` event during
-  # which the loop keeps reading late bookkeeping output while the Claude CLI
-  # shuts down. If the OS process never exits (e.g. a lingering tool
-  # subprocess keeps it alive) we finalize the turn as success once the grace
-  # expires so the caller is not stuck waiting for the port `exit_status`.
-  @post_completion_grace_default_ms 1_000
+  # Grace window after a terminal `result`/`turn_completed`/`turn_failed` event
+  # during which the loop keeps reading late bookkeeping output while the
+  # Claude CLI shuts down. If the OS process never exits (e.g. a lingering tool
+  # subprocess keeps it alive) we finalize the turn from the captured result
+  # once the grace expires so the caller is not stuck waiting for the port
+  # `exit_status`.
+  @post_completion_grace_default_ms 1_500
 
   @type session :: %{
           workspace: Path.t(),
@@ -1126,8 +1127,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp handle_nonzero_exit(acc, status) do
-    if terminal_result_observed?(acc) do
-      Logger.info("Claude turn_completed before non-zero exit status=#{status} session_id=#{inspect(Map.get(acc, :session_id))}")
+    if terminal_event_observed?(acc) do
+      Logger.info("Claude terminal result before non-zero exit status=#{status} session_id=#{inspect(Map.get(acc, :session_id))}")
 
       finalize_read_result(acc)
     else
@@ -1153,7 +1154,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp maybe_start_post_completion_grace(acc, nil) do
-    if terminal_result_observed?(acc) do
+    if terminal_event_observed?(acc) do
       System.monotonic_time(:millisecond) + post_completion_grace_ms()
     else
       nil
@@ -1162,8 +1163,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp maybe_start_post_completion_grace(_acc, deadline), do: deadline
 
-  defp terminal_result_observed?(acc) do
-    Map.get(acc, :turn_completed, false) and is_nil(Map.get(acc, :turn_failed))
+  defp terminal_event_observed?(acc) do
+    Map.get(acc, :turn_completed, false) or is_binary(Map.get(acc, :turn_failed))
   end
 
   defp post_completion_grace_ms do

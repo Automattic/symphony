@@ -54,6 +54,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     File.write!(shim_path, "shim")
     File.mkdir_p!(stale_managed_dir)
+    File.write!(Path.join(stale_managed_dir, "sock"), "stale")
     File.mkdir_p!(outside_glob_dir)
 
     on_exit(fn ->
@@ -72,7 +73,7 @@ defmodule SymphonyElixir.McpServerTest do
 
   test "startup reaper leaves a live managed socket directory alone" do
     first_server = unique_server()
-    start_supervised!({McpServer, name: first_server})
+    start_supervised!({McpServer, name: first_server}, id: first_server)
 
     {:ok, session} =
       McpServer.start_session(%{workspace: System.tmp_dir!()},
@@ -81,12 +82,24 @@ defmodule SymphonyElixir.McpServerTest do
       )
 
     second_server = unique_server()
-    start_supervised!({McpServer, name: second_server})
+    start_supervised!({McpServer, name: second_server}, id: second_server)
 
     assert File.dir?(session.socket_dir)
     assert File.exists?(session.socket_path)
 
     McpServer.stop_session(session, server: first_server)
+  end
+
+  test "startup reaper leaves a fresh managed socket directory without sock alone" do
+    fresh_dir = managed_socket_dir("fresh-control")
+    File.mkdir_p!(fresh_dir)
+
+    on_exit(fn -> File.rm_rf(fresh_dir) end)
+
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    assert File.dir?(fresh_dir)
   end
 
   test "sessions started after init create managed socket directories" do

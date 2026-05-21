@@ -15,6 +15,7 @@ defmodule SymphonyElixir.McpServer do
   @managed_socket_root "/tmp"
   @managed_socket_prefix "symphony-mcp-"
   @shim_prefix "symphony-mcp-shim-"
+  @orphaned_socket_dir_grace_seconds 5
 
   @type session :: %{
           id: String.t(),
@@ -342,20 +343,38 @@ defmodule SymphonyElixir.McpServer do
   end
 
   defp orphaned_socket_dir?(dir) do
-    not socket_accepting_connections?(Path.join(dir, "sock"))
+    socket_path = Path.join(dir, "sock")
+
+    case File.lstat(socket_path) do
+      {:ok, %{type: :regular}} -> true
+      {:ok, _stat} -> socket_liveness(socket_path) == :stale
+      {:error, :enoent} -> managed_socket_dir_old_enough?(dir)
+      {:error, _reason} -> false
+    end
   end
 
-  defp socket_accepting_connections?(path) do
+  defp managed_socket_dir_old_enough?(dir) do
+    case File.stat(dir, time: :posix) do
+      {:ok, %{mtime: mtime}} -> System.system_time(:second) - mtime >= @orphaned_socket_dir_grace_seconds
+      {:error, _reason} -> false
+    end
+  end
+
+  defp socket_liveness(path) do
     case :socket.open(:local, :stream) do
       {:ok, socket} ->
         try do
-          :socket.connect(socket, %{family: :local, path: path}) == :ok
+          case :socket.connect(socket, %{family: :local, path: path}) do
+            :ok -> :accepting
+            {:error, reason} when reason in [:enoent, :econnrefused, :eprototype, :einval] -> :stale
+            {:error, _reason} -> :unknown
+          end
         after
           close_socket(socket)
         end
 
       {:error, _reason} ->
-        false
+        :unknown
     end
   end
 

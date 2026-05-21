@@ -1670,29 +1670,18 @@ Current Elixir sandbox behavior:
   deny-write the sensitive/static Codex files `auth.json`, `config.toml`, and `AGENTS.md`.
   Shell startup files are also read-denied and write-denied; non-fatal PATH update warnings from
   Codex MUST NOT be resolved by granting access to those files.
-- SRT Git write model (per-issue workspace scoped):
+- SRT Git write model:
   - For each writable Git metadata root (workspace `.git`, plus any discovered linked-worktree
     `--git-dir` / `--git-common-dir`), SRT settings MUST deny writes to `config`,
     `config.worktree`, `hooks`, `info`, `packed-refs`, and the per-worktree `worktrees/*/config`
     and `worktrees/*/config.worktree` patterns. These deny rules apply regardless of layout.
-  - SRT settings MUST allow writes to `<git_dir>/objects` only when the canonical Git metadata
-    root is inside the per-issue workspace (clone workspaces and any explicitly isolated per-run
-    object store provisioned inside the workspace). This keeps `git add`, `git commit`, and
-    similar staging operations working in the default clone layout.
-  - SRT settings MUST keep writes denied to a linked worktree's external shared common
-    `.git/objects` database by default. The shared object DB belongs to the source repository,
-    not the per-issue workspace, and allowing writes there would let a sandboxed run mutate
-    objects visible to peer workspaces.
-  - Operators that need write access to a different object store (for example a dedicated per-run
-    isolated object store referenced via `GIT_OBJECT_DIRECTORY`) SHOULD provision that store
-    inside the per-issue workspace, or otherwise scope it to a path the deploy already grants
-    write access to. Because Symphony's default write denies are derived from the discovered
-    Git metadata roots, an isolated store outside those roots receives no implicit deny.
-  - Known limitation: under the default linked-worktree layout (`workspace.strategy: worktree`,
-    `workspace.repo: <source>`), Codex SRT cannot run `git add`/`git commit` against the shared
-    `<source>/.git/objects` store. Implementations targeting linked worktrees with SRT SHOULD
-    switch the affected workflow to a clone strategy or stage commits in a per-run isolated
-    object store inside the workspace.
+  - SRT settings MUST allow writes to `<git_dir>/objects` for clone workspaces and linked
+    worktrees. This keeps `git add`, `git commit`, and similar staging operations working under
+    SRT. Under the default linked-worktree layout (`workspace.strategy: worktree`,
+    `workspace.repo: <source>`), those writes target the source repository's shared
+    `<source>/.git/objects` database. This is an explicit cleanup/blast-radius tradeoff: object
+    writes may outlive workspace cleanup until Git GC, while higher-risk mutable Git metadata
+    remains write-protected.
 - Sensitive-path detection for command/audit safeguards also treats mounted volumes, admin paths,
   selected Codex runtime files, common credential basenames, `.env*`, `*.pem`, and `*.key` as
   sensitive.

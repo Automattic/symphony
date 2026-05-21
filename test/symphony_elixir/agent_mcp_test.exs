@@ -23,9 +23,9 @@ defmodule SymphonyElixir.AgentMcpTest do
       }
     }
 
-    block = AgentMcp.codex_server_toml_block("context.a8c", server)
+    block = AgentMcp.codex_server_toml_block("example.server", server)
 
-    assert block =~ ~s([mcp_servers."context.a8c"])
+    assert block =~ ~s([mcp_servers."example.server"])
     assert block =~ ~s(command = "node")
     refute block =~ "args"
     assert block =~ "enabled = true"

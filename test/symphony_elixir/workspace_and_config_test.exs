@@ -3007,10 +3007,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_mcp: %{
         servers: %{
-          "context-a8c" => %{
+          "example-server" => %{
             transport: "stdio",
             command: "node",
-            args: ["/srv/context-a8c/server.js"],
+            args: ["/srv/example-server/server.js"],
             env: %{LOG_LEVEL: "info"},
             runtimes: ["claude", "codex"]
           },
@@ -3027,10 +3027,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     mcp = Config.settings!().agent.mcp
     assert mcp.inherit == "none"
     assert mcp.allowed_servers == []
-    assert mcp.servers["context-a8c"].transport == "stdio"
-    assert mcp.servers["context-a8c"].command == "node"
-    assert mcp.servers["context-a8c"].args == ["/srv/context-a8c/server.js"]
-    assert mcp.servers["context-a8c"].env == %{"LOG_LEVEL" => "info"}
+    assert mcp.servers["example-server"].transport == "stdio"
+    assert mcp.servers["example-server"].command == "node"
+    assert mcp.servers["example-server"].args == ["/srv/example-server/server.js"]
+    assert mcp.servers["example-server"].env == %{"LOG_LEVEL" => "info"}
     assert mcp.servers["docs"].transport == "http"
     assert mcp.servers["docs"].runtimes == ["claude"]
   end
@@ -3085,7 +3085,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert message =~ "Codex MCP servers must use transport"
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      agent_mcp: %{inherit: "none", allowed_servers: ["context-a8c"]}
+      agent_mcp: %{inherit: "none", allowed_servers: ["example-server"]}
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
@@ -3095,7 +3095,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_mcp: %{
         inherit: "allowlist",
-        allowed_servers: ["context-a8c"],
+        allowed_servers: ["example-server"],
         servers: %{
           "invalid-runtime" => %{
             command: "node",

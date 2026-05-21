@@ -1892,7 +1892,8 @@ Optional client-side tool extension:
 - An implementation MAY expose a limited set of client-side tools to the agent session.
 - Current standardized optional tools: scoped Linear tools whose protocol-facing names match
   `^[a-zA-Z0-9_-]+$`, such as `linear_get_current_issue`, `linear_get_comments`, and
-  `linear_update_state`.
+  `linear_update_state`, and scoped GitHub tools such as `github_get_pull_request`,
+  `github_fetch_origin`, and `github_push_branch`.
 - If implemented, supported tools SHOULD be advertised to the agent session during startup using the
   protocol mechanism supported by the configured adapter.
 - Unsupported tool names SHOULD still return a failure result using the targeted protocol and
@@ -1936,6 +1937,24 @@ Elixir evidence: `lib/symphony_elixir/agent_tools/linear.ex`,
 `lib/symphony_elixir/mcp_server.ex`,
 `test/symphony_elixir/agent_tools_linear_test.exs`, and
 `test/symphony_elixir/mcp_server_test.exs`.
+
+Scoped GitHub tool extension contract:
+
+- Purpose: expose narrow, current-workspace GitHub and Git operations without
+  giving the agent direct access to host GitHub or SSH credential files.
+- Tools MUST derive repository, branch, remote, and PR scope server-side from
+  the Symphony session context; prompt-supplied repo, branch, remote, ref, or
+  refspec arguments MUST be rejected.
+- `github_fetch_origin`, if exposed, MUST fetch only the verified `origin`
+  remote for the current workspace and MUST NOT accept prompt-supplied refspecs
+  or remote names.
+- GitHub read-only review sessions SHOULD hide GitHub tools that mutate local
+  workspace Git metadata or remote GitHub state.
+
+Elixir evidence: `lib/symphony_elixir/agent_tools/github.ex`,
+`lib/symphony_elixir/codex/dynamic_tool.ex`,
+`test/symphony_elixir/agent_tools_github_test.exs`, and
+`test/symphony_elixir/dynamic_tool_test.exs`.
 
 User-input-required policy:
 

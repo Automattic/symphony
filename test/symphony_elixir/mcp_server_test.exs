@@ -34,6 +34,102 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
+  test "startup reaps orphaned managed socket directories" do
+    orphan_dir = managed_socket_dir("orphan")
+    File.mkdir_p!(orphan_dir)
+    File.write!(Path.join(orphan_dir, "sock"), "stale")
+
+    on_exit(fn -> File.rm_rf(orphan_dir) end)
+
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    refute File.exists?(orphan_dir)
+  end
+
+  test "startup reaper preserves extracted shim files and unrelated temp paths" do
+    shim_path =
+      Path.join(
+        Path.dirname(managed_socket_base()),
+        "symphony-mcp-shim-test-#{System.unique_integer([:positive])}"
+      )
+
+    stale_managed_dir = managed_socket_dir("stale-control")
+    outside_glob_dir =
+      Path.join(
+        Path.dirname(managed_socket_base()),
+        "something-else-#{System.unique_integer([:positive])}"
+      )
+
+    File.write!(shim_path, "shim")
+    File.mkdir_p!(stale_managed_dir)
+    File.write!(Path.join(stale_managed_dir, "sock"), "stale")
+    File.mkdir_p!(outside_glob_dir)
+
+    on_exit(fn ->
+      File.rm(shim_path)
+      File.rm_rf(stale_managed_dir)
+      File.rm_rf(outside_glob_dir)
+    end)
+
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    assert File.exists?(shim_path)
+    refute File.exists?(stale_managed_dir)
+    assert File.exists?(outside_glob_dir)
+  end
+
+  test "startup reaper leaves a live managed socket directory alone" do
+    first_server = unique_server()
+    start_supervised!({McpServer, name: first_server}, id: first_server)
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: first_server,
+        shim_path: "/tmp/shim"
+      )
+
+    second_server = unique_server()
+    start_supervised!({McpServer, name: second_server}, id: second_server)
+
+    assert File.dir?(session.socket_dir)
+    assert File.exists?(session.socket_path)
+
+    McpServer.stop_session(session, server: first_server)
+  end
+
+  test "startup reaper leaves a fresh managed socket directory without sock alone" do
+    fresh_dir = managed_socket_dir("fresh-control")
+    File.mkdir_p!(fresh_dir)
+
+    on_exit(fn -> File.rm_rf(fresh_dir) end)
+
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    assert File.dir?(fresh_dir)
+  end
+
+  test "sessions started after init create managed socket directories" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        shim_path: "/tmp/shim"
+      )
+
+    try do
+      assert String.starts_with?(session.socket_dir, Path.join(managed_socket_base(), "symphony-mcp-"))
+      assert File.dir?(session.socket_dir)
+      assert File.exists?(session.socket_path)
+    after
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
   test "lists scoped Linear and GitHub tools over a token-authenticated Unix socket" do
     server = unique_server()
     start_supervised!({McpServer, name: server})
@@ -147,7 +243,7 @@ defmodule SymphonyElixir.McpServerTest do
     assert McpServer.remote_socket_path("abc-123") == "/var/run/symphony/symphony-mcp-abc-123.sock"
   end
 
-  test "remote socket paths default independently from the local socket base" do
+  test "remote socket paths default to the local socket base when unset" do
     previous_socket_base = Application.get_env(:symphony_elixir, :mcp_socket_base)
     previous_remote_socket_base = Application.get_env(:symphony_elixir, :mcp_remote_socket_base)
     Application.put_env(:symphony_elixir, :mcp_socket_base, "_build/test/sockets/local-only")
@@ -158,7 +254,7 @@ defmodule SymphonyElixir.McpServerTest do
       restore_application_env(:mcp_remote_socket_base, previous_remote_socket_base)
     end)
 
-    assert McpServer.remote_socket_path("abc-123") == "/tmp/symphony-mcp-abc-123.sock"
+    assert McpServer.remote_socket_path("abc-123") == "_build/test/sockets/local-only/symphony-mcp-abc-123.sock"
   end
 
   test "lists scoped tools over token-authenticated loopback TCP" do
@@ -805,13 +901,21 @@ defmodule SymphonyElixir.McpServerTest do
     :"mcp_server_test_#{System.unique_integer([:positive])}"
   end
 
-  defp socket_path do
+  defp managed_socket_dir(label) do
+    Path.join(managed_socket_base(), "symphony-mcp-#{label}-#{System.unique_integer([:positive])}")
+  end
+
+  defp managed_socket_base do
     Application.fetch_env!(:symphony_elixir, :mcp_socket_base)
+  end
+
+  defp socket_path do
+    managed_socket_base()
     |> Path.join("symphony-mcp-test-#{System.unique_integer([:positive])}.sock")
   end
 
   defp test_socket_base(name) do
-    Application.fetch_env!(:symphony_elixir, :mcp_socket_base)
+    managed_socket_base()
     |> Path.dirname()
     |> Path.join("#{name}-#{System.unique_integer([:positive])}")
   end

@@ -182,6 +182,48 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
+  test "sessions fall back to SYMPHONY_MCP_SOCKET_ROOT system env when no opt or app env is set" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    custom_root = "/tmp/sym-env-#{System.unique_integer([:positive])}"
+    File.mkdir_p!(custom_root)
+
+    prior_app = Application.get_env(:symphony_elixir, :mcp_socket_root)
+    Application.delete_env(:symphony_elixir, :mcp_socket_root)
+
+    prior_env = System.get_env("SYMPHONY_MCP_SOCKET_ROOT")
+    System.put_env("SYMPHONY_MCP_SOCKET_ROOT", custom_root)
+
+    on_exit(fn ->
+      case prior_app do
+        nil -> :ok
+        value -> Application.put_env(:symphony_elixir, :mcp_socket_root, value)
+      end
+
+      case prior_env do
+        nil -> System.delete_env("SYMPHONY_MCP_SOCKET_ROOT")
+        value -> System.put_env("SYMPHONY_MCP_SOCKET_ROOT", value)
+      end
+
+      File.rm_rf(custom_root)
+    end)
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        shim_path: "/tmp/shim"
+      )
+
+    try do
+      assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
+      assert File.dir?(session.socket_dir)
+      assert File.exists?(session.socket_path)
+    after
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
   test "concurrent sessions sharing a run_id do not clobber each other's socket" do
     server = unique_server()
     start_supervised!({McpServer, name: server})

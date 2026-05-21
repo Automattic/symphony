@@ -161,8 +161,10 @@ workpad instead of synthesising a `gh` call.
   - Reserve `make all` and `make coverage` for the pre-push gate, not the inner
     edit/test loop.
 - In sandboxed Elixir runs, prefer
-  `HEX_HOME=/private/tmp/symphony-hex-home make all` for the full gate so Hex
-  and Dialyzer cache writes stay inside a writable location.
+  `HEX_HOME=/private/tmp/symphony-hex-home SYMPHONY_MCP_SOCKET_ROOT=/private/tmp/symphony-mcp make all`
+  for the full gate so Hex, Dialyzer, and MCP socket writes stay inside a
+  writable location. The MCP socket root must be a short path (the resulting
+  `<root>/symphony-mcp-<id>/sock` must fit the 104-byte Unix `sun_path` limit).
 - Keep tool output focused by default. For broad searches, diffs, and file
   reads, start with targeted `rg` queries, `sed -n` ranges, and modest
   `max_output_tokens` caps. Raise output caps only after narrowing the command

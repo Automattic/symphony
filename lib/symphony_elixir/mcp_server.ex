@@ -200,15 +200,31 @@ defmodule SymphonyElixir.McpServer do
   end
 
   defp resolved_socket_root(opts) do
-    case Keyword.get(opts, :socket_root) do
-      root when is_binary(root) and root != "" ->
-        root
+    with nil <- opt_socket_root(opts),
+         nil <- system_env_socket_root(),
+         nil <- app_env_socket_root() do
+      @managed_socket_root
+    end
+  end
 
-      _ ->
-        case Application.get_env(:symphony_elixir, :mcp_socket_root) do
-          root when is_binary(root) and root != "" -> root
-          _ -> @managed_socket_root
-        end
+  defp opt_socket_root(opts) do
+    case Keyword.get(opts, :socket_root) do
+      root when is_binary(root) and root != "" -> root
+      _ -> nil
+    end
+  end
+
+  defp system_env_socket_root do
+    case System.get_env("SYMPHONY_MCP_SOCKET_ROOT") do
+      root when is_binary(root) and root != "" -> root
+      _ -> nil
+    end
+  end
+
+  defp app_env_socket_root do
+    case Application.get_env(:symphony_elixir, :mcp_socket_root) do
+      root when is_binary(root) and root != "" -> root
+      _ -> nil
     end
   end
 

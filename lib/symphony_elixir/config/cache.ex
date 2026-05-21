@@ -274,7 +274,10 @@ defmodule SymphonyElixir.Config.Cache do
   defp watch_enabled?, do: Application.get_env(:symphony_elixir, :config_cache_watch, true)
 
   defp already_watched?(path) do
-    dir = Path.dirname(path)
+    dir_already_watched?(Path.dirname(path))
+  end
+
+  defp dir_already_watched?(dir) do
     set = :persistent_term.get(@watched_dirs_key, MapSet.new())
     MapSet.member?(set, dir)
   end
@@ -296,24 +299,61 @@ defmodule SymphonyElixir.Config.Cache do
         mark_dir_watched(dir)
         state
 
-      Code.ensure_loaded?(FileSystem) and File.dir?(dir) ->
-        case FileSystem.start_link(dirs: [dir]) do
+      dir_already_watched?(dir) ->
+        # Stat-only fallback was recorded for this dir by an earlier cast.
+        # Subsequent casts queued before that completed would otherwise
+        # re-enter start_watcher and flood the logs with bootstrap failures.
+        state
+
+      File.dir?(dir) ->
+        case start_watcher(dir) do
           {:ok, watcher} ->
-            :ok = FileSystem.subscribe(watcher)
             mark_dir_watched(dir)
             %{state | watchers: Map.put(state.watchers, dir, watcher)}
 
           {:error, reason} ->
-            Logger.warning("Failed to watch config directory=#{dir} reason=#{inspect(reason)}")
+            Logger.warning("Failed to watch config directory=#{dir} reason=#{inspect(reason)}; falling back to stat-based polling for this dir until node restart")
+
+            mark_dir_stat_only(dir)
             state
 
           :ignore ->
-            Logger.warning("Config watcher unavailable for directory=#{dir}; falling back to stat-based refresh")
+            Logger.warning("Config watcher unavailable for directory=#{dir}; falling back to stat-based polling for this dir until node restart")
+
+            mark_dir_stat_only(dir)
             state
         end
 
       true ->
         state
+    end
+  end
+
+  defp start_watcher(dir) do
+    case Application.get_env(:symphony_elixir, :config_cache_watcher) do
+      watcher when is_function(watcher, 1) ->
+        watcher.(dir)
+
+      _watcher ->
+        start_file_system_watcher(dir)
+    end
+  end
+
+  defp start_file_system_watcher(dir) do
+    if Code.ensure_loaded?(FileSystem), do: start_loaded_file_system_watcher(dir), else: :ignore
+  end
+
+  defp start_loaded_file_system_watcher(dir) do
+    case FileSystem.start_link(dirs: [dir]) do
+      {:ok, watcher} ->
+        :ok = FileSystem.subscribe(watcher)
+        {:ok, watcher}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      :ignore ->
+        :ignore
     end
   end
 
@@ -333,6 +373,20 @@ defmodule SymphonyElixir.Config.Cache do
   defp mark_dir_watched(dir) do
     set = :persistent_term.get(@watched_dirs_key, MapSet.new())
     :persistent_term.put(@watched_dirs_key, MapSet.put(set, dir))
+  end
+
+  defp mark_dir_stat_only(dir) do
+    # Track stat-only fallback dirs in the same persistent_term set used for live watchers so
+    # cast_watch/1 short-circuits instead of retrying FileSystem.start_link on every config read
+    # and flooding logs during active agent sessions.
+    #
+    # NOTE: this is sticky for the BEAM lifetime. unmark_dir_watched/1 only runs from
+    # drop_watcher/3 when a live watcher pid exits — stat-only entries have no pid in
+    # state.watchers, so they never get cleared. A transient watcher backend failure therefore
+    # pins that dir to stat-based polling until the node restarts. Stat polling still gives us
+    # eventual consistency, but if a future requirement demands in-process recovery, move
+    # stat-only entries into a separate persistent_term key with an explicit retry path.
+    mark_dir_watched(dir)
   end
 
   defp unmark_dir_watched(dir) do

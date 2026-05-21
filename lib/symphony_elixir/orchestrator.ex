@@ -1303,9 +1303,7 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
-        if Keyword.get(opts, :stop_agent_session, false) do
-          stop_agent_session_for_stuck_issue(running_entry)
-        end
+        cleanup_agent_session_for_terminated_issue(running_entry, opts)
 
         if Keyword.get(opts, :run_after_run_hook, false) do
           run_after_run_cleanup(running_entry)
@@ -3435,35 +3433,48 @@ defmodule SymphonyElixir.Orchestrator do
   defp repo_key_from(%{"repo_key" => repo_key}) when is_binary(repo_key) and repo_key != "", do: repo_key
   defp repo_key_from(_value), do: nil
 
-  defp start_stop_agent_session_cleanup(%{run_id: run_id} = running_entry) do
+  defp cleanup_agent_session_for_terminated_issue(running_entry, opts) do
+    if Keyword.get(opts, :stop_agent_session, false) do
+      stop_agent_session_for_stuck_issue(running_entry)
+    else
+      start_stop_agent_session_cleanup(running_entry, Keyword.get(opts, :error, "agent stopped by orchestrator"))
+    end
+  end
+
+  defp start_stop_agent_session_cleanup(%{run_id: run_id} = running_entry, cleanup_context) do
     if stop_agent_session_configured?(running_entry),
-      do: start_stop_agent_session_cleanup_task(running_entry, run_id),
+      do: start_stop_agent_session_cleanup_task(running_entry, run_id, cleanup_context),
       else: :ok
   end
 
-  defp start_stop_agent_session_cleanup(_running_entry), do: :ok
+  defp start_stop_agent_session_cleanup(_running_entry, _cleanup_context), do: :ok
 
-  defp start_stop_agent_session_cleanup_task(running_entry, run_id) do
+  defp start_stop_agent_session_cleanup_task(running_entry, run_id, cleanup_context) do
     case running_entry_repo_key(running_entry) do
       repo_key when is_binary(repo_key) ->
-        start_stop_agent_session_cleanup_task(running_entry, run_id, repo_key)
+        start_stop_agent_session_cleanup_task(running_entry, run_id, repo_key, cleanup_context)
 
       _repo_key ->
         :ok
     end
   end
 
-  defp start_stop_agent_session_cleanup_task(running_entry, run_id, repo_key) do
+  defp start_stop_agent_session_cleanup_task(running_entry, run_id, repo_key, cleanup_context) do
     case start_task_supervisor_child(fn ->
            running_entry
            |> stop_agent_session_with_timeout(@stop_session_cleanup_timeout_ms)
-           |> record_stop_agent_session_cleanup_result(repo_key, run_id)
+           |> record_stop_agent_session_cleanup_result(repo_key, run_id, cleanup_context)
          end) do
       {:ok, _pid} ->
         :ok
 
       {:error, reason} ->
-        record_stop_agent_session_cleanup_result({:error, {:cleanup_task_start_failed, reason}}, repo_key, run_id)
+        record_stop_agent_session_cleanup_result(
+          {:error, {:cleanup_task_start_failed, reason}},
+          repo_key,
+          run_id,
+          cleanup_context
+        )
     end
   end
 
@@ -3564,10 +3575,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_stop_session_result({:error, reason}), do: {:error, reason}
   defp normalize_stop_session_result(other), do: {:error, {:unexpected_result, other}}
 
-  defp record_stop_agent_session_cleanup_result(:ok, _repo_key, _run_id), do: :ok
+  defp record_stop_agent_session_cleanup_result(:ok, _repo_key, _run_id, _cleanup_context), do: :ok
 
-  defp record_stop_agent_session_cleanup_result({:error, reason}, repo_key, run_id) when is_binary(repo_key) and is_binary(run_id) do
-    message = "agent stopped by operator; stop_session cleanup failed: #{inspect(reason)}"
+  defp record_stop_agent_session_cleanup_result({:error, reason}, repo_key, run_id, cleanup_context)
+       when is_binary(repo_key) and is_binary(run_id) do
+    message = "#{cleanup_context}; stop_session cleanup failed: #{inspect(reason)}"
     Logger.warning("Agent stop_session cleanup failed while stopping issue run_id=#{run_id} reason=#{inspect(reason)}")
 
     repo_key
@@ -3576,7 +3588,7 @@ defmodule SymphonyElixir.Orchestrator do
     |> log_run_store_error("record stop_session cleanup failure")
   end
 
-  defp record_stop_agent_session_cleanup_result({:error, reason}, _repo_key, _run_id) do
+  defp record_stop_agent_session_cleanup_result({:error, reason}, _repo_key, _run_id, _cleanup_context) do
     Logger.warning("Agent stop_session cleanup failed while stopping issue reason=#{inspect(reason)}")
     :ok
   end
@@ -4498,7 +4510,6 @@ defmodule SymphonyElixir.Orchestrator do
             track_completed_run: true
           )
 
-        start_stop_agent_session_cleanup(running_entry)
         notify_dashboard()
 
         {:reply,

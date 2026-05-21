@@ -100,7 +100,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     last_progress = socket.assigns.last_command_progress_entry
 
     cond do
-      kind == "agent-text" and same_agent_phase?(last, event) ->
+      merge_agent_text_event?(kind, event, last) ->
         new_text = agent_text(event) || ""
         merged = %{last | summary: last.summary <> new_text}
 
@@ -110,7 +110,16 @@ defmodule SymphonyElixirWeb.TranscriptLive do
          |> assign(:last_command_progress_entry, nil)
          |> stream_insert(:events, merged)}
 
-      command_progress_event?(event) and same_agent_phase?(last_progress, event) ->
+      finalize_agent_text_event?(kind, event, last) ->
+        finalized = finalize_agent_text_entry(last, event)
+
+        {:noreply,
+         socket
+         |> assign(:last_agent_text_entry, finalized)
+         |> assign(:last_command_progress_entry, nil)
+         |> stream_insert(:events, finalized)}
+
+      merge_command_progress_event?(event, last_progress) ->
         merged = merge_command_progress_entry(last_progress, event)
 
         {:noreply,
@@ -322,7 +331,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
       tool_call_event?(method, item_type) ->
         "tool-call"
 
-      agent_text_event?(method) ->
+      agent_text_event?(method, item_type, event) ->
         "agent-text"
 
       session_event?(event_text, method) ->
@@ -420,9 +429,16 @@ defmodule SymphonyElixirWeb.TranscriptLive do
       (method in ["item/started"] and item_type in ["commandexecution", "filechange"])
   end
 
-  defp agent_text_event?(method) do
+  defp agent_text_event?(method, item_type, event) do
+    legacy_agent_text_method?(method) or completed_agent_message_item?(method, item_type, event)
+  end
+
+  defp legacy_agent_text_method?(method) do
     String.contains?(method, "agent_message") or String.contains?(method, "agentmessage")
   end
+
+  defp completed_agent_message_item?("item/completed", "agentmessage", event), do: is_binary(agent_text(event))
+  defp completed_agent_message_item?(_method, _item_type, _event), do: false
 
   defp session_event?(event_text, method) do
     String.contains?(event_text, "session") or String.contains?(event_text, "turn") or
@@ -539,6 +555,30 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   defp same_agent_phase?(nil, _event), do: false
   defp same_agent_phase?(entry, event), do: Map.get(entry, :phase) == agent_phase(event)
 
+  defp merge_agent_text_event?(kind, event, last_agent) do
+    kind == "agent-text" and agent_text_delta_event?(event) and same_agent_phase?(last_agent, event)
+  end
+
+  # Read-only reviewer sessions keep `item/agentMessage/delta` enabled (see
+  # SymphonyElixir.Codex.AppServer); the terminal `item/completed`/`agentMessage` then carries the
+  # full message. Without this gate the completed event would `stream_insert` a second entry while
+  # the merged delta entry stayed visible, rendering the same reviewer message twice. Reuse the
+  # merged entry's id/sequence so stream_insert replaces in place.
+  defp finalize_agent_text_event?(kind, event, last_agent) do
+    kind == "agent-text" and not is_nil(last_agent) and
+      not agent_text_delta_event?(event) and same_agent_phase?(last_agent, event)
+  end
+
+  defp finalize_agent_text_entry(last_agent, event) do
+    finalized = transcript_entry(event, last_agent.sequence)
+    summary = present_agent_text(finalized.summary) || last_agent.summary
+    %{finalized | summary: summary}
+  end
+
+  defp merge_command_progress_event?(event, last_progress) do
+    command_progress_event?(event) and same_agent_phase?(last_progress, event)
+  end
+
   defp tool_name(event) do
     tool_params(event)
     |> case do
@@ -567,13 +607,40 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   end
 
   defp agent_text(event) do
-    map_path(event, [:payload, "params", "msg", "content"]) ||
-      map_path(event, [:payload, :params, :msg, :content]) ||
-      map_path(event, [:payload, "params", "delta"]) ||
-      map_path(event, [:payload, :params, :delta]) ||
-      map_path(event, [:payload, "payload", "params", "msg", "content"]) ||
-      map_path(event, [:payload, :payload, "params", "msg", "content"])
+    event
+    |> tool_params()
+    |> agent_text_from_params()
   end
+
+  defp agent_text_from_params(nil), do: nil
+
+  defp agent_text_from_params(params) do
+    [
+      map_path(params, ["msg", "content"]),
+      map_path(params, [:msg, :content]),
+      map_path(params, ["msg", :content]),
+      map_path(params, [:msg, "content"]),
+      map_value(params, ["delta", :delta]),
+      map_path(params, ["item", "text"]),
+      map_path(params, [:item, :text]),
+      map_path(params, ["item", :text]),
+      map_path(params, [:item, "text"])
+    ]
+    |> Enum.find_value(&present_agent_text/1)
+  end
+
+  defp present_agent_text(""), do: nil
+  defp present_agent_text(value) when is_binary(value), do: value
+  defp present_agent_text(_value), do: nil
+
+  defp agent_text_delta_event?(event) do
+    event
+    |> event_method()
+    |> downcase_value()
+    |> agent_text_delta_method?()
+  end
+
+  defp agent_text_delta_method?(method), do: legacy_agent_text_method?(method) and String.contains?(method, "delta")
 
   defp command_progress_event?(event), do: is_integer(command_progress_dot_count(event))
 
@@ -679,27 +746,42 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     {Enum.reverse(entries_rev), last_agent, last_progress, seq}
   end
 
-  defp coalesce_entry(event, {acc_rev, last_agent, last_progress, seq}) do
+  defp coalesce_entry(event, {acc_rev, last_agent, last_progress, seq} = acc) do
     kind = event_kind(event)
 
     cond do
-      kind == "agent-text" and same_agent_phase?(last_agent, event) ->
-        new_text = agent_text(event) || ""
-        merged = %{last_agent | summary: last_agent.summary <> new_text}
-        {[merged | tl(acc_rev)], merged, nil, seq}
-
       kind == "agent-text" ->
-        entry = transcript_entry(event, seq)
-        {[entry | acc_rev], entry, nil, seq + 1}
+        coalesce_agent_text(event, last_agent, acc_rev, seq)
 
       command_progress_event?(event) and same_agent_phase?(last_progress, event) ->
         merged = merge_command_progress_entry(last_progress, event)
         {[merged | tl(acc_rev)], nil, merged, seq}
 
       true ->
-        entry = transcript_entry(event, seq)
-        {[entry | acc_rev], nil, command_progress_entry(event, entry), seq + 1}
+        coalesce_other_entry(event, acc)
     end
+  end
+
+  defp coalesce_agent_text(event, last_agent, acc_rev, seq) do
+    cond do
+      agent_text_delta_event?(event) and same_agent_phase?(last_agent, event) ->
+        new_text = agent_text(event) || ""
+        merged = %{last_agent | summary: last_agent.summary <> new_text}
+        {[merged | tl(acc_rev)], merged, nil, seq}
+
+      finalize_agent_text_event?("agent-text", event, last_agent) ->
+        finalized = finalize_agent_text_entry(last_agent, event)
+        {[finalized | tl(acc_rev)], finalized, nil, seq}
+
+      true ->
+        entry = transcript_entry(event, seq)
+        {[entry | acc_rev], entry, nil, seq + 1}
+    end
+  end
+
+  defp coalesce_other_entry(event, {acc_rev, _last_agent, _last_progress, seq}) do
+    entry = transcript_entry(event, seq)
+    {[entry | acc_rev], nil, command_progress_entry(event, entry), seq + 1}
   end
 
   defp command_progress_entry(event, entry) do

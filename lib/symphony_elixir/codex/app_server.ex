@@ -29,12 +29,31 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
-  @opt_out_notification_methods ["turn/diff/updated"]
+  # Soft cap on the size of any single string field (e.g. aggregatedOutput) we keep on a
+  # notification payload before forwarding it to the orchestrator/transcript/audit log. Codex itself
+  # is told to suppress streaming deltas, so this only kicks in for terminal item/completed payloads
+  # whose aggregatedOutput can otherwise be megabytes. 8 KiB keeps the head+tail slices in
+  # truncate_large_string/1 each within one comfortable transcript line. This is a byte cap and is
+  # intentionally not derived from Codex's tool_output_token_limit (which is a token budget) — the
+  # two limits guard different stages of the same backpressure failure mode.
+  @max_notification_field_bytes 8_192
+  @base_opt_out_notification_methods [
+    "turn/diff/updated",
+    "item/commandExecution/outputDelta",
+    "item/fileChange/outputDelta"
+  ]
+  # Executor sessions additionally suppress streaming agent-message deltas; the completed
+  # item/agentMessage notification still arrives via item/completed, which is what the transcript
+  # surfaces. Heavy completion payloads are trimmed in compact_notification_payload/2 below.
+  @executor_opt_out_notification_methods @base_opt_out_notification_methods ++
+                                           [
+                                             "item/agentMessage/delta"
+                                           ]
   @agent_runtime_env AgentEnv.runtime_marker_name()
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
-  @type stderr_tail :: pid() | nil
+  @type stderr_tail :: %{pid: pid(), ref: reference()} | nil
 
   @type session :: %{
           port: port(),
@@ -428,7 +447,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       stderr_log_path = Path.join(codex_home.home_path, "codex.stderr.log")
       :ok = File.touch!(stderr_log_path)
       wrapped_command = wrap_command_with_stderr_redirect(command, stderr_log_path)
-      stderr_tail = start_stderr_tail(stderr_log_path)
 
       port =
         Port.open(
@@ -442,6 +460,8 @@ defmodule SymphonyElixir.Codex.AppServer do
             line: @port_line_bytes
           ]
         )
+
+      stderr_tail = start_stderr_tail(stderr_log_path, port)
 
       {:ok, port, codex_home, codex_home.cleanup_paths ++ launch_cleanup_paths, nil, stderr_tail}
     else
@@ -914,14 +934,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp send_initialize(port, settings) do
+  defp send_initialize(port, settings, session_policies) do
     payload = %{
       "method" => "initialize",
       "id" => @initialize_id,
       "params" => %{
         "capabilities" => %{
           "experimentalApi" => true,
-          "optOutNotificationMethods" => @opt_out_notification_methods
+          "optOutNotificationMethods" => opt_out_notification_methods(session_policies)
         },
         "clientInfo" => %{
           "name" => "symphony-orchestrator",
@@ -939,6 +959,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp opt_out_notification_methods(%{tool_scope: :read_only}), do: @base_opt_out_notification_methods
+  defp opt_out_notification_methods(_session_policies), do: @executor_opt_out_notification_methods
+
   defp session_policies(workspace, nil, settings, tool_scope) do
     with {:ok, policies} <- Config.codex_runtime_settings(settings, workspace, []) do
       {:ok, Map.put(policies, :tool_scope, tool_scope)}
@@ -952,7 +975,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp do_start_session(port, workspace, session_policies, settings) do
-    case send_initialize(port, settings) do
+    case send_initialize(port, settings, session_policies) do
       :ok -> start_thread(port, workspace, session_policies, settings)
       {:error, reason} -> {:error, reason}
     end
@@ -1056,6 +1079,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          sandbox_startup
        ) do
     config = settings.agent
+    flush_stderr_transport_messages(port)
 
     receive_loop(
       port,
@@ -1067,6 +1091,22 @@ defmodule SymphonyElixir.Codex.AppServer do
       approval_context,
       initial_turn_stream_state(config.command_timeout_ms, sandbox_startup)
     )
+  end
+
+  # Drain any :codex_stderr_transport_failed messages left in the owner mailbox by the previous
+  # turn's stderr tail. The stderr poller is asynchronous to the JSON-RPC turn loop: a "Failed to
+  # write to stdout" line written after the previous turn's stdout response was already consumed
+  # would otherwise be picked up at the start of the next turn and abort a healthy session. If a
+  # transport failure happens during this turn, Codex's next stdout write will fail again and the
+  # in-line `codex_stdio_write_failed?` classifier in `handle_incoming/8` will surface it.
+  @doc false
+  @spec flush_stderr_transport_messages(port()) :: :ok
+  def flush_stderr_transport_messages(port) when is_port(port) do
+    receive do
+      {:codex_stderr_transport_failed, ^port, _ref, _reason} -> flush_stderr_transport_messages(port)
+    after
+      0 -> :ok
+    end
   end
 
   defp receive_loop(
@@ -1114,6 +1154,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
+
+      {:codex_stderr_transport_failed, ^port, _ref, reason} ->
+        handle_stderr_transport_failure(port, on_message, reason)
     after
       receive_timeout_ms(timeout_ms, turn_stream_state) ->
         case stream_timeout_error(timeout_ms, turn_stream_state) do
@@ -1206,6 +1249,23 @@ defmodule SymphonyElixir.Codex.AppServer do
             )
         end
     end
+  end
+
+  # Only :codex_stdio_write_failed is ever sent by maybe_notify_stderr_transport_failure/2. Adding
+  # a new failure tag without a matching clause here is intentional: it will crash the receive
+  # loop, surface in the supervisor log, and force the new tag to be handled explicitly rather
+  # than silently bubble out as a bare {:error, reason} with no transcript or log line.
+  defp handle_stderr_transport_failure(port, on_message, {:codex_stdio_write_failed, detail} = reason) do
+    Logger.error("Codex app-server stdout write failed; aborting turn: #{detail}")
+
+    emit_message(
+      on_message,
+      :transport_failed,
+      %{reason: :codex_stdio_write_failed, detail: detail, raw: detail},
+      metadata_from_message(port, %{raw: detail})
+    )
+
+    {:error, reason}
   end
 
   defp handle_decoded_payload(port, on_message, %{"method" => "turn/completed"} = payload, payload_string, stream_context) do
@@ -1383,12 +1443,14 @@ defmodule SymphonyElixir.Codex.AppServer do
 
           {:error, {:turn_input_required, payload}}
         else
+          {forwarded_payload, forwarded_raw} = compact_notification_payload(payload, payload_string)
+
           emit_message(
             on_message,
             :notification,
             %{
-              payload: payload,
-              raw: payload_string
+              payload: forwarded_payload,
+              raw: forwarded_raw
             },
             metadata
           )
@@ -3320,6 +3382,130 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  @doc false
+  # Trim a fixed set of large string fields on params.item (see noisy_item_fields/0:
+  # aggregatedOutput / aggregated_output / output / stdout / stderr / diff) before forwarding a
+  # notification upstream. Codex can emit megabyte-scale aggregatedOutput on item/completed, and
+  # carrying that into the transcript/audit log is wasteful and historically contributed to stdout
+  # backpressure on the BEAM side. The trimmed payload preserves the item shape so command tracking
+  # and the transcript classifier still work. Exposed via @doc false so the codepoint-aware
+  # truncation path can be exercised directly from tests.
+  @spec compact_notification_payload(map(), String.t()) :: {map(), String.t()}
+  def compact_notification_payload(payload, raw) when is_map(payload) do
+    case compact_payload_item(payload) do
+      :unchanged -> {payload, raw}
+      {:ok, compacted} -> {compacted, encode_compacted_raw(compacted, raw)}
+    end
+  end
+
+  defp compact_payload_item(payload) do
+    item = get_in(payload, ["params", "item"])
+
+    case truncate_noisy_item_fields(item) do
+      {:ok, trimmed_item} -> {:ok, put_in(payload, ["params", "item"], trimmed_item)}
+      :unchanged -> :unchanged
+    end
+  end
+
+  defp truncate_noisy_item_fields(%{} = item) do
+    {item, changed?} =
+      Enum.reduce(noisy_item_fields(), {item, false}, &truncate_noisy_item_field/2)
+
+    if changed?, do: {:ok, item}, else: :unchanged
+  end
+
+  defp truncate_noisy_item_fields(_item), do: :unchanged
+
+  defp truncate_noisy_item_field(field, {item, changed?}) do
+    case Map.get(item, field) do
+      value when is_binary(value) ->
+        put_truncated_noisy_item_field(item, changed?, field, truncate_large_string(value))
+
+      _other ->
+        {item, changed?}
+    end
+  end
+
+  defp put_truncated_noisy_item_field(item, _changed?, field, {:ok, trimmed}),
+    do: {Map.put(item, field, trimmed), true}
+
+  defp put_truncated_noisy_item_field(item, changed?, _field, :unchanged),
+    do: {item, changed?}
+
+  defp noisy_item_fields,
+    do: ["aggregatedOutput", "aggregated_output", "output", "stdout", "stderr", "diff"]
+
+  defp truncate_large_string(value) when byte_size(value) <= @max_notification_field_bytes,
+    do: :unchanged
+
+  defp truncate_large_string(value) do
+    keep = div(@max_notification_field_bytes, 2)
+    head = codepoint_safe_head(value, keep)
+    tail = codepoint_safe_tail(value, keep)
+    omitted = byte_size(value) - byte_size(head) - byte_size(tail)
+    trimmed = head <> "\n…[truncated #{omitted} bytes]…\n" <> tail
+
+    # Inputs barely over the threshold can produce a larger result once the marker is added;
+    # skip the substitution in that case so we never inflate the payload we were sent here to
+    # shrink.
+    if byte_size(trimmed) < byte_size(value), do: {:ok, trimmed}, else: :unchanged
+  end
+
+  # Take up to `max_bytes` from the start of `value`. If the cut lands inside a multibyte UTF-8
+  # codepoint the result would be invalid UTF-8 and Jason.encode/1 would fail, dropping the entire
+  # backpressure protection back to the un-truncated raw. Pull back up to 3 bytes (the longest
+  # UTF-8 continuation run) to land on a codepoint boundary; if the input itself is not valid
+  # UTF-8, return the byte slice as-is so genuinely binary blobs still get trimmed.
+  defp codepoint_safe_head(value, max_bytes) when byte_size(value) <= max_bytes, do: value
+
+  defp codepoint_safe_head(value, max_bytes) do
+    trim_trailing_partial_codepoint(binary_part(value, 0, max_bytes), 3)
+  end
+
+  defp trim_trailing_partial_codepoint(bin, 0), do: bin
+  defp trim_trailing_partial_codepoint(<<>>, _budget), do: <<>>
+
+  defp trim_trailing_partial_codepoint(bin, budget) do
+    if String.valid?(bin) do
+      bin
+    else
+      size = byte_size(bin)
+      trim_trailing_partial_codepoint(binary_part(bin, 0, size - 1), budget - 1)
+    end
+  end
+
+  # Take up to `max_bytes` from the end of `value`. Skip up to 3 leading UTF-8 continuation bytes
+  # (`10xxxxxx`, decimal 128–191) so the start of the kept range lines up with a codepoint
+  # boundary.
+  defp codepoint_safe_tail(value, max_bytes) when byte_size(value) <= max_bytes, do: value
+
+  defp codepoint_safe_tail(value, max_bytes) do
+    size = byte_size(value)
+    skip_leading_continuation_bytes(binary_part(value, size - max_bytes, max_bytes), 3)
+  end
+
+  defp skip_leading_continuation_bytes(<<>>, _budget), do: <<>>
+  defp skip_leading_continuation_bytes(bin, 0), do: bin
+
+  defp skip_leading_continuation_bytes(<<byte, _::binary>> = bin, _budget)
+       when byte < 0x80 or byte > 0xBF,
+       do: bin
+
+  defp skip_leading_continuation_bytes(<<_, rest::binary>>, budget),
+    do: skip_leading_continuation_bytes(rest, budget - 1)
+
+  defp encode_compacted_raw(payload, raw) do
+    case Jason.encode(payload) do
+      {:ok, encoded} ->
+        encoded
+
+      {:error, reason} ->
+        Logger.warning("Codex notification compaction skipped re-encode reason=#{inspect(reason)}; forwarding original raw")
+
+        raw
+    end
+  end
+
   defp item_type(payload) do
     get_in(payload, ["params", "item", "type"]) ||
       get_in(payload, ["params", "msg", "payload", "type"])
@@ -3391,6 +3577,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
+
+      {:codex_stderr_transport_failed, ^port, _ref, reason} ->
+        {:error, reason}
     after
       timeout_ms ->
         {:error, :response_timeout}
@@ -3595,20 +3784,31 @@ defmodule SymphonyElixir.Codex.AppServer do
     "{ " <> command <> "; } 2>>" <> shell_escape(stderr_log_path)
   end
 
-  @spec start_stderr_tail(Path.t()) :: pid()
-  defp start_stderr_tail(path) when is_binary(path) do
+  @spec start_stderr_tail(Path.t(), port()) :: stderr_tail()
+  defp start_stderr_tail(path, port) when is_binary(path) and is_port(port) do
+    owner = self()
+    ref = make_ref()
+
     {:ok, pid} =
       Task.start(fn ->
-        stderr_tail_loop(%{path: path, offset: 0, buffer: ""})
+        stderr_tail_loop(%{
+          path: path,
+          offset: 0,
+          buffer: "",
+          owner: owner,
+          port: port,
+          ref: ref,
+          transport_failed?: false
+        })
       end)
 
-    pid
+    %{pid: pid, ref: ref}
   end
 
   @spec stop_stderr_tail(stderr_tail()) :: :ok
   defp stop_stderr_tail(nil), do: :ok
 
-  defp stop_stderr_tail(pid) when is_pid(pid) do
+  defp stop_stderr_tail(%{pid: pid}) when is_pid(pid) do
     if Process.alive?(pid) do
       send(pid, {:stop, self()})
 
@@ -3630,7 +3830,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     receive do
       {:stop, caller} ->
         state = drain_stderr_lines(state)
-        log_stderr_line(state.buffer)
+        _state = log_stderr_line(state.buffer, state)
         send(caller, :stderr_tail_stopped)
         :ok
     after
@@ -3650,7 +3850,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     case read_range(path, offset, size - offset) do
       {:ok, chunk} ->
         {lines, residual} = split_pending_lines(buffer <> chunk)
-        Enum.each(lines, &log_stderr_line/1)
+        state = Enum.reduce(lines, state, &log_stderr_line/2)
         %{state | offset: size, buffer: residual}
 
       :error ->
@@ -3658,8 +3858,25 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp log_stderr_line(""), do: :ok
-  defp log_stderr_line(line), do: log_non_json_stream_line(line, "turn stream")
+  defp log_stderr_line("", state), do: state
+
+  defp log_stderr_line(line, state) do
+    log_non_json_stream_line(line, "turn stream")
+    maybe_notify_stderr_transport_failure(line, state)
+  end
+
+  defp maybe_notify_stderr_transport_failure(line, %{transport_failed?: false, owner: owner, port: port, ref: ref} = state)
+       when is_pid(owner) and is_port(port) and is_reference(ref) do
+    if codex_stdio_write_failed?(line) do
+      detail = line |> strip_ansi() |> String.trim()
+      send(owner, {:codex_stderr_transport_failed, port, ref, {:codex_stdio_write_failed, detail}})
+      %{state | transport_failed?: true}
+    else
+      state
+    end
+  end
+
+  defp maybe_notify_stderr_transport_failure(_line, state), do: state
 
   defp read_range(path, offset, length) when is_integer(length) and length > 0 do
     case File.open(path, [:read, :binary, :raw]) do

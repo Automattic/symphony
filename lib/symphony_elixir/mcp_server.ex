@@ -249,14 +249,41 @@ defmodule SymphonyElixir.McpServer do
   defp open_and_secure_socket(opts, id) do
     case Keyword.get(opts, :transport, :unix) do
       :tcp -> open_tcp_listen_socket()
-      _transport -> open_unix_listen_socket(opts, id)
+      _transport -> open_unix_listen_socket_with_fallback(opts, id)
+    end
+  end
+
+  defp open_unix_listen_socket_with_fallback(opts, id) do
+    case open_unix_listen_socket(opts, id) do
+      {:error, {:mcp_socket_open_failed, :eperm} = reason} = error ->
+        maybe_fallback_to_tcp(error, reason, opts, id)
+
+      result ->
+        result
+    end
+  end
+
+  defp maybe_fallback_to_tcp(error, reason, opts, id) do
+    if managed_socket_session?(opts), do: fallback_to_tcp(reason, opts, id), else: error
+  end
+
+  defp fallback_to_tcp(reason, opts, id) do
+    cleanup_failed_managed_socket_dir(opts, id)
+    Logger.warning("MCP Unix socket bind denied; falling back to loopback TCP transport reason=#{inspect(reason)}")
+
+    case open_tcp_listen_socket() do
+      {:ok, _socket_dir, _socket_path, _listen_socket, _endpoint} = result ->
+        result
+
+      {:error, tcp_reason} ->
+        {:error, {:mcp_socket_tcp_fallback_failed, reason, tcp_reason}}
     end
   end
 
   defp open_unix_listen_socket(opts, id) do
     with {:ok, socket_dir, socket_path} <- session_socket_paths(opts, id),
          :ok <- prepare_socket_dir(socket_dir),
-         {:ok, listen_socket} <- open_listen_socket(socket_path) do
+         {:ok, listen_socket} <- open_listen_socket(socket_path, opts) do
       case File.chmod(socket_path, 0o600) do
         :ok ->
           {:ok, socket_dir, socket_path, listen_socket, %{transport: :unix}}
@@ -304,6 +331,25 @@ defmodule SymphonyElixir.McpServer do
     else
       {:error, reason} -> {:error, {:mcp_socket_open_failed, reason}}
     end
+  end
+
+  defp open_listen_socket(path, opts) do
+    case Keyword.get(opts, :unix_socket_open_fun) do
+      fun when is_function(fun, 1) -> fun.(path)
+      _other -> open_listen_socket(path)
+    end
+  end
+
+  defp managed_socket_session?(opts) do
+    case Keyword.get(opts, :socket_path) do
+      path when is_binary(path) and path != "" -> false
+      _other -> true
+    end
+  end
+
+  defp cleanup_failed_managed_socket_dir(opts, id) do
+    {:ok, socket_dir, _socket_path} = session_socket_paths(opts, id)
+    remove_socket_dir(socket_dir)
   end
 
   defp tear_down_socket(socket_dir, socket_path, listen_socket) do

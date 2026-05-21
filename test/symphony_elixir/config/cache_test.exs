@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Config.CacheTest do
     original_symphony_path = Workflow.symphony_file_path()
     original_reader = Application.get_env(:symphony_elixir, :config_cache_file_reader)
     original_watch = Application.get_env(:symphony_elixir, :config_cache_watch)
+    original_watcher = Application.get_env(:symphony_elixir, :config_cache_watcher)
 
     root =
       Path.join(
@@ -25,6 +26,7 @@ defmodule SymphonyElixir.Config.CacheTest do
       Workflow.set_symphony_file_path(original_symphony_path)
       restore_env(:config_cache_file_reader, original_reader)
       restore_env(:config_cache_watch, original_watch)
+      restore_env(:config_cache_watcher, original_watcher)
       File.rm_rf(root)
     end)
 
@@ -121,6 +123,38 @@ defmodule SymphonyElixir.Config.CacheTest do
   end
 
   describe ":stop watcher cleanup" do
+    test "does not retry unavailable watcher backend on every cache read", %{root: root} do
+      symphony_path = Path.join(root, "symphony.yml")
+      File.write!(symphony_path, "tracker:\n  kind: memory\n")
+      Workflow.set_symphony_file_path(symphony_path)
+
+      test_pid = self()
+      dir = Path.dirname(Path.expand(symphony_path))
+
+      Application.put_env(:symphony_elixir, :config_cache_watcher, fn ^dir ->
+        send(test_pid, {:watch_attempt, dir})
+        :ignore
+      end)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, _} = Cache.get_symphony(symphony_path)
+        cache_pid = Process.whereis(Cache)
+        :sys.get_state(cache_pid)
+
+        assert {:ok, _} = Cache.get_symphony(symphony_path)
+        :sys.get_state(cache_pid)
+      end)
+
+      # `:sys.get_state` above drains the cast handler synchronously, but use
+      # assert_receive/refute_receive with a small timeout so the assertion remains deterministic
+      # even if the cast pipeline grows an async hop in the future.
+      assert_receive {:watch_attempt, ^dir}, 100
+      refute_receive {:watch_attempt, ^dir}, 50
+
+      state = :sys.get_state(Process.whereis(Cache))
+      refute Map.has_key?(state.watchers, dir)
+    end
+
     test "drops watcher entry from state so the next access re-watches", %{root: root} do
       symphony_path = Path.join(root, "symphony.yml")
       File.write!(symphony_path, "tracker:\n  kind: memory\n")

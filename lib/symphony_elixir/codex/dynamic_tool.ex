@@ -3,6 +3,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
+  require Logger
+
   alias SymphonyElixir.AgentTools.{GitHub, Linear}
 
   @tool_schemas [
@@ -359,11 +361,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp execute_linear_tool("linear_add_comment", context, args, opts) do
-    Linear.add_comment(context, Map.get(args, "body"), opts)
+    with {:ok, response} <- Linear.add_comment(context, Map.get(args, "body"), opts) do
+      {:ok, compact_comment_mutation_response(response, "commentCreate", opts)}
+    end
   end
 
   defp execute_linear_tool("linear_update_comment", context, args, opts) do
-    Linear.update_comment(context, Map.get(args, "comment_id"), Map.get(args, "body"), opts)
+    with {:ok, response} <- Linear.update_comment(context, Map.get(args, "comment_id"), Map.get(args, "body"), opts) do
+      {:ok, compact_comment_mutation_response(response, "commentUpdate", opts)}
+    end
   end
 
   defp execute_linear_tool("linear_delete_comment", context, args, opts) do
@@ -495,6 +501,56 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       ]
     }
   end
+
+  # Strip the echoed comment body from Linear mutation responses before returning to Codex. The
+  # body the agent just sent us would otherwise round-trip through the app-server stdout stream as
+  # part of the tool result, which can exceed Codex's stdio write limits on long comments and
+  # wedge the turn. Keep id/url plus bodyLength so the model can still confirm the write
+  # succeeded. If the response shape drifts (Linear API change, partial-failure envelope, etc.)
+  # we surface that with a warning so the silent regression is observable rather than just
+  # leaking the full body back into the stream.
+  defp compact_comment_mutation_response(response, field, opts) when is_map(response) and is_binary(field) do
+    case get_in(response, ["data", field, "comment"]) do
+      %{} = comment ->
+        put_in(response, ["data", field, "comment"], compact_comment_payload(comment))
+
+      _comment ->
+        # `data` can be `nil` (Linear sometimes returns `{:ok, %{"data" => nil}}` because
+        # check_mutation_success treats a missing `success` key as success). `Map.get/3`'s default
+        # is only used when the key is absent, so we must guard against the nil value separately
+        # before calling `Map.keys/1`.
+        data_keys =
+          case Map.get(response, "data") do
+            data when is_map(data) -> Map.keys(data)
+            _ -> []
+          end
+
+        Logger.warning(
+          "Linear #{field} response missing expected comment shape; comment-body compaction skipped " <>
+            "issue_identifier=#{inspect(issue_identifier(opts))} data_keys=#{inspect(data_keys)}"
+        )
+
+        response
+    end
+  end
+
+  defp issue_identifier(opts) do
+    case Keyword.get(opts, :issue) do
+      %{identifier: identifier} when is_binary(identifier) -> identifier
+      _ -> nil
+    end
+  end
+
+  defp compact_comment_payload(comment) when is_map(comment) do
+    comment
+    |> Map.take(["id", "url"])
+    |> maybe_put_body_length(comment)
+  end
+
+  defp maybe_put_body_length(compact, %{"body" => body}) when is_binary(body),
+    do: Map.put(compact, "bodyLength", String.length(body))
+
+  defp maybe_put_body_length(compact, _comment), do: compact
 
   defp encode_payload(payload) when is_map(payload) or is_list(payload) do
     Jason.encode!(payload, pretty: true)

@@ -968,7 +968,11 @@ SHOULD stop before pushing, the reviewer SHOULD receive issue context plus the c
 the reviewer MUST return a structured verdict of `approve`, `request_changes`, or `block`. Reviewer
 sessions SHOULD expose only read-only scoped Linear/GitHub tools. An `approve` verdict SHOULD keep
 later executor continuations in push/PR handoff mode rather than reintroducing the pre-push reviewer
-gate. Reviewer token usage SHOULD be tracked separately from the aggregate run token total.
+gate. `request_changes` and `block` verdicts SHOULD include evidence-backed findings with file,
+line range, quoted snippet, summary, and suggested fix; Symphony SHOULD reject verdicts whose
+findings cannot be verified against the reviewer diff/context, and SHOULD run one bounded
+self-check turn before accepting blocking findings. Reviewer token usage SHOULD be tracked
+separately from the aggregate run token total.
 
 #### 5.4.18 `notifications` (object)
 

@@ -3328,8 +3328,11 @@ defmodule SymphonyElixir.CoreTest do
       write_review_agent_fake_codex!(codex_binary, trace_file)
       write_review_agent_workflow!(codex_binary, max_turns: 3, max_iterations: 1)
 
+      first_correction = review_agent_request_changes_response("Tighten the regression coverage.")
+
       put_review_agent_responses!([
-        ~s({"verdict":"request_changes","comments":["Tighten the regression coverage."]}),
+        first_correction,
+        first_correction,
         ~s({"verdict":"approve","comments":[]})
       ])
 
@@ -3343,6 +3346,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}
 
       assert_receive {:codex_worker_update, "issue-review-agent-runner",
                       %{
@@ -3352,8 +3356,8 @@ defmodule SymphonyElixir.CoreTest do
                           verdict: :request_changes,
                           round: 1,
                           max_iterations: 1,
-                          reason: "Tighten the regression coverage.",
-                          comments: ["Tighten the regression coverage."]
+                          reason: "Tighten the regression coverage. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change.",
+                          comments: ["Tighten the regression coverage. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change."]
                         }
                       }}
 
@@ -3364,7 +3368,7 @@ defmodule SymphonyElixir.CoreTest do
                         payload: %{verdict: :approve, round: 2, max_iterations: 1}
                       }}
 
-      refute_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}, 50
+      refute_receive {:review_agent_call, 4, _session, _prompt, _issue, _opts}, 50
 
       turn_texts = review_agent_turn_texts!(trace_file)
       assert length(turn_texts) == 3
@@ -3392,9 +3396,14 @@ defmodule SymphonyElixir.CoreTest do
       write_review_agent_fake_codex!(codex_binary, trace_file)
       write_review_agent_workflow!(codex_binary, max_turns: 3, max_iterations: 1)
 
+      first_correction = review_agent_request_changes_response("First correction.")
+      second_correction = review_agent_request_changes_response("Still not acceptable.")
+
       put_review_agent_responses!([
-        ~s({"verdict":"request_changes","comments":["First correction."]}),
-        ~s({"verdict":"request_changes","comments":["Still not acceptable."]})
+        first_correction,
+        first_correction,
+        second_correction,
+        second_correction
       ])
 
       assert_raise RuntimeError, ~r/review_agent.max_iterations reached/, fn ->
@@ -3408,6 +3417,8 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 4, _session, _prompt, _issue, _opts}
 
       assert_receive {:codex_worker_update, "issue-review-agent-runner",
                       %{
@@ -3424,11 +3435,11 @@ defmodule SymphonyElixir.CoreTest do
                           verdict: :request_changes,
                           round: 2,
                           max_iterations: 1,
-                          reason: "Still not acceptable."
+                          reason: "Still not acceptable. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change."
                         }
                       }}
 
-      refute_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}, 50
+      refute_receive {:review_agent_call, 5, _session, _prompt, _issue, _opts}, 50
 
       turn_texts = review_agent_turn_texts!(trace_file)
       assert length(turn_texts) == 2
@@ -3452,7 +3463,8 @@ defmodule SymphonyElixir.CoreTest do
 
       write_review_agent_fake_codex!(codex_binary, Path.join(test_root, "codex.trace"))
       write_review_agent_workflow!(codex_binary, max_turns: 2, max_iterations: 1)
-      put_review_agent_responses!([~s({"verdict":"block","comments":[],"reason":"Unsafe to continue."})])
+      block = review_agent_block_response("Unsafe to continue.")
+      put_review_agent_responses!([block, block])
 
       assert_raise RuntimeError, ~r/Unsafe to continue/, fn ->
         AgentRunner.run(review_agent_issue(), self(),
@@ -3472,7 +3484,7 @@ defmodule SymphonyElixir.CoreTest do
                           round: 1,
                           max_iterations: 1,
                           reason: "Unsafe to continue.",
-                          comments: []
+                          comments: ["Unsafe to continue. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change."]
                         }
                       }}
     after
@@ -3933,8 +3945,35 @@ defmodule SymphonyElixir.CoreTest do
     System.cmd("git", ["-C", repo, "add", "README.md"])
     System.cmd("git", ["-C", repo, "commit", "-m", "initial"])
     System.cmd("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", "HEAD"])
+    File.write!(Path.join(repo, "feature.txt"), "grounded evidence line\n")
+    System.cmd("git", ["-C", repo, "add", "feature.txt"])
+    System.cmd("git", ["-C", repo, "commit", "-m", "feat: add reviewer evidence"])
 
     repo
+  end
+
+  defp review_agent_request_changes_response(summary) do
+    review_agent_verdict_response("request_changes", summary)
+  end
+
+  defp review_agent_block_response(reason) do
+    review_agent_verdict_response("block", reason)
+  end
+
+  defp review_agent_verdict_response(verdict, summary) do
+    Jason.encode!(%{
+      "verdict" => verdict,
+      "findings" => [
+        %{
+          "summary" => summary,
+          "file" => "feature.txt",
+          "line_range" => [1, 1],
+          "quoted_snippet" => "grounded evidence line",
+          "suggested_fix" => "Keep the evidence-backed change."
+        }
+      ],
+      "reason" => if(verdict == "block", do: summary, else: "")
+    })
   end
 
   defp write_review_agent_fake_codex!(codex_binary, trace_file) do

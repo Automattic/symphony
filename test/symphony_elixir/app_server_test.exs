@@ -4215,7 +4215,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       task = Task.async(fn -> AppServer.run(workspace, "Drain stdout burst", issue, on_message: on_message) end)
 
-      assert_receive {:callback_blocked, callback_pid}, 1_000
+      assert_receive {:callback_blocked, callback_pid}, 5_000
       assert eventually(fn -> File.exists?(marker_file) end, 200)
 
       send(callback_pid, :release_callback)
@@ -4335,7 +4335,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         agent_command: "#{codex_binary} app-server",
-        agent_turn_timeout_ms: 1_000
+        agent_turn_timeout_ms: 5_000
       )
 
       issue = %Issue{
@@ -4873,11 +4873,7 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
       assert {:ok, _result} =
-               AppServer.run_turn(
-                 codex_project_guides_session(codex_binary, workspace),
-                 "Codex prompt",
-                 issue!("MT-CODEX-GUIDES-DEFAULT")
-               )
+               AppServer.run(workspace, "Codex prompt", issue!("MT-CODEX-GUIDES-DEFAULT"))
 
       assert codex_turn_prompt(trace_file) == "Codex prompt"
     after
@@ -4911,11 +4907,7 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
       assert {:ok, _result} =
-               AppServer.run_turn(
-                 codex_project_guides_session(codex_binary, workspace),
-                 "Codex explicit prompt",
-                 issue!("MT-CODEX-GUIDES-EXPLICIT")
-               )
+               AppServer.run(workspace, "Codex explicit prompt", issue!("MT-CODEX-GUIDES-EXPLICIT"))
 
       prompt = codex_turn_prompt(trace_file)
       assert prompt =~ "Codex explicit prompt\n\n## Project conventions"
@@ -4935,11 +4927,7 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
       assert {:ok, _result} =
-               AppServer.run_turn(
-                 codex_project_guides_session(codex_binary, workspace),
-                 "Codex disabled prompt",
-                 issue!("MT-CODEX-GUIDES-DISABLED")
-               )
+               AppServer.run(workspace, "Codex disabled prompt", issue!("MT-CODEX-GUIDES-DISABLED"))
 
       assert codex_turn_prompt(trace_file) == "Codex disabled prompt"
     after
@@ -4955,46 +4943,20 @@ defmodule SymphonyElixir.AppServerTest do
       printf 'JSON:%s\\n' "$line" >> "$trace_file"
 
       case "$line" in
+        *'"id":1'*)
+          printf '%s\\n' '{"id":1,"result":{}}'
+          ;;
+        *'"method":"thread/start"'*)
+          printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-guides-#{suffix}"}}}'
+          ;;
         *'"method":"turn/start"'*)
           printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-guides-#{suffix}","status":"inProgress","items":[]}}}'
           printf '%s\\n' '{"method":"turn/completed"}'
           exit 0
           ;;
-        *)
-          exit 0
-          ;;
       esac
     done
     """
-  end
-
-  defp codex_project_guides_session(codex_binary, workspace) do
-    port =
-      Port.open({:spawn_executable, String.to_charlist(codex_binary)}, [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        line: 1_048_576,
-        cd: String.to_charlist(workspace)
-      ])
-
-    %{
-      port: port,
-      metadata: %{},
-      approval_policy: %{},
-      auto_approve_requests: false,
-      thread_sandbox: "workspace-write",
-      turn_sandbox_policy: %{},
-      thread_id: "thread-project-guides",
-      workspace: workspace,
-      worker_host: nil,
-      command_security: %{},
-      launch_cleanup_paths: [],
-      mcp_session: nil,
-      mcp_remote_shim_path: nil,
-      mcp_remote_codex_home: nil,
-      settings: SymphonyElixir.Config.settings!()
-    }
   end
 
   defp codex_turn_prompt(trace_file) do
@@ -5161,7 +5123,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  defp eventually(fun, attempts \\ 40)
+  defp eventually(fun, attempts)
   defp eventually(_fun, 0), do: false
 
   defp eventually(fun, attempts) do

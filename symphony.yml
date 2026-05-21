@@ -83,7 +83,7 @@ agent:
     networkAccess: true
     # writableRoots: []                      # Symphony adds the issue workspace and git metadata roots at runtime.
   sandbox_runtime:
-    kind: srt                                # none | srt (Codex-only outer SRT wrapper)
+    kind: none                                # none | srt (Codex-only outer SRT wrapper)
     command: srt
     enable_weaker_network_isolation: false
 

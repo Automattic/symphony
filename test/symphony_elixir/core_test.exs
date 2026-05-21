@@ -3151,13 +3151,15 @@ defmodule SymphonyElixir.CoreTest do
       assert length(turn_texts) == 2
       assert Enum.at(turn_texts, 0) =~ "Review-agent gate:"
       assert Enum.at(turn_texts, 1) =~ "Reviewer agent approved the committed diff"
+      assert Enum.at(turn_texts, 1) =~ "github_push_branch"
+      assert Enum.at(turn_texts, 1) =~ "Avoid raw `gh` or `git push`"
     after
       clear_review_agent_env!()
       File.rm_rf(test_root)
     end
   end
 
-  test "agent runner preserves the review-agent gate in later continuation prompts" do
+  test "agent runner preserves approved review-agent handoff in later continuation prompts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -3187,9 +3189,12 @@ defmodule SymphonyElixir.CoreTest do
       turn_texts = review_agent_turn_texts!(trace_file)
       assert length(turn_texts) == 3
       assert Enum.at(turn_texts, 1) =~ "Reviewer agent approved the committed diff"
-      assert Enum.at(turn_texts, 2) =~ "Review-agent gate reminder:"
-      assert Enum.at(turn_texts, 2) =~ "has not already received a reviewer-agent approval prompt"
-      assert Enum.at(turn_texts, 2) =~ "Ending the turn at that gate is expected"
+      assert Enum.at(turn_texts, 2) =~ "Review-agent gate status:"
+      assert Enum.at(turn_texts, 2) =~ "Reviewer-agent approval has already been injected"
+      assert Enum.at(turn_texts, 2) =~ "Do not stop at the reviewer-agent gate again"
+      assert Enum.at(turn_texts, 2) =~ "github_create_pull_request"
+      refute Enum.at(turn_texts, 2) =~ "has not already received a reviewer-agent approval prompt"
+      refute Enum.at(turn_texts, 2) =~ "Ending the turn at that gate is expected"
     after
       clear_review_agent_env!()
       File.rm_rf(test_root)

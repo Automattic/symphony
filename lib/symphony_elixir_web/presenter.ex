@@ -783,7 +783,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp workspace_path(issue_identifier, running, retry) do
     (running && Map.get(running, :workspace_path)) ||
       (retry && Map.get(retry, :workspace_path)) ||
-      Path.join(Config.settings!().workspace.root, issue_identifier)
+      Path.join(Path.expand(Config.settings!().workspace.root), issue_identifier)
   end
 
   defp workspace_host(running, retry) do

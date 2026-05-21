@@ -69,7 +69,9 @@ defmodule SymphonyElixir.ReviewAgent do
     """
     Reviewer agent approved the committed diff.
 
-    Continue the normal workflow push and PR handoff now. Do not run another implementation pass before pushing unless a required local validation gate fails.
+    Continue the normal workflow push and PR handoff now. Use the validation evidence already collected for the reviewed diff. Do not stop at the reviewer-agent gate again unless code changes after this approval.
+
+    Use the scoped `github_get_pull_request`, `github_push_branch`, and `github_create_pull_request` tools for PR handoff. Avoid raw `gh` or `git push` from shell commands because unattended runtimes may not have direct GitHub or SSH credential access.
     """
   end
 

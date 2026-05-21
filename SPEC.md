@@ -966,8 +966,9 @@ Fields:
 When enabled, Symphony SHOULD run an executor + reviewer flow in the same workspace. The executor
 SHOULD stop before pushing, the reviewer SHOULD receive issue context plus the committed diff, and
 the reviewer MUST return a structured verdict of `approve`, `request_changes`, or `block`. Reviewer
-sessions SHOULD expose only read-only scoped Linear/GitHub tools. Reviewer token usage SHOULD be
-tracked separately from the aggregate run token total.
+sessions SHOULD expose only read-only scoped Linear/GitHub tools. An `approve` verdict SHOULD keep
+later executor continuations in push/PR handoff mode rather than reintroducing the pre-push reviewer
+gate. Reviewer token usage SHOULD be tracked separately from the aggregate run token total.
 
 #### 5.4.18 `notifications` (object)
 

@@ -1982,6 +1982,7 @@ defmodule SymphonyElixir.AppServerTest do
                          event: :command_completed_recovered,
                          recovery: :malformed_command_completion
                        }}
+
       assert_received {:app_server_message, %{event: :turn_completed}}
     after
       File.rm_rf(test_root)

@@ -49,8 +49,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "tracker"
     assert config.pr_review.cooldown_minutes == nil
     assert config.pr_review.stale_days == nil
-    assert config.pr_review.github_user == nil
-    assert config.pr_review.bot_users == []
+    assert config.pr_review.ignored_users == []
     assert config.pr_review.auto_reply == false
     assert config.pr_review.auto_request_review == false
     assert config.ci.enabled == false
@@ -238,8 +237,7 @@ defmodule SymphonyElixir.CoreTest do
       pr_review_mode: "polling",
       pr_review_cooldown_minutes: 15,
       pr_review_stale_days: 3,
-      pr_review_github_user: "agent-user",
-      pr_review_bot_users: ["symphony-bot"],
+      pr_review_ignored_users: ["symphony-bot", " agent-user "],
       pr_review_auto_reply: true,
       pr_review_auto_request_review: true
     )
@@ -248,8 +246,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "polling"
     assert config.pr_review.cooldown_minutes == 15
     assert config.pr_review.stale_days == 3
-    assert config.pr_review.github_user == "agent-user"
-    assert config.pr_review.bot_users == ["symphony-bot"]
+    assert config.pr_review.ignored_users == ["symphony-bot", "agent-user"]
     assert config.pr_review.auto_reply == true
     assert config.pr_review.auto_request_review == true
 
@@ -262,7 +259,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "polling"
     assert config.pr_review.cooldown_minutes == 10
     assert config.pr_review.stale_days == 7
-    assert config.pr_review.bot_users == []
+    assert config.pr_review.ignored_users == []
     assert config.pr_review.auto_reply == false
     assert config.pr_review.auto_request_review == false
 
@@ -270,8 +267,7 @@ defmodule SymphonyElixir.CoreTest do
       pr_review_mode: "tracker",
       pr_review_cooldown_minutes: "invalid",
       pr_review_stale_days: -1,
-      pr_review_github_user: "ignored",
-      pr_review_bot_users: ["ignored"],
+      pr_review_ignored_users: ["ignored"],
       pr_review_auto_reply: true,
       pr_review_auto_request_review: true
     )
@@ -280,8 +276,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "tracker"
     assert config.pr_review.cooldown_minutes == nil
     assert config.pr_review.stale_days == nil
-    assert config.pr_review.github_user == nil
-    assert config.pr_review.bot_users == []
+    assert config.pr_review.ignored_users == []
     assert config.pr_review.auto_reply == false
     assert config.pr_review.auto_request_review == false
 
@@ -297,6 +292,28 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(), pr_review_mode: "invalid")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "pr_review.mode"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "github_user" => "legacy-user"}})
+
+    assert message =~ "`pr_review.github_user` has been removed"
+    assert message =~ "ignored_users"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "bot_users" => ["legacy-bot"]}})
+
+    assert message =~ "`pr_review.bot_users` has been removed"
+    assert message =~ "ignored_users"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "github_user" => nil}})
+
+    assert message =~ "`pr_review.github_user` has been removed"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "bot_users" => nil}})
+
+    assert message =~ "`pr_review.bot_users` has been removed"
   end
 
   test "current WORKFLOW.md file is valid and complete" do

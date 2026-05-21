@@ -538,8 +538,7 @@ defmodule SymphonyElixir.TestSupport do
           pr_review_mode: "tracker",
           pr_review_cooldown_minutes: nil,
           pr_review_stale_days: nil,
-          pr_review_github_user: nil,
-          pr_review_bot_users: nil,
+          pr_review_ignored_users: nil,
           pr_review_auto_reply: nil,
           pr_review_auto_request_review: nil,
           ci: nil,
@@ -611,8 +610,7 @@ defmodule SymphonyElixir.TestSupport do
     pr_review_mode = Keyword.get(config, :pr_review_mode)
     pr_review_cooldown_minutes = Keyword.get(config, :pr_review_cooldown_minutes)
     pr_review_stale_days = Keyword.get(config, :pr_review_stale_days)
-    pr_review_github_user = Keyword.get(config, :pr_review_github_user)
-    pr_review_bot_users = Keyword.get(config, :pr_review_bot_users)
+    pr_review_ignored_users = Keyword.get(config, :pr_review_ignored_users)
     pr_review_auto_reply = Keyword.get(config, :pr_review_auto_reply)
     pr_review_auto_request_review = Keyword.get(config, :pr_review_auto_request_review)
     ci = Keyword.get(config, :ci)
@@ -687,8 +685,7 @@ defmodule SymphonyElixir.TestSupport do
           pr_review_mode,
           pr_review_cooldown_minutes,
           pr_review_stale_days,
-          pr_review_github_user,
-          pr_review_bot_users,
+          pr_review_ignored_users,
           pr_review_auto_reply,
           pr_review_auto_request_review
         ),
@@ -793,14 +790,13 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
-  defp pr_review_yaml(mode, cooldown_minutes, stale_days, github_user, bot_users, auto_reply, auto_request_review) do
+  defp pr_review_yaml(mode, cooldown_minutes, stale_days, ignored_users, auto_reply, auto_request_review) do
     [
       "pr_review:",
       "  mode: #{yaml_value(mode)}",
       !is_nil(cooldown_minutes) && "  cooldown_minutes: #{yaml_value(cooldown_minutes)}",
       !is_nil(stale_days) && "  stale_days: #{yaml_value(stale_days)}",
-      !is_nil(github_user) && "  github_user: #{yaml_value(github_user)}",
-      !is_nil(bot_users) && "  bot_users: #{yaml_value(bot_users)}",
+      !is_nil(ignored_users) && "  ignored_users: #{yaml_value(ignored_users)}",
       !is_nil(auto_reply) && "  auto_reply: #{yaml_value(auto_reply)}",
       !is_nil(auto_request_review) && "  auto_request_review: #{yaml_value(auto_request_review)}"
     ]

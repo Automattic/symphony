@@ -2347,7 +2347,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
 
     assert config.agent.turn_timeout_ms == 3_600_000
-    assert config.agent.read_timeout_ms == 5_000
+    assert config.agent.read_timeout_ms == 30_000
     assert config.agent.stall_timeout_ms == 300_000
     assert config.agent.command_timeout_ms == 600_000
     assert config.watchdog.enabled

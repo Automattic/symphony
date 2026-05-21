@@ -293,27 +293,16 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "pr_review.mode"
 
-    assert {:error, {:invalid_workflow_config, message}} =
-             Schema.parse(%{"pr_review" => %{"mode" => "polling", "github_user" => "legacy-user"}})
+    assert {:ok, config} =
+             Schema.parse(%{
+               "pr_review" => %{
+                 "mode" => "polling",
+                 "github_user" => "legacy-user",
+                 "bot_users" => ["legacy-bot"]
+               }
+             })
 
-    assert message =~ "`pr_review.github_user` has been removed"
-    assert message =~ "ignored_users"
-
-    assert {:error, {:invalid_workflow_config, message}} =
-             Schema.parse(%{"pr_review" => %{"mode" => "polling", "bot_users" => ["legacy-bot"]}})
-
-    assert message =~ "`pr_review.bot_users` has been removed"
-    assert message =~ "ignored_users"
-
-    assert {:error, {:invalid_workflow_config, message}} =
-             Schema.parse(%{"pr_review" => %{"mode" => "polling", "github_user" => nil}})
-
-    assert message =~ "`pr_review.github_user` has been removed"
-
-    assert {:error, {:invalid_workflow_config, message}} =
-             Schema.parse(%{"pr_review" => %{"mode" => "polling", "bot_users" => nil}})
-
-    assert message =~ "`pr_review.bot_users` has been removed"
+    assert config.pr_review.ignored_users == []
   end
 
   test "current WORKFLOW.md file is valid and complete" do

@@ -1558,6 +1558,104 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.codex_total_tokens == 380
   end
 
+  test "orchestrator normalizes equivalent codex and claude cache usage into comparable uncached buckets" do
+    codex_issue = %Issue{
+      id: "issue-codex-token-parity",
+      identifier: "MT-CODEX-PARITY",
+      title: "Codex token parity",
+      description: "Compare Codex token semantics",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-CODEX-PARITY"
+    }
+
+    claude_issue = %Issue{
+      id: "issue-claude-token-parity",
+      identifier: "MT-CLAUDE-PARITY",
+      title: "Claude token parity",
+      description: "Compare Claude token semantics",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-CLAUDE-PARITY"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ProviderTokenParityOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+    started_at = DateTime.utc_now()
+
+    running = %{
+      codex_issue.id => running_entry_for_token_test(codex_issue, started_at),
+      claude_issue.id => running_entry_for_token_test(claude_issue, started_at)
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, running)
+      |> Map.put(:claimed, MapSet.union(initial_state.claimed, MapSet.new(Map.keys(running))))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, codex_issue.id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{
+             "msg" => %{
+               "payload" => %{
+                 "info" => %{
+                   "total_token_usage" => %{
+                     "input_tokens" => 12_000,
+                     "cached_input_tokens" => 10_000,
+                     "output_tokens" => 500,
+                     "total_tokens" => 12_500
+                   }
+                 }
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, claude_issue.id,
+       AppServer.event_to_update(
+         {:token_usage,
+          %{
+            input_tokens: 12_400,
+            uncached_input_tokens: 2_000,
+            cached_input_tokens: 10_000,
+            cache_creation_input_tokens: 400,
+            output_tokens: 500,
+            total_tokens: 12_900
+          }}
+       )}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    entries_by_identifier = Map.new(snapshot.running, &{&1.identifier, &1})
+
+    assert entries_by_identifier["MT-CODEX-PARITY"].uncached_input_tokens == 2_000
+    assert entries_by_identifier["MT-CODEX-PARITY"].cached_input_tokens == 10_000
+    assert entries_by_identifier["MT-CODEX-PARITY"].cache_creation_input_tokens == 0
+    assert entries_by_identifier["MT-CODEX-PARITY"].output_tokens == 500
+
+    assert entries_by_identifier["MT-CLAUDE-PARITY"].uncached_input_tokens == 2_000
+    assert entries_by_identifier["MT-CLAUDE-PARITY"].cached_input_tokens == 10_000
+    assert entries_by_identifier["MT-CLAUDE-PARITY"].cache_creation_input_tokens == 400
+    assert entries_by_identifier["MT-CLAUDE-PARITY"].output_tokens == 500
+  end
+
   test "orchestrator token accounting ignores last_token_usage without cumulative totals" do
     issue_id = "issue-last-token-ignored"
 
@@ -5027,6 +5125,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   defp wait_for_run_record(predicate, timeout_ms \\ 500) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_run_record(predicate, deadline_ms)
+  end
+
+  defp running_entry_for_token_test(%Issue{} = issue, %DateTime{} = started_at) do
+    %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
   end
 
   defp do_wait_for_run_record(predicate, deadline_ms) do

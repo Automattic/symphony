@@ -746,31 +746,42 @@ defmodule SymphonyElixirWeb.TranscriptLive do
     {Enum.reverse(entries_rev), last_agent, last_progress, seq}
   end
 
-  defp coalesce_entry(event, {acc_rev, last_agent, last_progress, seq}) do
+  defp coalesce_entry(event, {acc_rev, last_agent, last_progress, seq} = acc) do
     kind = event_kind(event)
 
     cond do
-      kind == "agent-text" and agent_text_delta_event?(event) and same_agent_phase?(last_agent, event) ->
-        new_text = agent_text(event) || ""
-        merged = %{last_agent | summary: last_agent.summary <> new_text}
-        {[merged | tl(acc_rev)], merged, nil, seq}
-
-      finalize_agent_text_event?(kind, event, last_agent) ->
-        finalized = finalize_agent_text_entry(last_agent, event)
-        {[finalized | tl(acc_rev)], finalized, nil, seq}
-
       kind == "agent-text" ->
-        entry = transcript_entry(event, seq)
-        {[entry | acc_rev], entry, nil, seq + 1}
+        coalesce_agent_text(event, last_agent, acc_rev, seq)
 
       command_progress_event?(event) and same_agent_phase?(last_progress, event) ->
         merged = merge_command_progress_entry(last_progress, event)
         {[merged | tl(acc_rev)], nil, merged, seq}
 
       true ->
-        entry = transcript_entry(event, seq)
-        {[entry | acc_rev], nil, command_progress_entry(event, entry), seq + 1}
+        coalesce_other_entry(event, acc)
     end
+  end
+
+  defp coalesce_agent_text(event, last_agent, acc_rev, seq) do
+    cond do
+      agent_text_delta_event?(event) and same_agent_phase?(last_agent, event) ->
+        new_text = agent_text(event) || ""
+        merged = %{last_agent | summary: last_agent.summary <> new_text}
+        {[merged | tl(acc_rev)], merged, nil, seq}
+
+      finalize_agent_text_event?("agent-text", event, last_agent) ->
+        finalized = finalize_agent_text_entry(last_agent, event)
+        {[finalized | tl(acc_rev)], finalized, nil, seq}
+
+      true ->
+        entry = transcript_entry(event, seq)
+        {[entry | acc_rev], entry, nil, seq + 1}
+    end
+  end
+
+  defp coalesce_other_entry(event, {acc_rev, _last_agent, _last_progress, seq}) do
+    entry = transcript_entry(event, seq)
+    {[entry | acc_rev], nil, command_progress_entry(event, entry), seq + 1}
   end
 
   defp command_progress_entry(event, entry) do

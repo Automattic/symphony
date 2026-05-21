@@ -3595,9 +3595,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     "{ " <> command <> "; } 2>>" <> shell_escape(stderr_log_path)
   end
 
-  @spec start_stderr_tail(Path.t() | nil) :: stderr_tail()
-  defp start_stderr_tail(nil), do: nil
-
+  @spec start_stderr_tail(Path.t()) :: pid()
   defp start_stderr_tail(path) when is_binary(path) do
     {:ok, pid} =
       Task.start(fn ->

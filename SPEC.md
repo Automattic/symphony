@@ -746,6 +746,17 @@ Fields:
 - `max_tokens_per_day` (integer or null)
   - Default: `5000000`.
   - Explicit `null` disables the daily cap.
+- `include_project_guides` (boolean)
+  - Default: `true`.
+  - When enabled, implementations MAY append a `## Project conventions` section to the rendered
+    workflow prompt using workspace-local prose guide files.
+- `project_guide_files` (list of relative paths or null)
+  - Default: `null`, meaning adapter defaults apply.
+  - Elixir adapter defaults: `["CLAUDE.md"]` for Claude, `[]` for Codex.
+  - Entries MUST be relative workspace paths, MUST NOT contain parent directory segments, and
+    missing files are skipped.
+  - Implementations that resolve `@path` import lines MUST reject absolute, home-relative, and
+    workspace-escaping imports and enforce bounded size/depth/file-count limits.
 
 #### 5.4.9 Agent Protocol Fields
 
@@ -1020,6 +1031,9 @@ Fallback prompt behavior:
   branch without creating a new PR.
 - Workflow file read/parse failures are configuration/validation errors and SHOULD NOT silently fall
   back to a prompt.
+- If project guides are enabled and at least one configured guide is present, the runtime MAY append
+  a `## Project conventions` section after the rendered workflow prompt. If no configured guide is
+  present, the section SHOULD be omitted rather than rendering an empty heading.
 
 ### 5.6 Workflow Validation and Error Surface
 
@@ -1196,6 +1210,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.max_tokens_per_day`: integer or null, default `5000000`; explicit null disables the cap
 - `agent.kind`: `codex` or `claude`, REQUIRED
 - `agent.command`: shell command string, REQUIRED
+- `agent.include_project_guides`: boolean, default `true`
+- `agent.project_guide_files`: list of relative paths or null, default `null`
 - `agent.approval_policy`: agent approval policy, default depends on `agent.kind`
 - `agent.thread_sandbox`: Codex `SandboxMode` value, default `workspace-write`
 - `agent.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined

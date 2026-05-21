@@ -20,6 +20,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.McpServer
   alias SymphonyElixir.Notifications
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.ProjectGuides
   alias SymphonyElixir.SensitivePath
   alias SymphonyElixir.SSH
 
@@ -191,6 +192,44 @@ defmodule SymphonyElixir.Codex.AppServer do
       dependency_gate: dependency_gate
     }
 
+    turn_context = %{
+      port: port,
+      thread_id: thread_id,
+      issue: issue,
+      workspace: workspace,
+      approval_policy: approval_policy,
+      turn_sandbox_policy: turn_sandbox_policy,
+      settings: settings,
+      on_message: on_message,
+      tool_executor: tool_executor,
+      auto_approve_requests: auto_approve_requests,
+      approval_context: approval_context,
+      metadata: metadata
+    }
+
+    case ProjectGuides.append_to_prompt(prompt, workspace, settings, :codex) do
+      {:ok, prompt} ->
+        run_turn_with_prompt(prompt, turn_context)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp run_turn_with_prompt(prompt, %{
+         port: port,
+         thread_id: thread_id,
+         issue: issue,
+         workspace: workspace,
+         approval_policy: approval_policy,
+         turn_sandbox_policy: turn_sandbox_policy,
+         settings: settings,
+         on_message: on_message,
+         tool_executor: tool_executor,
+         auto_approve_requests: auto_approve_requests,
+         approval_context: approval_context,
+         metadata: metadata
+       }) do
     case start_turn(
            port,
            thread_id,

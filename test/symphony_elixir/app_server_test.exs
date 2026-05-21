@@ -4141,4 +4141,185 @@ defmodule SymphonyElixir.AppServerTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "Codex default project guide list does not inject CLAUDE.md" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-codex-project-guides-default-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-CODEX-GUIDES-DEFAULT")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-project-guides-default.trace")
+      File.mkdir_p!(workspace)
+
+      File.write!(Path.join(workspace, "CLAUDE.md"), "Claude-only convention\n")
+      File.write!(codex_binary, project_guides_fake_codex(trace_file, "default"))
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, _result} =
+               AppServer.run_turn(
+                 codex_project_guides_session(codex_binary, workspace),
+                 "Codex prompt",
+                 issue!("MT-CODEX-GUIDES-DEFAULT")
+               )
+
+      assert codex_turn_prompt(trace_file) == "Codex prompt"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "Codex injects explicit project guide files and honors disabled guide injection" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-codex-project-guides-explicit-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-CODEX-GUIDES-EXPLICIT")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-project-guides-explicit.trace")
+      File.mkdir_p!(workspace)
+
+      File.write!(Path.join(workspace, "CLAUDE.md"), "Claude rule\n@AGENTS.md\n")
+      File.write!(Path.join(workspace, "AGENTS.md"), "Agent rule\n")
+      File.write!(codex_binary, project_guides_fake_codex(trace_file, "explicit"))
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_project_guide_files: ["CLAUDE.md"]
+      )
+
+      assert {:ok, _result} =
+               AppServer.run_turn(
+                 codex_project_guides_session(codex_binary, workspace),
+                 "Codex explicit prompt",
+                 issue!("MT-CODEX-GUIDES-EXPLICIT")
+               )
+
+      prompt = codex_turn_prompt(trace_file)
+      assert prompt =~ "Codex explicit prompt\n\n## Project conventions"
+      assert prompt =~ "### CLAUDE.md"
+      assert prompt =~ "Claude rule"
+      assert prompt =~ "### @AGENTS.md"
+      assert prompt =~ "Agent rule"
+
+      File.rm!(trace_file)
+      File.write!(codex_binary, project_guides_fake_codex(trace_file, "disabled"))
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_project_guide_files: ["CLAUDE.md"],
+        agent_include_project_guides: false
+      )
+
+      assert {:ok, _result} =
+               AppServer.run_turn(
+                 codex_project_guides_session(codex_binary, workspace),
+                 "Codex disabled prompt",
+                 issue!("MT-CODEX-GUIDES-DISABLED")
+               )
+
+      assert codex_turn_prompt(trace_file) == "Codex disabled prompt"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp project_guides_fake_codex(trace_file, suffix) do
+    """
+    #!/bin/sh
+    trace_file="#{trace_file}"
+    while IFS= read -r line; do
+      printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+      case "$line" in
+        *'"method":"turn/start"'*)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-guides-#{suffix}","status":"inProgress","items":[]}}}'
+          printf '%s\\n' '{"method":"turn/completed"}'
+          exit 0
+          ;;
+        *)
+          exit 0
+          ;;
+      esac
+    done
+    """
+  end
+
+  defp codex_project_guides_session(codex_binary, workspace) do
+    port =
+      Port.open({:spawn_executable, String.to_charlist(codex_binary)}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        line: 1_048_576,
+        cd: String.to_charlist(workspace)
+      ])
+
+    %{
+      port: port,
+      metadata: %{},
+      approval_policy: %{},
+      auto_approve_requests: false,
+      thread_sandbox: "workspace-write",
+      turn_sandbox_policy: %{},
+      thread_id: "thread-project-guides",
+      workspace: workspace,
+      worker_host: nil,
+      command_security: %{},
+      launch_cleanup_paths: [],
+      mcp_session: nil,
+      mcp_remote_shim_path: nil,
+      mcp_remote_codex_home: nil,
+      settings: SymphonyElixir.Config.settings!()
+    }
+  end
+
+  defp codex_turn_prompt(trace_file) do
+    trace_file
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.find_value(&turn_prompt_from_trace_line/1)
+  end
+
+  defp turn_prompt_from_trace_line("JSON:" <> encoded) do
+    encoded
+    |> Jason.decode!()
+    |> turn_prompt_from_payload()
+  end
+
+  defp turn_prompt_from_trace_line(_line), do: nil
+
+  defp turn_prompt_from_payload(%{"id" => 3} = payload) do
+    get_in(payload, ["params", "input", Access.at(0), "text"])
+  end
+
+  defp turn_prompt_from_payload(_payload), do: nil
+
+  defp issue!(identifier) do
+    %Issue{
+      id: "issue-#{identifier}",
+      identifier: identifier,
+      title: "Project guides",
+      description: "Ensure project guide prompt injection behaves by runner",
+      state: "In Progress",
+      url: "https://example.org/issues/#{identifier}",
+      labels: ["backend"]
+    }
+  end
 end

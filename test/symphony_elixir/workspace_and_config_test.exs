@@ -667,6 +667,157 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "worktree create_for_issue returns a 2-tuple error when git worktree add fails" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-worktree-2tuple-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      issue = %Issue{
+        identifier: "MT-BAD-BASE",
+        workspace_branch: "auto/MT-BAD-BASE",
+        workspace_base_ref: "origin/does-not-exist"
+      }
+
+      log =
+        capture_log(fn ->
+          result = Workspace.create_for_issue(issue)
+          assert {:error, reason} = result
+          assert tuple_size(result) == 2
+          assert match?({:git_failed, _repo, _args, _status}, reason)
+        end)
+
+      assert log =~ "Workspace worktree preparation failed"
+      assert log =~ "auto/MT-BAD-BASE"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "worktree strategy refuses when the requested branch is already checked out elsewhere" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-worktree-collision-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      peer_worktree = Path.join(test_root, "peer-worktree")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo)
+      git!(primary_repo, ["branch", "auto/MT-COLLIDE"])
+      git!(primary_repo, ["worktree", "add", peer_worktree, "auto/MT-COLLIDE"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      issue = %Issue{
+        identifier: "PR-COLLIDE",
+        workspace_branch: "auto/MT-COLLIDE",
+        workspace_base_ref: "auto/MT-COLLIDE"
+      }
+
+      assert {:ok, expected_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "PR-COLLIDE"]))
+
+      assert {:error, {:branch_already_checked_out_elsewhere, branch: "auto/MT-COLLIDE", at: at, requested: ^expected_workspace}} =
+               Workspace.create_for_issue(issue)
+
+      assert {:ok, canonical_peer} = SymphonyElixir.PathSafety.canonicalize(peer_worktree)
+      assert {:ok, canonical_at} = SymphonyElixir.PathSafety.canonicalize(at)
+      assert canonical_at == canonical_peer
+
+      # The collision is detected pre-flight: the requested workspace is not
+      # populated with a worktree and the peer worktree is untouched.
+      refute File.exists?(Path.join(expected_workspace, ".git"))
+      assert File.exists?(peer_worktree)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "remote worktree creation maps branch collision script exit to the collision variant" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-worktree-collision-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+    end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      workspace_root = "/remote/workspaces"
+      workspace_repo = "/remote/primary"
+      workspace_path = "/remote/workspaces/default/PR-REMOTE-COLLIDE"
+      other_worktree = "/remote/workspaces/default/RSM-OTHER"
+
+      File.mkdir_p!(test_root)
+      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf 'workspace_branch_already_checked_out_elsewhere\\t%s\\t%s\\t%s\\n' \
+        'auto/RSM-OTHER' '#{other_worktree}' '#{workspace_path}'
+      exit 45
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: workspace_repo,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      issue = %Issue{
+        identifier: "PR-REMOTE-COLLIDE",
+        workspace_branch: "auto/RSM-OTHER",
+        workspace_base_ref: "origin/auto/RSM-OTHER"
+      }
+
+      assert {:error, {:branch_already_checked_out_elsewhere, details}} =
+               Workspace.create_for_issue(issue, "worker-01")
+
+      assert details[:branch] == "auto/RSM-OTHER"
+      assert details[:at] == other_worktree
+      assert details[:requested] == workspace_path
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -1193,7 +1344,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     raw_issue =
       raw_linear_issue("issue-1", "MT-1", "user-1")
       |> Map.merge(%{
-        "team" => %{"key" => "RSM", "name" => "Radical Speed Month"},
+        "team" => %{"key" => "ACME", "name" => "Acme Team"},
         "project" => %{"id" => "project-1", "name" => "Multi-repo support"}
       })
 
@@ -1205,7 +1356,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, [issue]} = Client.fetch_candidate_issues_for_test(graphql_fun)
 
-    assert issue.team == %{key: "RSM", name: "Radical Speed Month"}
+    assert issue.team == %{key: "ACME", name: "Acme Team"}
     assert issue.project == %{id: "project-1", name: "Multi-repo support"}
 
     assert_receive {:candidate_query, query, _variables}
@@ -1247,14 +1398,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear client sends team key in candidate filter" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
-      tracker_team: "RSM"
+      tracker_team: "ACME"
     )
 
     variables = capture_candidate_variables!()
 
     assert variables.filter == %{
              "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
-             "team" => %{"key" => %{"eq" => "RSM"}}
+             "team" => %{"key" => %{"eq" => "ACME"}}
            }
 
     refute Map.has_key?(variables.filter, "project")
@@ -1330,7 +1481,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear client omits empty labels from candidate filter" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
-      tracker_team: "RSM",
+      tracker_team: "ACME",
       tracker_labels: []
     )
 
@@ -1343,7 +1494,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear client normalizes blank candidate scope values before building filter" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: " ",
-      tracker_team: " RSM ",
+      tracker_team: " ACME ",
       tracker_labels: ["", " backend ", " "]
     )
 
@@ -1351,7 +1502,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert variables.filter == %{
              "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
-             "team" => %{"key" => %{"eq" => "RSM"}},
+             "team" => %{"key" => %{"eq" => "ACME"}},
              "labels" => %{"some" => %{"name" => %{"in" => ["backend"]}}}
            }
 
@@ -1360,7 +1511,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "linear client combines configured candidate filter dimensions" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_team: "RSM",
+      tracker_team: "ACME",
       tracker_labels: ["backend"],
       tracker_assignee: "user-1"
     )
@@ -1370,7 +1521,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert variables.filter == %{
              "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
              "project" => %{"slugId" => %{"eq" => "project"}},
-             "team" => %{"key" => %{"eq" => "RSM"}},
+             "team" => %{"key" => %{"eq" => "ACME"}},
              "labels" => %{"some" => %{"name" => %{"in" => ["backend"]}}},
              "assignee" => %{"id" => %{"in" => ["user-1"]}}
            }
@@ -1389,7 +1540,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           "name" => "web",
           "path" => repo_root,
           "workflow" => "WORKFLOW.md",
-          "team" => "RSM",
+          "team" => "ACME",
           "projects" => ["Project Alpha"],
           "labels" => ["web"],
           "assignee" => "user-web"
@@ -1398,7 +1549,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           "name" => "api",
           "path" => repo_root,
           "workflow" => "WORKFLOW.md",
-          "team" => "RSM",
+          "team" => "ACME",
           "projects" => ["Project Beta"],
           "labels" => ["api"],
           "assignee" => "user-api"
@@ -1411,15 +1562,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       issue =
         case get_in(variables, [:filter, "assignee", "id", "in"]) do
-          ["user-web"] -> raw_linear_issue("issue-web", "RSM-WEB", "user-web")
-          ["user-api"] -> raw_linear_issue("issue-api", "RSM-API", "user-api")
+          ["user-web"] -> raw_linear_issue("issue-web", "ACME-WEB", "user-web")
+          ["user-api"] -> raw_linear_issue("issue-api", "ACME-API", "user-api")
         end
 
       {:ok, linear_page_response([issue])}
     end
 
     assert {:ok, issues} = Client.fetch_candidate_issues_for_test(graphql_fun)
-    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"RSM-API", "api"}, {"RSM-WEB", "web"}]
+    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"ACME-API", "api"}, {"ACME-WEB", "web"}]
 
     assert_receive {:candidate_query, query, web_variables}
     assert_receive {:candidate_query, ^query, api_variables}
@@ -1432,7 +1583,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                  %{"slugId" => %{"in" => ["Project Alpha"]}}
                ]
              },
-             "team" => %{"key" => %{"eq" => "RSM"}},
+             "team" => %{"key" => %{"eq" => "ACME"}},
              "labels" => %{"some" => %{"name" => %{"eqIgnoreCase" => "web"}}},
              "assignee" => %{"id" => %{"in" => ["user-web"]}}
            }
@@ -1445,7 +1596,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                  %{"slugId" => %{"in" => ["Project Beta"]}}
                ]
              },
-             "team" => %{"key" => %{"eq" => "RSM"}},
+             "team" => %{"key" => %{"eq" => "ACME"}},
              "labels" => %{"some" => %{"name" => %{"eqIgnoreCase" => "api"}}},
              "assignee" => %{"id" => %{"in" => ["user-api"]}}
            }
@@ -1462,14 +1613,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           "name" => "web",
           "path" => repo_root,
           "workflow" => "WORKFLOW.md",
-          "team" => "RSM",
+          "team" => "ACME",
           "labels" => ["web"]
         },
         %{
           "name" => "api",
           "path" => repo_root,
           "workflow" => "WORKFLOW.md",
-          "team" => "RSM",
+          "team" => "ACME",
           "labels" => ["api"]
         }
       ]
@@ -1481,7 +1632,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       case get_in(variables, [:filter, "labels", "some", "name", "eqIgnoreCase"]) do
         "web" ->
           issue =
-            raw_linear_issue("issue-web", "RSM-WEB")
+            raw_linear_issue("issue-web", "ACME-WEB")
             |> Map.put("state", %{"name" => "In Progress"})
 
           {:ok, linear_page_response([issue])}
@@ -1493,7 +1644,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, issues} = Client.fetch_issues_by_states_for_test(["In Progress"], graphql_fun)
 
-    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"RSM-WEB", "web"}]
+    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"ACME-WEB", "web"}]
     assert_receive {:state_query, query, web_variables}
     assert_receive {:state_query, ^query, api_variables}
     assert get_in(web_variables, [:filter, "labels", "some", "name", "eqIgnoreCase"]) == "web"
@@ -1503,7 +1654,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear client repeats candidate filter while paginating" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
-      tracker_team: "RSM",
+      tracker_team: "ACME",
       tracker_labels: ["backend"]
     )
 
@@ -3007,10 +3158,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_mcp: %{
         servers: %{
-          "context-a8c" => %{
+          "example-server" => %{
             transport: "stdio",
             command: "node",
-            args: ["/srv/context-a8c/server.js"],
+            args: ["/srv/example-server/server.js"],
             env: %{LOG_LEVEL: "info"},
             runtimes: ["claude", "codex"]
           },
@@ -3027,10 +3178,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     mcp = Config.settings!().agent.mcp
     assert mcp.inherit == "none"
     assert mcp.allowed_servers == []
-    assert mcp.servers["context-a8c"].transport == "stdio"
-    assert mcp.servers["context-a8c"].command == "node"
-    assert mcp.servers["context-a8c"].args == ["/srv/context-a8c/server.js"]
-    assert mcp.servers["context-a8c"].env == %{"LOG_LEVEL" => "info"}
+    assert mcp.servers["example-server"].transport == "stdio"
+    assert mcp.servers["example-server"].command == "node"
+    assert mcp.servers["example-server"].args == ["/srv/example-server/server.js"]
+    assert mcp.servers["example-server"].env == %{"LOG_LEVEL" => "info"}
     assert mcp.servers["docs"].transport == "http"
     assert mcp.servers["docs"].runtimes == ["claude"]
   end
@@ -3085,7 +3236,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert message =~ "Codex MCP servers must use transport"
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      agent_mcp: %{inherit: "none", allowed_servers: ["context-a8c"]}
+      agent_mcp: %{inherit: "none", allowed_servers: ["example-server"]}
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
@@ -3095,7 +3246,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_mcp: %{
         inherit: "allowlist",
-        allowed_servers: ["context-a8c"],
+        allowed_servers: ["example-server"],
         servers: %{
           "invalid-runtime" => %{
             command: "node",

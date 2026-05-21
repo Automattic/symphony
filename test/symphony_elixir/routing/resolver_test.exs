@@ -7,43 +7,43 @@ defmodule SymphonyElixir.Routing.ResolverTest do
 
   describe "resolve/2" do
     test "returns the matched repo for a unique team-only route" do
-      web = repo("web", team: "RSM")
+      web = repo("web", team: "ACME")
       api = repo("api", team: "API")
-      issue = issue(team: %{key: "RSM", name: "Radical Speed Month"})
+      issue = issue(team: %{key: "ACME", name: "Acme Team"})
 
       assert Resolver.resolve(issue, [web, api]) == {:matched, web}
     end
 
     test "returns a conflict when multiple repos match" do
-      backend = repo("backend", team: "RSM", labels: ["backend"])
-      api = repo("api", team: "RSM", labels: ["api"])
-      issue = issue(team: %{key: "RSM"}, labels: ["backend", "api"])
+      backend = repo("backend", team: "ACME", labels: ["backend"])
+      api = repo("api", team: "ACME", labels: ["api"])
+      issue = issue(team: %{key: "ACME"}, labels: ["backend", "api"])
 
       assert Resolver.resolve(issue, [backend, api]) == {:conflict, [backend, api]}
     end
 
     test "returns unmatched when no repos match" do
-      issue = issue(team: %{key: "RSM"})
+      issue = issue(team: %{key: "ACME"})
 
       assert Resolver.resolve(issue, [repo("api", team: "API")]) == :unmatched
     end
 
     test "matches team plus projects with any-of semantics" do
-      repo = repo("web", team: "RSM", projects: ["Project Alpha", "Project Beta"])
+      repo = repo("web", team: "ACME", projects: ["Project Alpha", "Project Beta"])
 
-      matching_issue = issue(team: %{key: "RSM"}, project: %{id: "project-1", name: "Project Beta"})
-      other_project_issue = issue(team: %{key: "RSM"}, project: %{id: "project-2", name: "Project Gamma"})
+      matching_issue = issue(team: %{key: "ACME"}, project: %{id: "project-1", name: "Project Beta"})
+      other_project_issue = issue(team: %{key: "ACME"}, project: %{id: "project-2", name: "Project Gamma"})
 
       assert Resolver.resolve(matching_issue, [repo]) == {:matched, repo}
       assert Resolver.resolve(other_project_issue, [repo]) == :unmatched
-      assert Resolver.resolve(issue(team: %{key: "RSM"}), [repo]) == :unmatched
+      assert Resolver.resolve(issue(team: %{key: "ACME"}), [repo]) == :unmatched
     end
 
     test "matches team plus labels with AND semantics" do
-      repo = repo("web", team: "RSM", labels: ["Backend", "API"])
+      repo = repo("web", team: "ACME", labels: ["Backend", "API"])
 
-      matching_issue = issue(team: %{key: "RSM"}, labels: ["api", "backend", "urgent"])
-      missing_label_issue = issue(team: %{key: "RSM"}, labels: ["api"])
+      matching_issue = issue(team: %{key: "ACME"}, labels: ["api", "backend", "urgent"])
+      missing_label_issue = issue(team: %{key: "ACME"}, labels: ["api"])
 
       assert Resolver.resolve(matching_issue, [repo]) == {:matched, repo}
       assert Resolver.resolve(missing_label_issue, [repo]) == :unmatched
@@ -52,28 +52,28 @@ defmodule SymphonyElixir.Routing.ResolverTest do
     test "matches labels without requiring a team selector" do
       repo = repo("web", labels: ["Backend"])
 
-      assert Resolver.resolve(issue(team: %{key: "RSM"}, labels: ["backend"]), [repo]) == {:matched, repo}
+      assert Resolver.resolve(issue(team: %{key: "ACME"}, labels: ["backend"]), [repo]) == {:matched, repo}
     end
 
     test "matches team plus assignee by id, name, or email" do
-      id_repo = repo("by-id", team: "RSM", assignee: "user-1")
-      name_repo = repo("by-name", team: "RSM", assignee: "Chi Hsuan")
-      email_repo = repo("by-email", team: "RSM", assignee: "chi@example.com")
+      id_repo = repo("by-id", team: "ACME", assignee: "user-1")
+      name_repo = repo("by-name", team: "ACME", assignee: "Chi Hsuan")
+      email_repo = repo("by-email", team: "ACME", assignee: "chi@example.com")
 
-      assert Resolver.resolve(issue(team: %{key: "RSM"}, assignee_id: "user-1"), [id_repo]) ==
+      assert Resolver.resolve(issue(team: %{key: "ACME"}, assignee_id: "user-1"), [id_repo]) ==
                {:matched, id_repo}
 
-      assert Resolver.resolve(%{team: %{key: "RSM"}, assignee: %{name: "Chi Hsuan"}}, [name_repo]) ==
+      assert Resolver.resolve(%{team: %{key: "ACME"}, assignee: %{name: "Chi Hsuan"}}, [name_repo]) ==
                {:matched, name_repo}
 
-      assert Resolver.resolve(%{team: %{key: "RSM"}, assignee: %{email: "chi@example.com"}}, [email_repo]) ==
+      assert Resolver.resolve(%{team: %{key: "ACME"}, assignee: %{email: "chi@example.com"}}, [email_repo]) ==
                {:matched, email_repo}
     end
 
     test "matches all selectors together" do
       repo =
         repo("web",
-          team: "RSM",
+          team: "ACME",
           projects: ["project-1"],
           labels: ["backend", "agent-ready"],
           assignee: "user-1"
@@ -81,7 +81,7 @@ defmodule SymphonyElixir.Routing.ResolverTest do
 
       issue =
         issue(
-          team: %{key: "RSM"},
+          team: %{key: "ACME"},
           project: %{id: "project-1", name: "Project Alpha"},
           labels: ["agent-ready", "backend", "triaged"],
           assignee_id: "user-1"
@@ -96,11 +96,11 @@ defmodule SymphonyElixir.Routing.ResolverTest do
           name: "web",
           path: "/tmp/web",
           workflow: "WORKFLOW.md",
-          team: "RSM",
+          team: "ACME",
           labels: ["backend"]
         )
 
-      issue = issue(team: %{key: "RSM"}, labels: ["backend", "triaged"])
+      issue = issue(team: %{key: "ACME"}, labels: ["backend", "triaged"])
 
       assert Resolver.resolve(issue, [repo]) == {:matched, repo}
     end
@@ -108,26 +108,26 @@ defmodule SymphonyElixir.Routing.ResolverTest do
 
   describe "matches?/2" do
     test "supports string-keyed repo entries" do
-      issue = issue(team: %{name: "Radical Speed Month"}, labels: ["backend"])
+      issue = issue(team: %{name: "Acme Team"}, labels: ["backend"])
 
       assert Resolver.matches?(issue, %{
                "name" => "web",
-               "team" => "Radical Speed Month",
+               "team" => "Acme Team",
                "labels" => ["backend"]
              })
     end
 
     test "supports scalar project values and non-string label values" do
-      issue = %{team: "RSM", project: "project-1", labels: ["backend"]}
-      repo = %{"name" => "web", "team" => "RSM", "projects" => "project-1", "labels" => [:Backend]}
+      issue = %{team: "ACME", project: "project-1", labels: ["backend"]}
+      repo = %{"name" => "web", "team" => "ACME", "projects" => "project-1", "labels" => [:Backend]}
 
       assert Resolver.matches?(issue, repo)
     end
 
     test "returns false for invalid routes" do
-      refute Resolver.matches?(issue(team: %{key: "RSM"}), :not_a_repo)
-      refute Resolver.matches?(nil, repo("web", team: "RSM"))
-      refute Resolver.matches?(:not_an_issue, repo("web", team: "RSM"))
+      refute Resolver.matches?(issue(team: %{key: "ACME"}), :not_a_repo)
+      refute Resolver.matches?(nil, repo("web", team: "ACME"))
+      refute Resolver.matches?(:not_an_issue, repo("web", team: "ACME"))
     end
   end
 
@@ -135,8 +135,8 @@ defmodule SymphonyElixir.Routing.ResolverTest do
     test "accepts distinct match rules" do
       assert :ok =
                Resolver.validate_repos([
-                 repo("web", team: "RSM", labels: ["web"]),
-                 repo("api", team: "RSM", labels: ["api"]),
+                 repo("web", team: "ACME", labels: ["web"]),
+                 repo("api", team: "ACME", labels: ["api"]),
                  repo("docs", team: "DOCS")
                ])
     end
@@ -164,8 +164,8 @@ defmodule SymphonyElixir.Routing.ResolverTest do
     end
 
     test "rejects identical match rules across repos" do
-      web = repo("web", team: "RSM", projects: ["P2", "P1"], labels: ["Backend", "API"], assignee: "user-1")
-      api = repo("api", team: "RSM", projects: ["P1", "P2"], labels: ["api", "backend"], assignee: "user-1")
+      web = repo("web", team: "ACME", projects: ["P2", "P1"], labels: ["Backend", "API"], assignee: "user-1")
+      api = repo("api", team: "ACME", projects: ["P1", "P2"], labels: ["api", "backend"], assignee: "user-1")
 
       assert {:error, errors} = Resolver.validate_repos([web, api])
 
@@ -176,25 +176,25 @@ defmodule SymphonyElixir.Routing.ResolverTest do
     end
 
     test "rejects multiple team-only catch-all repos for the same team" do
-      web = repo("web", team: "RSM")
-      api = repo("api", team: "RSM")
+      web = repo("web", team: "ACME")
+      api = repo("api", team: "ACME")
 
       assert {:error, errors} = Resolver.validate_repos([web, api])
 
       assert Enum.any?(errors, fn
-               {:ambiguous_team_catch_all, "RSM", repos} -> repos == [web, api]
+               {:ambiguous_team_catch_all, "ACME", repos} -> repos == [web, api]
                _error -> false
              end)
     end
 
     test "requires an explicit default when a team catch-all shares a team with specific repos" do
-      catch_all = repo("default", team: "RSM")
-      api = repo("api", team: "RSM", labels: ["api"])
+      catch_all = repo("default", team: "ACME")
+      api = repo("api", team: "ACME", labels: ["api"])
 
       assert {:error, errors} = Resolver.validate_repos([catch_all, api])
 
       assert Enum.any?(errors, fn
-               {:ambiguous_team_catch_all, "RSM", repos} -> repos == [catch_all]
+               {:ambiguous_team_catch_all, "ACME", repos} -> repos == [catch_all]
                _error -> false
              end)
 
@@ -202,13 +202,13 @@ defmodule SymphonyElixir.Routing.ResolverTest do
     end
 
     test "rejects more than one default repo per team" do
-      web = repo("web", team: "RSM", labels: ["web"], default: true)
-      api = repo("api", team: "RSM", labels: ["api"], default: true)
+      web = repo("web", team: "ACME", labels: ["web"], default: true)
+      api = repo("api", team: "ACME", labels: ["api"], default: true)
 
       assert {:error, errors} = Resolver.validate_repos([web, api])
 
       assert Enum.any?(errors, fn
-               {:multiple_defaults, "RSM", repos} -> repos == [web, api]
+               {:multiple_defaults, "ACME", repos} -> repos == [web, api]
                _error -> false
              end)
     end
@@ -216,7 +216,7 @@ defmodule SymphonyElixir.Routing.ResolverTest do
 
   describe "validate_repos!/1" do
     test "returns ok for valid repo rules" do
-      assert Resolver.validate_repos!([repo("web", team: "RSM")]) == :ok
+      assert Resolver.validate_repos!([repo("web", team: "ACME")]) == :ok
     end
 
     test "raises on invalid repo rules" do

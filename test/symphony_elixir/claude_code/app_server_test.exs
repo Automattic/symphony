@@ -793,7 +793,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-SETTINGS")
+        workspace = Path.join(workspace_root, "ACME-SETTINGS")
         claude_path = Path.join(workspace, ".claude")
         File.mkdir_p!(workspace)
         File.write!(claude_path, "not a directory")
@@ -825,7 +825,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-SETTINGS-WRITE")
+        workspace = Path.join(workspace_root, "ACME-SETTINGS-WRITE")
         settings_path = Path.join(workspace, ".claude/settings.json")
         File.mkdir_p!(Path.dirname(settings_path))
         File.write!(settings_path, ~s({"permissions":{"deny":[]}}))
@@ -863,7 +863,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-SETTINGS-ENCODE")
+        workspace = Path.join(workspace_root, "ACME-SETTINGS-ENCODE")
         File.mkdir_p!(workspace)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -888,7 +888,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       try do
         workspace_root = Path.join(test_root, "workspaces")
         locked_dir = Path.join(workspace_root, "locked")
-        workspace = Path.join(locked_dir, "RSM-99")
+        workspace = Path.join(locked_dir, "ACME-99")
         File.mkdir_p!(workspace)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -1126,7 +1126,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-STOP")
+        workspace = Path.join(workspace_root, "ACME-STOP")
         File.mkdir_p!(workspace)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -1321,7 +1321,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-1")
+        workspace = Path.join(workspace_root, "ACME-1")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1366,7 +1366,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-HANDOFF-MISSING")
+        workspace = Path.join(workspace_root, "ACME-HANDOFF-MISSING")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1411,7 +1411,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-HANDOFF-TOOLS")
+        workspace = Path.join(workspace_root, "ACME-HANDOFF-TOOLS")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1463,7 +1463,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-ENVSTRIP")
+        workspace = Path.join(workspace_root, "ACME-ENVSTRIP")
         fake_claude = Path.join(test_root, "fake-claude")
         trace_file = Path.join(test_root, "claude-env-strip.trace")
         File.mkdir_p!(workspace)
@@ -1527,7 +1527,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-PATH")
+        workspace = Path.join(workspace_root, "ACME-PATH")
         fake_claude = Path.join(test_root, "fake-claude-path")
         File.mkdir_p!(workspace)
         System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
@@ -1560,7 +1560,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-RELATIVE")
+        workspace = Path.join(workspace_root, "ACME-RELATIVE")
         bin_dir = Path.join(workspace, "bin")
         fake_claude = Path.join(bin_dir, "fake-claude")
         File.mkdir_p!(bin_dir)
@@ -1593,7 +1593,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-NO-REMOTE-CONTROL")
+        workspace = Path.join(workspace_root, "ACME-NO-REMOTE-CONTROL")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1609,7 +1609,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         {:ok, session} = AppServer.start_session(workspace)
 
         assert {:ok, result} =
-                 AppServer.run_turn(session, "normal run", %{identifier: "RSM-NO-REMOTE-CONTROL"}, run_id: "run-123")
+                 AppServer.run_turn(session, "normal run", %{identifier: "ACME-NO-REMOTE-CONTROL"}, run_id: "run-123")
 
         assert result.input_tokens == 6
 
@@ -1656,7 +1656,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       try do
         prompt_tmp_root = Path.join(test_root, "prompt-tmp")
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-PROMPT-FILE")
+        workspace = Path.join(workspace_root, "ACME-PROMPT-FILE")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
         File.mkdir_p!(prompt_tmp_root)
@@ -1710,7 +1710,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-GUIDES")
+        workspace = Path.join(workspace_root, "ACME-GUIDES")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1749,7 +1749,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-GUIDES-MISSING")
+        workspace = Path.join(workspace_root, "ACME-GUIDES-MISSING")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1792,7 +1792,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-GUIDES-EXPLICIT")
+        workspace = Path.join(workspace_root, "ACME-GUIDES-EXPLICIT")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1828,7 +1828,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "work spaces")
-        workspace = Path.join(workspace_root, "RSM 1")
+        workspace = Path.join(workspace_root, "ACME 1")
         bin_dir = Path.join(test_root, "bin dir")
         fake_claude = Path.join(bin_dir, "fake claude")
         File.mkdir_p!(workspace)
@@ -1870,7 +1870,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-EMPTY")
+        workspace = Path.join(workspace_root, "ACME-EMPTY")
         File.mkdir_p!(workspace)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -1896,7 +1896,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-INVALID")
+        workspace = Path.join(workspace_root, "ACME-INVALID")
         File.mkdir_p!(workspace)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -1923,7 +1923,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-MISSING")
+        workspace = Path.join(workspace_root, "ACME-MISSING")
         File.mkdir_p!(workspace)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -1950,7 +1950,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-2")
+        workspace = Path.join(workspace_root, "ACME-2")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1985,7 +1985,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-KILLED")
+        workspace = Path.join(workspace_root, "ACME-KILLED")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2026,7 +2026,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-3")
+        workspace = Path.join(workspace_root, "ACME-3")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2066,7 +2066,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-RL")
+        workspace = Path.join(workspace_root, "ACME-RL")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2109,7 +2109,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-TIMEOUT")
+        workspace = Path.join(workspace_root, "ACME-TIMEOUT")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2151,7 +2151,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-REMOTE")
+        workspace = Path.join(workspace_root, "ACME-REMOTE")
         fake_ssh = Path.join(test_root, "ssh")
         trace_file = Path.join(test_root, "ssh-command.trace")
         stdin_trace_file = Path.join(test_root, "ssh-stdin.trace")
@@ -2230,7 +2230,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-NORESULT")
+        workspace = Path.join(workspace_root, "ACME-NORESULT")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2265,7 +2265,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-CMDTIMEOUT")
+        workspace = Path.join(workspace_root, "ACME-CMDTIMEOUT")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2303,7 +2303,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-4")
+        workspace = Path.join(workspace_root, "ACME-4")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2363,7 +2363,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-LINGER")
+        workspace = Path.join(workspace_root, "ACME-LINGER")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2424,7 +2424,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-LATEEXIT")
+        workspace = Path.join(workspace_root, "ACME-LATEEXIT")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2467,7 +2467,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-EARLYEXIT")
+        workspace = Path.join(workspace_root, "ACME-EARLYEXIT")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -2507,7 +2507,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-FAILED-LINGER")
+        workspace = Path.join(workspace_root, "ACME-FAILED-LINGER")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 

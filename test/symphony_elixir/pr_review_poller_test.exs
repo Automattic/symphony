@@ -300,7 +300,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
       send(recipient, {:remove_workspace, workspace_path, worker_host})
 
-      {:error, :branch_checked_out, "error: cannot delete branch 'auto/RSM-1780' checked out at '/tmp/peer-worktree'"}
+      {:error, :branch_checked_out, "error: cannot delete branch 'auto/ACME-1780' checked out at '/tmp/peer-worktree'"}
     end
   end
 
@@ -347,7 +347,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                issue_id: issue.id,
                issue_identifier: issue.identifier,
                status: "success",
-               workspace_path: "/tmp/workspaces/RSM-1780",
+               workspace_path: "/tmp/workspaces/ACME-1780",
                worker_host: nil,
                started_at: DateTime.add(now, -120, :second),
                ended_at: DateTime.add(now, -60, :second)
@@ -359,9 +359,9 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [
              %{
                issue_id: "issue-1780",
-               issue_identifier: "RSM-1780",
+               issue_identifier: "ACME-1780",
                pr_url: "https://github.com/example/repo/pull/1780",
-               workspace_path: "/tmp/workspaces/RSM-1780",
+               workspace_path: "/tmp/workspaces/ACME-1780",
                status: "watching"
              }
            ] = RunStore.list_pr_reviews()
@@ -373,10 +373,10 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     issue =
       Client.normalize_issue_for_test(%{
         "id" => "issue-malicious",
-        "identifier" => "RSM-MAL",
+        "identifier" => "ACME-MAL",
         "title" => "Malicious attachment",
         "state" => %{"name" => "In Review"},
-        "url" => "https://linear.app/example/issue/RSM-MAL",
+        "url" => "https://linear.app/example/issue/ACME-MAL",
         "attachments" => %{
           "nodes" => [
             %{
@@ -397,7 +397,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                issue_id: issue.id,
                issue_identifier: issue.identifier,
                status: "success",
-               workspace_path: "/tmp/workspaces/RSM-MAL",
+               workspace_path: "/tmp/workspaces/ACME-MAL",
                worker_host: nil,
                started_at: DateTime.add(now, -120, :second),
                ended_at: DateTime.add(now, -60, :second)
@@ -575,9 +575,9 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                     %Event{
                       event: "reviewer_commented",
                       issue_id: "issue-1780",
-                      issue_identifier: "RSM-1780",
+                      issue_identifier: "ACME-1780",
                       issue_title: "Review manager",
-                      issue_url: "https://linear.app/example/issue/RSM-1780",
+                      issue_url: "https://linear.app/example/issue/ACME-1780",
                       pr_url: "https://github.com/example/repo/pull/1780",
                       state: "In Progress",
                       reason: "1 actionable reviewer comment discovered",
@@ -1051,9 +1051,9 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                     %Event{
                       event: "rework_pushed",
                       issue_id: "issue-1780",
-                      issue_identifier: "RSM-1780",
+                      issue_identifier: "ACME-1780",
                       issue_title: "Review manager",
-                      issue_url: "https://linear.app/example/issue/RSM-1780",
+                      issue_url: "https://linear.app/example/issue/ACME-1780",
                       pr_url: "https://github.com/example/repo/pull/1780",
                       state: "In Progress",
                       reason: "1 actionable reviewer comment addressed",
@@ -1756,7 +1756,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                now: now
              )
 
-    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert_receive {:remove_workspace, "/tmp/workspaces/ACME-1780", nil}
     assert [] = RunStore.list_pr_reviews()
 
     stale_activity_at = DateTime.add(now, -8, :day)
@@ -1771,7 +1771,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                now: now
              )
 
-    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert_receive {:remove_workspace, "/tmp/workspaces/ACME-1780", nil}
     assert [] = RunStore.list_pr_reviews()
   end
 
@@ -1885,8 +1885,8 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              repo: "repo",
              tags: ["docs", "workflow-config"],
              evidence_quote: "Remember to update docs.",
-             evidence_issue_identifier: "RSM-1780",
-             evidence_issue_url: "https://linear.app/example/issue/RSM-1780",
+             evidence_issue_identifier: "ACME-1780",
+             evidence_issue_url: "https://linear.app/example/issue/ACME-1780",
              evidence_pr_number: 1780,
              evidence_run_id: "run-1780",
              created_at: ^now
@@ -1941,7 +1941,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       end)
 
     assert_receive {:learning_reflection, _, _}
-    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert_receive {:remove_workspace, "/tmp/workspaces/ACME-1780", nil}
     assert log =~ "Learning reflection crashed issue_id=issue-1780"
     assert log =~ "learning provider crashed"
 
@@ -2016,7 +2016,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                now: now
              )
 
-    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert_receive {:remove_workspace, "/tmp/workspaces/ACME-1780", nil}
 
     assert [%{status: "cleanup_pending", workspace_removed_at: ^now}] =
              StatefulRunStore.list_pr_reviews()
@@ -2054,7 +2054,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                poll_interval_ms: 5_000
              )
 
-    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert_receive {:remove_workspace, "/tmp/workspaces/ACME-1780", nil}
 
     assert [
              %{
@@ -2102,7 +2102,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                now: now
              )
 
-    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert_receive {:remove_workspace, "/tmp/workspaces/ACME-1780", nil}
     assert_receive {:put_review, "issue-1780"}
 
     assert [%{status: "cleanup_pending", workspace_removed_at: ^now}] =
@@ -2152,7 +2152,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                  )
       end)
 
-    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+    assert_receive {:remove_workspace, "/tmp/workspaces/ACME-1780", nil}
     assert log =~ "Failed to update PR review workspace removal issue_id=issue-1780"
     assert log =~ "Failed to persist PR review workspace removal issue_id=issue-1780"
 
@@ -2166,7 +2166,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     failing_issue =
       in_review_issue(
         id: "issue-fail",
-        identifier: "RSM-FAIL",
+        identifier: "ACME-FAIL",
         pr_url: "https://github.com/example/repo/pull/1",
         updated_at: now
       )
@@ -2174,7 +2174,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     ok_issue =
       in_review_issue(
         id: "issue-ok",
-        identifier: "RSM-OK",
+        identifier: "ACME-OK",
         pr_url: "https://github.com/example/repo/pull/2",
         updated_at: now
       )
@@ -2184,8 +2184,8 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     Application.put_env(:symphony_elixir, :pr_review_test_put_failures, ["issue-fail"])
 
     Application.put_env(:symphony_elixir, :pr_review_test_runs, [
-      review_run(failing_issue, "/tmp/workspaces/RSM-FAIL", now),
-      review_run(ok_issue, "/tmp/workspaces/RSM-OK", now)
+      review_run(failing_issue, "/tmp/workspaces/ACME-FAIL", now),
+      review_run(ok_issue, "/tmp/workspaces/ACME-OK", now)
     ])
 
     assert {:ok, %{discovered: 1, processed: 1}} =
@@ -2198,7 +2198,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     assert_receive {:put_review, "issue-ok"}
 
-    assert [%{issue_id: "issue-ok", workspace_path: "/tmp/workspaces/RSM-OK"}] =
+    assert [%{issue_id: "issue-ok", workspace_path: "/tmp/workspaces/ACME-OK"}] =
              StatefulRunStore.list_pr_reviews()
   end
 
@@ -2227,7 +2227,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert_receive {:notification_event,
                     %SymphonyElixir.Notifications.Event{
                       event: "run_failed",
-                      issue_identifier: "RSM-1780",
+                      issue_identifier: "ACME-1780",
                       metadata: %{source: "pr_review_poller", consecutive_errors: 3}
                     }},
                    500
@@ -2376,11 +2376,11 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     %{
       repo_key: @repo_key,
       issue_id: "issue-1780",
-      issue_identifier: "RSM-1780",
+      issue_identifier: "ACME-1780",
       issue_title: "Review manager",
-      issue_url: "https://linear.app/example/issue/RSM-1780",
+      issue_url: "https://linear.app/example/issue/ACME-1780",
       pr_url: "https://github.com/example/repo/pull/1780",
-      workspace_path: "/tmp/workspaces/RSM-1780",
+      workspace_path: "/tmp/workspaces/ACME-1780",
       worker_host: nil,
       status: "watching",
       inserted_at: now,
@@ -2392,7 +2392,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
   defp in_review_issue(opts) do
     updated_at = Keyword.fetch!(opts, :updated_at)
     id = Keyword.get(opts, :id, "issue-1780")
-    identifier = Keyword.get(opts, :identifier, "RSM-1780")
+    identifier = Keyword.get(opts, :identifier, "ACME-1780")
     pr_url = Keyword.get(opts, :pr_url, "https://github.com/example/repo/pull/1780")
 
     %Issue{

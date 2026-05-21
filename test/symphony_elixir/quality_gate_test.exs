@@ -214,7 +214,7 @@ defmodule SymphonyElixir.QualityGateTest do
           pass_threshold: 6,
           comment_posted?: true,
           posted_at: nil,
-          identifier: "RSM-ID-SELF",
+          identifier: "ACME-ID-SELF",
           title: "Title",
           state: "Todo",
           url: "https://linear.app/x/ID-SELF",
@@ -262,7 +262,7 @@ defmodule SymphonyElixir.QualityGateTest do
           pass_threshold: 6,
           comment_posted?: true,
           posted_at: posted_at,
-          identifier: "RSM-ID-BUMP",
+          identifier: "ACME-ID-BUMP",
           title: "Title",
           state: "Todo",
           url: "https://linear.app/x/ID-BUMP",
@@ -303,7 +303,7 @@ defmodule SymphonyElixir.QualityGateTest do
           pass_threshold: 6,
           comment_posted?: true,
           posted_at: posted_at,
-          identifier: "RSM-ID-EDIT",
+          identifier: "ACME-ID-EDIT",
           title: "Title",
           state: "Todo",
           url: "https://linear.app/x/ID-EDIT",
@@ -338,7 +338,7 @@ defmodule SymphonyElixir.QualityGateTest do
           pass_threshold: 6,
           comment_posted?: true,
           posted_at: ~U[2026-05-05 04:00:00Z],
-          identifier: "RSM-ID-NON-DATETIME",
+          identifier: "ACME-ID-NON-DATETIME",
           title: "Title",
           state: "Todo",
           url: "https://linear.app/x/ID-NON-DATETIME",
@@ -382,7 +382,7 @@ defmodule SymphonyElixir.QualityGateTest do
           pass_threshold: 6,
           comment_posted?: true,
           posted_at: posted_at,
-          identifier: "RSM-ID-HUMAN",
+          identifier: "ACME-ID-HUMAN",
           title: "Title",
           state: "Todo",
           url: "https://linear.app/x/ID-HUMAN",
@@ -414,7 +414,7 @@ defmodule SymphonyElixir.QualityGateTest do
           max_rounds: 2,
           pass_threshold: 6,
           comment_posted?: true,
-          identifier: "RSM-CAP",
+          identifier: "ACME-CAP",
           title: "Title",
           state: "Todo",
           url: "https://linear.app/x/ID-CAP",
@@ -563,7 +563,7 @@ defmodule SymphonyElixir.QualityGateTest do
           max_rounds: 2,
           pass_threshold: 6,
           comment_posted?: true,
-          identifier: "RSM-ID-WORKPAD",
+          identifier: "ACME-ID-WORKPAD",
           title: "Title ID-WORKPAD",
           state: "Todo",
           url: "https://linear.app/x/ID-WORKPAD",
@@ -625,10 +625,10 @@ defmodule SymphonyElixir.QualityGateTest do
           reason: "cached",
           passed?: true,
           comment_posted?: false,
-          identifier: "RSM-1",
+          identifier: "ACME-1",
           title: "Title",
           state: "Todo",
-          url: "https://linear.app/x/RSM-1",
+          url: "https://linear.app/x/ACME-1",
           scored_at: ~U[2026-05-05 02:00:00Z]
         }
       }
@@ -656,10 +656,10 @@ defmodule SymphonyElixir.QualityGateTest do
           reason: "stale",
           passed?: true,
           comment_posted?: true,
-          identifier: "RSM-1",
+          identifier: "ACME-1",
           title: "Title",
           state: "Todo",
-          url: "https://linear.app/x/RSM-1",
+          url: "https://linear.app/x/ACME-1",
           scored_at: stale_at
         }
       }
@@ -685,10 +685,10 @@ defmodule SymphonyElixir.QualityGateTest do
           reason: "vague",
           passed?: false,
           comment_posted?: true,
-          identifier: "RSM-1",
+          identifier: "ACME-1",
           title: "Title",
           state: "Todo",
-          url: "https://linear.app/x/RSM-1",
+          url: "https://linear.app/x/ACME-1",
           scored_at: updated_at
         }
       }
@@ -725,7 +725,7 @@ defmodule SymphonyElixir.QualityGateTest do
           passed?: false,
           awaiting_clarification?: true,
           comment_posted?: true,
-          identifier: "RSM-ID-FAIL",
+          identifier: "ACME-ID-FAIL",
           title: "Title",
           state: "Todo",
           url: "https://linear.app/x/ID-FAIL",
@@ -882,7 +882,7 @@ defmodule SymphonyElixir.QualityGateTest do
           reason: "ok",
           passed?: true,
           comment_posted?: false,
-          identifier: "RSM-PASS",
+          identifier: "ACME-PASS",
           title: "Pass",
           state: "Todo",
           url: nil,
@@ -894,7 +894,7 @@ defmodule SymphonyElixir.QualityGateTest do
           reason: "vague",
           passed?: false,
           comment_posted?: true,
-          identifier: "RSM-OLD",
+          identifier: "ACME-OLD",
           title: "Old",
           state: "Todo",
           url: nil,
@@ -906,7 +906,7 @@ defmodule SymphonyElixir.QualityGateTest do
           reason: "broad",
           passed?: false,
           comment_posted?: false,
-          identifier: "RSM-NEW",
+          identifier: "ACME-NEW",
           title: "New",
           state: "Todo",
           url: nil,
@@ -937,7 +937,7 @@ defmodule SymphonyElixir.QualityGateTest do
         "ID-AWAIT" => %{
           passed?: false,
           awaiting_clarification?: true,
-          identifier: "RSM-AWAIT",
+          identifier: "ACME-AWAIT",
           title: "Await",
           state: "Todo",
           url: nil,
@@ -949,7 +949,7 @@ defmodule SymphonyElixir.QualityGateTest do
       }
 
       assert [
-               %{kind: :clarification, issue_id: "ID-AWAIT", identifier: "RSM-AWAIT", rounds_asked: 2}
+               %{kind: :clarification, issue_id: "ID-AWAIT", identifier: "ACME-AWAIT", rounds_asked: 2}
              ] = QualityGate.awaiting_clarification_from_cache(cache)
     end
   end
@@ -1069,7 +1069,7 @@ defmodule SymphonyElixir.QualityGateTest do
   defp issue(id, opts \\ []) do
     %Issue{
       id: id,
-      identifier: Keyword.get(opts, :identifier, "RSM-#{id}"),
+      identifier: Keyword.get(opts, :identifier, "ACME-#{id}"),
       title: Keyword.get(opts, :title, "Title #{id}"),
       description: Keyword.get(opts, :description, "Some description"),
       state: Keyword.get(opts, :state, "Todo"),

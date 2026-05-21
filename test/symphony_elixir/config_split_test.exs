@@ -279,13 +279,13 @@ defmodule SymphonyElixir.ConfigSplitTest do
       - name: web
         path: #{Path.join(root, "web")}
         workflow: WORKFLOW.md
-        team: RSM
+        team: ACME
         labels:
           - backend
       - name: api
         path: #{Path.join(root, "api")}
         workflow: WORKFLOW.md
-        team: RSM
+        team: ACME
         labels:
           - backend
     """)
@@ -310,11 +310,11 @@ defmodule SymphonyElixir.ConfigSplitTest do
       - name: fallback
         path: #{Path.join(root, "fallback")}
         workflow: WORKFLOW.md
-        team: RSM
+        team: ACME
       - name: api
         path: #{Path.join(root, "api")}
         workflow: WORKFLOW.md
-        team: RSM
+        team: ACME
         labels:
           - api
     """)
@@ -616,14 +616,14 @@ defmodule SymphonyElixir.ConfigSplitTest do
 
     issue = %SymphonyElixir.Linear.Issue{
       id: "issue-api",
-      identifier: "RSM-API",
+      identifier: "ACME-API",
       title: "Route to API",
       state: "Todo",
       repo_key: "api",
       labels: ["api"]
     }
 
-    assert SymphonyElixir.PromptBuilder.build_prompt(issue) == "API api RSM-API"
+    assert SymphonyElixir.PromptBuilder.build_prompt(issue) == "API api ACME-API"
   end
 
   test "repo workflow with an empty prompt falls back to the default prompt", %{root: root} do
@@ -650,7 +650,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
 
     issue = %Issue{
       id: "issue-api-fallback",
-      identifier: "RSM-FALLBACK",
+      identifier: "ACME-FALLBACK",
       title: "Use default prompt",
       state: "Todo",
       repo_key: "api"
@@ -659,7 +659,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     prompt = PromptBuilder.build_prompt(issue)
 
     assert prompt =~ "You are working on a Linear issue."
-    assert prompt =~ "Identifier: RSM-FALLBACK"
+    assert prompt =~ "Identifier: ACME-FALLBACK"
     assert prompt =~ "Title: <linear_issue_title>\nUse default prompt\n</linear_issue_title>"
   end
 

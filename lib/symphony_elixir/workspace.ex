@@ -158,6 +158,13 @@ defmodule SymphonyElixir.Workspace do
          base_ref = worktree_base_ref(issue_context),
          {:ok, created?} <- add_or_reuse_local_worktree(repo, workspace, branch, base_ref) do
       {:ok, workspace, created?}
+    else
+      {:error, reason, output} ->
+        log_local_worktree_failure(workspace, issue_context, reason, output)
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -214,6 +221,9 @@ defmodule SymphonyElixir.Workspace do
     case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
       {:ok, {output, 0}} ->
         parse_remote_workspace_output(output)
+
+      {:ok, {output, 45}} ->
+        {:error, parse_remote_branch_collision(output, workspace)}
 
       {:ok, {output, status}} ->
         {:error, {:workspace_prepare_failed, worker_host, status, output}}
@@ -284,8 +294,40 @@ defmodule SymphonyElixir.Workspace do
   defp add_local_worktree(repo, workspace, branch, base_ref) do
     File.mkdir_p!(Path.dirname(workspace))
 
-    with :ok <- run_git(repo, worktree_add_args(repo, workspace, branch, base_ref)) do
+    with :ok <- check_branch_not_checked_out_elsewhere(repo, workspace, branch),
+         :ok <- run_git(repo, worktree_add_args(repo, workspace, branch, base_ref)) do
       {:ok, true}
+    end
+  end
+
+  defp check_branch_not_checked_out_elsewhere(repo, workspace, branch) do
+    # On `git worktree list --porcelain` failure, fall through to the actual
+    # `git worktree add` so its native error surfaces via the existing path.
+    with {:ok, output} <- git_output(repo, ["worktree", "list", "--porcelain"]),
+         path when is_binary(path) <- find_worktree_for_branch(output, branch),
+         false <- Path.expand(path) == Path.expand(workspace) do
+      {:error, {:branch_already_checked_out_elsewhere, branch: branch, at: path, requested: workspace}}
+    else
+      _ -> :ok
+    end
+  end
+
+  defp find_worktree_for_branch(porcelain_output, branch) when is_binary(branch) do
+    porcelain_output
+    |> IO.iodata_to_binary()
+    |> String.split(~r/\R\R+/, trim: true)
+    |> Enum.find_value(&worktree_block_branch_owner(&1, branch))
+  end
+
+  defp worktree_block_branch_owner(block, branch) do
+    lines = String.split(block, ~r/\R/, trim: true)
+    needle = "branch refs/heads/" <> branch
+
+    if Enum.any?(lines, &(&1 == needle)) do
+      Enum.find_value(lines, fn
+        "worktree " <> path -> path
+        _line -> nil
+      end)
     end
   end
 
@@ -303,7 +345,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp remote_worktree_add_command do
-    "if [ \"$base_ref\" != \"HEAD\" ]; then git -C \"$repo\" worktree add -B \"$branch\" \"$workspace\" \"$base_ref\"; elif git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
+    "branch_owner=$(git -C \"$repo\" worktree list --porcelain | awk -v b=\"$branch\" 'BEGIN { wt = \"\" } /^worktree / { wt = substr($0, 10); next } $0 == \"branch refs/heads/\" b { print wt; exit }'); if [ -n \"$branch_owner\" ] && [ \"$branch_owner\" != \"$workspace\" ]; then printf 'workspace_branch_already_checked_out_elsewhere\\t%s\\t%s\\t%s\\n' \"$branch\" \"$branch_owner\" \"$workspace\"; exit 45; fi; if [ \"$base_ref\" != \"HEAD\" ]; then git -C \"$repo\" worktree add -B \"$branch\" \"$workspace\" \"$base_ref\"; elif git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
   end
 
   # Builds the shell preamble that canonicalizes the remote workspace root
@@ -1231,6 +1273,12 @@ defmodule SymphonyElixir.Workspace do
     )
   end
 
+  defp log_local_worktree_failure(workspace, issue_context, reason, output) do
+    sanitized_output = sanitize_hook_output_for_log(output)
+
+    Logger.warning("Workspace worktree preparation failed #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local reason=#{inspect(reason)} output=#{inspect(sanitized_output)}")
+  end
+
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
     expanded_root = Path.expand(Config.settings!().workspace.root)
@@ -1283,6 +1331,28 @@ defmodule SymphonyElixir.Workspace do
       "esac"
     ]
     |> Enum.join("\n")
+  end
+
+  defp parse_remote_branch_collision(output, requested_workspace) do
+    output
+    |> IO.iodata_to_binary()
+    |> String.split("\n", trim: true)
+    |> Enum.find_value(fn line ->
+      case String.split(line, "\t", parts: 4) do
+        ["workspace_branch_already_checked_out_elsewhere", branch, at, requested] ->
+          {:branch_already_checked_out_elsewhere, branch: branch, at: at, requested: requested}
+
+        _ ->
+          nil
+      end
+    end)
+    |> case do
+      nil ->
+        {:branch_already_checked_out_elsewhere, branch: nil, at: nil, requested: requested_workspace}
+
+      reason ->
+        reason
+    end
   end
 
   defp parse_remote_workspace_output(output) do

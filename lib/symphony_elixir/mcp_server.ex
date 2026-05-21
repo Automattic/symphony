@@ -194,23 +194,38 @@ defmodule SymphonyElixir.McpServer do
         {:ok, Path.dirname(path), path}
 
       _ ->
-        segment = run_id_segment(opts) || id
-        dir = Path.join(@managed_socket_root, "#{@managed_socket_prefix}#{segment}")
+        dir = Path.join(resolved_socket_root(opts), "#{@managed_socket_prefix}#{id}")
         {:ok, dir, Path.join(dir, "sock")}
     end
   end
 
-  defp run_id_segment(opts) do
-    case Keyword.get(opts, :run_id) do
-      value when is_binary(value) and value != "" -> to_socket_segment(value)
+  defp resolved_socket_root(opts) do
+    with nil <- opt_socket_root(opts),
+         nil <- system_env_socket_root(),
+         nil <- app_env_socket_root() do
+      @managed_socket_root
+    end
+  end
+
+  defp opt_socket_root(opts) do
+    case Keyword.get(opts, :socket_root) do
+      root when is_binary(root) and root != "" -> root
       _ -> nil
     end
   end
 
-  defp to_socket_segment(value) when is_binary(value) and value != "" do
-    value
-    |> String.replace(~r/[^A-Za-z0-9_.-]/, "-")
-    |> String.slice(0, 80)
+  defp system_env_socket_root do
+    case System.get_env("SYMPHONY_MCP_SOCKET_ROOT") do
+      root when is_binary(root) and root != "" -> root
+      _ -> nil
+    end
+  end
+
+  defp app_env_socket_root do
+    case Application.get_env(:symphony_elixir, :mcp_socket_root) do
+      root when is_binary(root) and root != "" -> root
+      _ -> nil
+    end
   end
 
   defp prepare_socket_dir(dir) when is_binary(dir) do
@@ -318,7 +333,7 @@ defmodule SymphonyElixir.McpServer do
   defp remove_socket_dir(_dir), do: :ok
 
   defp managed_socket_dir?(dir) do
-    String.starts_with?(dir, Path.join(@managed_socket_root, @managed_socket_prefix))
+    String.starts_with?(Path.basename(dir), @managed_socket_prefix)
   end
 
   defp reap_orphaned_socket_dirs do
@@ -533,7 +548,7 @@ defmodule SymphonyElixir.McpServer do
   defp serve(socket, context, buffer) do
     case read_message(socket, buffer) do
       {:ok, payload, rest} ->
-        maybe_send_response(socket, handle_payload(payload, context))
+        maybe_send_response(socket, safe_handle_payload(payload, context))
         serve(socket, context, rest)
 
       {:error, :closed} ->
@@ -544,6 +559,48 @@ defmodule SymphonyElixir.McpServer do
         :ok
     end
   end
+
+  # The per-connection serve loop runs in a bare `spawn/1` (see `accept_loop/2`),
+  # so an unhandled exception in `handle_payload/2` would silently kill the
+  # connection — the client sees "MCP error -32000: Connection closed" with no
+  # trace in the symphony log. Catch and log so the real cause is recoverable
+  # and the connection survives.
+  defp safe_handle_payload(payload, context) do
+    handle_payload(payload, context)
+  rescue
+    error ->
+      stacktrace = __STACKTRACE__
+      method = (is_map(payload) && Map.get(payload, "method")) || "unknown"
+      tool = mcp_tool_name(payload)
+
+      Logger.error(
+        "MCP handler crashed method=#{inspect(method)} tool=#{inspect(tool)} " <>
+          "error=#{Exception.format(:error, error, stacktrace)}"
+      )
+
+      crash_response(payload, error)
+  catch
+    kind, reason ->
+      stacktrace = __STACKTRACE__
+      method = (is_map(payload) && Map.get(payload, "method")) || "unknown"
+      tool = mcp_tool_name(payload)
+
+      Logger.error(
+        "MCP handler exited method=#{inspect(method)} tool=#{inspect(tool)} " <>
+          "kind=#{inspect(kind)} reason=#{inspect(reason)} stack=#{Exception.format_stacktrace(stacktrace)}"
+      )
+
+      crash_response(payload, {kind, reason})
+  end
+
+  defp mcp_tool_name(%{"params" => %{"name" => name}}) when is_binary(name), do: name
+  defp mcp_tool_name(_payload), do: nil
+
+  defp crash_response(%{"id" => id}, error) when not is_nil(id) do
+    error_response(id, -32_603, "Internal MCP handler error: #{inspect(error)}")
+  end
+
+  defp crash_response(_payload, _error), do: nil
 
   defp read_message(socket, buffer) do
     case parse_message(buffer) do

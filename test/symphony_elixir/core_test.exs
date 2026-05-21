@@ -122,7 +122,7 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       tracker_project_slug: nil,
-      tracker_team: "RSM"
+      tracker_team: "ACME"
     )
 
     assert {:error, :missing_linear_api_token} = Config.validate!()
@@ -152,7 +152,7 @@ defmodule SymphonyElixir.CoreTest do
     tracker =
       %TrackerConfig{
         project_slug: "project",
-        team: "RSM",
+        team: "ACME",
         labels: ["backend"]
       }
       |> TrackerConfig.changeset(%{
@@ -178,11 +178,11 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
-      tracker_team: "RSM"
+      tracker_team: "ACME"
     )
 
     assert :ok = Config.validate!()
-    assert Config.settings!().tracker.team == "RSM"
+    assert Config.settings!().tracker.team == "ACME"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
@@ -1679,15 +1679,15 @@ defmodule SymphonyElixir.CoreTest do
          "data" => %{
            "issue" => %{
              "id" => "issue-1",
-             "identifier" => "RSM-1",
+             "identifier" => "ACME-1",
              "title" => "Run one issue",
              "description" => "Run this directly",
              "priority" => 2,
              "state" => %{"name" => "Todo"},
-             "team" => %{"key" => "RSM", "name" => "Radical Speed Month"},
+             "team" => %{"key" => "ACME", "name" => "Acme Team"},
              "project" => %{"id" => "project-1", "name" => "Harness"},
-             "branchName" => "rsm-1-run-one-issue",
-             "url" => "https://linear.app/example/issue/RSM-1",
+             "branchName" => "acme-1-run-one-issue",
+             "url" => "https://linear.app/example/issue/ACME-1",
              "attachments" => %{"nodes" => []},
              "assignee" => %{"id" => "user-1"},
              "labels" => %{"nodes" => [%{"name" => "backend"}]},
@@ -1700,12 +1700,12 @@ defmodule SymphonyElixir.CoreTest do
        }}
     end
 
-    assert {:ok, issue} = Client.fetch_issue_by_identifier_for_test("RSM-1", graphql_fun)
+    assert {:ok, issue} = Client.fetch_issue_by_identifier_for_test("ACME-1", graphql_fun)
 
-    assert_receive {:issue_query, query, %{id: "RSM-1", relationFirst: 50, attachmentFirst: 20, commentLast: 20}}
+    assert_receive {:issue_query, query, %{id: "ACME-1", relationFirst: 50, attachmentFirst: 20, commentLast: 20}}
 
     assert query =~ "SymphonyLinearIssueByIdentifier"
-    assert %Issue{id: "issue-1", identifier: "RSM-1", state: "Todo", labels: ["backend"]} = issue
+    assert %Issue{id: "issue-1", identifier: "ACME-1", state: "Todo", labels: ["backend"]} = issue
   end
 
   test "linear client enriches issue comments and linked issues" do
@@ -2874,6 +2874,62 @@ defmodule SymphonyElixir.CoreTest do
       trace = File.read!(trace_file)
       assert trace =~ "worker-a bash -lc"
       refute trace =~ "worker-b bash -lc"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner refuses run when branch is checked out by another worktree" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-branch-collision-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      peer_worktree = Path.join(test_root, "peer-worktree")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      File.mkdir_p!(primary_repo)
+      git_setup = fn args -> System.cmd("git", ["-C", primary_repo | args], stderr_to_stdout: true) end
+      {_out, 0} = System.cmd("git", ["init", "-b", "main", primary_repo])
+      {_out, 0} = git_setup.(["config", "user.name", "Test User"])
+      {_out, 0} = git_setup.(["config", "user.email", "test@example.com"])
+      File.write!(Path.join(primary_repo, "README.md"), "initial\n")
+      {_out, 0} = git_setup.(["add", "README.md"])
+      {_out, 0} = git_setup.(["commit", "-m", "initial"])
+      {_out, 0} = git_setup.(["branch", "auto/MT-COLLIDE-AGENT"])
+      {_out, 0} = git_setup.(["worktree", "add", peer_worktree, "auto/MT-COLLIDE-AGENT"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      issue = %Issue{
+        id: "issue-branch-collision",
+        identifier: "PR-COLLIDE-AGENT",
+        title: "PR run collides with active issue worktree",
+        description: "Refuse with a clear error, do not crash",
+        state: "In Progress",
+        workspace_branch: "auto/MT-COLLIDE-AGENT",
+        workspace_base_ref: "auto/MT-COLLIDE-AGENT"
+      }
+
+      log =
+        capture_log(fn ->
+          assert_raise RuntimeError, ~r/branch_already_checked_out_elsewhere/, fn ->
+            AgentRunner.run(issue, nil, issue_enricher: no_op_issue_enricher())
+          end
+        end)
+
+      assert log =~ "Refusing run for"
+      assert log =~ "PR-COLLIDE-AGENT"
+      assert log =~ "branch auto/MT-COLLIDE-AGENT already checked out at"
+      assert File.exists?(peer_worktree)
     after
       File.rm_rf(test_root)
     end

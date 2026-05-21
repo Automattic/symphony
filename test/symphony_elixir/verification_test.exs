@@ -23,7 +23,7 @@ defmodule SymphonyElixir.VerificationTest do
       %{
         run_id: run_id,
         issue_id: "issue-#{run_id}",
-        issue_identifier: "RSM-#{run_id}",
+        issue_identifier: "ACME-#{run_id}",
         port_range: [4110, 4111]
       }
     end
@@ -58,7 +58,7 @@ defmodule SymphonyElixir.VerificationTest do
                repo_key: "default",
                run_id: "live-run",
                issue_id: "issue-live",
-               issue_identifier: "RSM-LIVE",
+               issue_identifier: "ACME-LIVE",
                port: 4120,
                status: "dev_server_started",
                dev_server_os_pid: 111,
@@ -71,7 +71,7 @@ defmodule SymphonyElixir.VerificationTest do
                repo_key: "api",
                run_id: "api-live-run",
                issue_id: "issue-api-live",
-               issue_identifier: "RSM-API-LIVE",
+               issue_identifier: "ACME-API-LIVE",
                port: 4122,
                status: "dev_server_started",
                dev_server_os_pid: 333,
@@ -84,7 +84,7 @@ defmodule SymphonyElixir.VerificationTest do
                repo_key: "default",
                run_id: "stale-run",
                issue_id: "issue-stale",
-               issue_identifier: "RSM-STALE",
+               issue_identifier: "ACME-STALE",
                port: 4121,
                status: "dev_server_started",
                dev_server_os_pid: 222,
@@ -129,7 +129,7 @@ defmodule SymphonyElixir.VerificationTest do
              PortPool.allocate(%{
                run_id: run_id,
                issue_id: "issue-dev-server",
-               issue_identifier: "RSM-DEV",
+               issue_identifier: "ACME-DEV",
                port_range: [port, port]
              })
 
@@ -273,7 +273,7 @@ defmodule SymphonyElixir.VerificationTest do
 
       issue = %Issue{
         id: "issue-verification-timeout",
-        identifier: "RSM-VERIFY",
+        identifier: "ACME-VERIFY",
         title: "Verify before turn",
         state: "In Progress"
       }
@@ -314,7 +314,7 @@ defmodule SymphonyElixir.VerificationTest do
 
       issue = %Issue{
         id: "issue-verification-workspace-fail",
-        identifier: "RSM-VERIFY-WS",
+        identifier: "ACME-VERIFY-WS",
         title: "Release on workspace failure",
         state: "In Progress"
       }

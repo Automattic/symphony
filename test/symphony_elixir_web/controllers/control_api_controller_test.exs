@@ -92,18 +92,18 @@ defmodule SymphonyElixirWeb.ControlApiControllerTest do
   end
 
   test "POST /control/stop forwards the issue identifier" do
-    pid = start_stub([{:ok, %{stopped: "RSM-123"}}])
+    pid = start_stub([{:ok, %{stopped: "ACME-123"}}])
 
     conn =
       send_to(
-        build_conn(:post, "/api/v1/control/stop", %{"issue_identifier" => "RSM-123"}),
+        build_conn(:post, "/api/v1/control/stop", %{"issue_identifier" => "ACME-123"}),
         :stop,
         pid,
-        %{"issue_identifier" => "RSM-123"}
+        %{"issue_identifier" => "ACME-123"}
       )
 
     assert conn.status == 200
-    assert calls(pid) == [{:stop_running, "RSM-123"}]
+    assert calls(pid) == [{:stop_running, "ACME-123"}]
   end
 
   test "POST /control/dispatch_pr forwards target and intent" do

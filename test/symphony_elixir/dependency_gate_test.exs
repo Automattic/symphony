@@ -19,7 +19,7 @@ defmodule SymphonyElixir.DependencyGateTest do
 
     issue = %Issue{
       id: "issue-dependency-gate-failure",
-      identifier: "RSM-GATE-FAILURE",
+      identifier: "ACME-GATE-FAILURE",
       title: "Dependency gate failure",
       description: "Exercise tracker update failure branch",
       state: "In Progress"

@@ -90,9 +90,20 @@ defmodule SymphonyElixir.AgentRunner do
               Verification.release(verification, "after_run completed")
             end
 
+          {:error, {:branch_already_checked_out_elsewhere, details}} = error ->
+            log_branch_collision(issue, worker_host, details)
+            Verification.release(verification, "workspace setup failed")
+            error
+
           {:error, reason} ->
             Verification.release(verification, "workspace setup failed")
             {:error, reason}
+
+          other ->
+            Logger.error("workspace_for_issue returned unexpected shape #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)} result=#{inspect(other)}")
+
+            Verification.release(verification, "workspace setup failed")
+            {:error, {:invalid_workspace_result, other}}
         end
 
       {:error, reason} ->
@@ -767,6 +778,18 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
+
+  defp log_branch_collision(issue, worker_host, details) when is_list(details) do
+    branch = Keyword.get(details, :branch)
+    at = Keyword.get(details, :at)
+    requested = Keyword.get(details, :requested)
+
+    Logger.error("Refusing run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}: branch #{branch} already checked out at #{at} (requested #{requested})")
+  end
+
+  defp log_branch_collision(issue, worker_host, details) do
+    Logger.error("Refusing run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}: branch collision details=#{inspect(details)}")
+  end
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     state_name

@@ -302,11 +302,11 @@ agent:
   disable.
 - The per-issue cap stops only the over-budget issue without retrying; the daily cap pauses new
   dispatch for the day while already-running agents continue.
-- Codex app-server reporting feeds the structured event path most completely; **Claude is
-  best-effort** until its usage events are normalized. Symphony warns if a budget is active with
-  a command that may not report token usage.
-- The dashboard surfaces daily usage, daily remaining headroom, and per-issue usage. Cached vs
-  fresh input tokens are distinguished when the agent reports them.
+- Codex app-server and Claude stream-json usage events are normalized into uncached input, cached
+  input, cache-creation input, and output buckets. Symphony warns if a budget is active with a
+  command that may not report token usage.
+- The dashboard surfaces daily usage, daily remaining headroom, and per-issue usage. Cached,
+  cache-created, fresh input, and output tokens are shown separately when reported.
 
 **Project guides:**
 

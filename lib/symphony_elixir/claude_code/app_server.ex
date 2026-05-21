@@ -1513,7 +1513,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       [
         {:token_usage_delta,
          %{
-           input_tokens: uncached_input,
+           input_tokens: uncached_input + cached + cache_creation,
            uncached_input_tokens: uncached_input,
            cached_input_tokens: cached,
            cache_creation_input_tokens: cache_creation,

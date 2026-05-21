@@ -5634,14 +5634,17 @@ defmodule SymphonyElixir.Orchestrator do
     }
     |> Tuple.to_list()
     |> then(fn [uncached_input, cached_input, cache_creation_input, output, total] ->
+      input_delta = uncached_input.delta + cached_input.delta + cache_creation_input.delta
+      input_reported = uncached_input.reported + cached_input.reported + cache_creation_input.reported
+
       %{
-        input_tokens: uncached_input.delta,
+        input_tokens: input_delta,
         uncached_input_tokens: uncached_input.delta,
         cached_input_tokens: cached_input.delta,
         cache_creation_input_tokens: cache_creation_input.delta,
         output_tokens: output.delta,
         total_tokens: total.delta,
-        input_reported: uncached_input.reported,
+        input_reported: input_reported,
         uncached_input_reported: uncached_input.reported,
         cached_input_reported: cached_input.reported,
         cache_creation_input_reported: cache_creation_input.reported,

@@ -279,7 +279,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                 {:agent_text, "hi"},
                 {:token_usage_delta,
                  %{
-                   input_tokens: 3,
+                   input_tokens: 57,
                    uncached_input_tokens: 3,
                    output_tokens: 2,
                    cached_input_tokens: 50,

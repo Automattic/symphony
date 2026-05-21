@@ -1356,6 +1356,90 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "approved handoff fails fast when Symphony MCP server is missing" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-handoff-missing-mcp-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-HANDOFF-MISSING")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-handoff-missing","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"sess-handoff-missing","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        session = local_session(workspace, test_root)
+        test_pid = self()
+        on_message = fn msg -> send(test_pid, {:turn_msg, msg}) end
+
+        prompt = "Reviewer agent approved the committed diff.\n\nContinue the PR handoff."
+
+        assert {:error, {:turn_failed, reason}} =
+                 AppServer.run_turn(session, prompt, %{}, on_message: on_message)
+
+        assert reason =~ "missing_required_mcp_tools"
+        assert reason =~ "Missing MCP server: symphony"
+        assert_received {:turn_msg, {:turn_failed, ^reason}}
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "approved handoff continues when Symphony MCP server is loaded" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-handoff-tools-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-HANDOFF-TOOLS")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess-handoff-tools","cwd":"/tmp","tools":[],"mcp_servers":["symphony"],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"env"}'
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"sess-handoff-tools","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        session = local_session(workspace, test_root)
+        prompt = "Reviewer agent approved the committed diff.\n\nContinue the PR handoff."
+
+        assert {:ok, result} = AppServer.run_turn(session, prompt, %{}, [])
+        assert result.input_tokens == 10
+        assert result.output_tokens == 5
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "strips provider, tracker, GitHub, and SSH agent secrets from the Claude subprocess env" do
       test_root =
         Path.join(

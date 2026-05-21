@@ -40,6 +40,7 @@ defmodule SymphonyElixir.Orchestrator do
   @snapshot_table :symphony_orchestrator_snapshot
   @snapshot_key :current
   @repo_poll_cold_failure_warm_after 3
+  @terminal_agent_setup_error_marker "missing_required_mcp_tools"
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -500,8 +501,8 @@ defmodule SymphonyElixir.Orchestrator do
     error = "agent exited: #{inspect(reason)}"
     persist_run_completion(running_entry, terminal_status_for_reason(reason), error)
 
-    case pr_run_entry?(running_entry) do
-      true ->
+    cond do
+      pr_run_entry?(running_entry) ->
         # PR runs are explicit operator dispatches keyed by a synthetic
         # "pr:<repo>:<n>" id that has no Linear backing. Scheduling a retry or
         # tracking it for Linear watching would push the id through
@@ -512,7 +513,17 @@ defmodule SymphonyElixir.Orchestrator do
         emit_run_failed(running_entry, error, nil)
         state
 
-      false ->
+      terminal_agent_setup_error?(reason) ->
+        Logger.error(
+          "Agent task exited for issue_id=#{issue_id} session_id=#{session_id} " <>
+            "reason=#{inspect(reason)}; terminal setup error is not retried"
+        )
+
+        maybe_comment_terminal_agent_setup_failure(issue_id, running_entry, reason)
+        emit_run_failed(running_entry, error, nil)
+        state
+
+      true ->
         Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
         next_attempt = next_retry_attempt_from_running(running_entry)
@@ -528,6 +539,59 @@ defmodule SymphonyElixir.Orchestrator do
         })
     end
   end
+
+  defp terminal_agent_setup_error?({:terminal_agent_setup_error, _reason}), do: true
+
+  defp terminal_agent_setup_error?(reason) do
+    reason
+    |> inspect()
+    |> String.contains?(@terminal_agent_setup_error_marker)
+  end
+
+  defp maybe_comment_terminal_agent_setup_failure(issue_id, running_entry, reason)
+       when is_binary(issue_id) and is_map(running_entry) do
+    body = terminal_agent_setup_failure_comment(reason)
+
+    case Tracker.create_comment(issue_id, body) do
+      :ok ->
+        :ok
+
+      {:error, comment_reason} ->
+        Logger.warning(
+          "Failed to post terminal setup failure comment for issue_id=#{issue_id}: " <>
+            "#{inspect(comment_reason)}"
+        )
+    end
+  rescue
+    exception ->
+      Logger.warning(
+        "Failed to post terminal setup failure comment for issue_id=#{issue_id}: " <>
+          "#{Exception.message(exception)}"
+      )
+  end
+
+  defp maybe_comment_terminal_agent_setup_failure(_issue_id, _running_entry, _reason), do: :ok
+
+  defp terminal_agent_setup_failure_comment(reason) do
+    """
+    Symphony stopped this run before retrying because the agent runtime did not expose
+    the required Symphony GitHub MCP tools.
+
+    Reason: #{terminal_agent_setup_error_summary(reason)}
+
+    Fix the agent MCP/tool configuration, then re-dispatch the issue.
+    """
+  end
+
+  defp terminal_agent_setup_error_summary({:terminal_agent_setup_error, reason}) do
+    terminal_agent_setup_error_summary(reason)
+  end
+
+  defp terminal_agent_setup_error_summary({:turn_failed, reason}) when is_binary(reason), do: reason
+
+  defp terminal_agent_setup_error_summary(reason) when is_binary(reason), do: reason
+
+  defp terminal_agent_setup_error_summary(reason), do: inspect(reason)
 
   defp start_repo_poll_task(%State{repo_poll_task_ref: ref} = state, _now_ms) when is_reference(ref),
     do: {:skip, state}

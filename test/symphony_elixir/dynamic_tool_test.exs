@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert "linear_attach_file" in tool_names
     assert "github_get_pull_request" in tool_names
     assert "github_create_pull_request" in tool_names
+    assert "github_reply_to_review_comment" in tool_names
     assert "github_push_branch" in tool_names
     assert "github_get_pr_checks" in tool_names
     assert "github_list_pr_comments" in tool_names
@@ -652,6 +653,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           {"github_create_pull_request", %{"title" => "Add tools", "body" => "Body", "head" => "owned"}},
           {"github_get_pull_request", %{"branch" => "owned"}},
           {"github_add_pr_comment", %{"body" => "Looks good", "remote" => "evil"}},
+          {"github_reply_to_review_comment", %{"comment_id" => 123, "body" => "Acked.", "repo" => "attacker/repo"}},
           {"github_get_pr_checks", %{"base" => "owned"}},
           {"github_list_pr_comments", %{"repo" => "attacker/repo"}},
           {"github_list_pr_review_comments", %{"repository" => "attacker/repo"}},
@@ -950,6 +952,135 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       assert response["success"] == true
       assert %{"url" => ^pr_url} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.reply_to_review_comment posts under the named inline thread" do
+    workspace = tmp_workspace!("github-reply-review-comment")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], opts ->
+          assert opts[:cd] == workspace
+          {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
+          assert opts[:cd] == workspace
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["api", "repos/acme/symphony/pulls/3051/comments/123/replies", "-f", "body=Acked."], opts ->
+          assert opts[:cd] == workspace
+          {Jason.encode!(%{"id" => 4242, "html_url" => "#{pr_url}#discussion_r4242"}), 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_reply_to_review_comment",
+          %{"comment_id" => 123, "body" => "Acked."},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+
+      assert %{
+               "pr_url" => ^pr_url,
+               "comment_id" => "123",
+               "reply_id" => 4242,
+               "url" => reply_url
+             } = Jason.decode!(response["output"])
+
+      assert reply_url == "#{pr_url}#discussion_r4242"
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.reply_to_review_comment surfaces invalid_comment_id without contacting gh" do
+    workspace = tmp_workspace!("github-reply-review-comment-invalid-id")
+
+    try do
+      gh_runner = fn _args, _opts -> flunk("gh should not run for invalid comment ids") end
+      git_runner = fn _args, _opts -> flunk("git should not run for invalid comment ids") end
+
+      for bad <- ["", "   ", "abc", 0] do
+        response =
+          DynamicTool.execute(
+            "github_reply_to_review_comment",
+            %{"comment_id" => bad, "body" => "Acked."},
+            github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+          )
+
+        assert response["success"] == false
+        assert %{"error" => %{"code" => "invalid_comment_id"}} = Jason.decode!(response["output"])
+      end
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.reply_to_review_comment surfaces invalid_body without contacting gh" do
+    workspace = tmp_workspace!("github-reply-review-comment-invalid-body")
+
+    try do
+      gh_runner = fn _args, _opts -> flunk("gh should not run for invalid body") end
+      git_runner = fn _args, _opts -> flunk("git should not run for invalid body") end
+
+      response =
+        DynamicTool.execute(
+          "github_reply_to_review_comment",
+          %{"comment_id" => 123, "body" => nil},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == false
+      assert %{"error" => %{"code" => "invalid_body"}} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "legacy github.reply_to_review_comment dotted alias dispatches the new tool" do
+    workspace = tmp_workspace!("github-reply-review-comment-legacy-alias")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      git_runner = fn
+        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+      end
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["api", "repos/acme/symphony/pulls/3051/comments/123/replies", "-f", "body=Hi"], _opts ->
+          {Jason.encode!(%{"id" => 4242, "html_url" => "#{pr_url}#discussion_r4242"}), 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github.reply_to_review_comment",
+          %{"comment_id" => 123, "body" => "Hi"},
+          github_tool_opts(workspace, gh_runner: gh_runner, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+      assert %{"reply_id" => 4242} = Jason.decode!(response["output"])
     after
       File.rm_rf(workspace)
     end

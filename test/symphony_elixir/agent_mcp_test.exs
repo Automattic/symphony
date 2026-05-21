@@ -71,6 +71,25 @@ defmodule SymphonyElixir.AgentMcpTest do
     end
   end
 
+  test "symphony MCP shim env includes token and runtime PATH" do
+    session = %{
+      id: "mcp-test",
+      transport: :unix,
+      socket_path: "/tmp/symphony-mcp.sock",
+      token: "session-token"
+    }
+
+    config = AgentMcp.symphony_claude_config(session, session.socket_path, "/tmp/shim")
+    env = config["env"]
+
+    assert env["SYMPHONY_MCP_SESSION_TOKEN"] == "session-token"
+    assert env["PATH"] == System.get_env("PATH")
+
+    block = AgentMcp.symphony_codex_toml_block(session, session.socket_path, "/tmp/shim")
+    assert block =~ ~s(SYMPHONY_MCP_SESSION_TOKEN = "session-token")
+    assert block =~ "PATH = "
+  end
+
   test "Claude raw server config normalizes transport-specific entries" do
     assert AgentMcp.normalize_claude_server_config(%{
              "command" => "node",

@@ -500,6 +500,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert get_in(mcp_config, ["mcpServers", "symphony", "env", "SYMPHONY_MCP_SESSION_TOKEN"]) ==
                  session.mcp_session.token
 
+        assert get_in(mcp_config, ["mcpServers", "symphony", "env", "PATH"]) == System.get_env("PATH")
         assert get_in(mcp_config, ["mcpServers", "symphony", "alwaysLoad"]) == true
 
         assert get_in(contents, ["permissions", "deny"]) == [

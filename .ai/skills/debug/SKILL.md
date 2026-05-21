@@ -16,11 +16,17 @@ description:
 
 ## Log Sources
 
-- Primary runtime log: `log/symphony.log`
-  - Default comes from `SymphonyElixir.LogFile` (`log/symphony.log`).
+- Primary runtime log: `<logs-root>/symphony.log`
+  - Resolved by `SymphonyElixir.Paths.log_file/0`.
+  - Default logs root is `~/Library/Logs/symphony/` for local runs and
+    `~/Library/Logs/symphony/release/` for packaged releases.
+  - `--logs-root`, `SYMPHONY_LOGS_ROOT`, or app env `:logs_root` can override it.
+  - The CLI prints the resolved path at run start: `logs: ...`.
   - Includes orchestrator, agent runner, and Codex app-server lifecycle logs.
-- Rotated runtime logs: `log/symphony.log*`
+- Rotated runtime logs: `<logs-root>/symphony.log*`
   - Check these when the relevant run is older.
+  - Do not assume a repo-local `log/` directory unless the logs root was
+    explicitly set there.
 
 ## Correlation Keys
 
@@ -43,21 +49,25 @@ them as your join keys during debugging.
 
 ## Commands
 
+Set `LOGS_ROOT` to the directory containing `symphony.log` before running these
+commands. Use the path printed by the CLI, `--logs-root`, `SYMPHONY_LOGS_ROOT`,
+or the default logs root.
+
 ```bash
 # 1) Narrow by ticket key (fastest entry point)
-rg -n "issue_identifier=MT-625" log/symphony.log*
+rg -n "issue_identifier=MT-625" "$LOGS_ROOT"/symphony.log*
 
 # 2) If needed, narrow by Linear UUID
-rg -n "issue_id=<linear-uuid>" log/symphony.log*
+rg -n "issue_id=<linear-uuid>" "$LOGS_ROOT"/symphony.log*
 
 # 3) Pull session IDs seen for that ticket
-rg -o "session_id=[^ ;]+" log/symphony.log* | sort -u
+rg -o "session_id=[^ ;]+" "$LOGS_ROOT"/symphony.log* | sort -u
 
 # 4) Trace one session end-to-end
-rg -n "session_id=<thread>-<turn>" log/symphony.log*
+rg -n "session_id=<thread>-<turn>" "$LOGS_ROOT"/symphony.log*
 
 # 5) Focus on stuck/retry signals
-rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|Codex session failed|Codex session ended with error" log/symphony.log*
+rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|Codex session failed|Codex session ended with error" "$LOGS_ROOT"/symphony.log*
 ```
 
 ## Investigation Flow
@@ -85,8 +95,8 @@ rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|Codex session fai
 
 ## Reading Codex Session Logs
 
-In Symphony, Codex session diagnostics are emitted into `log/symphony.log` and
-keyed by `session_id`. Read them as a lifecycle:
+In Symphony, Codex session diagnostics are emitted into
+`<logs-root>/symphony.log` and keyed by `session_id`. Read them as a lifecycle:
 
 1. `Codex session started ... session_id=...`
 2. Session stream/lifecycle events for the same `session_id`
@@ -99,7 +109,7 @@ For one specific session investigation, keep the trace narrow:
 
 1. Capture one `session_id` for the ticket.
 2. Build a timestamped slice for only that session:
-    - `rg -n "session_id=<thread>-<turn>" log/symphony.log*`
+    - `rg -n "session_id=<thread>-<turn>" "$LOGS_ROOT"/symphony.log*`
 3. Mark the exact failing stage:
     - Startup failure before stream events (`Codex session failed ...`).
     - Turn/runtime failure after stream events (`turn_*` / `ended with error`).
@@ -113,6 +123,7 @@ concurrent runs.
 ## Notes
 
 - Prefer `rg` over `grep` for speed on large logs.
-- Check rotated logs (`log/symphony.log*`) before concluding data is missing.
+- Check rotated logs (`<logs-root>/symphony.log*`) before concluding data is
+  missing.
 - If required context fields are missing in new log statements, align with
   `docs/logging.md` conventions.

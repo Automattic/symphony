@@ -24,13 +24,14 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
 
     runner = fn
       ["pr", "view", ^pr_url, "--json", fields], opts ->
-        assert fields == "number,state,reviewDecision,updatedAt,comments,reviews,title,body,url"
+        assert fields == "number,state,reviewDecision,updatedAt,comments,reviews,title,body,url,author"
         assert opts[:stderr_to_stdout]
 
         {Jason.encode!(%{
            "number" => 42,
            "title" => "Ship review polling",
            "body" => "PR body",
+           "author" => %{"login" => "pr-author"},
            "state" => "OPEN",
            "reviewDecision" => "APPROVED",
            "updatedAt" => "2026-05-01T10:00:00Z",
@@ -71,6 +72,7 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert activity.pr_number == 42
     assert activity.pr_title == "Ship review polling"
     assert activity.pr_description == "PR body"
+    assert activity.pr_author == "pr-author"
     assert activity.state == "OPEN"
     assert activity.review_decision == "APPROVED"
     assert activity.latest_activity_at == ~U[2026-05-01 10:00:00Z]
@@ -79,6 +81,23 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert Enum.map(activity.comments, & &1.id) == ["PRR_kw1", "123"]
     assert List.last(activity.comments).path == "lib/example.ex"
     assert List.last(activity.comments).line == 42
+  end
+
+  test "current_user returns the authenticated gh login and falls back gracefully" do
+    success_runner = fn ["api", "user", "--jq", ".login"], opts ->
+      assert opts[:stderr_to_stdout]
+      {"symphony-operator\n", 0}
+    end
+
+    assert {:ok, "symphony-operator"} = PullRequest.current_user(gh_runner: success_runner)
+
+    empty_runner = fn ["api", "user", "--jq", ".login"], _opts -> {"", 0} end
+    assert {:error, :empty_current_user} = PullRequest.current_user(gh_runner: empty_runner)
+
+    failing_runner = fn ["api", "user", "--jq", ".login"], _opts -> {"not authenticated", 4} end
+
+    assert {:error, {:gh_failed, ["api", "user", "--jq", ".login"], 4, "not authenticated"}} =
+             PullRequest.current_user(gh_runner: failing_runner)
   end
 
   test "fetch_activity ignores a stale cwd when the workspace was already removed" do

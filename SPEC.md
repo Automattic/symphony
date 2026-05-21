@@ -668,16 +668,20 @@ Fields:
 - `stale_days` (integer)
   - Polling-mode default: `7`.
   - Applies only in `polling` mode before reclaiming idle tracked PR workspaces.
-- `github_user` (string, OPTIONAL)
-  - Polling-mode option.
-- `bot_users` (list of strings)
+- `ignored_users` (list of strings)
   - Polling-mode default: `[]`.
+  - Extra GitHub users whose comments do not trigger PR review rework dispatch.
+  - The effective ignored set in `polling` mode is the union of `ignored_users`, the
+    auto-detected current `gh` user (when `gh api user` succeeds), and the PR author returned
+    by `gh pr view`. Operators do not need to configure their own identity here.
 - `auto_reply` (boolean)
   - Polling-mode default: `false`.
 - `auto_request_review` (boolean)
   - Polling-mode default: `false`.
 
-Polling-only options are ignored when `mode` is not `polling`.
+Polling-only options are ignored when `mode` is not `polling`. CI failure dispatch is driven only
+by failed status checks and ignores comment authorship; the ignored reviewer set above does not
+affect CI escalation.
 
 #### 5.4.7 `github` (object)
 
@@ -1237,8 +1241,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `pr_review.mode`: `tracker` or `polling`, default `tracker`
 - `pr_review.cooldown_minutes`: polling-mode integer, default `10`
 - `pr_review.stale_days`: polling-mode integer, default `7`
-- `pr_review.github_user`: polling-mode string or null
-- `pr_review.bot_users`: polling-mode list of strings, default `[]`
+- `pr_review.ignored_users`: polling-mode list of strings, default `[]`; combined with
+  the auto-detected current `gh` user and PR author
 - `pr_review.auto_reply`: polling-mode boolean, default `false`
 - `pr_review.auto_request_review`: polling-mode boolean, default `false`
 - `ci.enabled`: boolean, default `false`

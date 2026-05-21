@@ -884,8 +884,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:mode, :string, default: "tracker")
       field(:cooldown_minutes, :integer)
       field(:stale_days, :integer)
-      field(:github_user, :string)
-      field(:bot_users, {:array, :string}, default: [])
+      field(:ignored_users, {:array, :string}, default: [])
       field(:auto_reply, :boolean, default: false)
       field(:auto_request_review, :boolean, default: false)
     end
@@ -895,10 +894,11 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         polling_attrs(attrs),
-        [:mode, :cooldown_minutes, :stale_days, :github_user, :bot_users, :auto_reply, :auto_request_review],
+        [:mode, :cooldown_minutes, :stale_days, :ignored_users, :auto_reply, :auto_request_review],
         empty_values: []
       )
       |> put_polling_defaults()
+      |> normalize_ignored_users()
       |> validate_required([:mode])
       |> validate_inclusion(:mode, @modes)
       |> validate_polling_options()
@@ -915,10 +915,8 @@ defmodule SymphonyElixir.Config.Schema do
             :cooldown_minutes,
             "stale_days",
             :stale_days,
-            "github_user",
-            :github_user,
-            "bot_users",
-            :bot_users,
+            "ignored_users",
+            :ignored_users,
             "auto_reply",
             :auto_reply,
             "auto_request_review",
@@ -932,12 +930,26 @@ defmodule SymphonyElixir.Config.Schema do
         changeset
         |> put_default(:cooldown_minutes, @default_cooldown_minutes)
         |> put_default(:stale_days, @default_stale_days)
-        |> put_default(:bot_users, [])
+        |> put_default(:ignored_users, [])
         |> put_default(:auto_reply, false)
         |> put_default(:auto_request_review, false)
       else
         changeset
       end
+    end
+
+    defp normalize_ignored_users(changeset) do
+      update_change(changeset, :ignored_users, fn
+        values when is_list(values) ->
+          values
+          |> Enum.filter(&is_binary/1)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+
+        _ ->
+          []
+      end)
     end
 
     defp put_default(changeset, field, default) do
@@ -1599,10 +1611,25 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp reject_removed_keys(config) do
-    if Map.has_key?(config, "self_review") do
-      {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
-    else
-      :ok
+    cond do
+      Map.has_key?(config, "self_review") ->
+        {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
+
+      pr_review_has_removed_key?(config, "github_user") ->
+        {:error, {:invalid_workflow_config, "`pr_review.github_user` has been removed; add the user to `pr_review.ignored_users` (Symphony also auto-detects the current `gh` user) instead"}}
+
+      pr_review_has_removed_key?(config, "bot_users") ->
+        {:error, {:invalid_workflow_config, "`pr_review.bot_users` has been removed; move bot users into `pr_review.ignored_users` instead"}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp pr_review_has_removed_key?(config, key) when is_binary(key) do
+    case Map.get(config, "pr_review") do
+      %{} = pr_review -> Map.has_key?(pr_review, key)
+      _other -> false
     end
   end
 

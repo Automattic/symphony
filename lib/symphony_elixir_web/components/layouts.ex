@@ -85,8 +85,29 @@ defmodule SymphonyElixirWeb.Layouts do
               };
             }
 
+            var Hooks = {
+              LocalTime: {
+                render: function () {
+                  var iso = this.el.getAttribute("datetime");
+                  if (!iso) return;
+                  var d = new Date(iso);
+                  if (isNaN(d.getTime())) return;
+                  this.el.textContent = d.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false
+                  });
+                  this.el.setAttribute("title", d.toLocaleString());
+                },
+                mounted: function () { this.render(); },
+                updated: function () { this.render(); }
+              }
+            };
+
             var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
-              params: {_csrf_token: csrfToken}
+              params: {_csrf_token: csrfToken},
+              hooks: Hooks
             });
 
             installRestartAwareReconnect(liveSocket);

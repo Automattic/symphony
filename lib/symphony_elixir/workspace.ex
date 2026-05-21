@@ -1350,7 +1350,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp branch_checked_out_elsewhere?(output) when is_binary(output) do
-    String.contains?(output, ["checked out at", "is checked out"])
+    String.contains?(output, ["checked out at", "is checked out", "used by worktree at"])
   end
 
   defp branch_checked_out_elsewhere?(_output), do: false

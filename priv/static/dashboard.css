@@ -84,7 +84,11 @@ button.pause-dispatch-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.38rem;
+  min-height: 1.85rem;
+  padding: 0.3rem 0.68rem;
+  font-size: 0.8rem;
+  line-height: 1;
   border-color: #e5c16c;
   background: #fff7e8;
   color: #7a4b00;
@@ -94,8 +98,8 @@ button.pause-dispatch-button {
 
 button.pause-dispatch-button::before {
   content: "";
-  width: 0.56rem;
-  height: 0.78rem;
+  width: 0.42rem;
+  height: 0.58rem;
   border-radius: 1px;
   background:
     linear-gradient(
@@ -384,6 +388,10 @@ pre,
   display: grid;
   gap: 0.45rem;
   min-width: min(100%, 22rem);
+}
+
+.ops-control-copy > .state-badge {
+  justify-self: start;
 }
 
 .ops-control-detail,

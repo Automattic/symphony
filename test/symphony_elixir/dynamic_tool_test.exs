@@ -906,7 +906,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         command_security: %{
           origin_repo: "acme/symphony",
           origin_url: "git@github.com:acme/symphony.git",
-          current_branch: "auto/RSM-3187",
+          current_branch: "auto/ACME-3187",
           workspace: remote_workspace,
           worker_host: "worker-01"
         }

@@ -1365,7 +1365,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-HANDOFF-MISSING")
+        workspace = Path.join(workspace_root, "ACME-HANDOFF-MISSING")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 
@@ -1410,7 +1410,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       try do
         workspace_root = Path.join(test_root, "workspaces")
-        workspace = Path.join(workspace_root, "RSM-HANDOFF-TOOLS")
+        workspace = Path.join(workspace_root, "ACME-HANDOFF-TOOLS")
         fake_claude = Path.join(test_root, "fake-claude")
         File.mkdir_p!(workspace)
 

@@ -471,8 +471,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_event_at" => nil,
                  "tokens" => %{
                    "input_tokens" => 4,
-                   "cached_input_tokens" => 0,
                    "uncached_input_tokens" => 4,
+                   "cached_input_tokens" => 0,
+                   "cache_creation_input_tokens" => 0,
                    "output_tokens" => 8,
                    "total_tokens" => 12
                  }
@@ -531,8 +532,9 @@ defmodule SymphonyElixir.ExtensionsTest do
              ],
              "codex_totals" => %{
                "input_tokens" => 4,
-               "cached_input_tokens" => 0,
                "uncached_input_tokens" => 4,
+               "cached_input_tokens" => 0,
+               "cache_creation_input_tokens" => 0,
                "output_tokens" => 8,
                "total_tokens" => 12,
                "seconds_running" => 42.5
@@ -583,8 +585,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event_at" => nil,
                "tokens" => %{
                  "input_tokens" => 4,
-                 "cached_input_tokens" => 0,
                  "uncached_input_tokens" => 4,
+                 "cached_input_tokens" => 0,
+                 "cache_creation_input_tokens" => 0,
                  "output_tokens" => 8,
                  "total_tokens" => 12
                }
@@ -1910,7 +1913,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     snapshot =
       static_snapshot()
-      |> Map.put(:codex_totals, %{input_tokens: 4, output_tokens: 8, total_tokens: 12})
+      |> Map.put(:codex_totals, %{"input_tokens" => 12, "cached_input_tokens" => 8, "output_tokens" => 5, "total_tokens" => 17})
 
     {:ok, _pid} =
       StaticOrchestrator.start_link(
@@ -1924,11 +1927,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     state_payload = json_response(get(build_conn(), "/api/v1/state"), 200)
 
     assert state_payload["codex_totals"] == %{
-             "input_tokens" => 4,
-             "cached_input_tokens" => 0,
+             "input_tokens" => 12,
              "uncached_input_tokens" => 4,
-             "output_tokens" => 8,
-             "total_tokens" => 12,
+             "cached_input_tokens" => 8,
+             "cache_creation_input_tokens" => 0,
+             "output_tokens" => 5,
+             "total_tokens" => 17,
              "seconds_running" => 0
            }
 

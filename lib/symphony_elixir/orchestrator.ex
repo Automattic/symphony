@@ -43,6 +43,9 @@ defmodule SymphonyElixir.Orchestrator do
   @terminal_agent_setup_error_marker "missing_required_mcp_tools"
   @empty_codex_totals %{
     input_tokens: 0,
+    uncached_input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
     seconds_running: 0
@@ -2423,17 +2426,31 @@ defmodule SymphonyElixir.Orchestrator do
             codex_app_server_pid: nil,
             agent_module: nil,
             agent_session: nil,
+            uncached_input_tokens: 0,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            reviewer_uncached_input_tokens: 0,
+            reviewer_cached_input_tokens: 0,
+            reviewer_cache_creation_input_tokens: 0,
+            reviewer_output_tokens: 0,
+            reviewer_total_tokens: 0,
             codex_input_tokens: 0,
             codex_cached_input_tokens: 0,
+            codex_cache_creation_input_tokens: 0,
             codex_output_tokens: 0,
             codex_total_tokens: 0,
             reviewer_input_tokens: 0,
-            reviewer_cached_input_tokens: 0,
-            reviewer_output_tokens: 0,
-            reviewer_total_tokens: 0,
             review_agent_enabled: review_agent_enabled_for_repo(repo_key),
+            last_reported_uncached_input_tokens: 0,
+            last_reported_cached_input_tokens: 0,
+            last_reported_cache_creation_input_tokens: 0,
+            last_reported_output_tokens: 0,
+            last_reported_total_tokens: 0,
             codex_last_reported_input_tokens: 0,
             codex_last_reported_cached_input_tokens: 0,
+            codex_last_reported_cache_creation_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
@@ -4095,30 +4112,81 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_tokens(running_entry) when is_map(running_entry) do
-    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
-    cached_input_tokens = Map.get(running_entry, :codex_cached_input_tokens, 0)
-
     %{
-      input_tokens: input_tokens,
-      cached_input_tokens: cached_input_tokens,
-      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
-      output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
-      total_tokens: Map.get(running_entry, :codex_total_tokens, 0)
+      input_tokens: entry_input_tokens(running_entry),
+      uncached_input_tokens: entry_uncached_input_tokens(running_entry),
+      cached_input_tokens: entry_cached_input_tokens(running_entry),
+      cache_creation_input_tokens: entry_cache_creation_input_tokens(running_entry),
+      output_tokens: entry_output_tokens(running_entry),
+      total_tokens: entry_total_tokens(running_entry)
     }
   end
 
   defp reviewer_tokens(running_entry) when is_map(running_entry) do
-    input_tokens = Map.get(running_entry, :reviewer_input_tokens, 0)
-    cached_input_tokens = Map.get(running_entry, :reviewer_cached_input_tokens, 0)
-
     %{
-      input_tokens: input_tokens,
-      cached_input_tokens: cached_input_tokens,
-      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
-      output_tokens: Map.get(running_entry, :reviewer_output_tokens, 0),
-      total_tokens: Map.get(running_entry, :reviewer_total_tokens, 0)
+      input_tokens: reviewer_input_tokens(running_entry),
+      uncached_input_tokens: reviewer_uncached_input_tokens(running_entry),
+      cached_input_tokens: reviewer_cached_input_tokens(running_entry),
+      cache_creation_input_tokens: reviewer_cache_creation_input_tokens(running_entry),
+      output_tokens: reviewer_output_tokens(running_entry),
+      total_tokens: reviewer_total_tokens(running_entry)
     }
   end
+
+  defp entry_uncached_input_tokens(entry) when is_map(entry) do
+    case Map.get(entry, :uncached_input_tokens) do
+      value when is_integer(value) -> max(value, 0)
+      _ -> max(Map.get(entry, :codex_input_tokens, 0) - Map.get(entry, :codex_cached_input_tokens, 0), 0)
+    end
+  end
+
+  defp entry_input_tokens(entry) when is_map(entry) do
+    if Map.has_key?(entry, :uncached_input_tokens) do
+      entry_uncached_input_tokens(entry) + entry_cached_input_tokens(entry) + entry_cache_creation_input_tokens(entry)
+    else
+      max(Map.get(entry, :codex_input_tokens, 0), 0)
+    end
+  end
+
+  defp entry_cached_input_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :cached_input_tokens, Map.get(entry, :codex_cached_input_tokens, 0)), 0)
+
+  defp entry_cache_creation_input_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :cache_creation_input_tokens, Map.get(entry, :codex_cache_creation_input_tokens, 0)), 0)
+
+  defp entry_output_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :output_tokens, Map.get(entry, :codex_output_tokens, 0)), 0)
+
+  defp entry_total_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :total_tokens, Map.get(entry, :codex_total_tokens, 0)), 0)
+
+  defp reviewer_uncached_input_tokens(entry) when is_map(entry) do
+    case Map.get(entry, :reviewer_uncached_input_tokens) do
+      value when is_integer(value) -> max(value, 0)
+      _ -> max(Map.get(entry, :reviewer_input_tokens, 0) - Map.get(entry, :reviewer_cached_input_tokens, 0), 0)
+    end
+  end
+
+  defp reviewer_input_tokens(entry) when is_map(entry) do
+    if Map.has_key?(entry, :reviewer_uncached_input_tokens) do
+      reviewer_uncached_input_tokens(entry) + reviewer_cached_input_tokens(entry) +
+        reviewer_cache_creation_input_tokens(entry)
+    else
+      max(Map.get(entry, :reviewer_input_tokens, 0), 0)
+    end
+  end
+
+  defp reviewer_cached_input_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :reviewer_cached_input_tokens, 0), 0)
+
+  defp reviewer_cache_creation_input_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :reviewer_cache_creation_input_tokens, 0), 0)
+
+  defp reviewer_output_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :reviewer_output_tokens, 0), 0)
+
+  defp reviewer_total_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :reviewer_total_tokens, 0), 0)
 
   defp review_agent_enabled?(%{review_agent: %{enabled: true}}), do: true
   defp review_agent_enabled?(_settings), do: false
@@ -4487,14 +4555,23 @@ defmodule SymphonyElixir.Orchestrator do
           session_id: Map.get(metadata, :session_id),
           transcript_path: Map.get(metadata, :transcript_path),
           codex_app_server_pid: Map.get(metadata, :codex_app_server_pid),
-          codex_input_tokens: Map.get(metadata, :codex_input_tokens, 0),
-          codex_cached_input_tokens: Map.get(metadata, :codex_cached_input_tokens, 0),
-          codex_output_tokens: Map.get(metadata, :codex_output_tokens, 0),
-          codex_total_tokens: Map.get(metadata, :codex_total_tokens, 0),
-          reviewer_input_tokens: Map.get(metadata, :reviewer_input_tokens, 0),
-          reviewer_cached_input_tokens: Map.get(metadata, :reviewer_cached_input_tokens, 0),
-          reviewer_output_tokens: Map.get(metadata, :reviewer_output_tokens, 0),
-          reviewer_total_tokens: Map.get(metadata, :reviewer_total_tokens, 0),
+          input_tokens: entry_input_tokens(metadata),
+          uncached_input_tokens: entry_uncached_input_tokens(metadata),
+          cached_input_tokens: entry_cached_input_tokens(metadata),
+          cache_creation_input_tokens: entry_cache_creation_input_tokens(metadata),
+          output_tokens: entry_output_tokens(metadata),
+          total_tokens: entry_total_tokens(metadata),
+          codex_input_tokens: entry_input_tokens(metadata),
+          codex_cached_input_tokens: entry_cached_input_tokens(metadata),
+          codex_cache_creation_input_tokens: entry_cache_creation_input_tokens(metadata),
+          codex_output_tokens: entry_output_tokens(metadata),
+          codex_total_tokens: entry_total_tokens(metadata),
+          reviewer_input_tokens: reviewer_input_tokens(metadata),
+          reviewer_uncached_input_tokens: reviewer_uncached_input_tokens(metadata),
+          reviewer_cached_input_tokens: reviewer_cached_input_tokens(metadata),
+          reviewer_cache_creation_input_tokens: reviewer_cache_creation_input_tokens(metadata),
+          reviewer_output_tokens: reviewer_output_tokens(metadata),
+          reviewer_total_tokens: reviewer_total_tokens(metadata),
           review_agent_enabled: Map.get(metadata, :review_agent_enabled, false),
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
@@ -4612,23 +4689,52 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
-    codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
-    codex_cached_input_tokens = Map.get(running_entry, :codex_cached_input_tokens, 0)
-    codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
-    codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
-    reviewer_input_tokens = Map.get(running_entry, :reviewer_input_tokens, 0)
-    reviewer_cached_input_tokens = Map.get(running_entry, :reviewer_cached_input_tokens, 0)
-    reviewer_output_tokens = Map.get(running_entry, :reviewer_output_tokens, 0)
-    reviewer_total_tokens = Map.get(running_entry, :reviewer_total_tokens, 0)
+    uncached_input_tokens = entry_uncached_input_tokens(running_entry)
+    cached_input_tokens = entry_cached_input_tokens(running_entry)
+    cache_creation_input_tokens = entry_cache_creation_input_tokens(running_entry)
+    output_tokens = entry_output_tokens(running_entry)
+    total_tokens = entry_total_tokens(running_entry)
+    reviewer_uncached_input_tokens = reviewer_uncached_input_tokens(running_entry)
+    reviewer_cached_input_tokens = reviewer_cached_input_tokens(running_entry)
+    reviewer_cache_creation_input_tokens = reviewer_cache_creation_input_tokens(running_entry)
+    reviewer_output_tokens = reviewer_output_tokens(running_entry)
+    reviewer_total_tokens = reviewer_total_tokens(running_entry)
     codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
     transcript_path = Map.get(running_entry, :transcript_path)
     pull_request_url = URLUtils.pull_request_url(update) || URLUtils.pull_request_url(running_entry)
-    last_reported_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
-    last_reported_cached_input = Map.get(running_entry, :codex_last_reported_cached_input_tokens, 0)
-    last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
-    last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
+    last_reported_uncached_input = last_reported_token(running_entry, :uncached_input)
+    last_reported_cached_input = last_reported_token(running_entry, :cached_input)
+    last_reported_cache_creation_input = last_reported_token(running_entry, :cache_creation_input)
+    last_reported_output = last_reported_token(running_entry, :output)
+    last_reported_total = last_reported_token(running_entry, :total)
     turn_count = Map.get(running_entry, :turn_count, 0)
     reviewer_delta = reviewer_token_delta(update, token_delta)
+    next_uncached_input_tokens = uncached_input_tokens + token_delta.uncached_input_tokens
+    next_cached_input_tokens = cached_input_tokens + token_delta.cached_input_tokens
+    next_cache_creation_input_tokens = cache_creation_input_tokens + token_delta.cache_creation_input_tokens
+    next_input_tokens = next_uncached_input_tokens + next_cached_input_tokens + next_cache_creation_input_tokens
+    next_output_tokens = output_tokens + token_delta.output_tokens
+    next_total_tokens = total_tokens + token_delta.total_tokens
+    next_reviewer_uncached_input_tokens = reviewer_uncached_input_tokens + reviewer_delta.uncached_input_tokens
+    next_reviewer_cached_input_tokens = reviewer_cached_input_tokens + reviewer_delta.cached_input_tokens
+
+    next_reviewer_cache_creation_input_tokens =
+      reviewer_cache_creation_input_tokens + reviewer_delta.cache_creation_input_tokens
+
+    next_reviewer_input_tokens =
+      next_reviewer_uncached_input_tokens + next_reviewer_cached_input_tokens +
+        next_reviewer_cache_creation_input_tokens
+
+    next_reviewer_output_tokens = reviewer_output_tokens + reviewer_delta.output_tokens
+    next_reviewer_total_tokens = reviewer_total_tokens + reviewer_delta.total_tokens
+    next_last_reported_uncached_input = max(last_reported_uncached_input, token_delta.uncached_input_reported)
+    next_last_reported_cached_input = max(last_reported_cached_input, token_delta.cached_input_reported)
+
+    next_last_reported_cache_creation_input =
+      max(last_reported_cache_creation_input, token_delta.cache_creation_input_reported)
+
+    next_last_reported_output = max(last_reported_output, token_delta.output_reported)
+    next_last_reported_total = max(last_reported_total, token_delta.total_reported)
 
     {transcript_buffer, transcript_buffer_size} =
       append_transcript_event(
@@ -4648,18 +4754,33 @@ defmodule SymphonyElixir.Orchestrator do
         last_codex_event: event,
         last_event_at: timestamp,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
-        codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
-        codex_cached_input_tokens: codex_cached_input_tokens + token_delta.cached_input_tokens,
-        codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
-        codex_total_tokens: codex_total_tokens + token_delta.total_tokens,
-        reviewer_input_tokens: reviewer_input_tokens + reviewer_delta.input_tokens,
-        reviewer_cached_input_tokens: reviewer_cached_input_tokens + reviewer_delta.cached_input_tokens,
-        reviewer_output_tokens: reviewer_output_tokens + reviewer_delta.output_tokens,
-        reviewer_total_tokens: reviewer_total_tokens + reviewer_delta.total_tokens,
-        codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
-        codex_last_reported_cached_input_tokens: max(last_reported_cached_input, token_delta.cached_input_reported),
-        codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
-        codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
+        input_tokens: next_input_tokens,
+        uncached_input_tokens: next_uncached_input_tokens,
+        cached_input_tokens: next_cached_input_tokens,
+        cache_creation_input_tokens: next_cache_creation_input_tokens,
+        output_tokens: next_output_tokens,
+        total_tokens: next_total_tokens,
+        codex_input_tokens: next_input_tokens,
+        codex_cached_input_tokens: next_cached_input_tokens,
+        codex_cache_creation_input_tokens: next_cache_creation_input_tokens,
+        codex_output_tokens: next_output_tokens,
+        codex_total_tokens: next_total_tokens,
+        reviewer_input_tokens: next_reviewer_input_tokens,
+        reviewer_uncached_input_tokens: next_reviewer_uncached_input_tokens,
+        reviewer_cached_input_tokens: next_reviewer_cached_input_tokens,
+        reviewer_cache_creation_input_tokens: next_reviewer_cache_creation_input_tokens,
+        reviewer_output_tokens: next_reviewer_output_tokens,
+        reviewer_total_tokens: next_reviewer_total_tokens,
+        last_reported_uncached_input_tokens: next_last_reported_uncached_input,
+        last_reported_cached_input_tokens: next_last_reported_cached_input,
+        last_reported_cache_creation_input_tokens: next_last_reported_cache_creation_input,
+        last_reported_output_tokens: next_last_reported_output,
+        last_reported_total_tokens: next_last_reported_total,
+        codex_last_reported_input_tokens: next_last_reported_uncached_input,
+        codex_last_reported_cached_input_tokens: next_last_reported_cached_input,
+        codex_last_reported_cache_creation_input_tokens: next_last_reported_cache_creation_input,
+        codex_last_reported_output_tokens: next_last_reported_output,
+        codex_last_reported_total_tokens: next_last_reported_total,
         turn_count: turn_count_for_update(turn_count, Map.get(running_entry, :session_id), update),
         transcript_buffer: transcript_buffer,
         transcript_buffer_size: transcript_buffer_size
@@ -4671,7 +4792,46 @@ defmodule SymphonyElixir.Orchestrator do
   defp reviewer_token_delta(%{agent_phase: :reviewer}, token_delta), do: token_delta
 
   defp reviewer_token_delta(_update, _token_delta) do
-    %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
+    %{
+      input_tokens: 0,
+      uncached_input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0
+    }
+  end
+
+  defp last_reported_token(running_entry, :uncached_input) do
+    case Map.get(running_entry, :last_reported_uncached_input_tokens) do
+      value when is_integer(value) ->
+        value
+
+      _ ->
+        legacy_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
+        legacy_cached = Map.get(running_entry, :codex_last_reported_cached_input_tokens, 0)
+        max(legacy_input - legacy_cached, 0)
+    end
+  end
+
+  defp last_reported_token(running_entry, :cached_input) do
+    Map.get(running_entry, :last_reported_cached_input_tokens, Map.get(running_entry, :codex_last_reported_cached_input_tokens, 0))
+  end
+
+  defp last_reported_token(running_entry, :cache_creation_input) do
+    Map.get(
+      running_entry,
+      :last_reported_cache_creation_input_tokens,
+      Map.get(running_entry, :codex_last_reported_cache_creation_input_tokens, 0)
+    )
+  end
+
+  defp last_reported_token(running_entry, :output) do
+    Map.get(running_entry, :last_reported_output_tokens, Map.get(running_entry, :codex_last_reported_output_tokens, 0))
+  end
+
+  defp last_reported_token(running_entry, :total) do
+    Map.get(running_entry, :last_reported_total_tokens, Map.get(running_entry, :codex_last_reported_total_tokens, 0))
   end
 
   defp maybe_put_review_agent_verdict_tokens(%{event: event} = update, running_entry)
@@ -5030,7 +5190,9 @@ defmodule SymphonyElixir.Orchestrator do
         state.codex_totals,
         %{
           input_tokens: 0,
+          uncached_input_tokens: 0,
           cached_input_tokens: 0,
+          cache_creation_input_tokens: 0,
           output_tokens: 0,
           total_tokens: 0,
           seconds_running: runtime_seconds
@@ -5368,7 +5530,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp enforce_issue_budget(state, _issue_id), do: state
 
   defp running_entry_total_tokens(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :codex_total_tokens, 0)
+    entry_total_tokens(running_entry)
   end
 
   defp running_entry_total_tokens(_running_entry), do: 0
@@ -5376,11 +5538,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp log_issue_budget_exhausted(issue_id, running_entry, limit, total_tokens) do
     identifier = Map.get(running_entry, :identifier, issue_id)
     session_id = running_entry_session_id(running_entry)
-    input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
-    output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
+    input_tokens = entry_uncached_input_tokens(running_entry)
+    output_tokens = entry_output_tokens(running_entry)
 
     Logger.warning(
-      "Issue token budget exhausted: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} input_tokens=#{input_tokens} output_tokens=#{output_tokens} total_tokens=#{total_tokens} limit=#{limit}; stopping active agent without retry"
+      "Issue token budget exhausted: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} uncached_input_tokens=#{input_tokens} output_tokens=#{output_tokens} total_tokens=#{total_tokens} limit=#{limit}; stopping active agent without retry"
     )
   end
 
@@ -5390,7 +5552,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_codex_token_delta(
          %{codex_totals: codex_totals} = state,
-         %{input_tokens: input, output_tokens: output, total_tokens: total} = token_delta
+         %{uncached_input_tokens: input, output_tokens: output, total_tokens: total} = token_delta
        )
        when is_integer(input) and is_integer(output) and is_integer(total) do
     state = reset_daily_budget_if_needed(state)
@@ -5420,8 +5582,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp apply_rate_limits(state, _update), do: state
 
   defp apply_token_delta(codex_totals, token_delta) do
-    input_tokens = Map.get(codex_totals, :input_tokens, 0) + token_delta.input_tokens
+    uncached_input_tokens = codex_totals_uncached_input_tokens(codex_totals) + token_delta.uncached_input_tokens
     cached_input_tokens = Map.get(codex_totals, :cached_input_tokens, 0) + token_delta.cached_input_tokens
+
+    cache_creation_input_tokens =
+      Map.get(codex_totals, :cache_creation_input_tokens, 0) + token_delta.cache_creation_input_tokens
+
     output_tokens = Map.get(codex_totals, :output_tokens, 0) + token_delta.output_tokens
     total_tokens = Map.get(codex_totals, :total_tokens, 0) + token_delta.total_tokens
 
@@ -5429,14 +5595,24 @@ defmodule SymphonyElixir.Orchestrator do
       Map.get(codex_totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
 
     %{
-      input_tokens: max(0, input_tokens),
+      input_tokens: max(0, uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens),
+      uncached_input_tokens: max(0, uncached_input_tokens),
       cached_input_tokens: max(0, cached_input_tokens),
-      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
+      cache_creation_input_tokens: max(0, cache_creation_input_tokens),
       output_tokens: max(0, output_tokens),
       total_tokens: max(0, total_tokens),
       seconds_running: max(0, seconds_running)
     }
   end
+
+  defp codex_totals_uncached_input_tokens(codex_totals) when is_map(codex_totals) do
+    case Map.get(codex_totals, :uncached_input_tokens) do
+      value when is_integer(value) -> max(value, 0)
+      _ -> max(Map.get(codex_totals, :input_tokens, 0) - Map.get(codex_totals, :cached_input_tokens, 0), 0)
+    end
+  end
+
+  defp codex_totals_uncached_input_tokens(_codex_totals), do: 0
 
   defp extract_token_delta(running_entry, %{event: _, timestamp: _} = update) do
     running_entry = running_entry || %{}
@@ -5445,38 +5621,51 @@ defmodule SymphonyElixir.Orchestrator do
     {
       compute_token_delta(
         running_entry,
-        :input,
+        :uncached_input,
         usage,
-        :codex_last_reported_input_tokens
+        :last_reported_uncached_input_tokens
       ),
       compute_token_delta(
         running_entry,
         :cached_input,
         usage,
-        :codex_last_reported_cached_input_tokens
+        :last_reported_cached_input_tokens
+      ),
+      compute_token_delta(
+        running_entry,
+        :cache_creation_input,
+        usage,
+        :last_reported_cache_creation_input_tokens
       ),
       compute_token_delta(
         running_entry,
         :output,
         usage,
-        :codex_last_reported_output_tokens
+        :last_reported_output_tokens
       ),
       compute_token_delta(
         running_entry,
         :total,
         usage,
-        :codex_last_reported_total_tokens
+        :last_reported_total_tokens
       )
     }
     |> Tuple.to_list()
-    |> then(fn [input, cached_input, output, total] ->
+    |> then(fn [uncached_input, cached_input, cache_creation_input, output, total] ->
+      input_delta = uncached_input.delta + cached_input.delta + cache_creation_input.delta
+      input_reported = uncached_input.reported + cached_input.reported + cache_creation_input.reported
+
       %{
-        input_tokens: input.delta,
+        input_tokens: input_delta,
+        uncached_input_tokens: uncached_input.delta,
         cached_input_tokens: cached_input.delta,
+        cache_creation_input_tokens: cache_creation_input.delta,
         output_tokens: output.delta,
         total_tokens: total.delta,
-        input_reported: input.reported,
+        input_reported: input_reported,
+        uncached_input_reported: uncached_input.reported,
         cached_input_reported: cached_input.reported,
+        cache_creation_input_reported: cache_creation_input.reported,
         output_reported: output.reported,
         total_reported: total.reported
       }
@@ -5485,7 +5674,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp compute_token_delta(running_entry, token_key, usage, reported_key) do
     next_total = get_token_usage(usage, token_key)
-    prev_reported = Map.get(running_entry, reported_key, 0)
+    prev_reported = reported_token(running_entry, reported_key)
 
     delta =
       if is_integer(next_total) and next_total >= prev_reported do
@@ -5499,6 +5688,21 @@ defmodule SymphonyElixir.Orchestrator do
       reported: if(is_integer(next_total), do: next_total, else: prev_reported)
     }
   end
+
+  defp reported_token(running_entry, :last_reported_uncached_input_tokens),
+    do: last_reported_token(running_entry, :uncached_input)
+
+  defp reported_token(running_entry, :last_reported_cached_input_tokens),
+    do: last_reported_token(running_entry, :cached_input)
+
+  defp reported_token(running_entry, :last_reported_cache_creation_input_tokens),
+    do: last_reported_token(running_entry, :cache_creation_input)
+
+  defp reported_token(running_entry, :last_reported_output_tokens),
+    do: last_reported_token(running_entry, :output)
+
+  defp reported_token(running_entry, :last_reported_total_tokens),
+    do: last_reported_token(running_entry, :total)
 
   defp extract_token_usage(update) do
     payloads = [
@@ -5649,11 +5853,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp integer_token_map?(payload) do
     token_fields = [
       :input_tokens,
+      :uncached_input_tokens,
       :output_tokens,
       :total_tokens,
       :prompt_tokens,
       :completion_tokens,
       :inputTokens,
+      :uncachedInputTokens,
       :outputTokens,
       :totalTokens,
       :promptTokens,
@@ -5661,19 +5867,25 @@ defmodule SymphonyElixir.Orchestrator do
       :cached_input_tokens,
       :cachedInputTokens,
       :cache_read_input_tokens,
+      :cache_creation_input_tokens,
+      :cacheCreationInputTokens,
       "input_tokens",
+      "uncached_input_tokens",
       "output_tokens",
       "total_tokens",
       "prompt_tokens",
       "completion_tokens",
       "inputTokens",
+      "uncachedInputTokens",
       "outputTokens",
       "totalTokens",
       "promptTokens",
       "completionTokens",
       "cached_input_tokens",
       "cachedInputTokens",
-      "cache_read_input_tokens"
+      "cache_read_input_tokens",
+      "cache_creation_input_tokens",
+      "cacheCreationInputTokens"
     ]
 
     token_fields
@@ -5683,19 +5895,47 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
-  defp get_token_usage(usage, :input),
-    do:
+  defp get_token_usage(usage, :uncached_input) do
+    explicit =
       payload_get(usage, [
-        "input_tokens",
-        "prompt_tokens",
-        :input_tokens,
-        :prompt_tokens,
-        :input,
-        "promptTokens",
-        :promptTokens,
-        "inputTokens",
-        :inputTokens
+        "uncached_input_tokens",
+        :uncached_input_tokens,
+        "uncachedInputTokens",
+        :uncachedInputTokens
       ])
+
+    if is_integer(explicit) do
+      explicit
+    else
+      input =
+        payload_get(usage, [
+          "input_tokens",
+          "prompt_tokens",
+          :input_tokens,
+          :prompt_tokens,
+          :input,
+          "promptTokens",
+          :promptTokens,
+          "inputTokens",
+          :inputTokens
+        ])
+
+      codex_cached =
+        payload_get(usage, [
+          "cached_input_tokens",
+          :cached_input_tokens,
+          "cachedInputTokens",
+          :cachedInputTokens
+        ])
+
+      cond do
+        is_integer(input) and anthropic_cache_usage?(usage) -> input
+        is_integer(input) and is_integer(codex_cached) -> max(input - codex_cached, 0)
+        is_integer(input) -> input
+        true -> nil
+      end
+    end
+  end
 
   defp get_token_usage(usage, :cached_input),
     do:
@@ -5705,7 +5945,18 @@ defmodule SymphonyElixir.Orchestrator do
         "cachedInputTokens",
         :cachedInputTokens,
         "cache_read_input_tokens",
-        :cache_read_input_tokens
+        :cache_read_input_tokens,
+        "cacheReadInputTokens",
+        :cacheReadInputTokens
+      ])
+
+  defp get_token_usage(usage, :cache_creation_input),
+    do:
+      payload_get(usage, [
+        "cache_creation_input_tokens",
+        :cache_creation_input_tokens,
+        "cacheCreationInputTokens",
+        :cacheCreationInputTokens
       ])
 
   defp get_token_usage(usage, :output),
@@ -5723,8 +5974,8 @@ defmodule SymphonyElixir.Orchestrator do
         :completionTokens
       ])
 
-  defp get_token_usage(usage, :total),
-    do:
+  defp get_token_usage(usage, :total) do
+    explicit =
       payload_get(usage, [
         "total_tokens",
         "total",
@@ -5733,6 +5984,38 @@ defmodule SymphonyElixir.Orchestrator do
         "totalTokens",
         :totalTokens
       ])
+
+    if is_integer(explicit) do
+      explicit
+    else
+      [
+        get_token_usage(usage, :uncached_input),
+        get_token_usage(usage, :cached_input),
+        get_token_usage(usage, :cache_creation_input),
+        get_token_usage(usage, :output)
+      ]
+      |> Enum.filter(&is_integer/1)
+      |> case do
+        [] -> nil
+        values -> Enum.sum(values)
+      end
+    end
+  end
+
+  defp anthropic_cache_usage?(usage) do
+    is_integer(
+      payload_get(usage, [
+        "cache_read_input_tokens",
+        :cache_read_input_tokens,
+        "cacheReadInputTokens",
+        :cacheReadInputTokens,
+        "cache_creation_input_tokens",
+        :cache_creation_input_tokens,
+        "cacheCreationInputTokens",
+        :cacheCreationInputTokens
+      ])
+    )
+  end
 
   defp payload_get(payload, fields) when is_list(fields) do
     Enum.find_value(fields, fn field -> map_integer_value(payload, field) end)

@@ -228,6 +228,24 @@ Ignore these for accounting:
 
 Do not treat generic `params.usage` as equivalent to a cumulative thread total unless the event type makes that meaning explicit.
 
+### Provider-neutral buckets
+
+Symphony stores token usage in four provider-neutral buckets:
+
+- `uncached_input_tokens`: new input processed by the model.
+- `cached_input_tokens`: input served from cache or cache read.
+- `cache_creation_input_tokens`: input written into cache.
+- `output_tokens`: generated output.
+
+Codex/OpenAI reports `input_tokens` as full prompt input, including cached input, so Symphony derives
+`uncached_input_tokens = max(input_tokens - cached_input_tokens, 0)` unless an explicit uncached field
+is present. Anthropic reports `input_tokens` as uncached input and reports cache reads and cache writes
+separately, so Symphony maps `cache_read_input_tokens` to `cached_input_tokens` and preserves
+`cache_creation_input_tokens`.
+
+`input_tokens` can still appear in API and persisted metadata as a legacy total-input field. New code
+should prefer the four explicit buckets.
+
 ### Algorithm
 
 #### If an absolute total is present

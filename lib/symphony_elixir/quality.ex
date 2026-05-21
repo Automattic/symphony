@@ -227,25 +227,46 @@ defmodule SymphonyElixir.Quality do
     input_tokens = integer_or_zero(Map.get(tokens, :input_tokens) || Map.get(tokens, "input_tokens"))
     cached_input_tokens = integer_or_zero(Map.get(tokens, :cached_input_tokens) || Map.get(tokens, "cached_input_tokens"))
 
+    uncached_input_tokens =
+      integer_or_zero(
+        Map.get(tokens, :uncached_input_tokens) ||
+          Map.get(tokens, "uncached_input_tokens") ||
+          max(input_tokens - cached_input_tokens, 0)
+      )
+
+    cache_creation_input_tokens =
+      integer_or_zero(Map.get(tokens, :cache_creation_input_tokens) || Map.get(tokens, "cache_creation_input_tokens"))
+
     %{
-      input_tokens: input_tokens,
+      input_tokens: uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens,
+      uncached_input_tokens: uncached_input_tokens,
       cached_input_tokens: cached_input_tokens,
-      uncached_input_tokens: integer_or_zero(Map.get(tokens, :uncached_input_tokens) || Map.get(tokens, "uncached_input_tokens") || max(input_tokens - cached_input_tokens, 0)),
+      cache_creation_input_tokens: cache_creation_input_tokens,
       output_tokens: integer_or_zero(Map.get(tokens, :output_tokens) || Map.get(tokens, "output_tokens")),
       total_tokens: integer_or_zero(Map.get(tokens, :total_tokens) || Map.get(tokens, "total_tokens"))
     }
   end
 
   defp tokens_from_entry(running_entry) when is_map(running_entry) do
-    input_tokens = integer_or_zero(Map.get(running_entry, :codex_input_tokens))
-    cached_input_tokens = integer_or_zero(Map.get(running_entry, :codex_cached_input_tokens))
+    uncached_input_tokens =
+      integer_or_zero(
+        Map.get(running_entry, :uncached_input_tokens) ||
+          max(integer_or_zero(Map.get(running_entry, :codex_input_tokens)) - integer_or_zero(Map.get(running_entry, :codex_cached_input_tokens)), 0)
+      )
+
+    cached_input_tokens =
+      integer_or_zero(Map.get(running_entry, :cached_input_tokens) || Map.get(running_entry, :codex_cached_input_tokens))
+
+    cache_creation_input_tokens =
+      integer_or_zero(Map.get(running_entry, :cache_creation_input_tokens) || Map.get(running_entry, :codex_cache_creation_input_tokens))
 
     %{
-      input_tokens: input_tokens,
+      input_tokens: uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens,
+      uncached_input_tokens: uncached_input_tokens,
       cached_input_tokens: cached_input_tokens,
-      uncached_input_tokens: max(input_tokens - cached_input_tokens, 0),
-      output_tokens: integer_or_zero(Map.get(running_entry, :codex_output_tokens)),
-      total_tokens: integer_or_zero(Map.get(running_entry, :codex_total_tokens))
+      cache_creation_input_tokens: cache_creation_input_tokens,
+      output_tokens: integer_or_zero(Map.get(running_entry, :output_tokens) || Map.get(running_entry, :codex_output_tokens)),
+      total_tokens: integer_or_zero(Map.get(running_entry, :total_tokens) || Map.get(running_entry, :codex_total_tokens))
     }
   end
 

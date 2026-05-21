@@ -269,12 +269,18 @@ Fields:
   - Updated for every transcript event and initialized when runtime dispatch metadata is received.
   - Used by no-progress watchdog detection.
 - `last_codex_message` (summarized payload)
-- `codex_input_tokens` (integer)
-- `codex_output_tokens` (integer)
-- `codex_total_tokens` (integer)
-- `last_reported_input_tokens` (integer)
+- `input_tokens` (integer, legacy total input bucket)
+- `uncached_input_tokens` (integer)
+- `cached_input_tokens` (integer)
+- `cache_creation_input_tokens` (integer)
+- `output_tokens` (integer)
+- `total_tokens` (integer)
+- `last_reported_uncached_input_tokens` (integer)
+- `last_reported_cached_input_tokens` (integer)
+- `last_reported_cache_creation_input_tokens` (integer)
 - `last_reported_output_tokens` (integer)
 - `last_reported_total_tokens` (integer)
+- `codex_*_tokens` compatibility aliases for older callers
 - `turn_count` (integer)
   - Number of coding-agent turns started within the current worker lifetime.
 
@@ -2210,7 +2216,10 @@ SHOULD return:
 - `run_history` (recent durable run records, if a durable store is enabled)
 - each run-history row SHOULD include `repo_key`
 - `codex_totals`
-  - `input_tokens`
+  - `input_tokens` (legacy total input bucket)
+  - `uncached_input_tokens`
+  - `cached_input_tokens`
+  - `cache_creation_input_tokens`
   - `output_tokens`
   - `total_tokens`
   - `seconds_running` (aggregate runtime seconds as of snapshot time, including active sessions)
@@ -2242,8 +2251,18 @@ Token accounting rules:
   - `thread/tokenUsage/updated` payloads
   - `total_token_usage` within token-count wrapper events
 - Ignore delta-style payloads such as `last_token_usage` for dashboard/API totals.
-- Extract input/output/total token counts leniently from common field names within the selected
-  payload.
+- Extract token counts leniently from common field names within the selected payload.
+- Track provider-neutral buckets with consistent semantics:
+  - `uncached_input_tokens`: new input processed by the model
+  - `cached_input_tokens`: input served from cache or cache read
+  - `cache_creation_input_tokens`: input written into cache
+  - `output_tokens`: generated output
+- `input_tokens` MAY be exposed as a legacy total input value, but callers SHOULD prefer the
+  provider-neutral buckets.
+- For Codex/OpenAI payloads where `input_tokens` includes cached input, derive uncached input as
+  `max(input_tokens - cached_input_tokens, 0)` unless an explicit uncached field is present.
+- For Anthropic payloads, treat `input_tokens` as uncached input and preserve
+  `cache_read_input_tokens` as cached input plus `cache_creation_input_tokens`.
 - For absolute totals, track deltas relative to last reported totals to avoid double-counting.
 - Do not treat generic `usage` maps as cumulative totals unless the event type defines them that
   way.
@@ -2374,6 +2393,9 @@ Minimum endpoints:
           "last_event_at": "2026-02-24T20:14:59Z",
           "tokens": {
             "input_tokens": 1200,
+            "uncached_input_tokens": 900,
+            "cached_input_tokens": 250,
+            "cache_creation_input_tokens": 50,
             "output_tokens": 800,
             "total_tokens": 2000
           }
@@ -2415,6 +2437,9 @@ Minimum endpoints:
           "workspace_path": "/tmp/symphony_workspaces/web/MT-649",
           "tokens": {
             "input_tokens": 1200,
+            "uncached_input_tokens": 900,
+            "cached_input_tokens": 250,
+            "cache_creation_input_tokens": 50,
             "output_tokens": 800,
             "total_tokens": 2000
           }
@@ -2422,6 +2447,9 @@ Minimum endpoints:
       ],
       "codex_totals": {
         "input_tokens": 5000,
+        "uncached_input_tokens": 4100,
+        "cached_input_tokens": 700,
+        "cache_creation_input_tokens": 200,
         "output_tokens": 2400,
         "total_tokens": 7400,
         "seconds_running": 1834.2
@@ -2469,6 +2497,9 @@ Minimum endpoints:
         "last_event_at": "2026-02-24T20:14:59Z",
         "tokens": {
           "input_tokens": 1200,
+          "uncached_input_tokens": 900,
+          "cached_input_tokens": 250,
+          "cache_creation_input_tokens": 50,
           "output_tokens": 800,
           "total_tokens": 2000
         }
@@ -2886,10 +2917,15 @@ function dispatch_issue(issue, state, attempt):
     last_codex_message: null,
     last_codex_event: null,
     last_codex_timestamp: null,
-    codex_input_tokens: 0,
-    codex_output_tokens: 0,
-    codex_total_tokens: 0,
-    last_reported_input_tokens: 0,
+    input_tokens: 0,
+    uncached_input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    last_reported_uncached_input_tokens: 0,
+    last_reported_cached_input_tokens: 0,
+    last_reported_cache_creation_input_tokens: 0,
     last_reported_output_tokens: 0,
     last_reported_total_tokens: 0,
     retry_attempt: normalize_attempt(attempt),

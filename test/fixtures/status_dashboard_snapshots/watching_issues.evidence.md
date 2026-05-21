@@ -4,7 +4,7 @@
 │ Agents: 0/10
 │ Throughput: 0 tps
 │ Runtime: 45m 0s
-│ Tokens: in 18,000 | out 2,200 | total 20,200
+│ Tokens: new 18,000 | cached 0 | created 0 | out 2,200
 │ Rate Limits: unavailable
 │ Repos: default
 │ Next refresh: n/a

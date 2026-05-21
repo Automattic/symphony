@@ -417,7 +417,9 @@ A set var substitutes the value; an empty var drops the entry; a missing var kee
   app-server stdio soft limit, Symphony sends a compact bootstrap prompt instead. The compact
   prompt keeps the hard security rules and directs Codex to load issue details through scoped
   `linear_*` tools, preventing large echoed `userMessage` events from wedging the app-server
-  stdout stream.
+  stdout stream. Symphony also injects Codex-only guidance to run noisy validation commands
+  through a log file and print only the exit status plus a short tail, reducing the chance that
+  large `aggregatedOutput` events hit Codex app-server stdio write limits.
 - **Codex remote workers:** `inherit: allowlist` and `inherit: all` are rejected (Symphony only
   reads the orchestrator's host config). Declare servers explicitly under `servers`.
 - **Claude:** `inherit: allowlist` reads only the top-level `mcpServers` map in
@@ -711,9 +713,9 @@ github:
   tools run in the orchestrator with orchestrator credentials. During Codex session setup,
   Symphony discovers the remote workspace's `origin` URL and current branch over SSH and uses that
   scope for `github_get_pull_request`, `github_create_pull_request`,
-  `github_update_pull_request_body`, `github_add_pr_comment`, and `github_get_pr_checks`. Git push
-  is separate: `github_push_branch` is **not** brokered for SSH workers and returns an unsupported
-  error.
+  `github_update_pull_request_body`, `github_add_pr_comment`,
+  `github_reply_to_review_comment`, and `github_get_pr_checks`. Git push is separate:
+  `github_push_branch` is **not** brokered for SSH workers and returns an unsupported error.
 
 ### `observability` and `server`
 

@@ -7,6 +7,13 @@ defmodule SymphonyElixir.PromptBuilder do
 
   @render_opts [strict_variables: true, strict_filters: true]
   @compact_comment_limit 5
+  @codex_transport_output_guard """
+  Codex transport output guard:
+
+  - Do not stream broad validation commands directly when they may emit large or repetitive output.
+  - For commands such as `make all`, `mix test`, `mix dialyzer`, dependency installs, or coverage, redirect full stdout/stderr to a log file, then print the exit code and at most the final 200 lines.
+  - Example: `LOG=/tmp/symphony-validation.log; HEX_HOME=/private/tmp/symphony-hex-home make all >"$LOG" 2>&1; status=$?; tail -200 "$LOG"; exit $status`
+  """
   @default_pr_prompt """
   You are working on an existing GitHub pull request.
 
@@ -67,6 +74,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> append_ci_failure(ci_failure)
     |> append_review_agent_instructions(Keyword.get(opts, :settings))
     |> append_linear_input_warnings(linear_input_warnings)
+    |> append_codex_transport_output_guard(agent_context, opts)
   end
 
   @spec build_compact_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
@@ -120,6 +128,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
     |> append_review_agent_instructions(Keyword.get(opts, :settings))
     |> append_linear_input_warnings(linear_input_warnings)
+    |> append_codex_transport_output_guard(agent_context, opts)
   end
 
   defp prompt_template!({:ok, workflow}, prompt_mode) do
@@ -310,6 +319,20 @@ defmodule SymphonyElixir.PromptBuilder do
 
   defp append_extra_prompt(prompt, _extra_prompt), do: prompt
 
+  defp append_codex_transport_output_guard(prompt, %{kind: "codex"}, opts) do
+    if codex_transport_output_guard_enabled?(opts) do
+      prompt <> "\n\n" <> String.trim(@codex_transport_output_guard)
+    else
+      prompt
+    end
+  end
+
+  defp append_codex_transport_output_guard(prompt, _agent_context, _opts), do: prompt
+
+  defp codex_transport_output_guard_enabled?(opts) do
+    Keyword.has_key?(opts, :settings) or Keyword.has_key?(opts, :agent_kind)
+  end
+
   defp repo_context_for_prompt(issue, opts) do
     explicit_repo_key = present_string(Keyword.get(opts, :repo_key))
     issue_repo_key = repo_key_from_issue(issue)
@@ -386,6 +409,8 @@ defmodule SymphonyElixir.PromptBuilder do
 
       - After implementation, validation, commit, and committed-diff review are complete, stop before `git push`.
       - Do not push, open a PR, or move the issue to review until Symphony injects the reviewer-agent verdict.
+      - This overrides retry or continuation guidance that says to keep working while the issue remains active; stopping at this gate is expected.
+      - Only continue to push/PR after an explicit reviewer-agent approval prompt. Do not treat missing reviewer comments as approval.
       - If the reviewer requests changes, address those comments in the same workspace and stop before push again.
       - If the reviewer approves, follow the injected continuation prompt and complete the normal push/PR handoff.
       """

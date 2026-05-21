@@ -163,6 +163,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     },
     %{
+      "name" => "github_reply_to_review_comment",
+      "description" => "Reply under an existing inline review comment thread on the pull request for the current workspace branch.",
+      "inputSchema" => %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "required" => ["comment_id", "body"],
+        "properties" => %{
+          "comment_id" => %{"type" => ["integer", "string"]},
+          "body" => %{"type" => "string"}
+        }
+      }
+    },
+    %{
       "name" => "github_push_branch",
       "description" => "Push the current workspace branch to origin.",
       "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
@@ -217,6 +230,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "github_create_pull_request" => ["title", "body", "draft"],
     "github_update_pull_request_body" => ["body"],
     "github_add_pr_comment" => ["body"],
+    "github_reply_to_review_comment" => ["comment_id", "body"],
     "github_push_branch" => [],
     "github_get_pr_checks" => [],
     "github_list_pr_comments" => [],
@@ -240,6 +254,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "github.create_pull_request" => "github_create_pull_request",
     "github.update_pull_request_body" => "github_update_pull_request_body",
     "github.add_pr_comment" => "github_add_pr_comment",
+    "github.reply_to_review_comment" => "github_reply_to_review_comment",
     "github.push_branch" => "github_push_branch",
     "github.get_pr_checks" => "github_get_pr_checks",
     "github.list_pr_comments" => "github_list_pr_comments",
@@ -369,6 +384,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp execute_github_tool("github_add_pr_comment", context, args, opts) do
     GitHub.add_pr_comment(context, Map.get(args, "body"), opts)
+  end
+
+  defp execute_github_tool("github_reply_to_review_comment", context, args, opts) do
+    GitHub.reply_to_review_comment(context, Map.get(args, "comment_id"), Map.get(args, "body"), opts)
   end
 
   defp execute_github_tool("github_push_branch", context, _args, opts), do: GitHub.push_branch(context, opts)
@@ -675,6 +694,42 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "error" => %{
         "code" => "invalid_failed_run_log_max_bytes",
         "message" => "github.failed_run_log_max_bytes must be a positive integer."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_comment_id) do
+    %{
+      "error" => %{
+        "code" => "invalid_comment_id",
+        "message" => "github_reply_to_review_comment requires a non-blank inline review comment id (integer or numeric string)."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_body) do
+    %{
+      "error" => %{
+        "code" => "invalid_body",
+        "message" => "Dynamic GitHub tools require a string `body` argument."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_reply_payload) do
+    %{
+      "error" => %{
+        "code" => "invalid_reply_payload",
+        "message" => "GitHub did not return a JSON object payload for the inline-comment reply."
+      }
+    }
+  end
+
+  defp tool_error_payload({:invalid_reply_payload, message}) do
+    %{
+      "error" => %{
+        "code" => "invalid_reply_payload",
+        "message" => "GitHub returned an invalid JSON payload for the inline-comment reply: #{message}."
       }
     }
   end

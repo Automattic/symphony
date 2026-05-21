@@ -20,7 +20,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.McpServer
   alias SymphonyElixir.Notifications
   alias SymphonyElixir.PathSafety
-  alias SymphonyElixir.ProjectGuides
+  alias SymphonyElixir.ProjectGuidePrompt
   alias SymphonyElixir.SensitivePath
   alias SymphonyElixir.SSH
 
@@ -207,7 +207,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata: metadata
     }
 
-    case ProjectGuides.append_to_prompt(prompt, workspace, settings, :codex) do
+    case ProjectGuidePrompt.append_to_prompt(prompt, workspace, settings, :codex) do
       {:ok, prompt} ->
         run_turn_with_prompt(prompt, turn_context)
 
@@ -769,16 +769,14 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> Enum.flat_map(&git_metadata_deny_write_paths(&1, workspace))
   end
 
-  # Git stages blob objects under `<git_dir>/objects` before updating the index, so a blanket
-  # deny on `objects` blocks `git add`/`git commit`. Clone workspaces keep their object DB inside
-  # the per-issue workspace; linked worktrees share an external common object DB outside the
-  # workspace. We only deny `objects` writes when the metadata root lives outside the per-issue
-  # workspace so clone staging works while the shared linked-worktree DB stays read-only.
+  # Git stages blob objects under `<git_dir>/objects` before updating the index, so denying
+  # `objects` blocks `git add`/`git commit`. Keep high-risk mutable metadata protected while
+  # allowing object writes for both clone workspaces and linked worktrees.
   @doc false
   @spec git_metadata_deny_write_paths(Path.t() | term(), Path.t() | term()) :: [Path.t()]
-  def git_metadata_deny_write_paths(path, workspace) when is_binary(path) and is_binary(workspace) do
-    if Enum.any?(Path.split(path), &(&1 == ".git")) do
-      base_entries = [
+  def git_metadata_deny_write_paths(path, workspace) when is_binary(path) do
+    if is_binary(workspace) and Enum.any?(Path.split(path), &(&1 == ".git")) do
+      [
         "config",
         "config.worktree",
         "hooks",
@@ -787,29 +785,13 @@ defmodule SymphonyElixir.Codex.AppServer do
         Path.join(["worktrees", "*", "config"]),
         Path.join(["worktrees", "*", "config.worktree"])
       ]
-
-      entries =
-        if git_metadata_root_inside_workspace?(path, workspace) do
-          base_entries
-        else
-          base_entries ++ ["objects"]
-        end
-
-      Enum.map(entries, &Path.join(path, &1))
+      |> Enum.map(&Path.join(path, &1))
     else
       []
     end
   end
 
   def git_metadata_deny_write_paths(_path, _workspace), do: []
-
-  defp git_metadata_root_inside_workspace?(path, workspace)
-       when is_binary(path) and is_binary(workspace) and workspace != "" do
-    workspace = String.trim_trailing(workspace, "/")
-    path == workspace or String.starts_with?(path, workspace <> "/")
-  end
-
-  defp git_metadata_root_inside_workspace?(_path, _workspace), do: false
 
   defp inject_config_overrides(command, overrides) do
     case shell_words(command) do

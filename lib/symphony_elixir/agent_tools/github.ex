@@ -73,6 +73,30 @@ defmodule SymphonyElixir.AgentTools.GitHub do
     end
   end
 
+  @spec reply_to_review_comment(context(), term(), term(), keyword()) :: {:ok, map()} | {:error, term()}
+  def reply_to_review_comment(context, comment_id, body, opts \\ []) do
+    with {:ok, comment_id} <- require_comment_id(comment_id),
+         {:ok, body} <- require_string(body, :invalid_body),
+         :ok <-
+           SecretScanner.reject_fields_if_secret_pattern(
+             [body: body],
+             context,
+             "github_reply_to_review_comment",
+             opts
+           ),
+         {:ok, pr_url} <- current_pull_request_url(context, opts),
+         {:ok, payload} <-
+           PullRequest.post_inline_comment_reply(pr_url, comment_id, body, github_opts(context, opts)) do
+      {:ok,
+       %{
+         "pr_url" => pr_url,
+         "comment_id" => comment_id,
+         "reply_id" => Map.get(payload, "id"),
+         "url" => Map.get(payload, "html_url")
+       }}
+    end
+  end
+
   @spec push_branch(context(), keyword()) :: {:ok, map()} | {:error, term()}
   def push_branch(context, opts \\ []) do
     if ssh_worker?(context) do
@@ -274,6 +298,17 @@ defmodule SymphonyElixir.AgentTools.GitHub do
 
   defp require_string(value, _reason) when is_binary(value), do: {:ok, value}
   defp require_string(_value, reason), do: {:error, reason}
+
+  defp require_comment_id(value) when is_integer(value) and value > 0, do: {:ok, Integer.to_string(value)}
+
+  defp require_comment_id(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, :invalid_comment_id}
+      trimmed -> if String.match?(trimmed, ~r/^\d+$/), do: {:ok, trimmed}, else: {:error, :invalid_comment_id}
+    end
+  end
+
+  defp require_comment_id(_value), do: {:error, :invalid_comment_id}
 
   defp normalize_draft(value) when is_boolean(value), do: {:ok, value}
   defp normalize_draft(nil), do: {:ok, false}

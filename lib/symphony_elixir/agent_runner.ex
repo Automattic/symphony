@@ -21,6 +21,7 @@ defmodule SymphonyElixir.AgentRunner do
     Tracker,
     URLUtils,
     Verification,
+    Workpad,
     Workspace
   }
 
@@ -73,7 +74,11 @@ defmodule SymphonyElixir.AgentRunner do
                      Verification.start_dev_server(verification, workspace, settings: settings) do
                 remember_verification_dev_server(dev_server_pid)
                 enriched_issue = enrich_issue_for_dispatch(issue, opts)
-                run_codex_turns(workspace, enriched_issue, codex_update_recipient, opts, worker_host)
+
+                with {:ok, bootstrapped_issue} <-
+                       Workpad.bootstrap(enriched_issue, workspace, Keyword.put(opts, :worker_host, worker_host)) do
+                  run_codex_turns(workspace, bootstrapped_issue, codex_update_recipient, opts, worker_host)
+                end
               end
             after
               Workspace.run_after_run_hook(workspace, issue, worker_host,
@@ -565,7 +570,24 @@ defmodule SymphonyElixir.AgentRunner do
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+    #{review_agent_continuation_guard(opts)}
     """
+  end
+
+  defp review_agent_continuation_guard(opts) do
+    case Keyword.get(opts, :settings) do
+      %{review_agent: %{enabled: true}} ->
+        """
+
+        Review-agent gate reminder:
+
+        - If this thread has not already received a reviewer-agent approval prompt, stop before `git push`, PR creation, or moving the issue to review after validation and committed-diff review.
+        - Ending the turn at that gate is expected even if the issue remains active; Symphony will run the reviewer agent and inject the next prompt.
+        """
+
+      _settings ->
+        ""
+    end
   end
 
   defp agent_kind_from_settings(%{agent: %{kind: kind}}), do: kind

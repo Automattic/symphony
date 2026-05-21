@@ -1274,7 +1274,7 @@ defmodule SymphonyElixir.AppServerTest do
         assert Path.join(root, "config.worktree") in settings["filesystem"]["denyWrite"]
         assert Path.join(root, "hooks") in settings["filesystem"]["denyWrite"]
         assert Path.join(root, "info") in settings["filesystem"]["denyWrite"]
-        assert Path.join(root, "objects") in settings["filesystem"]["denyWrite"]
+        refute Path.join(root, "objects") in settings["filesystem"]["denyWrite"]
         assert Path.join(root, "packed-refs") in settings["filesystem"]["denyWrite"]
         assert Path.join([root, "worktrees", "*", "config"]) in settings["filesystem"]["denyWrite"]
         assert Path.join([root, "worktrees", "*", "config.worktree"]) in settings["filesystem"]["denyWrite"]
@@ -1446,13 +1446,13 @@ defmodule SymphonyElixir.AppServerTest do
       assert Path.join([git_dir, "worktrees", "*", "config.worktree"]) in denies
     end
 
-    test "linked worktree common dir denies objects and high-risk metadata" do
+    test "linked worktree common dir keeps objects writable while denying high-risk metadata" do
       workspace = "/workspaces/MT-LINKED"
       common_dir = "/source/.git"
 
       denies = AppServer.git_metadata_deny_write_paths(common_dir, workspace)
 
-      assert Path.join(common_dir, "objects") in denies
+      refute Path.join(common_dir, "objects") in denies
       assert Path.join(common_dir, "config") in denies
       assert Path.join(common_dir, "config.worktree") in denies
       assert Path.join(common_dir, "hooks") in denies
@@ -1462,13 +1462,13 @@ defmodule SymphonyElixir.AppServerTest do
       assert Path.join([common_dir, "worktrees", "*", "config.worktree"]) in denies
     end
 
-    test "linked worktree per-issue git_dir under common dir denies objects" do
+    test "linked worktree per-issue git_dir keeps objects writable while denying high-risk metadata" do
       workspace = "/workspaces/MT-LINKED"
       worktree_git_dir = "/source/.git/worktrees/MT-LINKED"
 
       denies = AppServer.git_metadata_deny_write_paths(worktree_git_dir, workspace)
 
-      assert Path.join(worktree_git_dir, "objects") in denies
+      refute Path.join(worktree_git_dir, "objects") in denies
       assert Path.join(worktree_git_dir, "config") in denies
       assert Path.join(worktree_git_dir, "hooks") in denies
       assert Path.join(worktree_git_dir, "info") in denies
@@ -1486,7 +1486,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       denies = AppServer.git_metadata_deny_write_paths(neighbor_git_dir, workspace)
 
-      assert Path.join(neighbor_git_dir, "objects") in denies
+      refute Path.join(neighbor_git_dir, "objects") in denies
+      assert Path.join(neighbor_git_dir, "config") in denies
     end
 
     test "trailing slash on workspace does not affect the inside-workspace check" do

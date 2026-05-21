@@ -218,6 +218,10 @@ The Markdown body remains the issue prompt. `prompts.pr` is an optional PR-mode 
 with `pr`, `issue`, `repo_key`, `agent`, `reviewer_comments`, and `ci_failure`; if omitted, Symphony
 uses a built-in PR prompt.
 
+For issue-mode runs, Symphony bootstraps the configured tracker before the first agent turn by
+moving `Todo` issues to `In Progress` and creating the configured workpad comment if one is not
+already present. Agents still own reconciling and updating that workpad during execution.
+
 When `agent.include_project_guides` is enabled, Symphony can append repo prose guides to the
 rendered prompt without enabling agent runtime settings discovery. The default is `CLAUDE.md` for
 Claude and no extra files for Codex, since Codex already discovers workspace `AGENTS.md`; set

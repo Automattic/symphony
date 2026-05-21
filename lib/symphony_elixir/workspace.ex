@@ -463,7 +463,17 @@ defmodule SymphonyElixir.Workspace do
         "  exit 42",
         "fi",
         "if git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then",
-        "  git -C \"$repo\" branch -D \"$branch\"",
+        "  if ! branch_delete_output=$(git -C \"$repo\" branch -D \"$branch\" 2>&1); then",
+        "    case \"$branch_delete_output\" in",
+        "      *\"checked out at\"*|*\"is checked out\"*)",
+        "        printf '%s\\n' \"workspace_branch_delete_skipped: $branch checked out elsewhere\"",
+        "        ;;",
+        "      *)",
+        "        printf '%s\\n' \"$branch_delete_output\"",
+        "        exit 44",
+        "        ;;",
+        "    esac",
+        "  fi",
         "fi"
       ]
       |> Enum.join("\n")
@@ -1316,10 +1326,34 @@ defmodule SymphonyElixir.Workspace do
 
   defp delete_local_worktree_branch(repo, branch) do
     case git_branch_exists?(repo, branch) do
-      true -> run_git(repo, ["branch", "-D", branch])
+      true -> run_git_branch_delete(repo, branch)
       false -> :ok
     end
   end
+
+  defp run_git_branch_delete(repo, branch) do
+    case run_git(repo, ["branch", "-D", branch]) do
+      :ok ->
+        :ok
+
+      {:error, _reason, output} = error ->
+        case branch_checked_out_elsewhere?(output) do
+          true ->
+            Logger.warning("Workspace branch deletion skipped repo=#{repo} branch=#{branch} reason=checked_out_elsewhere output=#{inspect(sanitize_hook_output_for_log(output))}")
+
+            :ok
+
+          false ->
+            error
+        end
+    end
+  end
+
+  defp branch_checked_out_elsewhere?(output) when is_binary(output) do
+    String.contains?(output, ["checked out at", "is checked out", "used by worktree at"])
+  end
+
+  defp branch_checked_out_elsewhere?(_output), do: false
 
   defp registered_worktree?(repo, workspace) do
     workspace = Path.expand(workspace)

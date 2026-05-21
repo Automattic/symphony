@@ -1151,6 +1151,8 @@ defmodule SymphonyElixir.Codex.AppServer do
             {:error, {:codex_stdio_write_failed, trimmed}}
 
           protocol_message_candidate?(payload_string) ->
+            updated_turn_stream_state = update_command_tracking_from_malformed(turn_stream_state, payload_string)
+
             emit_message(
               on_message,
               :malformed,
@@ -1169,7 +1171,7 @@ defmodule SymphonyElixir.Codex.AppServer do
               tool_executor,
               auto_approve_requests,
               approval_context,
-              turn_stream_state
+              updated_turn_stream_state
             )
 
           true ->
@@ -3191,6 +3193,21 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp update_command_tracking(turn_stream_state, _method, _payload), do: turn_stream_state
+
+  defp update_command_tracking_from_malformed(turn_stream_state, data) do
+    if malformed_command_execution_completed?(data) do
+      complete_command_tracking(turn_stream_state)
+    else
+      turn_stream_state
+    end
+  end
+
+  defp malformed_command_execution_completed?(data) do
+    text = data |> to_string() |> String.trim_leading()
+
+    String.match?(text, ~r/^\{\s*"method"\s*:\s*"item\/completed"/) and
+      String.match?(text, ~r/"type"\s*:\s*"command(?:Execution|_execution)"/)
+  end
 
   defp start_command_tracking(turn_stream_state, command) do
     Map.put(turn_stream_state, :active_command, %{

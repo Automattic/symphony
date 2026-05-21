@@ -70,10 +70,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
     required_mcp_server = required_mcp_server_for_prompt(prompt)
 
+    read_opts = [required_mcp_server: required_mcp_server]
+
     with {:ok, prompt} <- ProjectGuidePrompt.append_to_prompt(prompt, workspace, settings, :claude),
          {:ok, port, prompt_cleanup_paths} <- start_port(workspace, command, prompt, worker_host, session) do
       try do
-        read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms, required_mcp_server: required_mcp_server)
+        read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms, read_opts)
       after
         safe_close_port(port)
         remove_local_prompt_files(prompt_cleanup_paths)

@@ -194,23 +194,22 @@ defmodule SymphonyElixir.McpServer do
         {:ok, Path.dirname(path), path}
 
       _ ->
-        segment = run_id_segment(opts) || id
-        dir = Path.join(@managed_socket_root, "#{@managed_socket_prefix}#{segment}")
+        dir = Path.join(resolved_socket_root(opts), "#{@managed_socket_prefix}#{id}")
         {:ok, dir, Path.join(dir, "sock")}
     end
   end
 
-  defp run_id_segment(opts) do
-    case Keyword.get(opts, :run_id) do
-      value when is_binary(value) and value != "" -> to_socket_segment(value)
-      _ -> nil
-    end
-  end
+  defp resolved_socket_root(opts) do
+    case Keyword.get(opts, :socket_root) do
+      root when is_binary(root) and root != "" ->
+        root
 
-  defp to_socket_segment(value) when is_binary(value) and value != "" do
-    value
-    |> String.replace(~r/[^A-Za-z0-9_.-]/, "-")
-    |> String.slice(0, 80)
+      _ ->
+        case Application.get_env(:symphony_elixir, :mcp_socket_root) do
+          root when is_binary(root) and root != "" -> root
+          _ -> @managed_socket_root
+        end
+    end
   end
 
   defp prepare_socket_dir(dir) when is_binary(dir) do
@@ -318,7 +317,7 @@ defmodule SymphonyElixir.McpServer do
   defp remove_socket_dir(_dir), do: :ok
 
   defp managed_socket_dir?(dir) do
-    String.starts_with?(dir, Path.join(@managed_socket_root, @managed_socket_prefix))
+    String.starts_with?(Path.basename(dir), @managed_socket_prefix)
   end
 
   defp reap_orphaned_socket_dirs do

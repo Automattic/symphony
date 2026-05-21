@@ -946,9 +946,6 @@ defmodule SymphonyElixir.Config.Schema do
           |> Enum.map(&String.trim/1)
           |> Enum.reject(&(&1 == ""))
           |> Enum.uniq()
-
-        _ ->
-          []
       end)
     end
 

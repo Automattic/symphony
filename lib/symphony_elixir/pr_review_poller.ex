@@ -953,8 +953,6 @@ defmodule SymphonyElixir.PrReviewPoller do
     Map.get(comment, :kind) != "review" and String.trim(Map.get(comment, :body, "")) == ""
   end
 
-  defp review_activity_drop?(_comment), do: true
-
   defp unaddressed_reviewer_comments(record, reviewer_comments) when is_list(reviewer_comments) do
     reviewer_comments
     |> comments_after_cursor(Map.get(record, :last_addressed_comment_id))

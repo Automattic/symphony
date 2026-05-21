@@ -72,7 +72,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
   def current_user(opts \\ []) when is_list(opts) do
     case run_gh(["api", "user", "--jq", ".login"], opts) do
       {:ok, output} ->
-        case String.trim(output || "") do
+        case String.trim(output) do
           "" -> {:error, :empty_current_user}
           login -> {:ok, login}
         end

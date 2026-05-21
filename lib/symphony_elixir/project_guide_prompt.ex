@@ -31,7 +31,7 @@ defmodule SymphonyElixir.ProjectGuidePrompt do
   end
 
   defp apply_project_guides(module, prompt, workspace, settings, runner) do
-    apply(module, :append_to_prompt, [prompt, workspace, settings, runner])
+    module.append_to_prompt(prompt, workspace, settings, runner)
   rescue
     error in UndefinedFunctionError ->
       case missing_append_to_prompt?(error, module) do

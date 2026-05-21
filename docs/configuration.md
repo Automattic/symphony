@@ -475,8 +475,9 @@ single-agent shape.
   before Symphony blocks the run with the reviewer's latest reason.
 - The reviewer is told to stop before push, runs in the same workspace with read-only Linear and
   GitHub tools, and must return a structured JSON verdict. `approve` injects a push handoff
-  prompt; `request_changes` injects reviewer comments into one more executor pass while
-  `max_iterations` allows it; `block` fails the worker run without pushing.
+  prompt and later continuations keep that approved handoff state instead of reintroducing the
+  stop-before-push gate; `request_changes` injects reviewer comments into one more executor pass
+  while `max_iterations` allows it; `block` fails the worker run without pushing.
 - Reviewer token usage is tracked separately from total run token usage for observability.
 - Linear/GitHub write tools are hidden from MCP listings and rejected if called directly.
 - **Size `agent.max_turns` accordingly:** it budgets every reviewer-driven continuation turn. With

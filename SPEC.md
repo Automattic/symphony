@@ -844,7 +844,7 @@ fields locally if they want stricter startup checks.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
-  - Default: `5000`
+  - Default: `30000`
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
@@ -1230,7 +1230,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.sandbox_runtime.kind`: `none` or `srt`, default `none`
 - `agent.sandbox_runtime.command`: SRT command string, default `srt`
 - `agent.turn_timeout_ms`: integer, default `3600000`
-- `agent.read_timeout_ms`: integer, default `5000`
+- `agent.read_timeout_ms`: integer, default `30000`
 - `agent.stall_timeout_ms`: integer, default `300000`
 - `agent.command_timeout_ms`: integer, default `600000`
 - `watchdog.enabled`: boolean, default `true`

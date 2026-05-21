@@ -34,6 +34,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
+  @type stderr_tail :: pid() | nil
+
   @type session :: %{
           port: port(),
           metadata: map(),
@@ -50,6 +52,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           mcp_session: McpServer.session() | nil,
           mcp_remote_shim_path: Path.t() | nil,
           mcp_remote_codex_home: Path.t() | nil,
+          stderr_tail: stderr_tail(),
           settings: Schema.t()
         }
 
@@ -87,13 +90,14 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path, tool_scope) do
     case start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
-      {:ok, port, codex_home, launch_cleanup_paths, remote_codex_home} ->
+      {:ok, port, codex_home, launch_cleanup_paths, remote_codex_home, stderr_tail} ->
         launch_context = %{
           codex_home: codex_home,
           cleanup_paths: launch_cleanup_paths,
           mcp_session: mcp_session,
           remote_shim_path: remote_shim_path,
           remote_codex_home: remote_codex_home,
+          stderr_tail: stderr_tail,
           tool_scope: tool_scope
         }
 
@@ -123,6 +127,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            mcp_session: mcp_session,
            remote_shim_path: remote_shim_path,
            remote_codex_home: remote_codex_home,
+           stderr_tail: stderr_tail,
            tool_scope: tool_scope
          }
        ) do
@@ -147,11 +152,13 @@ defmodule SymphonyElixir.Codex.AppServer do
          mcp_session: mcp_session,
          mcp_remote_shim_path: remote_shim_path,
          mcp_remote_codex_home: remote_codex_home,
+         stderr_tail: stderr_tail,
          settings: settings
        }}
     else
       {:error, reason} ->
         stop_port(port)
+        stop_stderr_tail(stderr_tail)
         McpConfig.sync_cloud_requirements_cache(codex_home)
         cleanup_launch_paths(launch_cleanup_paths)
         cleanup_remote_shim(worker_host, remote_shim_path)
@@ -307,6 +314,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port} = session) when is_port(port) do
     stop_port(port)
+    stop_stderr_tail(Map.get(session, :stderr_tail))
     McpConfig.sync_cloud_requirements_cache(Map.get(session, :codex_home))
     cleanup_launch_paths(Map.get(session, :launch_cleanup_paths, []))
     cleanup_remote_shim(Map.get(session, :worker_host), Map.get(session, :mcp_remote_shim_path))
@@ -417,21 +425,25 @@ defmodule SymphonyElixir.Codex.AppServer do
     with {:ok, executable} <- bash_executable(),
          {:ok, codex_home} <- McpConfig.write_home(settings, mcp_session),
          {:ok, command, launch_cleanup_paths} <- local_command_with_codex_home(settings, workspace, codex_home) do
+      stderr_log_path = Path.join(codex_home.home_path, "codex.stderr.log")
+      :ok = File.touch!(stderr_log_path)
+      wrapped_command = wrap_command_with_stderr_redirect(command, stderr_log_path)
+      stderr_tail = start_stderr_tail(stderr_log_path)
+
       port =
         Port.open(
           {:spawn_executable, String.to_charlist(executable)},
           [
             :binary,
             :exit_status,
-            :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(command)],
+            args: [~c"-lc", String.to_charlist(wrapped_command)],
             cd: String.to_charlist(workspace),
             env: AgentEnv.build_with(%{"CODEX_HOME" => codex_home.home_path}),
             line: @port_line_bytes
           ]
         )
 
-      {:ok, port, codex_home, codex_home.cleanup_paths ++ launch_cleanup_paths, nil}
+      {:ok, port, codex_home, codex_home.cleanup_paths ++ launch_cleanup_paths, nil, stderr_tail}
     else
       {:error, {:local_codex_home_command_failed, reason, cleanup_paths}} ->
         cleanup_launch_paths(cleanup_paths)
@@ -454,7 +466,7 @@ defmodule SymphonyElixir.Codex.AppServer do
              env: AgentEnv.build(),
              reverse_forwards: mcp_reverse_forwards(mcp_session, remote_socket_path)
            ) do
-      {:ok, port, nil, [], remote_codex_home}
+      {:ok, port, nil, [], remote_codex_home, nil}
     end
   end
 
@@ -1083,22 +1095,28 @@ defmodule SymphonyElixir.Codex.AppServer do
         )
 
       {^port, {:data, {:noeol, chunk}}} ->
-        receive_loop(
-          port,
-          on_message,
-          timeout_ms,
-          pending_line <> to_string(chunk),
-          tool_executor,
-          auto_approve_requests,
-          approval_context,
-          turn_stream_state
-        )
+        case stream_timeout_error(timeout_ms, turn_stream_state) do
+          :ok ->
+            receive_loop(
+              port,
+              on_message,
+              timeout_ms,
+              pending_line <> to_string(chunk),
+              tool_executor,
+              auto_approve_requests,
+              approval_context,
+              turn_stream_state
+            )
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
     after
       receive_timeout_ms(timeout_ms, turn_stream_state) ->
-        case command_timeout_error(turn_stream_state) do
+        case stream_timeout_error(timeout_ms, turn_stream_state) do
           {:error, reason} -> {:error, reason}
           :ok -> {:error, :turn_timeout}
         end
@@ -1151,7 +1169,8 @@ defmodule SymphonyElixir.Codex.AppServer do
             {:error, {:codex_stdio_write_failed, trimmed}}
 
           protocol_message_candidate?(payload_string) ->
-            updated_turn_stream_state = update_command_tracking_from_malformed(turn_stream_state, payload_string)
+            {updated_turn_stream_state, recovery_event} =
+              update_command_tracking_from_malformed(turn_stream_state, payload_string)
 
             emit_message(
               on_message,
@@ -1163,11 +1182,12 @@ defmodule SymphonyElixir.Codex.AppServer do
               metadata_from_message(port, %{raw: payload_string})
             )
 
-            receive_loop(
+            maybe_emit_malformed_recovery(on_message, recovery_event, payload_string, port)
+
+            continue_turn_stream(
               port,
               on_message,
               timeout_ms,
-              "",
               tool_executor,
               auto_approve_requests,
               approval_context,
@@ -1175,11 +1195,10 @@ defmodule SymphonyElixir.Codex.AppServer do
             )
 
           true ->
-            receive_loop(
+            continue_turn_stream(
               port,
               on_message,
               timeout_ms,
-              "",
               tool_executor,
               auto_approve_requests,
               approval_context,
@@ -1260,11 +1279,10 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata_from_message(port, payload)
     )
 
-    receive_loop(
+    continue_turn_stream(
       port,
       on_message,
       stream_context.timeout_ms,
-      "",
       stream_context.tool_executor,
       stream_context.auto_approve_requests,
       stream_context.approval_context,
@@ -3017,6 +3035,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp initial_turn_stream_state(command_timeout_ms, sandbox_startup) do
     %{
       command_timeout_ms: normalize_command_timeout_ms(command_timeout_ms),
+      turn_started_at_ms: System.monotonic_time(:millisecond),
       active_command: nil,
       sandbox_startup: sandbox_startup
     }
@@ -3103,16 +3122,36 @@ defmodule SymphonyElixir.Codex.AppServer do
     turn_stream_state =
       update_command_tracking(stream_context.turn_stream_state, method, payload)
 
-    case command_timeout_error(turn_stream_state) do
+    continue_turn_stream(
+      port,
+      on_message,
+      stream_context.timeout_ms,
+      stream_context.tool_executor,
+      stream_context.auto_approve_requests,
+      stream_context.approval_context,
+      turn_stream_state
+    )
+  end
+
+  defp continue_turn_stream(
+         port,
+         on_message,
+         timeout_ms,
+         tool_executor,
+         auto_approve_requests,
+         approval_context,
+         turn_stream_state
+       ) do
+    case stream_timeout_error(timeout_ms, turn_stream_state) do
       :ok ->
         receive_loop(
           port,
           on_message,
-          stream_context.timeout_ms,
+          timeout_ms,
           "",
-          stream_context.tool_executor,
-          stream_context.auto_approve_requests,
-          stream_context.approval_context,
+          tool_executor,
+          auto_approve_requests,
+          approval_context,
           turn_stream_state
         )
 
@@ -3121,19 +3160,53 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp receive_timeout_ms(turn_timeout_ms, %{active_command: nil}), do: turn_timeout_ms
+  defp receive_timeout_ms(turn_timeout_ms, turn_stream_state) do
+    turn_remaining_ms(turn_timeout_ms, turn_stream_state)
+    |> min_timeout(command_remaining_ms(turn_stream_state))
+  end
 
-  defp receive_timeout_ms(turn_timeout_ms, %{
+  defp turn_remaining_ms(turn_timeout_ms, %{turn_started_at_ms: started_at_ms})
+       when is_integer(started_at_ms) and is_integer(turn_timeout_ms) and turn_timeout_ms > 0 do
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at_ms
+    max(0, turn_timeout_ms - elapsed_ms)
+  end
+
+  defp turn_remaining_ms(turn_timeout_ms, _turn_stream_state), do: turn_timeout_ms
+
+  defp command_remaining_ms(%{
          active_command: %{started_at_ms: started_at_ms},
          command_timeout_ms: command_timeout_ms
        })
        when is_integer(started_at_ms) and is_integer(command_timeout_ms) and
               command_timeout_ms > 0 do
     elapsed_ms = System.monotonic_time(:millisecond) - started_at_ms
-    min(turn_timeout_ms, max(0, command_timeout_ms - elapsed_ms))
+    max(0, command_timeout_ms - elapsed_ms)
   end
 
-  defp receive_timeout_ms(turn_timeout_ms, _turn_stream_state), do: turn_timeout_ms
+  defp command_remaining_ms(_turn_stream_state), do: nil
+
+  defp min_timeout(nil, nil), do: 0
+  defp min_timeout(timeout_ms, nil), do: timeout_ms
+  defp min_timeout(nil, timeout_ms), do: timeout_ms
+  defp min_timeout(left_ms, right_ms), do: min(left_ms, right_ms)
+
+  defp stream_timeout_error(turn_timeout_ms, turn_stream_state) do
+    case command_timeout_error(turn_stream_state) do
+      {:error, reason} -> {:error, reason}
+      :ok -> turn_timeout_error(turn_timeout_ms, turn_stream_state)
+    end
+  end
+
+  defp turn_timeout_error(turn_timeout_ms, %{turn_started_at_ms: started_at_ms})
+       when is_integer(started_at_ms) and is_integer(turn_timeout_ms) and turn_timeout_ms > 0 do
+    if System.monotonic_time(:millisecond) - started_at_ms >= turn_timeout_ms do
+      {:error, :turn_timeout}
+    else
+      :ok
+    end
+  end
+
+  defp turn_timeout_error(_turn_timeout_ms, _turn_stream_state), do: :ok
 
   defp command_timeout_error(%{active_command: nil}), do: :ok
   defp command_timeout_error(%{command_timeout_ms: timeout_ms}) when timeout_ms <= 0, do: :ok
@@ -3196,11 +3269,29 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp update_command_tracking_from_malformed(turn_stream_state, data) do
     if malformed_command_execution_completed?(data) do
-      complete_command_tracking(turn_stream_state)
+      {complete_command_tracking(turn_stream_state), :command_completed}
     else
-      turn_stream_state
+      {turn_stream_state, nil}
     end
   end
+
+  defp maybe_emit_malformed_recovery(on_message, :command_completed, payload_string, port) do
+    emit_message(
+      on_message,
+      :command_completed_recovered,
+      %{
+        payload: %{
+          "method" => "item/completed",
+          "params" => %{"item" => %{"type" => "commandExecution", "status" => "completed"}}
+        },
+        raw: payload_string,
+        recovery: :malformed_command_completion
+      },
+      metadata_from_message(port, %{raw: payload_string})
+    )
+  end
+
+  defp maybe_emit_malformed_recovery(_on_message, _recovery_event, _payload_string, _port), do: :ok
 
   defp malformed_command_execution_completed?(data) do
     text = data |> to_string() |> String.trim_leading()
@@ -3427,6 +3518,104 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp wrap_command_with_stderr_redirect(command, stderr_log_path)
+       when is_binary(command) and is_binary(stderr_log_path) do
+    "{ " <> command <> "; } 2>>" <> shell_escape(stderr_log_path)
+  end
+
+  @spec start_stderr_tail(Path.t() | nil) :: stderr_tail()
+  defp start_stderr_tail(nil), do: nil
+
+  defp start_stderr_tail(path) when is_binary(path) do
+    {:ok, pid} =
+      Task.start(fn ->
+        stderr_tail_loop(%{path: path, offset: 0, buffer: ""})
+      end)
+
+    pid
+  end
+
+  @spec stop_stderr_tail(stderr_tail()) :: :ok
+  defp stop_stderr_tail(nil), do: :ok
+
+  defp stop_stderr_tail(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      send(pid, {:stop, self()})
+
+      receive do
+        :stderr_tail_stopped -> :ok
+      after
+        1_000 ->
+          Process.exit(pid, :kill)
+          :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp stderr_tail_loop(state) do
+    state = drain_stderr_lines(state)
+
+    receive do
+      {:stop, caller} ->
+        state = drain_stderr_lines(state)
+        log_stderr_line(state.buffer)
+        send(caller, :stderr_tail_stopped)
+        :ok
+    after
+      100 ->
+        stderr_tail_loop(state)
+    end
+  end
+
+  defp drain_stderr_lines(%{path: path, offset: offset} = state) do
+    case File.stat(path) do
+      {:ok, %{size: size}} when size > offset -> drain_stderr_chunk(state, size)
+      _ -> state
+    end
+  end
+
+  defp drain_stderr_chunk(%{path: path, offset: offset, buffer: buffer} = state, size) do
+    case read_range(path, offset, size - offset) do
+      {:ok, chunk} ->
+        {lines, residual} = split_pending_lines(buffer <> chunk)
+        Enum.each(lines, &log_stderr_line/1)
+        %{state | offset: size, buffer: residual}
+
+      :error ->
+        state
+    end
+  end
+
+  defp log_stderr_line(""), do: :ok
+  defp log_stderr_line(line), do: log_non_json_stream_line(line, "turn stream")
+
+  defp read_range(path, offset, length) when is_integer(length) and length > 0 do
+    case File.open(path, [:read, :binary, :raw]) do
+      {:ok, io} ->
+        try do
+          with {:ok, _new_pos} <- :file.position(io, offset),
+               data when is_binary(data) <- IO.binread(io, length) do
+            {:ok, data}
+          else
+            _ -> :error
+          end
+        after
+          File.close(io)
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp split_pending_lines(data) do
+    parts = String.split(data, "\n")
+    {complete, [residual]} = Enum.split(parts, -1)
+    {complete, residual}
   end
 
   defp default_on_message(_message), do: :ok

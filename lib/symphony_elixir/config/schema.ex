@@ -736,7 +736,7 @@ defmodule SymphonyElixir.Config.Schema do
       embeds_one(:network_access, NetworkAccess, on_replace: :update, defaults_to_struct: true)
       embeds_one(:sandbox_runtime, SandboxRuntime, on_replace: :update, defaults_to_struct: true)
       field(:turn_timeout_ms, :integer, default: 3_600_000)
-      field(:read_timeout_ms, :integer, default: 5_000)
+      field(:read_timeout_ms, :integer, default: 30_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
       field(:command_timeout_ms, :integer, default: 600_000)
     end
@@ -1609,21 +1609,8 @@ defmodule SymphonyElixir.Config.Schema do
       Map.has_key?(config, "self_review") ->
         {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
 
-      pr_review_has_removed_key?(config, "github_user") ->
-        {:error, {:invalid_workflow_config, "`pr_review.github_user` has been removed; add the user to `pr_review.ignored_users` (Symphony also auto-detects the current `gh` user) instead"}}
-
-      pr_review_has_removed_key?(config, "bot_users") ->
-        {:error, {:invalid_workflow_config, "`pr_review.bot_users` has been removed; move bot users into `pr_review.ignored_users` instead"}}
-
       true ->
         :ok
-    end
-  end
-
-  defp pr_review_has_removed_key?(config, key) when is_binary(key) do
-    case Map.get(config, "pr_review") do
-      %{} = pr_review -> Map.has_key?(pr_review, key)
-      _other -> false
     end
   end
 

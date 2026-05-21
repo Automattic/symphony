@@ -1740,6 +1740,73 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server times out a turn even while codex emits side output" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-turn-timeout-side-output-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1005")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1005"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1005","status":"inProgress","items":[]}}}'
+            while true; do
+              printf '%s\\n' 'ERROR codex_models_manager::manager: failed to refresh available models'
+              sleep 0.01
+            done
+            ;;
+          *)
+            sleep 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_command_timeout_ms: 0,
+        agent_turn_timeout_ms: 30
+      )
+
+      issue = %Issue{
+        id: "issue-turn-timeout-side-output",
+        identifier: "MT-1005",
+        title: "Validate turn timeout",
+        description: "Ensure side output cannot keep a turn alive indefinitely",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-1005",
+        labels: ["backend"]
+      }
+
+      assert {:error, :turn_timeout} =
+               AppServer.run(workspace, "Validate turn timeout with side output", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server clears command tracking for malformed command completion frames" do
     test_root =
       Path.join(
@@ -1809,6 +1876,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert_received {:app_server_message, %{event: :malformed, payload: malformed_payload}}
       assert malformed_payload =~ ~s("method":"item/completed")
       assert malformed_payload =~ ~s("type":"commandExecution")
+      assert_received {:app_server_message, %{event: :command_completed_recovered, recovery: :malformed_command_completion}}
       assert_received {:app_server_message, %{event: :turn_completed}}
     after
       File.rm_rf(test_root)
@@ -3867,6 +3935,82 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert_received {:app_server_message, %{event: :malformed, payload: "{\"method\":\"turn/completed\""}}
       assert_received {:app_server_message, %{event: :turn_completed}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server keeps JSON frames intact when codex stderr fires mid-frame" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stderr-interleave-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-95")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-95"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-95","status":"inProgress","items":[]}}}'
+            ;;
+          4)
+            printf '%s' '{"method":"turn/completed"'
+            printf '%s\\n' 'codex stderr noise that would otherwise split the frame' >&2
+            printf '%s\\n' ',"params":{}}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-stderr-interleave",
+        identifier: "MT-95",
+        title: "Stderr interleave",
+        description: "Ensure codex stderr does not corrupt mid-flight stdout JSON frames",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-95",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _result} =
+                   AppServer.run(workspace, "Stderr interleave", issue, on_message: on_message)
+        end)
+
+      assert_received {:app_server_message, %{event: :turn_completed}}
+      refute_received {:app_server_message, %{event: :malformed}}
+      assert log =~ "codex stderr noise that would otherwise split the frame"
     after
       File.rm_rf(test_root)
     end

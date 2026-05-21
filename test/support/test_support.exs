@@ -521,7 +521,7 @@ defmodule SymphonyElixir.TestSupport do
           agent_network_access: nil,
           agent_sandbox_runtime: nil,
           agent_turn_timeout_ms: 3_600_000,
-          agent_read_timeout_ms: 5_000,
+          agent_read_timeout_ms: 30_000,
           agent_stall_timeout_ms: 300_000,
           agent_command_timeout_ms: 600_000,
           hook_after_create: nil,

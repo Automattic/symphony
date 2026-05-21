@@ -90,6 +90,8 @@ defmodule SymphonyElixir.MixProject do
         "test/support/test_support.exs"
       ],
       dialyzer: [
+        plt_local_path: "_build/plts",
+        plt_core_path: "_build/plts",
         plt_add_apps: [:mix, :mnesia]
       ],
       escript: escript(),

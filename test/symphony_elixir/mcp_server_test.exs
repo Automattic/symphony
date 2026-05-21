@@ -68,6 +68,74 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
+  test "generated Unix socket paths use configured socket base and clean up managed dir" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+    socket_base = test_socket_base("configured")
+    previous_socket_base = Application.get_env(:symphony_elixir, :mcp_socket_base)
+    Application.put_env(:symphony_elixir, :mcp_socket_base, socket_base)
+
+    on_exit(fn ->
+      restore_application_env(:mcp_socket_base, previous_socket_base)
+      File.rm_rf(socket_base)
+    end)
+
+    stale_dir = Path.join(socket_base, "symphony-mcp-run-123")
+    stale_file = Path.join(stale_dir, "stale")
+    File.mkdir_p!(stale_dir)
+    File.write!(stale_file, "stale")
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        run_id: "run/123",
+        shim_path: "/tmp/shim"
+      )
+
+    assert session.socket_dir == stale_dir
+    assert session.socket_path == Path.join(stale_dir, "sock")
+    refute File.exists?(stale_file)
+    assert File.exists?(session.socket_path)
+
+    assert :ok = McpServer.stop_session(session, server: server)
+    refute File.exists?(stale_dir)
+  end
+
+  test "custom socket paths outside configured socket base are not treated as managed dirs" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+    socket_base = test_socket_base("managed")
+    previous_socket_base = Application.get_env(:symphony_elixir, :mcp_socket_base)
+    Application.put_env(:symphony_elixir, :mcp_socket_base, socket_base)
+
+    outside_dir =
+      socket_base
+      |> Path.dirname()
+      |> Path.join("symphony-mcp-outside-#{System.unique_integer([:positive])}")
+
+    on_exit(fn ->
+      restore_application_env(:mcp_socket_base, previous_socket_base)
+      File.rm_rf(socket_base)
+      File.rm_rf(outside_dir)
+    end)
+
+    outside_socket_path = Path.join(outside_dir, "sock")
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        socket_path: outside_socket_path,
+        shim_path: "/tmp/shim"
+      )
+
+    assert session.socket_dir == outside_dir
+    assert File.exists?(session.socket_path)
+
+    assert :ok = McpServer.stop_session(session, server: server)
+    assert File.dir?(outside_dir)
+    refute File.exists?(outside_socket_path)
+  end
+
   test "lists scoped tools over token-authenticated loopback TCP" do
     server = unique_server()
     start_supervised!({McpServer, name: server})
@@ -713,8 +781,18 @@ defmodule SymphonyElixir.McpServerTest do
   end
 
   defp socket_path do
-    Path.join(System.tmp_dir!(), "symphony-mcp-test-#{System.unique_integer([:positive])}.sock")
+    Application.fetch_env!(:symphony_elixir, :mcp_socket_base)
+    |> Path.join("symphony-mcp-test-#{System.unique_integer([:positive])}.sock")
   end
+
+  defp test_socket_base(name) do
+    Application.fetch_env!(:symphony_elixir, :mcp_socket_base)
+    |> Path.dirname()
+    |> Path.join("#{name}-#{System.unique_integer([:positive])}")
+  end
+
+  defp restore_application_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_application_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
   defp connect!(path, token) do
     {:ok, socket} = :socket.open(:local, :stream)

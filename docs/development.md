@@ -22,7 +22,8 @@ mise exec -- mix setup
 make all
 ```
 
-In sandboxed Codex workspaces, prefer a writable Hex cache location for the full gate:
+In sandboxed Codex workspaces, prefer a writable Hex cache location for the full gate. Dialyzer
+PLTs are project-local under `_build/plts`.
 
 ```bash
 HEX_HOME=/private/tmp/symphony-hex-home make all

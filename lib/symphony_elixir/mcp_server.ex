@@ -12,6 +12,7 @@ defmodule SymphonyElixir.McpServer do
   @protocol_version "2025-06-18"
   @auth_header "symphony-session-token"
   @header_separator "\r\n\r\n"
+  @default_socket_base "/tmp"
 
   @type session :: %{
           id: String.t(),
@@ -190,8 +191,15 @@ defmodule SymphonyElixir.McpServer do
 
       _ ->
         segment = run_id_segment(opts) || id
-        dir = Path.join("/tmp", "symphony-mcp-#{segment}")
+        dir = Path.join(mcp_socket_base(), "symphony-mcp-#{segment}")
         {:ok, dir, Path.join(dir, "sock")}
+    end
+  end
+
+  defp mcp_socket_base do
+    case Application.get_env(:symphony_elixir, :mcp_socket_base, @default_socket_base) do
+      path when is_binary(path) and path != "" -> path
+      _ -> @default_socket_base
     end
   end
 
@@ -313,7 +321,11 @@ defmodule SymphonyElixir.McpServer do
   defp remove_socket_dir(_dir), do: :ok
 
   defp managed_socket_dir?(dir) do
-    String.starts_with?(dir, "/tmp/symphony-mcp-")
+    expanded_dir = Path.expand(dir)
+    base = Path.expand(mcp_socket_base())
+
+    String.starts_with?(Path.basename(expanded_dir), "symphony-mcp-") and
+      Path.dirname(expanded_dir) == base
   end
 
   defp compute_remote_socket_path(_id, _opts, %{transport: :tcp}), do: nil

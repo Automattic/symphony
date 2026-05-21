@@ -548,7 +548,7 @@ defmodule SymphonyElixir.McpServer do
   defp serve(socket, context, buffer) do
     case read_message(socket, buffer) do
       {:ok, payload, rest} ->
-        maybe_send_response(socket, handle_payload(payload, context))
+        maybe_send_response(socket, safe_handle_payload(payload, context))
         serve(socket, context, rest)
 
       {:error, :closed} ->
@@ -559,6 +559,48 @@ defmodule SymphonyElixir.McpServer do
         :ok
     end
   end
+
+  # The per-connection serve loop runs in a bare `spawn/1` (see `accept_loop/2`),
+  # so an unhandled exception in `handle_payload/2` would silently kill the
+  # connection — the client sees "MCP error -32000: Connection closed" with no
+  # trace in the symphony log. Catch and log so the real cause is recoverable
+  # and the connection survives.
+  defp safe_handle_payload(payload, context) do
+    handle_payload(payload, context)
+  rescue
+    error ->
+      stacktrace = __STACKTRACE__
+      method = (is_map(payload) && Map.get(payload, "method")) || "unknown"
+      tool = mcp_tool_name(payload)
+
+      Logger.error(
+        "MCP handler crashed method=#{inspect(method)} tool=#{inspect(tool)} " <>
+          "error=#{Exception.format(:error, error, stacktrace)}"
+      )
+
+      crash_response(payload, error)
+  catch
+    kind, reason ->
+      stacktrace = __STACKTRACE__
+      method = (is_map(payload) && Map.get(payload, "method")) || "unknown"
+      tool = mcp_tool_name(payload)
+
+      Logger.error(
+        "MCP handler exited method=#{inspect(method)} tool=#{inspect(tool)} " <>
+          "kind=#{inspect(kind)} reason=#{inspect(reason)} stack=#{Exception.format_stacktrace(stacktrace)}"
+      )
+
+      crash_response(payload, {kind, reason})
+  end
+
+  defp mcp_tool_name(%{"params" => %{"name" => name}}) when is_binary(name), do: name
+  defp mcp_tool_name(_payload), do: nil
+
+  defp crash_response(%{"id" => id}, error) when not is_nil(id) do
+    error_response(id, -32_603, "Internal MCP handler error: #{inspect(error)}")
+  end
+
+  defp crash_response(_payload, _error), do: nil
 
   defp read_message(socket, buffer) do
     case parse_message(buffer) do

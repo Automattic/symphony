@@ -14,6 +14,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @agent_runtime_env AgentEnv.runtime_marker_name()
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @port_line_bytes 1_048_576
+  # Grace window after a terminal `result`/`turn_completed`/`turn_failed` event
+  # during which the loop keeps reading late bookkeeping output while the
+  # Claude CLI shuts down. If the OS process never exits (e.g. a lingering tool
+  # subprocess keeps it alive) we finalize the turn from the captured result
+  # once the grace expires so the caller is not stuck waiting for the port
+  # `exit_status`.
+  @post_completion_grace_default_ms 1_500
 
   @type session :: %{
           workspace: Path.t(),
@@ -1050,51 +1057,120 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms) do
     now = System.monotonic_time(:millisecond)
-    turn_deadline = now + turn_timeout_ms
     acc = %{session_id: nil, input_tokens: 0, output_tokens: 0, turn_failed: nil, turn_completed: false}
-    read_loop(port, on_message, acc, turn_deadline, nil, command_timeout_ms, "")
+
+    loop_state = %{
+      turn_deadline: now + turn_timeout_ms,
+      command_deadline: nil,
+      command_timeout_ms: command_timeout_ms,
+      pending_line: "",
+      post_completion_deadline: nil
+    }
+
+    read_loop(port, on_message, acc, loop_state)
   end
 
-  defp read_loop(port, on_message, acc, turn_deadline, command_deadline, command_timeout_ms, pending_line) do
-    now = System.monotonic_time(:millisecond)
-    turn_remaining = max(1, turn_deadline - now)
-
-    timeout =
-      case command_deadline do
-        nil -> turn_remaining
-        cd -> min(turn_remaining, max(1, cd - now))
-      end
+  defp read_loop(port, on_message, acc, loop_state) do
+    timeout = compute_read_timeout(loop_state)
 
     receive do
       {^port, {:data, {:eol, line}}} ->
-        full_line = pending_line <> line
-        event = parse_event(full_line)
-
-        new_command_deadline =
-          if command_timeout_ms > 0 and event_contains_tool_use?(event) do
-            System.monotonic_time(:millisecond) + command_timeout_ms
-          else
-            command_deadline
-          end
-
-        acc = apply_event(event, on_message, acc)
-        read_loop(port, on_message, acc, turn_deadline, new_command_deadline, command_timeout_ms, "")
+        handle_eol_line(port, on_message, acc, loop_state, line)
 
       {^port, {:data, {:noeol, partial}}} ->
-        read_loop(port, on_message, acc, turn_deadline, command_deadline, command_timeout_ms, pending_line <> partial)
+        read_loop(port, on_message, acc, %{loop_state | pending_line: loop_state.pending_line <> partial})
 
       {^port, {:exit_status, 0}} ->
         finalize_read_result(acc)
 
       {^port, {:exit_status, status}} ->
-        {:error, {:exit_status, status}}
+        handle_nonzero_exit(acc, status)
     after
       timeout ->
-        if System.monotonic_time(:millisecond) >= turn_deadline do
-          {:error, :turn_timeout}
-        else
-          {:error, :command_timeout}
-        end
+        handle_read_loop_timeout(acc, loop_state)
+    end
+  end
+
+  defp compute_read_timeout(%{turn_deadline: turn_deadline, command_deadline: command_deadline, post_completion_deadline: post_completion_deadline}) do
+    now = System.monotonic_time(:millisecond)
+
+    [
+      max(1, turn_deadline - now),
+      command_deadline && max(1, command_deadline - now),
+      post_completion_deadline && max(1, post_completion_deadline - now)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min()
+  end
+
+  defp handle_eol_line(port, on_message, acc, loop_state, line) do
+    full_line = loop_state.pending_line <> line
+    event = parse_event(full_line)
+
+    new_command_deadline =
+      if loop_state.command_timeout_ms > 0 and event_contains_tool_use?(event) do
+        System.monotonic_time(:millisecond) + loop_state.command_timeout_ms
+      else
+        loop_state.command_deadline
+      end
+
+    new_acc = apply_event(event, on_message, acc)
+
+    new_loop_state = %{
+      loop_state
+      | command_deadline: new_command_deadline,
+        pending_line: "",
+        post_completion_deadline: maybe_start_post_completion_grace(new_acc, loop_state.post_completion_deadline)
+    }
+
+    read_loop(port, on_message, new_acc, new_loop_state)
+  end
+
+  defp handle_nonzero_exit(acc, status) do
+    if terminal_event_observed?(acc) do
+      Logger.info("Claude terminal result before non-zero exit status=#{status} session_id=#{inspect(Map.get(acc, :session_id))}")
+
+      finalize_read_result(acc)
+    else
+      {:error, {:exit_status, status}}
+    end
+  end
+
+  defp handle_read_loop_timeout(acc, %{turn_deadline: turn_deadline, post_completion_deadline: post_completion_deadline}) do
+    now = System.monotonic_time(:millisecond)
+
+    cond do
+      post_completion_deadline != nil and now >= post_completion_deadline ->
+        Logger.warning("Claude turn_completed_without_process_exit: finalizing turn after grace period session_id=#{inspect(Map.get(acc, :session_id))}")
+
+        finalize_read_result(acc)
+
+      now >= turn_deadline ->
+        {:error, :turn_timeout}
+
+      true ->
+        {:error, :command_timeout}
+    end
+  end
+
+  defp maybe_start_post_completion_grace(acc, nil) do
+    if terminal_event_observed?(acc) do
+      System.monotonic_time(:millisecond) + post_completion_grace_ms()
+    else
+      nil
+    end
+  end
+
+  defp maybe_start_post_completion_grace(_acc, deadline), do: deadline
+
+  defp terminal_event_observed?(acc) do
+    Map.get(acc, :turn_completed, false) or is_binary(Map.get(acc, :turn_failed))
+  end
+
+  defp post_completion_grace_ms do
+    case Application.get_env(:symphony_elixir, :claude_post_completion_grace_ms) do
+      ms when is_integer(ms) and ms >= 0 -> ms
+      _ -> @post_completion_grace_default_ms
     end
   end
 
@@ -1174,7 +1250,84 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp safe_close_port(port) do
+    terminate_port_descendants(port)
     if Port.info(port) != nil, do: Port.close(port)
+  end
+
+  # Send SIGKILL to descendants of the port's OS process before closing the
+  # port. Port.close only signals the immediate child, so tool subprocesses
+  # spawned by Claude (e.g. a long-running bash loop) would otherwise be
+  # reparented to init and keep running.
+  defp terminate_port_descendants(port) do
+    with {:os_pid, os_pid} when is_integer(os_pid) and os_pid > 0 <-
+           safe_port_info(port, :os_pid) do
+      os_pid
+      |> collect_descendant_pids([])
+      |> Enum.uniq()
+      |> Enum.each(&kill_pid/1)
+    end
+
+    :ok
+  rescue
+    exception ->
+      Logger.debug("Claude port descendant cleanup raised: #{Exception.message(exception)}")
+      :ok
+  end
+
+  defp safe_port_info(port, key) do
+    Port.info(port, key)
+  rescue
+    _ -> nil
+  end
+
+  defp collect_descendant_pids(pid, acc) when is_integer(pid) and pid > 0 do
+    case pgrep_children(pid) do
+      [] ->
+        acc
+
+      children ->
+        Enum.reduce(children, acc, fn child_pid, acc ->
+          collect_descendant_pids(child_pid, [child_pid | acc])
+        end)
+    end
+  end
+
+  defp collect_descendant_pids(_pid, acc), do: acc
+
+  defp pgrep_children(pid) when is_integer(pid) do
+    case System.find_executable("pgrep") do
+      nil -> []
+      pgrep -> run_pgrep_children(pgrep, pid)
+    end
+  rescue
+    _ -> []
+  end
+
+  defp run_pgrep_children(pgrep, pid) do
+    case System.cmd(pgrep, ["-P", to_string(pid)], stderr_to_stdout: true) do
+      {output, status} when status in [0, 1] -> parse_pgrep_output(output)
+      _ -> []
+    end
+  end
+
+  defp parse_pgrep_output(output) do
+    output
+    |> String.split(["\n", " ", "\t"], trim: true)
+    |> Enum.flat_map(&parse_pgrep_pid_token/1)
+  end
+
+  defp parse_pgrep_pid_token(token) do
+    case Integer.parse(token) do
+      {child_pid, ""} when child_pid > 0 -> [child_pid]
+      _ -> []
+    end
+  end
+
+  defp kill_pid(pid) when is_integer(pid) and pid > 0 do
+    _ = System.cmd("kill", ["-KILL", to_string(pid)], stderr_to_stdout: true)
+    :ok
+  rescue
+    _ -> :ok
   end
 
   defp effective_allowed_domains(%Agent.NetworkAccess{

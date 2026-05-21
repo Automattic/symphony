@@ -3405,8 +3405,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       map_at_path(payload, [:params, :msg, :info, :total_token_usage])
   end
 
-  defp usage_from_payload(_payload), do: nil
-
   defp normalize_codex_usage(usage) when is_map(usage) do
     input_tokens = token_count(usage, ["input_tokens", :input_tokens, "inputTokens", :inputTokens], 0)
     cached_input_tokens = token_count(usage, ["cached_input_tokens", :cached_input_tokens, "cachedInputTokens", :cachedInputTokens], 0)

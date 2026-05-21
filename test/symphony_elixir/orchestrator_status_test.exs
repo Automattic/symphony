@@ -1656,6 +1656,61 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert entries_by_identifier["MT-CLAUDE-PARITY"].output_tokens == 500
   end
 
+  test "legacy Claude usage keeps input tokens as uncached when cache buckets are present" do
+    issue_id = "issue-legacy-claude-usage"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-CLAUDE-LEGACY",
+      title: "Legacy Claude usage",
+      description: "Track Claude legacy cache fields",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-CLAUDE-LEGACY"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :LegacyClaudeUsageOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+    started_at = DateTime.utc_now()
+    running_entry = running_entry_for_token_test(issue, started_at)
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       AppServer.event_to_update(
+         {:token_usage,
+          %{
+            input_tokens: 800,
+            cache_read_input_tokens: 9_200,
+            cache_creation_input_tokens: 400,
+            output_tokens: 600,
+            total_tokens: 11_000
+          }}
+       )}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [entry]} = snapshot
+
+    assert entry.uncached_input_tokens == 800
+    assert entry.cached_input_tokens == 9_200
+    assert entry.cache_creation_input_tokens == 400
+    assert entry.output_tokens == 600
+  end
+
   test "orchestrator token accounting ignores last_token_usage without cumulative totals" do
     issue_id = "issue-last-token-ignored"
 
@@ -4772,6 +4827,29 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert StatusDashboard.humanize_codex_message(wrapped) =~ "turn completed"
     assert StatusDashboard.humanize_codex_message(wrapped) =~ "new 10"
+  end
+
+  test "status dashboard formats legacy Claude input tokens as new tokens with cache buckets" do
+    message = %{
+      event: :notification,
+      message: %{
+        "method" => "thread/tokenUsage/updated",
+        "params" => %{
+          "tokenUsage" => %{
+            "total" => %{
+              "input_tokens" => 800,
+              "cache_read_input_tokens" => 9_200,
+              "cache_creation_input_tokens" => 400,
+              "output_tokens" => 600,
+              "total_tokens" => 11_000
+            }
+          }
+        }
+      }
+    }
+
+    assert StatusDashboard.humanize_codex_message(message) ==
+             "thread token usage updated (new 800, cached 9,200, created 400, out 600, total 11,000)"
   end
 
   test "status dashboard uses shell command line as exec command status text" do

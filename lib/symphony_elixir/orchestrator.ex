@@ -5686,8 +5686,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp reported_token(running_entry, :last_reported_total_tokens),
     do: last_reported_token(running_entry, :total)
 
-  defp reported_token(running_entry, reported_key), do: Map.get(running_entry, reported_key, 0)
-
   defp extract_token_usage(update) do
     payloads = [
       update[:usage],
@@ -5907,6 +5905,7 @@ defmodule SymphonyElixir.Orchestrator do
       cached = get_token_usage(usage, :cached_input)
 
       cond do
+        is_integer(input) and anthropic_cache_usage?(usage) -> input
         is_integer(input) and is_integer(cached) -> max(input - cached, 0)
         is_integer(input) -> input
         true -> nil
@@ -5922,7 +5921,9 @@ defmodule SymphonyElixir.Orchestrator do
         "cachedInputTokens",
         :cachedInputTokens,
         "cache_read_input_tokens",
-        :cache_read_input_tokens
+        :cache_read_input_tokens,
+        "cacheReadInputTokens",
+        :cacheReadInputTokens
       ])
 
   defp get_token_usage(usage, :cache_creation_input),
@@ -5975,6 +5976,21 @@ defmodule SymphonyElixir.Orchestrator do
         values -> Enum.sum(values)
       end
     end
+  end
+
+  defp anthropic_cache_usage?(usage) do
+    is_integer(
+      payload_get(usage, [
+        "cache_read_input_tokens",
+        :cache_read_input_tokens,
+        "cacheReadInputTokens",
+        :cacheReadInputTokens,
+        "cache_creation_input_tokens",
+        :cache_creation_input_tokens,
+        "cacheCreationInputTokens",
+        :cacheCreationInputTokens
+      ])
+    )
   end
 
   defp payload_get(payload, fields) when is_list(fields) do

@@ -2281,7 +2281,12 @@ defmodule SymphonyElixir.StatusDashboard do
           "uncachedInputTokens",
           :uncachedInputTokens
         ])
-      ) || if(is_integer(legacy_input) and is_integer(cached), do: max(legacy_input - cached, 0), else: legacy_input)
+      ) ||
+        cond do
+          is_integer(legacy_input) and anthropic_cache_usage?(usage) -> legacy_input
+          is_integer(legacy_input) and is_integer(cached) -> max(legacy_input - cached, 0)
+          true -> legacy_input
+        end
 
     cache_creation =
       parse_integer(
@@ -2334,6 +2339,23 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_usage_counts(_usage), do: nil
+
+  defp anthropic_cache_usage?(usage) do
+    is_integer(
+      parse_integer(
+        map_value(usage, [
+          "cache_read_input_tokens",
+          :cache_read_input_tokens,
+          "cacheReadInputTokens",
+          :cacheReadInputTokens,
+          "cache_creation_input_tokens",
+          :cache_creation_input_tokens,
+          "cacheCreationInputTokens",
+          :cacheCreationInputTokens
+        ])
+      )
+    )
+  end
 
   defp append_usage_part(parts, _label, value) when not is_integer(value), do: parts
   defp append_usage_part(parts, label, value), do: parts ++ ["#{label} #{format_count(value)}"]

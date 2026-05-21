@@ -14,6 +14,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @agent_runtime_env AgentEnv.runtime_marker_name()
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @port_line_bytes 1_048_576
+  @approval_handoff_markers [
+    "Reviewer agent approved the committed diff.",
+    "Review-agent gate status:"
+  ]
+  @handoff_required_mcp_server "symphony"
+  @missing_required_mcp_tools_code "missing_required_mcp_tools"
   # Grace window after a terminal `result`/`turn_completed`/`turn_failed` event
   # during which the loop keeps reading late bookkeeping output while the
   # Claude CLI shuts down. If the OS process never exits (e.g. a lingering tool
@@ -62,10 +68,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     turn_timeout_ms = settings.agent.turn_timeout_ms
     command_timeout_ms = settings.agent.command_timeout_ms
 
+    required_mcp_server = required_mcp_server_for_prompt(prompt)
+
     with {:ok, prompt} <- ProjectGuidePrompt.append_to_prompt(prompt, workspace, settings, :claude),
          {:ok, port, prompt_cleanup_paths} <- start_port(workspace, command, prompt, worker_host, session) do
       try do
-        read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms)
+        read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms, required_mcp_server: required_mcp_server)
       after
         safe_close_port(port)
         remove_local_prompt_files(prompt_cleanup_paths)
@@ -1055,9 +1063,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     Application.get_env(:symphony_elixir, :claude_code_ssh_module, SSH)
   end
 
-  defp read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms) do
+  defp read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms, opts) do
     now = System.monotonic_time(:millisecond)
-    acc = %{session_id: nil, input_tokens: 0, output_tokens: 0, turn_failed: nil, turn_completed: false}
+
+    acc = %{
+      session_id: nil,
+      input_tokens: 0,
+      output_tokens: 0,
+      turn_failed: nil,
+      turn_completed: false,
+      required_mcp_server: Keyword.get(opts, :required_mcp_server),
+      required_mcp_server_checked: false
+    }
 
     loop_state = %{
       turn_deadline: now + turn_timeout_ms,
@@ -1114,7 +1131,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         loop_state.command_deadline
       end
 
-    new_acc = apply_event(event, on_message, acc)
+    new_acc =
+      event
+      |> apply_event(on_message, acc)
+      |> then(&maybe_fail_missing_required_mcp_server(full_line, on_message, &1))
 
     new_loop_state = %{
       loop_state
@@ -1183,8 +1203,132 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp finalize_read_result(acc) do
-    {:ok, acc |> Map.delete(:turn_failed) |> Map.delete(:turn_completed)}
+    {:ok,
+     acc
+     |> Map.delete(:turn_failed)
+     |> Map.delete(:turn_completed)
+     |> Map.delete(:required_mcp_server)
+     |> Map.delete(:required_mcp_server_checked)}
   end
+
+  defp required_mcp_server_for_prompt(prompt) when is_binary(prompt) do
+    if Enum.any?(@approval_handoff_markers, &String.contains?(prompt, &1)) do
+      @handoff_required_mcp_server
+    else
+      nil
+    end
+  end
+
+  defp required_mcp_server_for_prompt(_prompt), do: nil
+
+  defp maybe_fail_missing_required_mcp_server(
+         line,
+         on_message,
+         %{required_mcp_server: required_mcp_server, required_mcp_server_checked: false} = acc
+       )
+       when is_binary(required_mcp_server) do
+    case Jason.decode(line) do
+      {:ok, %{"type" => "system"} = event} ->
+        acc = %{acc | required_mcp_server_checked: true}
+
+        if mcp_server_available?(event, required_mcp_server) do
+          acc
+        else
+          reason = missing_required_mcp_server_reason(required_mcp_server, event)
+          Logger.error("Claude required MCP server unavailable: #{reason}")
+          on_message.({:turn_failed, reason})
+          %{acc | turn_failed: reason}
+        end
+
+      _not_system_event ->
+        acc
+    end
+  end
+
+  defp maybe_fail_missing_required_mcp_server(_line, _on_message, acc), do: acc
+
+  defp mcp_server_available?(%{"mcp_servers" => servers}, required_server) do
+    servers
+    |> mcp_server_entries()
+    |> Enum.any?(&mcp_server_entry_available?(&1, required_server))
+  end
+
+  defp mcp_server_available?(_event, _required_server), do: false
+
+  defp mcp_server_entries(servers) when is_list(servers), do: servers
+  defp mcp_server_entries(servers) when is_map(servers), do: Map.to_list(servers)
+  defp mcp_server_entries(_servers), do: []
+
+  defp mcp_server_entry_available?(server, required_server) when is_binary(server),
+    do: server == required_server
+
+  defp mcp_server_entry_available?({name, status}, required_server) when is_binary(name) do
+    name == required_server and mcp_server_status_available?(status)
+  end
+
+  defp mcp_server_entry_available?(%{} = server, required_server) do
+    server_name = mcp_server_entry_name(server)
+    server_name == required_server and mcp_server_status_available?(server)
+  end
+
+  defp mcp_server_entry_available?(_server, _required_server), do: false
+
+  defp mcp_server_entry_name(server) when is_map(server) do
+    Map.get(server, "name") ||
+      Map.get(server, :name) ||
+      Map.get(server, "id") ||
+      Map.get(server, :id) ||
+      Map.get(server, "server") ||
+      Map.get(server, :server)
+  end
+
+  defp mcp_server_status_available?(%{} = server) do
+    server
+    |> Map.get("status", Map.get(server, :status))
+    |> mcp_server_status_available?()
+  end
+
+  defp mcp_server_status_available?(status) when is_binary(status) do
+    normalized_status =
+      status
+      |> String.trim()
+      |> String.downcase()
+
+    normalized_status not in ["failed", "error", "disabled", "disconnected", "unavailable"]
+  end
+
+  defp mcp_server_status_available?(_status), do: true
+
+  defp missing_required_mcp_server_reason(required_server, event) do
+    "#{@missing_required_mcp_tools_code}: required Symphony MCP server is not available " <>
+      "in this Claude session. Missing MCP server: #{required_server}. " <>
+      "Advertised MCP servers: #{advertised_mcp_servers(event)}."
+  end
+
+  defp advertised_mcp_servers(%{"mcp_servers" => servers}) do
+    case mcp_server_entries(servers) do
+      [] -> "none"
+      entries -> Enum.map_join(entries, ", ", &format_mcp_server_entry/1)
+    end
+  end
+
+  defp advertised_mcp_servers(_event), do: "none"
+
+  defp format_mcp_server_entry(server) when is_binary(server), do: server
+  defp format_mcp_server_entry({name, status}), do: "#{name}=#{inspect(status)}"
+
+  defp format_mcp_server_entry(%{} = server) do
+    name = mcp_server_entry_name(server) || inspect(server)
+    status = Map.get(server, "status", Map.get(server, :status))
+
+    if is_nil(status) do
+      to_string(name)
+    else
+      "#{name}=#{status}"
+    end
+  end
+
+  defp format_mcp_server_entry(server), do: inspect(server)
 
   defp event_contains_tool_use?({:tool_use, _}), do: true
 

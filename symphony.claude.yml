@@ -127,11 +127,11 @@ polling:
 
 pr_review:
   mode: polling                              # tracker (default) | polling
-  # cooldown_minutes: 10                     # Polling: wait before responding to review comments.
+  cooldown_minutes: 1                     # Polling: wait before responding to review comments.
   # stale_days: 7                            # Polling: stop watching closed or idle PRs after this many days.
   # github_user: your-github-user            # Polling: current operator user, used for review filtering.
   # bot_users: []                            # Polling: GitHub users ignored as bot reviewers.
-  # auto_reply: false                        # Polling: reply to addressed review comments.
+  auto_reply: true                        # Polling: reply to addressed review comments.
   # auto_request_review: false               # Polling: request another review after pushing rework.
 
 ci:
@@ -183,7 +183,7 @@ observability:
   # dashboard_enabled: true                  # Start the local dashboard unless disabled.
   # refresh_ms: 1000                         # Dashboard polling interval.
   # render_interval_ms: 16                   # Transcript rendering throttle.
-  transcript_buffer_size: 200
+  transcript_buffer_size: 300
 
 # dependencies:
 #   allow_registries: []                     # Extra package registries trusted by the dependency audit.

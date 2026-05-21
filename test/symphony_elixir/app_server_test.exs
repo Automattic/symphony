@@ -1288,7 +1288,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       codex_config = File.read!(codex_config_copy)
       assert codex_config =~ ~s(args = ["--tcp-host", "127.0.0.1", "--tcp-port", )
-      assert codex_config =~ ~s(env = { SYMPHONY_MCP_SESSION_TOKEN = )
+      assert codex_config =~ ~s(SYMPHONY_MCP_SESSION_TOKEN = )
+      assert codex_config =~ "PATH = "
       refute codex_config =~ "--socket"
       refute codex_config =~ "--session"
     after

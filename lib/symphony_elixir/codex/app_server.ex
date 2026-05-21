@@ -29,6 +29,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @opt_out_notification_methods ["turn/diff/updated"]
   @agent_runtime_env AgentEnv.runtime_marker_name()
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
@@ -907,7 +908,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       "id" => @initialize_id,
       "params" => %{
         "capabilities" => %{
-          "experimentalApi" => true
+          "experimentalApi" => true,
+          "optOutNotificationMethods" => @opt_out_notification_methods
         },
         "clientInfo" => %{
           "name" => "symphony-orchestrator",
@@ -1136,7 +1138,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
         cond do
           codex_stdio_write_failed?(payload_string) ->
-            trimmed = String.trim(payload_string)
+            trimmed = payload_string |> strip_ansi() |> String.trim()
             Logger.error("Codex app-server stdout write failed; aborting turn: #{trimmed}")
 
             emit_message(
@@ -1149,6 +1151,8 @@ defmodule SymphonyElixir.Codex.AppServer do
             {:error, {:codex_stdio_write_failed, trimmed}}
 
           protocol_message_candidate?(payload_string) ->
+            updated_turn_stream_state = update_command_tracking_from_malformed(turn_stream_state, payload_string)
+
             emit_message(
               on_message,
               :malformed,
@@ -1167,7 +1171,7 @@ defmodule SymphonyElixir.Codex.AppServer do
               tool_executor,
               auto_approve_requests,
               approval_context,
-              turn_stream_state
+              updated_turn_stream_state
             )
 
           true ->
@@ -3190,6 +3194,21 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp update_command_tracking(turn_stream_state, _method, _payload), do: turn_stream_state
 
+  defp update_command_tracking_from_malformed(turn_stream_state, data) do
+    if malformed_command_execution_completed?(data) do
+      complete_command_tracking(turn_stream_state)
+    else
+      turn_stream_state
+    end
+  end
+
+  defp malformed_command_execution_completed?(data) do
+    text = data |> to_string() |> String.trim_leading()
+
+    String.match?(text, ~r/^\{\s*"method"\s*:\s*"item\/completed"/) and
+      String.match?(text, ~r/"type"\s*:\s*"command(?:Execution|_execution)"/)
+  end
+
   defp start_command_tracking(turn_stream_state, command) do
     Map.put(turn_stream_state, :active_command, %{
       command: command,
@@ -3336,9 +3355,15 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp codex_stdio_write_failed?(data) do
     data
     |> to_string()
-    |> String.replace(~r/\x1b\[[0-9;]*m/, "")
+    |> strip_ansi()
     |> String.trim_leading()
     |> String.match?(~r/^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?(?:(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR)\s+)?codex_app_server_transport::transport::stdio:\s+Failed to write to stdout\b/)
+  end
+
+  defp strip_ansi(data) do
+    data
+    |> to_string()
+    |> String.replace(~r/\x1b\[[0-9;]*m/, "")
   end
 
   defp issue_context(%{id: issue_id, identifier: identifier}) do

@@ -247,6 +247,7 @@ workpad instead of synthesising a `gh` call.
     - all known callers of those functions, using grep/search results where applicable,
     - existing test coverage for the affected code,
     - estimated blast radius (`narrow`, `moderate`, or `wide`) with justification.
+    - new branches and error/edge paths introduced by the change, and the exact test that will exercise each. The repo enforces a 100% coverage threshold; an unexercised branch will fail the CI `coverage report` job. If a path is genuinely unreachable from tests (boundary I/O shim), call it out here and plan to extend `mix.exs` `test_coverage` `ignore_modules` rather than skipping the gate.
     - Do not write the first code edit until this analysis is recorded.
 11. Compact context and proceed to execution.
 
@@ -329,12 +330,13 @@ Use this only when planning reaches a fundamentally unclear specification and th
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green.
     - If a prior push's CI checks are still failing, follow the `CI failure triage protocol` before re-pushing.
+    - Coverage threshold is a hard gate. Run `make coverage` (or `make all`) and confirm the final summary reports `Coverage: 100.00%` against `Threshold: 100.00%`. If it reports anything lower (for example `99.89%`), the CI `coverage report` job will fail — add tests that exercise the missing branches, or extend `mix.exs` `test_coverage` `ignore_modules` only for genuinely untestable I/O shims, then rerun. Never push with coverage below the threshold expecting CI to be different.
     - After staging/committing changes and before pushing, run `git diff origin/main..HEAD` to review committed-only diff for:
       - stray debug statements, `console.log`, hardcoded test values, or temporary proof edits,
       - unintended file changes outside the ticket's scope,
       - incomplete hunks, half-finished removals, or reverted-only placeholders.
     - Only push after this review is clean.
-    - Record `diff reviewed — clean` in the workpad before each push.
+    - Record `coverage 100.00% — green` and `diff reviewed — clean` in the workpad before each push.
     - If `review_agent.enabled: true` is configured in `symphony.yml`, stop before `git push` after validation and diff review are complete. Symphony will run the pre-push reviewer agent and inject the next continuation prompt.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).

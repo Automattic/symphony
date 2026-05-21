@@ -49,8 +49,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "tracker"
     assert config.pr_review.cooldown_minutes == nil
     assert config.pr_review.stale_days == nil
-    assert config.pr_review.github_user == nil
-    assert config.pr_review.bot_users == []
+    assert config.pr_review.ignored_users == []
     assert config.pr_review.auto_reply == false
     assert config.pr_review.auto_request_review == false
     assert config.ci.enabled == false
@@ -238,8 +237,7 @@ defmodule SymphonyElixir.CoreTest do
       pr_review_mode: "polling",
       pr_review_cooldown_minutes: 15,
       pr_review_stale_days: 3,
-      pr_review_github_user: "agent-user",
-      pr_review_bot_users: ["symphony-bot"],
+      pr_review_ignored_users: ["symphony-bot", " agent-user "],
       pr_review_auto_reply: true,
       pr_review_auto_request_review: true
     )
@@ -248,8 +246,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "polling"
     assert config.pr_review.cooldown_minutes == 15
     assert config.pr_review.stale_days == 3
-    assert config.pr_review.github_user == "agent-user"
-    assert config.pr_review.bot_users == ["symphony-bot"]
+    assert config.pr_review.ignored_users == ["symphony-bot", "agent-user"]
     assert config.pr_review.auto_reply == true
     assert config.pr_review.auto_request_review == true
 
@@ -262,7 +259,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "polling"
     assert config.pr_review.cooldown_minutes == 10
     assert config.pr_review.stale_days == 7
-    assert config.pr_review.bot_users == []
+    assert config.pr_review.ignored_users == []
     assert config.pr_review.auto_reply == false
     assert config.pr_review.auto_request_review == false
 
@@ -270,8 +267,7 @@ defmodule SymphonyElixir.CoreTest do
       pr_review_mode: "tracker",
       pr_review_cooldown_minutes: "invalid",
       pr_review_stale_days: -1,
-      pr_review_github_user: "ignored",
-      pr_review_bot_users: ["ignored"],
+      pr_review_ignored_users: ["ignored"],
       pr_review_auto_reply: true,
       pr_review_auto_request_review: true
     )
@@ -280,8 +276,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.mode == "tracker"
     assert config.pr_review.cooldown_minutes == nil
     assert config.pr_review.stale_days == nil
-    assert config.pr_review.github_user == nil
-    assert config.pr_review.bot_users == []
+    assert config.pr_review.ignored_users == []
     assert config.pr_review.auto_reply == false
     assert config.pr_review.auto_request_review == false
 
@@ -297,6 +292,28 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(), pr_review_mode: "invalid")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "pr_review.mode"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "github_user" => "legacy-user"}})
+
+    assert message =~ "`pr_review.github_user` has been removed"
+    assert message =~ "ignored_users"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "bot_users" => ["legacy-bot"]}})
+
+    assert message =~ "`pr_review.bot_users` has been removed"
+    assert message =~ "ignored_users"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "github_user" => nil}})
+
+    assert message =~ "`pr_review.github_user` has been removed"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "bot_users" => nil}})
+
+    assert message =~ "`pr_review.bot_users` has been removed"
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -1394,6 +1411,49 @@ defmodule SymphonyElixir.CoreTest do
              state.retry_attempts[issue_id]
 
     assert_due_in_range(due_at_ms, 39_000, 40_500)
+  end
+
+  test "worker exception exits store concise retry errors" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    issue_id = "issue-exception-summary"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :ExceptionSummaryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      repo_key: "api",
+      identifier: "MT-EXCEPTION",
+      issue: %Issue{id: issue_id, identifier: "MT-EXCEPTION", state: "In Progress", repo_key: "api"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    message = "Agent run failed: {:codex_stdio_write_failed, \"\e[31mERROR\e[0m\"}"
+    reason = {%RuntimeError{message: message}, [{SymphonyElixir.AgentRunner, :run, 3, []}]}
+
+    send(pid, {:DOWN, ref, :process, self(), reason})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{error: error} = state.retry_attempts[issue_id]
+    assert error == "agent exited: Agent run failed: {:codex_stdio_write_failed, \"ERROR\"}"
   end
 
   test "terminal agent setup errors comment and do not schedule retry" do
@@ -3392,8 +3452,11 @@ defmodule SymphonyElixir.CoreTest do
       write_review_agent_fake_codex!(codex_binary, trace_file)
       write_review_agent_workflow!(codex_binary, max_turns: 3, max_iterations: 1)
 
+      first_correction = review_agent_request_changes_response("Tighten the regression coverage.")
+
       put_review_agent_responses!([
-        ~s({"verdict":"request_changes","comments":["Tighten the regression coverage."]}),
+        first_correction,
+        first_correction,
         ~s({"verdict":"approve","comments":[]})
       ])
 
@@ -3407,6 +3470,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}
 
       assert_receive {:codex_worker_update, "issue-review-agent-runner",
                       %{
@@ -3416,8 +3480,8 @@ defmodule SymphonyElixir.CoreTest do
                           verdict: :request_changes,
                           round: 1,
                           max_iterations: 1,
-                          reason: "Tighten the regression coverage.",
-                          comments: ["Tighten the regression coverage."]
+                          reason: "Tighten the regression coverage. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change.",
+                          comments: ["Tighten the regression coverage. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change."]
                         }
                       }}
 
@@ -3428,7 +3492,7 @@ defmodule SymphonyElixir.CoreTest do
                         payload: %{verdict: :approve, round: 2, max_iterations: 1}
                       }}
 
-      refute_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}, 50
+      refute_receive {:review_agent_call, 4, _session, _prompt, _issue, _opts}, 50
 
       turn_texts = review_agent_turn_texts!(trace_file)
       assert length(turn_texts) == 3
@@ -3456,9 +3520,14 @@ defmodule SymphonyElixir.CoreTest do
       write_review_agent_fake_codex!(codex_binary, trace_file)
       write_review_agent_workflow!(codex_binary, max_turns: 3, max_iterations: 1)
 
+      first_correction = review_agent_request_changes_response("First correction.")
+      second_correction = review_agent_request_changes_response("Still not acceptable.")
+
       put_review_agent_responses!([
-        ~s({"verdict":"request_changes","comments":["First correction."]}),
-        ~s({"verdict":"request_changes","comments":["Still not acceptable."]})
+        first_correction,
+        first_correction,
+        second_correction,
+        second_correction
       ])
 
       assert_raise RuntimeError, ~r/review_agent.max_iterations reached/, fn ->
@@ -3472,6 +3541,8 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 4, _session, _prompt, _issue, _opts}
 
       assert_receive {:codex_worker_update, "issue-review-agent-runner",
                       %{
@@ -3488,11 +3559,11 @@ defmodule SymphonyElixir.CoreTest do
                           verdict: :request_changes,
                           round: 2,
                           max_iterations: 1,
-                          reason: "Still not acceptable."
+                          reason: "Still not acceptable. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change."
                         }
                       }}
 
-      refute_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}, 50
+      refute_receive {:review_agent_call, 5, _session, _prompt, _issue, _opts}, 50
 
       turn_texts = review_agent_turn_texts!(trace_file)
       assert length(turn_texts) == 2
@@ -3516,7 +3587,8 @@ defmodule SymphonyElixir.CoreTest do
 
       write_review_agent_fake_codex!(codex_binary, Path.join(test_root, "codex.trace"))
       write_review_agent_workflow!(codex_binary, max_turns: 2, max_iterations: 1)
-      put_review_agent_responses!([~s({"verdict":"block","comments":[],"reason":"Unsafe to continue."})])
+      block = review_agent_block_response("Unsafe to continue.")
+      put_review_agent_responses!([block, block])
 
       assert_raise RuntimeError, ~r/Unsafe to continue/, fn ->
         AgentRunner.run(review_agent_issue(), self(),
@@ -3536,7 +3608,7 @@ defmodule SymphonyElixir.CoreTest do
                           round: 1,
                           max_iterations: 1,
                           reason: "Unsafe to continue.",
-                          comments: []
+                          comments: ["Unsafe to continue. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change."]
                         }
                       }}
     after
@@ -3997,8 +4069,35 @@ defmodule SymphonyElixir.CoreTest do
     System.cmd("git", ["-C", repo, "add", "README.md"])
     System.cmd("git", ["-C", repo, "commit", "-m", "initial"])
     System.cmd("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", "HEAD"])
+    File.write!(Path.join(repo, "feature.txt"), "grounded evidence line\n")
+    System.cmd("git", ["-C", repo, "add", "feature.txt"])
+    System.cmd("git", ["-C", repo, "commit", "-m", "feat: add reviewer evidence"])
 
     repo
+  end
+
+  defp review_agent_request_changes_response(summary) do
+    review_agent_verdict_response("request_changes", summary)
+  end
+
+  defp review_agent_block_response(reason) do
+    review_agent_verdict_response("block", reason)
+  end
+
+  defp review_agent_verdict_response(verdict, summary) do
+    Jason.encode!(%{
+      "verdict" => verdict,
+      "findings" => [
+        %{
+          "summary" => summary,
+          "file" => "feature.txt",
+          "line_range" => [1, 1],
+          "quoted_snippet" => "grounded evidence line",
+          "suggested_fix" => "Keep the evidence-backed change."
+        }
+      ],
+      "reason" => if(verdict == "block", do: summary, else: "")
+    })
   end
 
   defp write_review_agent_fake_codex!(codex_binary, trace_file) do

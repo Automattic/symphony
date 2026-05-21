@@ -246,14 +246,45 @@ defmodule SymphonyElixir.PrReviewPoller do
     run_store = Keyword.get(opts, :run_store, RunStore)
     repo_key = repo_key_from_opts(opts)
     tracker = Keyword.get(opts, :tracker, Tracker)
+    current_gh_user = resolve_current_gh_user(opts)
 
     with {:ok, discovered} <- discover_reviews(run_store, tracker, repo_key, now),
          {:ok, reviews} <- list_pr_reviews(run_store, repo_key) do
       actions =
         reviews
-        |> Enum.map(&process_review(&1, settings, opts, now))
+        |> Enum.map(&process_review(&1, settings, current_gh_user, opts, now))
 
       {:ok, %{mode: :polling, discovered: discovered, processed: length(reviews), actions: actions}}
+    end
+  end
+
+  defp resolve_current_gh_user(opts) do
+    case Keyword.fetch(opts, :current_gh_user) do
+      {:ok, value} ->
+        normalize_user(value)
+
+      :error ->
+        opts |> detect_current_gh_user() |> normalize_user()
+    end
+  end
+
+  defp detect_current_gh_user(opts) do
+    github = Keyword.get(opts, :github, PullRequest)
+
+    if function_exported?(github, :current_user, 1) do
+      case github.current_user(opts) do
+        {:ok, login} when is_binary(login) ->
+          login
+
+        {:error, reason} ->
+          Logger.debug("PR review current gh user detection failed: #{inspect(reason)}")
+          nil
+
+        _other ->
+          nil
+      end
+    else
+      nil
     end
   end
 
@@ -375,22 +406,22 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp log_poll_action_warning(_action), do: :ok
 
-  defp process_review(record, settings, opts, now) when is_map(record) do
+  defp process_review(record, settings, current_gh_user, opts, now) when is_map(record) do
     case backoff_active_until(record, now) do
       {:backing_off, next_poll_at} ->
         {:backing_off, Map.get(record, :issue_id), next_poll_at}
 
       :ready ->
-        fetch_and_process_review(record, settings, opts, now)
+        fetch_and_process_review(record, settings, current_gh_user, opts, now)
     end
   end
 
-  defp fetch_and_process_review(record, settings, opts, now) do
+  defp fetch_and_process_review(record, settings, current_gh_user, opts, now) do
     github = Keyword.get(opts, :github, PullRequest)
 
     case github.fetch_activity(Map.get(record, :pr_url), cwd: Map.get(record, :workspace_path)) do
       {:ok, activity} ->
-        handle_activity(record, activity, settings, opts, now)
+        handle_activity(record, activity, settings, current_gh_user, opts, now)
 
       {:error, reason} ->
         record_poll_error(record, reason, opts, now)
@@ -410,10 +441,13 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp handle_activity(record, activity, settings, opts, now) do
-    {attrs, latest_activity_at, unaddressed_comments} = review_activity_attrs(record, activity, settings, now)
+  defp handle_activity(record, activity, settings, current_gh_user, opts, now) do
+    ignored_users = ignored_review_users(settings, activity, current_gh_user)
 
-    case review_action(record, activity, latest_activity_at, unaddressed_comments, settings, now) do
+    {attrs, latest_activity_at, unaddressed_comments} =
+      review_activity_attrs(record, activity, ignored_users, now)
+
+    case review_action(record, activity, latest_activity_at, unaddressed_comments, ignored_users, settings, now) do
       :merged ->
         record
         |> maybe_capture_learnings(activity, settings, opts, now)
@@ -442,20 +476,22 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp review_activity_attrs(record, activity, settings, now) do
+  defp review_activity_attrs(record, activity, ignored_users, now) do
     latest_activity_at =
       Map.get(activity, :latest_activity_at) ||
         Map.get(record, :last_activity_at) ||
         Map.get(record, :updated_at) ||
         now
 
+    raw_comments = Map.get(activity, :comments, [])
+    reviewer_comments = reviewer_comments(raw_comments, ignored_users)
+    unaddressed_comments = unaddressed_reviewer_comments(record, reviewer_comments)
+    latest_unaddressed_comment_at = latest_comment_activity_at(unaddressed_comments)
+
     latest_review_activity_at =
-      Map.get(activity, :latest_review_activity_at) ||
+      latest_comment_activity_at(review_activity_events(raw_comments, ignored_users)) ||
         Map.get(record, :last_review_activity_at) ||
         latest_activity_at
-
-    unaddressed_comments = unaddressed_reviewer_comments(record, Map.get(activity, :comments, []), settings)
-    latest_unaddressed_comment_at = latest_comment_activity_at(unaddressed_comments)
 
     attrs =
       %{
@@ -475,17 +511,19 @@ defmodule SymphonyElixir.PrReviewPoller do
     {attrs, latest_activity_at, unaddressed_comments}
   end
 
-  defp review_action(record, activity, latest_activity_at, unaddressed_comments, settings, now) do
+  defp review_action(record, activity, latest_activity_at, unaddressed_comments, ignored_users, settings, now) do
+    review_decision = normalize_decision(Map.get(activity, :review_decision))
+    changes_requested? = changes_requested_decision?(review_decision, activity, ignored_users)
     cond do
       merged_pr_state?(Map.get(activity, :state)) -> :merged
       closed_pr_state?(Map.get(activity, :state)) -> :closed
-      true -> open_review_action(record, activity, latest_activity_at, unaddressed_comments, settings, now)
+      true -> open_review_action(record, activity, latest_activity_at, unaddressed_comments, changes_requested?, settings, now)
     end
   end
 
-  defp open_review_action(record, activity, latest_activity_at, unaddressed_comments, settings, now) do
+  defp open_review_action(record, activity, latest_activity_at, unaddressed_comments, changes_requested?, settings, now) do
     case conflict_review_action(record, activity) do
-      nil -> reviewer_activity_action(activity, latest_activity_at, unaddressed_comments, settings, now)
+      nil -> reviewer_activity_action(activity, latest_activity_at, unaddressed_comments, changes_requested?, settings, now)
       action -> action
     end
   end
@@ -499,11 +537,11 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp reviewer_activity_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
+  defp reviewer_activity_action(activity, latest_activity_at, unaddressed_comments, changes_requested?, settings, now) do
     review_decision = normalize_decision(Map.get(activity, :review_decision))
 
     cond do
-      review_decision == @changes_requested -> :changes_requested
+      changes_requested? -> :changes_requested
       review_decision == @approved -> :approved
       unaddressed_comments != [] -> :review_comments
       stale?(latest_activity_at, now, settings.pr_review.stale_days) -> :stale
@@ -683,6 +721,26 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp active_agent_run?(_issue_id, _opts), do: false
+
+  defp changes_requested_decision?(@changes_requested, activity, ignored_users) do
+    unignored_changes_requested?(activity, ignored_users)
+  end
+
+  defp changes_requested_decision?(_review_decision, _activity, _ignored_users), do: false
+
+  defp unignored_changes_requested?(activity, ignored_users) do
+    activity
+    |> Map.get(:comments, [])
+    |> Enum.any?(&unignored_changes_requested_review?(&1, ignored_users))
+  end
+
+  defp unignored_changes_requested_review?(comment, ignored_users) when is_map(comment) do
+    Map.get(comment, :kind) == "review" and
+      normalize_decision(Map.get(comment, :state)) == @changes_requested and
+      not ignored_comment?(comment, ignored_users)
+  end
+
+  defp unignored_changes_requested_review?(_comment, _ignored_users), do: false
 
   defp maybe_transition_rework(record, attrs, settings, opts, now) do
     latest_activity_at = action_activity_at(attrs)
@@ -1113,14 +1171,26 @@ defmodule SymphonyElixir.PrReviewPoller do
     is_binary(pending_cursor) and pending_cursor != "" and pending_cursor == addressed_cursor
   end
 
-  defp unaddressed_reviewer_comments(record, comments, settings) do
-    comments =
-      comments
-      |> normalize_comments()
-      |> Enum.reject(&(ignored_comment?(&1, settings) or String.trim(Map.get(&1, :body, "")) == ""))
-      |> sort_comments()
-
+  defp reviewer_comments(comments, ignored_users) when is_list(ignored_users) do
     comments
+    |> normalize_comments()
+    |> Enum.reject(&(ignored_comment?(&1, ignored_users) or String.trim(Map.get(&1, :body, "")) == ""))
+    |> sort_comments()
+  end
+
+  defp review_activity_events(comments, ignored_users) when is_list(ignored_users) do
+    comments
+    |> normalize_comments()
+    |> Enum.reject(&(ignored_comment?(&1, ignored_users) or review_activity_drop?(&1)))
+    |> sort_comments()
+  end
+
+  defp review_activity_drop?(comment) when is_map(comment) do
+    Map.get(comment, :kind) != "review" and String.trim(Map.get(comment, :body, "")) == ""
+  end
+
+  defp unaddressed_reviewer_comments(record, reviewer_comments) when is_list(reviewer_comments) do
+    reviewer_comments
     |> comments_after_cursor(Map.get(record, :last_addressed_comment_id))
     |> comments_after_last_action(record)
   end
@@ -1149,19 +1219,25 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp normalize_comment(_comment), do: %{id: nil}
 
-  defp ignored_comment?(comment, settings) do
+  defp ignored_comment?(comment, ignored_users) when is_list(ignored_users) do
     author = normalize_user(Map.get(comment, :author))
 
-    author != nil and author in ignored_review_users(settings)
+    author != nil and author in ignored_users
   end
 
-  defp ignored_review_users(%{pr_review: pr_review}) do
-    ([Map.get(pr_review, :github_user)] ++ Map.get(pr_review, :bot_users, []))
+  defp ignored_review_users(settings, activity, current_gh_user) do
+    (configured_ignored_users(settings) ++
+       [Map.get(activity || %{}, :pr_author), current_gh_user])
     |> Enum.map(&normalize_user/1)
     |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
   end
 
-  defp ignored_review_users(_settings), do: []
+  defp configured_ignored_users(%{pr_review: pr_review}) do
+    Map.get(pr_review, :ignored_users) || []
+  end
+
+  defp configured_ignored_users(_settings), do: []
 
   defp normalize_user(value) when is_binary(value) do
     value
@@ -1741,9 +1817,11 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp reviewers_for_request(comments, settings) do
+    ignored = settings |> configured_ignored_users() |> Enum.map(&normalize_user/1) |> Enum.reject(&is_nil/1)
+
     comments
     |> Enum.map(&Map.get(&1, :author))
-    |> Enum.reject(&(normalize_user(&1) in ignored_review_users(settings)))
+    |> Enum.reject(&(normalize_user(&1) in ignored))
     |> Enum.filter(&is_binary/1)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))

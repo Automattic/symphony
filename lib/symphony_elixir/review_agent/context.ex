@@ -26,6 +26,7 @@ defmodule SymphonyElixir.ReviewAgent.Context do
   ]
 
   @type git_fun :: (list(String.t()) -> {:ok, String.t()} | {:error, term()})
+  @type line_range :: {pos_integer(), pos_integer()}
 
   @spec build(Issue.t(), Path.t(), String.t(), keyword(), git_fun()) ::
           {:ok, map()} | {:error, term()}
@@ -102,6 +103,172 @@ defmodule SymphonyElixir.ReviewAgent.Context do
          review_coverage: coverage,
          context_pack: context_pack
        }}
+    end
+  end
+
+  @doc false
+  @spec lookup_evidence(map(), String.t(), line_range()) ::
+          {:ok, %{path: String.t(), line_range: line_range(), text: String.t(), source: :diff | :adjacent_context}}
+          | {:error, term()}
+  def lookup_evidence(source, path, {start_line, end_line})
+      when is_map(source) and is_binary(path) and is_integer(start_line) and is_integer(end_line) and start_line > 0 and
+             end_line >= start_line do
+    with {:ok, normalized_path} <- normalize_lookup_path(path),
+         :ok <- path_known_to_context?(source, normalized_path) do
+      diff_evidence(source, normalized_path, start_line, end_line) ||
+        adjacent_evidence(source, normalized_path, start_line, end_line) ||
+        {:error, {:line_range_not_found, normalized_path, {start_line, end_line}}}
+    end
+  end
+
+  def lookup_evidence(_source, _path, _line_range), do: {:error, :invalid_line_range}
+
+  defp normalize_lookup_path(path) do
+    case String.trim(path) do
+      "" -> {:error, :invalid_file}
+      "/" <> _rest -> {:error, :absolute_file_not_allowed}
+      normalized -> {:ok, normalized}
+    end
+  end
+
+  defp path_known_to_context?(source, path) do
+    if path in changed_paths(source) or path in adjacent_paths(source) do
+      :ok
+    else
+      {:error, {:file_not_in_review_context, path}}
+    end
+  end
+
+  defp changed_paths(source) do
+    source
+    |> Map.get(:changed_paths, [])
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp adjacent_paths(source) do
+    source
+    |> get_in([:context_pack, :adjacent_context, :windows])
+    |> case do
+      windows when is_list(windows) -> windows |> Enum.map(&Map.get(&1, :path)) |> Enum.filter(&is_binary/1)
+      _other -> []
+    end
+  end
+
+  defp diff_evidence(source, path, start_line, end_line) do
+    source
+    |> Map.get(:changed_file_inventory, [])
+    |> Enum.find(&(Map.get(&1, :path) == path))
+    |> case do
+      nil ->
+        nil
+
+      %{patch: patch} when is_binary(patch) ->
+        case patch_lines_in_range(patch, start_line, end_line) do
+          [] -> nil
+          lines -> {:ok, %{path: path, line_range: {start_line, end_line}, text: Enum.join(lines, "\n"), source: :diff}}
+        end
+
+      _file ->
+        nil
+    end
+  end
+
+  defp adjacent_evidence(source, path, start_line, end_line) do
+    source
+    |> get_in([:context_pack, :adjacent_context, :windows])
+    |> case do
+      windows when is_list(windows) ->
+        Enum.find_value(windows, &adjacent_window_evidence(&1, path, start_line, end_line))
+
+      _other ->
+        nil
+    end
+  end
+
+  defp adjacent_window_evidence(
+         %{path: window_path, start_line: window_start, end_line: window_end, text: text},
+         path,
+         start_line,
+         end_line
+       )
+       when window_path == path and is_integer(window_start) and is_integer(window_end) and is_binary(text) do
+    if start_line >= window_start and end_line <= window_end do
+      build_adjacent_evidence(path, text, start_line, end_line)
+    end
+  end
+
+  defp adjacent_window_evidence(_window, _path, _start_line, _end_line), do: nil
+
+  defp build_adjacent_evidence(path, text, start_line, end_line) do
+    case adjacent_lines_in_range(text, start_line, end_line) do
+      [] ->
+        nil
+
+      lines ->
+        {:ok, %{path: path, line_range: {start_line, end_line}, text: Enum.join(lines, "\n"), source: :adjacent_context}}
+    end
+  end
+
+  defp patch_lines_in_range(patch, start_line, end_line) do
+    patch
+    |> String.split("\n", trim: false)
+    |> Enum.reduce({nil, []}, fn line, {next_line, acc} ->
+      cond do
+        hunk = Regex.run(~r/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/, line, capture: :all_but_first) ->
+          [start] = hunk
+          {parse_int(start), acc}
+
+        is_nil(next_line) ->
+          {next_line, acc}
+
+        String.starts_with?(line, "+") and not String.starts_with?(line, "+++") ->
+          collect_new_line(line, next_line, start_line, end_line, acc)
+
+        String.starts_with?(line, " ") ->
+          collect_new_line(line, next_line, start_line, end_line, acc)
+
+        String.starts_with?(line, "-") and not String.starts_with?(line, "---") ->
+          {next_line, acc}
+
+        true ->
+          {next_line, acc}
+      end
+    end)
+    |> elem(1)
+    |> Enum.reverse()
+  end
+
+  defp collect_new_line(line, current_line, start_line, end_line, acc) do
+    text = String.slice(line, 1..-1//1)
+
+    acc =
+      if current_line >= start_line and current_line <= end_line do
+        [text | acc]
+      else
+        acc
+      end
+
+    {current_line + 1, acc}
+  end
+
+  defp adjacent_lines_in_range(text, start_line, end_line) do
+    text
+    |> String.split("\n", trim: false)
+    |> Enum.flat_map(&adjacent_line_in_range(&1, start_line, end_line))
+  end
+
+  defp adjacent_line_in_range(line, start_line, end_line) do
+    case Regex.run(~r/^(\d+): ?(.*)$/, line, capture: :all_but_first) do
+      [number, text] -> adjacent_line_text(parse_int(number), text, start_line, end_line)
+      _no_line_number -> []
+    end
+  end
+
+  defp adjacent_line_text(line_number, text, start_line, end_line) do
+    if line_number >= start_line and line_number <= end_line do
+      [text]
+    else
+      []
     end
   end
 

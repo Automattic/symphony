@@ -26,9 +26,16 @@ description:
 ## Steps
 
 1. Identify current branch and confirm remote state.
-2. Run local validation before pushing. In sandboxed Codex workspaces, prefer
-   `HEX_HOME=/private/tmp/symphony-hex-home make all` so Hex and
-   Dialyzer cache writes stay in a writable location.
+2. Run local validation before pushing. The gate must include the coverage
+   check (`make coverage` or `make all`) and finish with `Coverage: 100.00%`
+   against `Threshold: 100.00%`. The repo enforces 100% coverage in the CI
+   `coverage report` job; pushing with anything lower (e.g. `99.89%`) is the
+   most common cause of failed auto-PRs. If coverage is short, add tests that
+   exercise the missing branches; reach for `mix.exs` `test_coverage`
+   `ignore_modules` only for genuinely untestable I/O shims, and never as a
+   shortcut to make the gate pass. In sandboxed Codex workspaces, prefer
+   `HEX_HOME=/private/tmp/symphony-hex-home make all` so Hex and Dialyzer
+   cache writes stay in a writable location.
 3. Push branch to `origin` with upstream tracking if needed, using whatever
    remote URL is already configured.
 4. If push is not clean/rejected:

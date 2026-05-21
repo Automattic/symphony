@@ -11,6 +11,7 @@ defmodule SymphonyElixir.ReviewAgent do
   alias SymphonyElixir.ReviewAgent.Context
 
   @max_diff_prompt_bytes 120_000
+  @self_check_max_iterations 4
   @agent_message_methods [
     "item/agentMessage/delta",
     "codex/event/agent_message_delta",
@@ -18,9 +19,17 @@ defmodule SymphonyElixir.ReviewAgent do
   ]
 
   @type verdict :: :approve | :request_changes | :block
+  @type finding :: %{
+          required(:summary) => String.t(),
+          required(:file) => String.t(),
+          required(:line_range) => {pos_integer(), pos_integer()},
+          required(:quoted_snippet) => String.t(),
+          required(:suggested_fix) => String.t()
+        }
   @type result :: %{
           required(:verdict) => verdict(),
           required(:comments) => [String.t()],
+          optional(:findings) => [finding()],
           optional(:reason) => String.t(),
           optional(:source) => map()
         }
@@ -35,9 +44,9 @@ defmodule SymphonyElixir.ReviewAgent do
 
     with true <- enabled?(config),
          {:ok, source} <- source_material(issue, workspace, settings, opts),
-         {:ok, raw_response} <- run_reviewer_agent(issue, workspace, settings, source, opts),
-         {:ok, verdict} <- pick_review_response(raw_response) do
-      {:ok, Map.put(verdict, :source, source)}
+         {:ok, verdict} <- run_reviewer_agent(issue, workspace, settings, source, opts),
+         {:ok, grounded_verdict} <- validate_findings(verdict, source) do
+      {:ok, Map.put(grounded_verdict, :source, source)}
     else
       false -> {:ok, %{verdict: :approve, comments: [], reason: "review_agent disabled"}}
       {:error, reason} -> {:error, reason}
@@ -54,14 +63,89 @@ defmodule SymphonyElixir.ReviewAgent do
          {:ok, decoded} <- Jason.decode(json),
          {:ok, verdict} <- coerce_verdict(Map.get(decoded, "verdict")),
          {:ok, comments} <- coerce_comments(Map.get(decoded, "comments")),
+         {:ok, findings} <- coerce_findings(Map.get(decoded, "findings")),
          {:ok, reason} <- coerce_reason(Map.get(decoded, "reason"), verdict),
-         {:ok, result} <- validate_result(%{verdict: verdict, comments: comments, reason: reason}) do
+         {:ok, result} <-
+           validate_result(%{verdict: verdict, comments: comments, findings: findings, reason: reason}) do
       {:ok, compact_result(result)}
     else
       {:error, {:review_agent_runtime_error, _raw} = reason} -> {:error, reason}
       {:error, %Jason.DecodeError{} = reason} -> {:error, {:malformed_review_agent_response, {:invalid_json, reason}}}
       {:error, reason} -> {:error, {:malformed_review_agent_response, reason}}
     end
+  end
+
+  @doc false
+  @spec validate_findings(result(), map()) :: {:ok, result()} | {:error, term()}
+  def validate_findings(%{verdict: verdict} = result, source) when verdict in [:block, :request_changes] and is_map(source) do
+    findings = Map.get(result, :findings, [])
+
+    findings
+    |> Enum.map(&validate_finding(&1, source))
+    |> split_valid_findings()
+    |> case do
+      {[], failures} ->
+        {:error, {:review_agent_unverifiable, %{verdict: verdict, failures: failures}}}
+
+      {valid_findings, _failures} ->
+        {:ok, result |> Map.put(:findings, valid_findings) |> put_grounded_comments()}
+    end
+  end
+
+  def validate_findings(result, _source), do: {:ok, result}
+
+  defp validate_finding(finding, source) do
+    case Context.lookup_evidence(source, finding.file, finding.line_range) do
+      {:ok, evidence} ->
+        if snippet_matches?(finding.quoted_snippet, evidence.text) do
+          {:ok, finding}
+        else
+          {:error, %{finding: finding, reason: :quoted_snippet_not_found, evidence: evidence}}
+        end
+
+      {:error, reason} ->
+        {:error, %{finding: finding, reason: reason}}
+    end
+  end
+
+  defp split_valid_findings(results) do
+    Enum.reduce(results, {[], []}, fn
+      {:ok, finding}, {valid, failures} -> {[finding | valid], failures}
+      {:error, failure}, {valid, failures} -> {valid, [failure | failures]}
+    end)
+    |> then(fn {valid, failures} -> {Enum.reverse(valid), Enum.reverse(failures)} end)
+  end
+
+  defp snippet_matches?(snippet, evidence) do
+    normalized_snippet = normalize_evidence_text(snippet)
+    normalized_evidence = normalize_evidence_text(evidence)
+
+    normalized_snippet != "" and
+      (String.contains?(normalized_evidence, normalized_snippet) or
+         compact_evidence_text(normalized_evidence) == compact_evidence_text(normalized_snippet) or
+         String.contains?(compact_evidence_text(normalized_evidence), compact_evidence_text(normalized_snippet)))
+  end
+
+  defp normalize_evidence_text(text) do
+    text
+    |> String.replace("\r\n", "\n")
+    |> String.split("\n", trim: false)
+    |> Enum.map_join("\n", &String.trim_trailing/1)
+    |> String.trim()
+  end
+
+  defp compact_evidence_text(text) do
+    text
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
+
+  defp put_grounded_comments(%{findings: findings} = result) when is_list(findings) do
+    Map.put(result, :comments, Enum.map(findings, &finding_comment/1))
+  end
+
+  defp finding_comment(%{summary: summary, file: file, line_range: {start_line, end_line}, suggested_fix: suggested_fix}) do
+    "#{summary} (#{file}:#{start_line}-#{end_line}) Suggested fix: #{suggested_fix}"
   end
 
   @spec approval_prompt(result()) :: String.t()
@@ -166,22 +250,92 @@ defmodule SymphonyElixir.ReviewAgent do
                linear_comment_registry: Keyword.get(opts, :linear_comment_registry)
              ) do
         try do
-          case agent_module.run_turn(session, prompt, issue,
-                 on_message: on_message,
-                 settings: reviewer_settings,
-                 repo_key: Keyword.get(opts, :repo_key),
-                 run_id: Keyword.get(opts, :run_id),
-                 tool_scope: :read_only,
-                 linear_comment_registry: Keyword.get(opts, :linear_comment_registry)
-               ) do
-            {:ok, result} -> {:ok, response_payload(result, message_collector)}
-            {:error, reason} -> {:error, {:review_agent_failed, reason}}
+          turn_opts =
+            reviewer_turn_opts(opts, reviewer_settings, on_message, linear_comment_registry: Keyword.get(opts, :linear_comment_registry))
+
+          case run_review_turn(agent_module, session, prompt, issue, message_collector, turn_opts) do
+            {:ok, verdict} -> self_check(agent_module, session, issue, verdict, message_collector, turn_opts)
+            {:error, reason} -> {:error, reason}
           end
         after
           agent_module.stop_session(session)
         end
       end
     end
+  end
+
+  defp reviewer_turn_opts(opts, reviewer_settings, on_message, extra) do
+    [
+      on_message: on_message,
+      settings: reviewer_settings,
+      repo_key: Keyword.get(opts, :repo_key),
+      run_id: Keyword.get(opts, :run_id),
+      tool_scope: :read_only,
+      linear_comment_registry: Keyword.get(extra, :linear_comment_registry)
+    ]
+  end
+
+  defp run_review_turn(agent_module, session, prompt, issue, message_collector, turn_opts) do
+    case agent_module.run_turn(session, prompt, issue, turn_opts) do
+      {:ok, result} -> result |> response_payload(message_collector) |> pick_review_response()
+      {:error, reason} -> {:error, {:review_agent_failed, reason}}
+    end
+  end
+
+  defp self_check(_agent_module, _session, _issue, %{verdict: :approve} = verdict, _message_collector, _turn_opts), do: {:ok, verdict}
+
+  defp self_check(agent_module, session, issue, %{verdict: verdict} = result, message_collector, turn_opts)
+       when verdict in [:block, :request_changes] do
+    prompt = self_check_prompt(result)
+    turn_opts = Keyword.put(turn_opts, :max_iterations, @self_check_max_iterations)
+
+    case run_review_turn(agent_module, session, prompt, issue, message_collector, turn_opts) do
+      {:ok, %{verdict: :block} = checked} ->
+        if Map.get(checked, :findings, []) == [] do
+          {:error, {:review_agent_inconclusive, :self_check_retracted_all_findings}}
+        else
+          {:ok, checked}
+        end
+
+      {:ok, checked} ->
+        {:ok, checked}
+
+      {:error, {:review_agent_failed, reason}} ->
+        if self_check_iteration_limit?(reason) do
+          {:error, {:review_agent_inconclusive, {:self_check_max_iterations, reason}}}
+        else
+          {:error, {:review_agent_failed, reason}}
+        end
+    end
+  end
+
+  defp self_check_prompt(result) do
+    """
+    For each finding, paste the exact lines from the diff or file that prove it (use the read-only tools if necessary). If you cannot paste the lines, retract the finding by removing it from `findings`. Return the corrected JSON object.
+
+    Previous JSON:
+    #{Jason.encode!(review_json(result))}
+    """
+  end
+
+  defp review_json(result) do
+    result
+    |> Map.take([:verdict, :findings, :reason])
+    |> Map.update!(:verdict, &Atom.to_string/1)
+    |> Map.update(:findings, [], fn findings ->
+      Enum.map(findings, fn finding -> %{finding | line_range: Tuple.to_list(finding.line_range)} end)
+    end)
+    |> maybe_put_comments(result)
+  end
+
+  defp maybe_put_comments(json, %{comments: comments}) when is_list(comments) and comments != [], do: Map.put(json, :comments, comments)
+  defp maybe_put_comments(json, _result), do: json
+
+  defp self_check_iteration_limit?(reason) do
+    reason
+    |> inspect()
+    |> String.downcase()
+    |> then(&(String.contains?(&1, "max_iterations") or String.contains?(&1, "maximum iterations")))
   end
 
   defp reviewer_settings(%Schema{} = settings, %Schema.ReviewAgent{} = config) do
@@ -219,10 +373,25 @@ defmodule SymphonyElixir.ReviewAgent do
     Diff context:
     #{truncate(source.diff, @max_diff_prompt_bytes)}
 
+    Discipline:
+    - Do not cite a function, file, or line you have not read. Use the read-only tools to verify before citing.
+    - Every finding must include `file`, `line_range`, and `quoted_snippet` that you have personally inspected.
+    - If a finding cannot be backed by a quoted snippet from the diff or workspace, omit it.
+    - If you are uncertain, prefer `approve` or `request_changes` (with concrete diffs) over `block`.
+    - Do not fabricate function or module names. If you cannot grep for the symbol you intend to cite, do not cite it.
+
     Return ONLY one JSON object in this shape:
     {
       "verdict": "approve" | "request_changes" | "block",
-      "comments": ["<required for request_changes; concise actionable comments>"],
+      "findings": [
+        {
+          "summary": "<concise actionable summary>",
+          "file": "lib/...",
+          "line_range": [1, 2],
+          "quoted_snippet": "<exact line or lines from the diff or workspace>",
+          "suggested_fix": "<concrete fix>"
+        }
+      ],
       "reason": "<required for block>"
     }
     """
@@ -269,10 +438,6 @@ defmodule SymphonyElixir.ReviewAgent do
     |> Enum.uniq()
     |> Enum.reject(&(&1 == ""))
     |> parse_first_review_response(nil)
-  end
-
-  defp pick_review_response(%{primary: primary, combined: combined}) do
-    pick_review_response(%{primary: primary, messages: "", combined: combined})
   end
 
   defp parse_first_review_response([], nil), do: parse_response("")
@@ -522,6 +687,63 @@ defmodule SymphonyElixir.ReviewAgent do
 
   defp coerce_comments(_comments), do: {:error, :invalid_comments}
 
+  defp coerce_findings(nil), do: {:ok, []}
+
+  defp coerce_findings(findings) when is_list(findings) do
+    findings
+    |> Enum.map(&coerce_finding/1)
+    |> collect_coerced_findings([])
+  end
+
+  defp coerce_findings(_findings), do: {:error, :invalid_findings}
+
+  defp collect_coerced_findings([], acc), do: {:ok, Enum.reverse(acc)}
+  defp collect_coerced_findings([{:ok, finding} | rest], acc), do: collect_coerced_findings(rest, [finding | acc])
+  defp collect_coerced_findings([{:error, reason} | _rest], _acc), do: {:error, reason}
+
+  defp coerce_finding(finding) when is_map(finding) do
+    with {:ok, summary} <- required_string(Map.get(finding, "summary"), :invalid_finding_summary),
+         {:ok, file} <- required_string(Map.get(finding, "file"), :invalid_finding_file),
+         {:ok, line_range} <- coerce_line_range(Map.get(finding, "line_range")),
+         {:ok, quoted_snippet} <- required_string(Map.get(finding, "quoted_snippet"), :invalid_finding_quoted_snippet),
+         {:ok, suggested_fix} <- required_string(Map.get(finding, "suggested_fix"), :invalid_finding_suggested_fix) do
+      {:ok,
+       %{
+         summary: summary,
+         file: file,
+         line_range: line_range,
+         quoted_snippet: quoted_snippet,
+         suggested_fix: suggested_fix
+       }}
+    end
+  end
+
+  defp coerce_finding(_finding), do: {:error, :invalid_finding}
+
+  defp required_string(value, error) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, error}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp required_string(_value, error), do: {:error, error}
+
+  defp coerce_line_range([start_line, end_line]) do
+    with {:ok, start_line} <- coerce_positive_integer(start_line),
+         {:ok, end_line} <- coerce_positive_integer(end_line),
+         true <- start_line <= end_line do
+      {:ok, {start_line, end_line}}
+    else
+      _other -> {:error, :invalid_finding_line_range}
+    end
+  end
+
+  defp coerce_line_range(_line_range), do: {:error, :invalid_finding_line_range}
+
+  defp coerce_positive_integer(value) when is_integer(value) and value > 0, do: {:ok, value}
+  defp coerce_positive_integer(_value), do: {:error, :invalid_positive_integer}
+
   defp coerce_reason(reason, :block) when is_binary(reason) do
     case String.trim(reason) do
       "" -> {:error, :missing_block_reason}
@@ -533,7 +755,7 @@ defmodule SymphonyElixir.ReviewAgent do
   defp coerce_reason(reason, _verdict) when is_binary(reason), do: {:ok, String.trim(reason)}
   defp coerce_reason(_reason, _verdict), do: {:ok, nil}
 
-  defp validate_result(%{verdict: :request_changes, comments: []}), do: {:error, :missing_request_changes_comments}
+  defp validate_result(%{verdict: :request_changes, comments: [], findings: []}), do: {:error, :missing_request_changes_comments}
   defp validate_result(result), do: {:ok, result}
 
   defp compact_result(%{reason: nil} = result), do: Map.delete(result, :reason)

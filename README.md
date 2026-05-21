@@ -218,6 +218,11 @@ The Markdown body remains the issue prompt. `prompts.pr` is an optional PR-mode 
 with `pr`, `issue`, `repo_key`, `agent`, `reviewer_comments`, and `ci_failure`; if omitted, Symphony
 uses a built-in PR prompt.
 
+When `agent.include_project_guides` is enabled, Symphony can append repo prose guides to the
+rendered prompt without enabling agent runtime settings discovery. The default is `CLAUDE.md` for
+Claude and no extra files for Codex, since Codex already discovers workspace `AGENTS.md`; set
+`agent.project_guide_files` to an explicit relative-path list to override either default.
+
 The quality gate is disabled by default. To opt in, set `quality_gate.enabled: true` and provide
 `ANTHROPIC_API_KEY` or configure another provider/model under `quality_gate`.
 

@@ -11,6 +11,11 @@ defmodule SymphonyElixir.ReviewAgent do
   alias SymphonyElixir.ReviewAgent.Context
 
   @max_diff_prompt_bytes 120_000
+  @agent_message_methods [
+    "item/agentMessage/delta",
+    "codex/event/agent_message_delta",
+    "codex/event/agent_message_content_delta"
+  ]
 
   @type verdict :: :approve | :request_changes | :block
   @type result :: %{
@@ -206,7 +211,7 @@ defmodule SymphonyElixir.ReviewAgent do
     messages = drain_collected_messages(collector, [])
 
     combined =
-      [primary, Enum.map_join(messages, "\n", &message_text/1)]
+      [primary, Enum.map_join(messages, "", &message_text/1)]
       |> Enum.join("\n")
       |> String.trim()
 
@@ -246,9 +251,24 @@ defmodule SymphonyElixir.ReviewAgent do
 
   defp message_text(%{event: :agent_text, payload: %{params: %{msg: %{content: text}}}}) when is_binary(text), do: text
   defp message_text(%{event: :agent_text, payload: %{"params" => %{"msg" => %{"content" => text}}}}) when is_binary(text), do: text
-  defp message_text(%{payload: %{"result" => text}}) when is_binary(text), do: text
-  defp message_text(%{payload: %{result: text}}) when is_binary(text), do: text
+  defp message_text(%{payload: payload}) when is_map(payload), do: payload_text(payload)
+  defp message_text(%{"payload" => payload}) when is_map(payload), do: payload_text(payload)
+  defp message_text(message) when is_map(message), do: payload_text(message)
   defp message_text(_message), do: ""
+
+  defp payload_text(%{"method" => method, "params" => params}) when method in @agent_message_methods and is_map(params),
+    do: agent_message_params_text(params)
+
+  defp payload_text(%{"result" => text}) when is_binary(text), do: text
+  defp payload_text(_payload), do: ""
+
+  defp agent_message_params_text(%{"delta" => text}) when is_binary(text), do: text
+  defp agent_message_params_text(%{"msg" => msg}) when is_map(msg), do: agent_message_msg_text(msg)
+  defp agent_message_params_text(_params), do: ""
+
+  defp agent_message_msg_text(%{"content" => text}) when is_binary(text), do: text
+  defp agent_message_msg_text(%{"payload" => %{"delta" => text}}) when is_binary(text), do: text
+  defp agent_message_msg_text(_msg), do: ""
 
   defp comparison_base(workspace, opts, worker_host) do
     case configured_comparison_base(Keyword.get(opts, :base_branch)) do

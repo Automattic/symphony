@@ -9,6 +9,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
   alias SymphonyElixir.GitHub.Hosts
+  alias SymphonyElixir.ProjectGuides
 
   @agent_runtime_env AgentEnv.runtime_marker_name()
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
@@ -54,7 +55,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     turn_timeout_ms = settings.agent.turn_timeout_ms
     command_timeout_ms = settings.agent.command_timeout_ms
 
-    with {:ok, port, prompt_cleanup_paths} <- start_port(workspace, command, prompt, worker_host, session) do
+    with {:ok, prompt} <- ProjectGuides.append_to_prompt(prompt, workspace, settings, :claude),
+         {:ok, port, prompt_cleanup_paths} <- start_port(workspace, command, prompt, worker_host, session) do
       try do
         read_port_output(port, on_message, turn_timeout_ms, command_timeout_ms)
       after

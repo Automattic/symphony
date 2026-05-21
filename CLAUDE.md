@@ -1,8 +1,9 @@
 # Claude Code project instructions
 
 This project uses a single, agent-agnostic instruction file for both Claude Code
-and Codex. Read [`AGENTS.md`](AGENTS.md) for the canonical project rules
-(environment, conventions, tests, required rules, PR template, docs policy).
+and Codex. The canonical project rules are imported below.
+
+@AGENTS.md
 
 ## Shared skills
 

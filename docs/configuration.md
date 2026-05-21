@@ -123,6 +123,7 @@ between them or when porting a config across runtimes.
 | Native sandbox (`agent.thread_sandbox`, `agent.turn_sandbox_policy`) | Supported. Defaults applied automatically (see [`agent`](#agent)). | Not used. |
 | `agent.approval_policy` | Supported, with safer defaults injected. | Not used. |
 | `agent.network_access` mode | Controls Codex's sandbox network switch and thread-level allow map. | Not enforced by Claude itself; declare network policy through the Claude command. |
+| `agent.project_guide_files` | Defaults to `[]` because Codex already discovers workspace `AGENTS.md`. Explicit files are injected into the turn prompt. | Defaults to `["CLAUDE.md"]` because Claude settings discovery stays disabled. |
 | `agent.sandbox_runtime` (outer SRT wrapper) | Supported (`kind: srt`). | Not supported. |
 | `workspace.sandbox.allow_read_paths` | Fully effective (rendered into Codex sandbox + SRT). | Adapter does not currently pass these entries through. Treat as Codex-effective. |
 | `agent.mcp.inherit: all` | Inherits every host MCP server. | Rejected — only `none` and `allowlist` are accepted. |
@@ -264,6 +265,8 @@ The most option-dense block. Many fields are runtime-specific; see [Codex vs Cla
 agent:
   kind: codex                          # or: claude
   command: codex app-server            # Codex shell-string; Claude split-args
+  include_project_guides: true
+  project_guide_files: null            # null = runner default
   max_concurrent_agents: 10
   max_turns: 20
   command_timeout_ms: 600000
@@ -304,6 +307,17 @@ agent:
   a command that may not report token usage.
 - The dashboard surfaces daily usage, daily remaining headroom, and per-issue usage. Cached vs
   fresh input tokens are distinguished when the agent reports them.
+
+**Project guides:**
+
+- `include_project_guides` defaults to `true`. Set it to `false` to omit the injected
+  `## Project conventions` prompt section.
+- `project_guide_files: null` uses the runner default: `["CLAUDE.md"]` for Claude, `[]` for
+  Codex. Codex keeps relying on native workspace `AGENTS.md` discovery unless an explicit list is
+  configured.
+- Explicit entries must be relative workspace paths and cannot contain `..`. Missing files are
+  skipped. `@path` import lines are resolved recursively inside the workspace with size, depth, and
+  file-count caps.
 
 **Network access:**
 

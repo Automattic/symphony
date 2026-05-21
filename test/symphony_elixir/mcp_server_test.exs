@@ -121,6 +121,113 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
+  test "sessions honor a custom :socket_root opt for sandboxed environments" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    custom_root = "/tmp/sym-root-#{System.unique_integer([:positive])}"
+    File.mkdir_p!(custom_root)
+    on_exit(fn -> File.rm_rf(custom_root) end)
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        socket_root: custom_root,
+        shim_path: "/tmp/shim"
+      )
+
+    try do
+      assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
+      assert File.dir?(session.socket_dir)
+      assert File.exists?(session.socket_path)
+    after
+      McpServer.stop_session(session, server: server)
+    end
+
+    refute File.exists?(session.socket_path)
+    refute File.exists?(session.socket_dir)
+  end
+
+  test "sessions fall back to :mcp_socket_root application env when no opt is supplied" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    custom_root = "/tmp/sym-app-#{System.unique_integer([:positive])}"
+    File.mkdir_p!(custom_root)
+
+    prior = Application.get_env(:symphony_elixir, :mcp_socket_root)
+    Application.put_env(:symphony_elixir, :mcp_socket_root, custom_root)
+
+    on_exit(fn ->
+      case prior do
+        nil -> Application.delete_env(:symphony_elixir, :mcp_socket_root)
+        value -> Application.put_env(:symphony_elixir, :mcp_socket_root, value)
+      end
+
+      File.rm_rf(custom_root)
+    end)
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        shim_path: "/tmp/shim"
+      )
+
+    try do
+      assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
+      assert File.dir?(session.socket_dir)
+      assert File.exists?(session.socket_path)
+    after
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "concurrent sessions sharing a run_id do not clobber each other's socket" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+    run_id = "shared-run-#{System.unique_integer([:positive])}"
+
+    {:ok, first_session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        run_id: run_id,
+        shim_path: "/tmp/shim"
+      )
+
+    try do
+      assert File.dir?(first_session.socket_dir)
+      assert File.exists?(first_session.socket_path)
+
+      {:ok, second_session} =
+        McpServer.start_session(%{workspace: System.tmp_dir!()},
+          server: server,
+          run_id: run_id,
+          shim_path: "/tmp/shim"
+        )
+
+      try do
+        assert first_session.socket_dir != second_session.socket_dir
+        assert first_session.socket_path != second_session.socket_path
+
+        assert File.dir?(first_session.socket_dir),
+               "first session's socket_dir was removed by second session start"
+
+        assert File.exists?(first_session.socket_path),
+               "first session's socket file was removed by second session start"
+      after
+        McpServer.stop_session(second_session, server: server)
+      end
+
+      assert File.dir?(first_session.socket_dir),
+             "first session's socket_dir was removed by second session stop"
+
+      assert File.exists?(first_session.socket_path),
+             "first session's socket file was removed by second session stop"
+    after
+      McpServer.stop_session(first_session, server: server)
+    end
+  end
+
   test "lists scoped Linear and GitHub tools over a token-authenticated Unix socket" do
     server = unique_server()
     start_supervised!({McpServer, name: server})

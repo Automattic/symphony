@@ -102,6 +102,41 @@ defmodule SymphonyElixir.ReviewAgentTest do
     end
   end
 
+  describe "approval_prompt/2" do
+    test "uses bare scoped GitHub tools for Codex executors" do
+      write_workflow_file!(Workflow.workflow_file_path(), agent_kind: "codex")
+
+      prompt =
+        ReviewAgent.approval_prompt(%{verdict: :approve, comments: []},
+          settings: Config.settings!()
+        )
+
+      assert prompt =~ "`github_get_pull_request`"
+      assert prompt =~ "`github_push_branch`"
+      assert prompt =~ "`github_create_pull_request`"
+      assert prompt =~ "If these scoped tools are not visible"
+      assert prompt =~ "Avoid raw `gh` or `git push`"
+    end
+
+    test "uses prefixed Symphony MCP GitHub tools for Claude executors" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        agent_kind: "claude",
+        agent_command: "claude --print"
+      )
+
+      prompt =
+        ReviewAgent.approval_prompt(%{verdict: :approve, comments: []},
+          settings: Config.settings!()
+        )
+
+      assert prompt =~ "`mcp__symphony__github_get_pull_request`"
+      assert prompt =~ "`mcp__symphony__github_push_branch`"
+      assert prompt =~ "`mcp__symphony__github_create_pull_request`"
+      assert prompt =~ "Do not search for these with ToolSearch"
+      assert prompt =~ "Avoid raw `gh` or `git push`"
+    end
+  end
+
   test "evaluate parses Codex reviewer verdicts from streamed agent-message deltas" do
     test_root =
       Path.join(

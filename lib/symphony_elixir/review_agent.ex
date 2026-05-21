@@ -5,7 +5,7 @@ defmodule SymphonyElixir.ReviewAgent do
 
   require Logger
 
-  alias SymphonyElixir.{Config, PromptSafety, SSH}
+  alias SymphonyElixir.{AgentLabels, Config, PromptSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.ReviewAgent.Context
@@ -65,14 +65,49 @@ defmodule SymphonyElixir.ReviewAgent do
   end
 
   @spec approval_prompt(result()) :: String.t()
-  def approval_prompt(_result) do
+  def approval_prompt(result), do: approval_prompt(result, [])
+
+  @spec approval_prompt(result(), keyword()) :: String.t()
+  def approval_prompt(_result, opts) do
     """
     Reviewer agent approved the committed diff.
 
-    Continue the normal workflow push and PR handoff now. Use the validation evidence already collected for the reviewed diff. Do not stop at the reviewer-agent gate again unless code changes after this approval.
+    Continue the normal workflow push and PR handoff now. Use the validation evidence already
+    collected for the reviewed diff. Do not stop at the reviewer-agent gate again unless code
+    changes after this approval.
 
-    Use the scoped `github_get_pull_request`, `github_push_branch`, and `github_create_pull_request` tools for PR handoff. Avoid raw `gh` or `git push` from shell commands because unattended runtimes may not have direct GitHub or SSH credential access.
+    #{approval_handoff_tool_guidance(Keyword.get(opts, :settings))}
     """
+  end
+
+  @doc false
+  @spec approval_handoff_tool_guidance(Schema.t() | map() | nil) :: String.t()
+  def approval_handoff_tool_guidance(settings) do
+    case configured_agent_kind(settings) do
+      "claude" ->
+        """
+        Use Claude's Symphony MCP GitHub tools for PR handoff:
+        - `mcp__symphony__github_get_pull_request`
+        - `mcp__symphony__github_push_branch`
+        - `mcp__symphony__github_create_pull_request`
+
+        Do not search for these with ToolSearch or deferred-tool discovery. If the
+        `mcp__symphony__github_*` tools are not visible in this session, stop and report that
+        the Symphony MCP GitHub tools are unavailable. Avoid raw `gh` or `git push`; do not use
+        SSH as a fallback.
+        """
+
+      _kind ->
+        """
+        Use Codex's scoped Symphony GitHub tools for PR handoff:
+        - `github_get_pull_request`
+        - `github_push_branch`
+        - `github_create_pull_request`
+
+        If these scoped tools are not visible in this session, stop and report that the Symphony
+        GitHub tools are unavailable. Avoid raw `gh` or `git push`; do not use SSH as a fallback.
+        """
+    end
   end
 
   @spec request_changes_prompt(result()) :: String.t()
@@ -95,6 +130,11 @@ defmodule SymphonyElixir.ReviewAgent do
   def block_reason(%{reason: reason}) when is_binary(reason) and reason != "", do: reason
   def block_reason(%{comments: [comment | _]}) when is_binary(comment), do: comment
   def block_reason(_result), do: "review_agent blocked the run"
+
+  defp configured_agent_kind(%Schema{agent: %{kind: kind}}), do: AgentLabels.normalize_kind(kind)
+  defp configured_agent_kind(%{agent: %{kind: kind}}), do: AgentLabels.normalize_kind(kind)
+  defp configured_agent_kind(%{agent: %{"kind" => kind}}), do: AgentLabels.normalize_kind(kind)
+  defp configured_agent_kind(_settings), do: nil
 
   defp source_material(issue, workspace, _settings, opts) do
     worker_host = Keyword.get(opts, :worker_host)

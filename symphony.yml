@@ -83,7 +83,7 @@ agent:
     networkAccess: true
     # writableRoots: []                      # Symphony adds the issue workspace and git metadata roots at runtime.
   sandbox_runtime:
-    kind: none                               # none | srt (Codex-only outer SRT wrapper)
+    kind: srt                                # none | srt (Codex-only outer SRT wrapper)
     command: srt
     enable_weaker_network_isolation: false
 
@@ -122,11 +122,11 @@ polling:
 
 pr_review:
   mode: polling                              # tracker (default) | polling
-  # cooldown_minutes: 10                     # Polling: wait before responding to review comments.
+  cooldown_minutes: 1                     # Polling: wait before responding to review comments.
   # stale_days: 7                            # Polling: stop watching closed or idle PRs after this many days.
   # github_user: your-github-user            # Polling: current operator user, used for review filtering.
   # bot_users: []                            # Polling: GitHub users ignored as bot reviewers.
-  # auto_reply: false                        # Polling: reply to addressed review comments.
+  auto_reply: true                        # Polling: reply to addressed review comments.
   # auto_request_review: false               # Polling: request another review after pushing rework.
 
 ci:

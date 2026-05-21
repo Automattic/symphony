@@ -28,6 +28,7 @@ defmodule SymphonyElixir.AgentRunner do
   @dev_server_pid_key {__MODULE__, :verification_dev_server_pid}
   @dependency_review_state "In Review"
   @codex_stdio_prompt_soft_limit 12_000
+  @terminal_agent_setup_error_marker "missing_required_mcp_tools"
 
   @type worker_host :: String.t() | nil
 
@@ -48,8 +49,19 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+
+        if terminal_agent_setup_error?(reason) do
+          exit({:terminal_agent_setup_error, reason})
+        else
+          raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        end
     end
+  end
+
+  defp terminal_agent_setup_error?(reason) do
+    reason
+    |> inspect()
+    |> String.contains?(@terminal_agent_setup_error_marker)
   end
 
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
@@ -429,7 +441,7 @@ defmodule SymphonyElixir.AgentRunner do
            phase: :complete,
            request_change_rounds: review_agent_request_change_rounds(run_context)
          },
-         next_prompt: ReviewAgent.approval_prompt(result)
+         next_prompt: ReviewAgent.approval_prompt(result, run_context.opts)
      }}
   end
 
@@ -575,18 +587,18 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp review_agent_continuation_guard(opts, review_agent_state) do
-    case {Keyword.get(opts, :settings), review_agent_phase(review_agent_state)} do
-      {%{review_agent: %{enabled: true}}, :complete} ->
+    case {Keyword.get(opts, :settings), review_agent_state} do
+      {%{review_agent: %{enabled: true}}, %{phase: :complete}} ->
         """
 
         Review-agent gate status:
 
         - Reviewer-agent approval has already been injected for this run.
         - Do not stop at the reviewer-agent gate again; complete the normal push/PR handoff unless code changes after approval or a true auth/permission blocker prevents handoff.
-        - Use scoped `github_get_pull_request`, `github_push_branch`, and `github_create_pull_request` tools for PR handoff instead of raw `gh` or `git push` shell commands.
+        #{ReviewAgent.approval_handoff_tool_guidance(Keyword.get(opts, :settings))}
         """
 
-      {%{review_agent: %{enabled: true}}, _phase} ->
+      {%{review_agent: %{enabled: true}}, _review_agent_state} ->
         """
 
         Review-agent gate reminder:
@@ -599,9 +611,6 @@ defmodule SymphonyElixir.AgentRunner do
         ""
     end
   end
-
-  defp review_agent_phase(%{phase: phase}), do: phase
-  defp review_agent_phase(_review_agent_state), do: :not_run
 
   defp agent_kind_from_settings(%{agent: %{kind: kind}}), do: kind
   defp agent_kind_from_settings(_settings), do: nil

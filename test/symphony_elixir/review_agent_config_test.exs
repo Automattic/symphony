@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ReviewAgentConfigTest do
   alias SymphonyElixir.Config.{Schema, SystemSchema}
 
   describe "removed self_review config" do
-    test "workflow config rejects self_review and points to review_agent" do
+    test "workflow config rejects self_review and points to pre_push_review" do
       File.write!(Workflow.workflow_file_path(), """
       ---
       self_review:
@@ -19,18 +19,20 @@ defmodule SymphonyElixir.ReviewAgentConfigTest do
 
       assert {:error, {:invalid_workflow_config, message}} = Config.settings()
       assert message =~ "self_review"
-      assert message =~ "review_agent"
+      assert message =~ "pre_push_review"
     end
 
-    test "system config rejects self_review and points to review_agent" do
+    test "system config rejects self_review and points to pre_push_review" do
       assert {:error, {:invalid_symphony_config, message}} =
                SystemSchema.parse(%{
                  "self_review" => %{"enabled" => true},
-                 "repos" => [%{"name" => "default", "workflow" => "WORKFLOW.md", "team" => "Test"}]
+                 "repositories" => [
+                   %{"key" => "default", "workflow" => "WORKFLOW.md", "route" => %{"team" => "Test"}}
+                 ]
                })
 
       assert message =~ "self_review"
-      assert message =~ "review_agent"
+      assert message =~ "pre_push_review"
     end
   end
 

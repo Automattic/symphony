@@ -10,9 +10,28 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   @primary_key false
   @allowed_keys ~w(
-    agent ci dependencies dispatch github learnings notifications observability polling pr_review quality_gate repos
-    review_agent server token_budget tracker verification watchdog worker workspace
+    agent dashboard dependency_audit github issue_gate issues notifications pre_push_review pull_requests
+    repositories verification watchdog workers workspaces
   )
+
+  @removed_top_level_keys %{
+    "ci" => "use `pull_requests.checks`",
+    "dependencies" => "use `dependency_audit`",
+    "dispatch" => "remove it; use `agent.concurrency.max_total`",
+    "learnings" => "use `pull_requests.learnings`",
+    "observability" => "use `dashboard`",
+    "polling" => "use `issues.poll_interval_ms`",
+    "pr_review" => "use `pull_requests.review_comments`",
+    "quality_gate" => "use `issue_gate`",
+    "repos" => "use `repositories`",
+    "review_agent" => "use `pre_push_review`",
+    "self_review" => "use `pre_push_review`",
+    "server" => "use `dashboard`",
+    "token_budget" => "remove it; use `agent.limits.tokens_per_issue` and `agent.limits.tokens_per_day`",
+    "tracker" => "use `issues`",
+    "worker" => "use `workers`",
+    "workspace" => "use `workspaces`"
+  }
 
   defmodule Repo do
     @moduledoc false
@@ -143,15 +162,13 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   @spec parse(map()) :: {:ok, t()} | {:error, {:invalid_symphony_config, String.t()}}
   def parse(config) when is_map(config) do
-    config =
-      config
-      |> normalize_keys()
-      |> drop_nil_values()
-      |> normalize_operator_aliases()
+    config = normalize_keys(config)
 
     with :ok <- reject_removed_keys(config),
-         :ok <- reject_unknown_keys(config) do
+         :ok <- reject_unknown_keys(config),
+         {:ok, config} <- normalize_operator_config(config) do
       config
+      |> drop_nil_values()
       |> changeset()
       |> apply_action(:validate)
       |> case do
@@ -257,49 +274,334 @@ defmodule SymphonyElixir.Config.SystemSchema do
   end
 
   defp reject_removed_keys(config) do
-    if Map.has_key?(config, "self_review") do
-      {:error, {:invalid_symphony_config, "`self_review` has been removed; use `review_agent` instead"}}
-    else
-      :ok
+    case Enum.find(Map.keys(config), &Map.has_key?(@removed_top_level_keys, &1)) do
+      nil ->
+        :ok
+
+      key ->
+        {:error, {:invalid_symphony_config, "`#{key}` is not valid; #{@removed_top_level_keys[key]}"}}
     end
   end
 
-  defp normalize_operator_aliases(config) do
-    config
-    |> merge_dispatch_alias()
-    |> merge_token_budget_alias()
-    |> Map.drop(["dispatch", "token_budget"])
+  defp normalize_operator_config(config) do
+    with {:ok, issue_config} <- normalize_issues(Map.get(config, "issues", %{})),
+         {:ok, repos} <- normalize_repositories(Map.get(config, "repositories")),
+         {:ok, workspace} <- normalize_workspaces(Map.get(config, "workspaces", %{})),
+         {:ok, agent_config} <- normalize_agent(Map.get(config, "agent", %{})),
+         {:ok, worker} <- normalize_workers(Map.get(config, "workers", %{})),
+         {:ok, pre_push_review} <- normalize_pre_push_review(Map.get(config, "pre_push_review", %{})),
+         {:ok, pull_requests} <- normalize_pull_requests(Map.get(config, "pull_requests", %{})),
+         {:ok, issue_gate} <- normalize_issue_gate(Map.get(config, "issue_gate", %{})),
+         {:ok, dependency_audit} <- normalize_dependency_audit(Map.get(config, "dependency_audit", %{})),
+         {:ok, dashboard} <- normalize_dashboard(Map.get(config, "dashboard", %{})) do
+      workspace = merge_section(workspace, "sandbox", Map.get(agent_config, "workspace_sandbox"))
+
+      {:ok,
+       %{}
+       |> merge_sections(issue_config)
+       |> maybe_put("repos", repos)
+       |> maybe_put("workspace", workspace)
+       |> maybe_put("worker", worker)
+       |> maybe_put("github", Map.get(config, "github"))
+       |> maybe_put("agent", Map.get(agent_config, "agent"))
+       |> maybe_put("verification", Map.get(config, "verification"))
+       |> maybe_put("review_agent", pre_push_review)
+       |> merge_sections(pull_requests)
+       |> maybe_put("quality_gate", issue_gate)
+       |> maybe_put("dependencies", dependency_audit)
+       |> maybe_put("watchdog", Map.get(config, "watchdog"))
+       |> merge_sections(dashboard)
+       |> maybe_put("notifications", Map.get(config, "notifications"))}
+    end
   end
 
-  defp merge_dispatch_alias(%{"dispatch" => %{} = dispatch} = config) do
-    agent = Map.get(config, "agent", %{})
+  defp normalize_issues(config) do
+    with {:ok, config} <- section_map(config, "issues"),
+         :ok <- reject_unknown_section_keys(config, ~w(provider poll_interval_ms linear states), "issues"),
+         {:ok, linear} <- section_map(Map.get(config, "linear", %{}), "issues.linear"),
+         :ok <- reject_unknown_section_keys(linear, ~w(endpoint api_key assignee scope), "issues.linear"),
+         {:ok, scope} <- section_map(Map.get(linear, "scope", %{}), "issues.linear.scope"),
+         :ok <- reject_unknown_section_keys(scope, ~w(project_slug team labels), "issues.linear.scope"),
+         {:ok, states} <- section_map(Map.get(config, "states", %{}), "issues.states"),
+         :ok <- reject_unknown_section_keys(states, ~w(active terminal), "issues.states") do
+      tracker =
+        %{}
+        |> maybe_put("kind", Map.get(config, "provider"))
+        |> maybe_put("endpoint", Map.get(linear, "endpoint"))
+        |> maybe_put("api_key", Map.get(linear, "api_key"))
+        |> maybe_put("assignee", Map.get(linear, "assignee"))
+        |> maybe_put("project_slug", Map.get(scope, "project_slug"))
+        |> maybe_put("team", Map.get(scope, "team"))
+        |> maybe_put("labels", Map.get(scope, "labels"))
+        |> maybe_put("active_states", Map.get(states, "active"))
+        |> maybe_put("terminal_states", Map.get(states, "terminal"))
 
-    agent =
-      case Map.get(dispatch, "max_concurrent") do
-        nil -> agent
-        max_concurrent -> Map.put_new(agent, "max_concurrent_agents", max_concurrent)
+      polling = %{} |> maybe_put("interval_ms", Map.get(config, "poll_interval_ms"))
+
+      {:ok, %{} |> maybe_put("tracker", tracker) |> maybe_put("polling", polling)}
+    end
+  end
+
+  defp normalize_repositories(nil), do: {:ok, nil}
+
+  defp normalize_repositories(repos) when is_list(repos) do
+    repos
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {repo, index}, {:ok, acc} ->
+      case normalize_repository(repo, index) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
-
-    Map.put(config, "agent", agent)
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp merge_dispatch_alias(config), do: config
+  defp normalize_repositories(_repos), do: {:error, {:invalid_symphony_config, "`repositories` must be a list"}}
 
-  defp merge_token_budget_alias(%{"token_budget" => %{} = token_budget} = config) do
-    agent = Map.get(config, "agent", %{})
+  defp normalize_repository(repo, index) do
+    path = "repositories[#{index}]"
 
-    agent =
-      agent
-      |> put_new_present("max_tokens_per_issue", Map.get(token_budget, "max_per_issue"))
-      |> put_new_present("max_tokens_per_day", Map.get(token_budget, "total_per_day"))
+    with {:ok, repo} <- section_map(repo, path),
+         :ok <- reject_unknown_section_keys(repo, ~w(key workflow base_branch route workspace default), path),
+         {:ok, route} <- section_map(Map.get(repo, "route", %{}), path <> ".route"),
+         :ok <- reject_unknown_section_keys(route, ~w(team projects labels assignee), path <> ".route"),
+         {:ok, workspace} <- optional_section_map(Map.get(repo, "workspace"), path <> ".workspace"),
+         :ok <- reject_unknown_section_keys(workspace || %{}, ~w(strategy repo fetch_before_dispatch), path <> ".workspace") do
+      normalized =
+        %{}
+        |> maybe_put("name", Map.get(repo, "key"))
+        |> maybe_put("workflow", Map.get(repo, "workflow"))
+        |> maybe_put("base_branch", Map.get(repo, "base_branch"))
+        |> maybe_put("default", Map.get(repo, "default"))
+        |> maybe_put("team", Map.get(route, "team"))
+        |> maybe_put("projects", Map.get(route, "projects"))
+        |> maybe_put("labels", Map.get(route, "labels"))
+        |> maybe_put("assignee", Map.get(route, "assignee"))
+        |> maybe_put("workspace", workspace)
 
-    Map.put(config, "agent", agent)
+      {:ok, normalized}
+    end
   end
 
-  defp merge_token_budget_alias(config), do: config
+  defp normalize_workspaces(config) do
+    with {:ok, config} <- section_map(config, "workspaces"),
+         :ok <- reject_unknown_section_keys(config, ~w(root strategy repo fetch_before_dispatch cleanup attachments), "workspaces"),
+         {:ok, cleanup} <- section_map(Map.get(config, "cleanup", %{}), "workspaces.cleanup"),
+         :ok <- reject_unknown_section_keys(cleanup, ~w(enabled max_age_days interval_ms min_free_bytes orphan_action trash_dir), "workspaces.cleanup"),
+         {:ok, attachments} <- section_map(Map.get(config, "attachments", %{}), "workspaces.attachments"),
+         :ok <- reject_unknown_section_keys(attachments, ~w(allowed_hosts public_upload_extensions), "workspaces.attachments") do
+      lifecycle =
+        %{}
+        |> maybe_put("age_gc_enabled", Map.get(cleanup, "enabled"))
+        |> maybe_put("max_age_days", Map.get(cleanup, "max_age_days"))
+        |> maybe_put("gc_interval_ms", Map.get(cleanup, "interval_ms"))
+        |> maybe_put("min_free_bytes", Map.get(cleanup, "min_free_bytes"))
+        |> maybe_put("orphan_action", Map.get(cleanup, "orphan_action"))
+        |> maybe_put("trash_dir", Map.get(cleanup, "trash_dir"))
 
-  defp put_new_present(map, _key, nil), do: map
-  defp put_new_present(map, key, value), do: Map.put_new(map, key, value)
+      workspace =
+        %{}
+        |> maybe_put("root", Map.get(config, "root"))
+        |> maybe_put("strategy", Map.get(config, "strategy"))
+        |> maybe_put("repo", Map.get(config, "repo"))
+        |> maybe_put("fetch_before_dispatch", Map.get(config, "fetch_before_dispatch"))
+        |> maybe_put("lifecycle", lifecycle)
+        |> maybe_put("attachments", attachments)
+
+      {:ok, workspace}
+    end
+  end
+
+  defp normalize_agent(config) do
+    with {:ok, config} <- section_map(config, "agent"),
+         :ok <- reject_unknown_section_keys(config, ~w(runtime command concurrency limits timeouts prompts permissions mcp), "agent"),
+         {:ok, concurrency} <- section_map(Map.get(config, "concurrency", %{}), "agent.concurrency"),
+         :ok <- reject_unknown_section_keys(concurrency, ~w(max_total max_by_issue_state), "agent.concurrency"),
+         {:ok, limits} <- section_map(Map.get(config, "limits", %{}), "agent.limits"),
+         :ok <- reject_unknown_section_keys(limits, ~w(max_turns retry_backoff_max_ms tokens_per_issue tokens_per_day), "agent.limits"),
+         {:ok, timeouts} <- section_map(Map.get(config, "timeouts", %{}), "agent.timeouts"),
+         :ok <- reject_unknown_section_keys(timeouts, ~w(turn_ms read_ms stall_ms command_ms), "agent.timeouts"),
+         {:ok, prompts} <- section_map(Map.get(config, "prompts", %{}), "agent.prompts"),
+         :ok <- reject_unknown_section_keys(prompts, ~w(include_project_guides project_guide_files), "agent.prompts"),
+         {:ok, permissions} <- section_map(Map.get(config, "permissions", %{}), "agent.permissions"),
+         :ok <- reject_unknown_section_keys(permissions, ~w(approval_policy filesystem network outer_sandbox), "agent.permissions"),
+         {:ok, filesystem} <- section_map(Map.get(permissions, "filesystem", %{}), "agent.permissions.filesystem"),
+         :ok <- reject_unknown_section_keys(filesystem, ~w(sandbox turn_policy allow_read_paths), "agent.permissions.filesystem"),
+         {:ok, network} <- section_map(Map.get(permissions, "network", %{}), "agent.permissions.network"),
+         :ok <- reject_unknown_section_keys(network, ~w(mode allowed_domains denied_domains), "agent.permissions.network"),
+         {:ok, outer_sandbox} <- section_map(Map.get(permissions, "outer_sandbox", %{}), "agent.permissions.outer_sandbox"),
+         :ok <- reject_unknown_section_keys(outer_sandbox, ~w(runtime command enable_weaker_network_isolation), "agent.permissions.outer_sandbox"),
+         {:ok, mcp} <- section_map(Map.get(config, "mcp", %{}), "agent.mcp"),
+         :ok <- reject_unknown_section_keys(mcp, ~w(inherit allowed_servers servers), "agent.mcp") do
+      sandbox_runtime =
+        %{}
+        |> maybe_put("kind", Map.get(outer_sandbox, "runtime"))
+        |> maybe_put("command", Map.get(outer_sandbox, "command"))
+        |> maybe_put("enable_weaker_network_isolation", Map.get(outer_sandbox, "enable_weaker_network_isolation"))
+
+      agent =
+        %{}
+        |> maybe_put("kind", Map.get(config, "runtime"))
+        |> maybe_put("command", Map.get(config, "command"))
+        |> maybe_put("max_concurrent_agents", Map.get(concurrency, "max_total"))
+        |> maybe_put("max_concurrent_agents_by_state", Map.get(concurrency, "max_by_issue_state"))
+        |> maybe_put("max_turns", Map.get(limits, "max_turns"))
+        |> maybe_put("max_retry_backoff_ms", Map.get(limits, "retry_backoff_max_ms"))
+        |> maybe_put_configured("max_tokens_per_issue", Map.get(limits, "tokens_per_issue"), Map.has_key?(limits, "tokens_per_issue"))
+        |> maybe_put_configured("max_tokens_per_day", Map.get(limits, "tokens_per_day"), Map.has_key?(limits, "tokens_per_day"))
+        |> maybe_put("turn_timeout_ms", Map.get(timeouts, "turn_ms"))
+        |> maybe_put("read_timeout_ms", Map.get(timeouts, "read_ms"))
+        |> maybe_put("stall_timeout_ms", Map.get(timeouts, "stall_ms"))
+        |> maybe_put("command_timeout_ms", Map.get(timeouts, "command_ms"))
+        |> maybe_put("include_project_guides", Map.get(prompts, "include_project_guides"))
+        |> maybe_put("project_guide_files", Map.get(prompts, "project_guide_files"))
+        |> maybe_put("approval_policy", Map.get(permissions, "approval_policy"))
+        |> maybe_put("thread_sandbox", Map.get(filesystem, "sandbox"))
+        |> maybe_put("turn_sandbox_policy", Map.get(filesystem, "turn_policy"))
+        |> maybe_put("network_access", network)
+        |> maybe_put("sandbox_runtime", sandbox_runtime)
+        |> maybe_put("mcp", mcp)
+
+      workspace_sandbox = %{} |> maybe_put("allow_read_paths", Map.get(filesystem, "allow_read_paths"))
+
+      {:ok, %{"agent" => agent, "workspace_sandbox" => workspace_sandbox}}
+    end
+  end
+
+  defp normalize_workers(config) do
+    with {:ok, config} <- section_map(config, "workers"),
+         :ok <- reject_unknown_section_keys(config, ~w(ssh_hosts max_concurrent_agents_per_host), "workers") do
+      {:ok, config}
+    end
+  end
+
+  defp normalize_pre_push_review(config) do
+    with {:ok, config} <- section_map(config, "pre_push_review"),
+         :ok <- reject_unknown_section_keys(config, ~w(enabled runtime command max_iterations), "pre_push_review") do
+      {:ok,
+       %{}
+       |> maybe_put("enabled", Map.get(config, "enabled"))
+       |> maybe_put("kind", Map.get(config, "runtime"))
+       |> maybe_put("command", Map.get(config, "command"))
+       |> maybe_put("max_iterations", Map.get(config, "max_iterations"))}
+    end
+  end
+
+  defp normalize_pull_requests(config) do
+    with {:ok, config} <- section_map(config, "pull_requests"),
+         :ok <- reject_unknown_section_keys(config, ~w(enabled poll_interval_ms review_comments checks learnings), "pull_requests"),
+         {:ok, review_comments} <- section_map(Map.get(config, "review_comments", %{}), "pull_requests.review_comments"),
+         :ok <-
+           reject_unknown_section_keys(
+             review_comments,
+             ~w(rework_delay_minutes stale_after_days ignored_reviewers reply_after_addressing request_review_after_push),
+             "pull_requests.review_comments"
+           ),
+         {:ok, checks} <- section_map(Map.get(config, "checks", %{}), "pull_requests.checks"),
+         :ok <- reject_unknown_section_keys(checks, ~w(enabled log_excerpt_lines retry_failed_once max_fix_attempts escalate_to_state), "pull_requests.checks"),
+         {:ok, learnings} <- section_map(Map.get(config, "learnings", %{}), "pull_requests.learnings"),
+         :ok <- reject_unknown_section_keys(learnings, ~w(enabled provider model max_total_per_repo max_per_run), "pull_requests.learnings"),
+         {:ok, mode} <- pr_review_mode(Map.get(config, "enabled")) do
+      pr_enabled = mode
+
+      pr_review =
+        %{}
+        |> maybe_put("mode", pr_enabled)
+        |> maybe_put("poll_interval_ms", Map.get(config, "poll_interval_ms"))
+        |> maybe_put("cooldown_minutes", Map.get(review_comments, "rework_delay_minutes"))
+        |> maybe_put("stale_days", Map.get(review_comments, "stale_after_days"))
+        |> maybe_put("ignored_users", Map.get(review_comments, "ignored_reviewers"))
+        |> maybe_put("auto_reply", Map.get(review_comments, "reply_after_addressing"))
+        |> maybe_put("auto_request_review", Map.get(review_comments, "request_review_after_push"))
+
+      ci =
+        %{}
+        |> maybe_put("enabled", Map.get(checks, "enabled"))
+        |> maybe_put("log_excerpt_lines", Map.get(checks, "log_excerpt_lines"))
+        |> maybe_put("flaky_retry", Map.get(checks, "retry_failed_once"))
+        |> maybe_put("max_retries", Map.get(checks, "max_fix_attempts"))
+        |> maybe_put("escalation_state", Map.get(checks, "escalate_to_state"))
+
+      {:ok,
+       %{}
+       |> maybe_put("pr_review", pr_review)
+       |> maybe_put("ci", ci)
+       |> maybe_put("learnings", learnings)}
+    end
+  end
+
+  defp pr_review_mode(true), do: {:ok, "polling"}
+  defp pr_review_mode(false), do: {:ok, "tracker"}
+  defp pr_review_mode(nil), do: {:ok, nil}
+
+  defp pr_review_mode(_invalid),
+    do: {:error, {:invalid_symphony_config, "`pull_requests.enabled` must be a boolean"}}
+
+  defp normalize_issue_gate(config) do
+    with {:ok, config} <- section_map(config, "issue_gate"),
+         :ok <- reject_unknown_section_keys(config, ~w(enabled provider model pass_threshold clarification_floor max_clarification_rounds on_error), "issue_gate") do
+      {:ok, config}
+    end
+  end
+
+  defp normalize_dependency_audit(config) do
+    with {:ok, config} <- section_map(config, "dependency_audit"),
+         :ok <- reject_unknown_section_keys(config, ~w(allow_registries allow_git_sources allow_path_sources), "dependency_audit") do
+      {:ok, config}
+    end
+  end
+
+  defp normalize_dashboard(config) do
+    with {:ok, config} <- section_map(config, "dashboard"),
+         :ok <- reject_unknown_section_keys(config, ~w(enabled host port refresh_ms render_interval_ms snapshot_publish_ms transcript_buffer_size), "dashboard") do
+      observability =
+        %{}
+        |> maybe_put("dashboard_enabled", Map.get(config, "enabled"))
+        |> maybe_put("refresh_ms", Map.get(config, "refresh_ms"))
+        |> maybe_put("render_interval_ms", Map.get(config, "render_interval_ms"))
+        |> maybe_put("snapshot_publish_ms", Map.get(config, "snapshot_publish_ms"))
+        |> maybe_put("transcript_buffer_size", Map.get(config, "transcript_buffer_size"))
+
+      server =
+        %{}
+        |> maybe_put("host", Map.get(config, "host"))
+        |> maybe_put("port", Map.get(config, "port"))
+
+      {:ok, %{} |> maybe_put("observability", observability) |> maybe_put("server", server)}
+    end
+  end
+
+  defp section_map(nil, _path), do: {:ok, %{}}
+  defp section_map(value, _path) when is_map(value), do: {:ok, value}
+  defp section_map(_value, path), do: {:error, {:invalid_symphony_config, "`#{path}` must be an object"}}
+
+  defp optional_section_map(nil, _path), do: {:ok, nil}
+  defp optional_section_map(value, path), do: section_map(value, path)
+
+  defp reject_unknown_section_keys(map, allowed_keys, path) do
+    unknown_keys = Map.keys(map) -- allowed_keys
+
+    case unknown_keys do
+      [] -> :ok
+      [key | _rest] -> {:error, {:invalid_symphony_config, "unknown symphony.yml key `#{path}.#{key}`"}}
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, %{} = value) when map_size(value) == 0, do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp maybe_put_configured(map, key, value, true), do: Map.put(map, key, value)
+  defp maybe_put_configured(map, _key, _value, false), do: map
+
+  defp merge_sections(map, %{} = sections), do: Map.merge(map, sections)
+
+  defp merge_section(map, _key, nil), do: map
+  defp merge_section(map, _key, %{} = value) when map_size(value) == 0, do: map
+  defp merge_section(map, key, %{} = value), do: Map.update(map, key, value, &Map.merge(&1, value))
 
   defp validate_unique_repo_names(changeset) do
     duplicate_names =

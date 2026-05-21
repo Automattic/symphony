@@ -249,17 +249,18 @@ defmodule SymphonyElixir.ConfigSplitTest do
     repo = write_repo!(root, "app", "Prompt\n")
 
     write_symphony_text!(root, """
-    tracker:
-      kind: linear
-      api_key: token
-      project_slug: project
+    issues:
+      provider: linear
+      linear:
+        api_key: token
+        scope:
+          project_slug: project
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: app
-        path: #{repo.path}
-        workflow: WORKFLOW.md
+    repositories:
+      - key: app
+        workflow: #{Path.join(repo.path, "WORKFLOW.md")}
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -270,24 +271,22 @@ defmodule SymphonyElixir.ConfigSplitTest do
 
   test "startup config rejects identical routing match rules", %{root: root} do
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: web
-        path: #{Path.join(root, "web")}
-        workflow: WORKFLOW.md
-        team: ACME
-        labels:
-          - backend
-      - name: api
-        path: #{Path.join(root, "api")}
-        workflow: WORKFLOW.md
-        team: ACME
-        labels:
-          - backend
+    repositories:
+      - key: web
+        workflow: #{Path.join(root, "web/WORKFLOW.md")}
+        route:
+          team: ACME
+          labels: [backend]
+      - key: api
+        workflow: #{Path.join(root, "api/WORKFLOW.md")}
+        route:
+          team: ACME
+          labels: [backend]
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -301,22 +300,21 @@ defmodule SymphonyElixir.ConfigSplitTest do
 
   test "startup config rejects ambiguous non-default catch-all routing", %{root: root} do
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: fallback
-        path: #{Path.join(root, "fallback")}
-        workflow: WORKFLOW.md
-        team: ACME
-      - name: api
-        path: #{Path.join(root, "api")}
-        workflow: WORKFLOW.md
-        team: ACME
-        labels:
-          - api
+    repositories:
+      - key: fallback
+        workflow: #{Path.join(root, "fallback/WORKFLOW.md")}
+        route:
+          team: ACME
+      - key: api
+        workflow: #{Path.join(root, "api/WORKFLOW.md")}
+        route:
+          team: ACME
+          labels: [api]
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -331,7 +329,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert {:ok, system_config} =
              SystemSchema.parse(
                system_config(%{
-                 "repos" => [
+                 "repositories" => [
                    repo_config("secondary"),
                    repo_config("primary", %{"default" => true})
                  ]
@@ -345,7 +343,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert {:error, {:invalid_symphony_config, duplicate_message}} =
              SystemSchema.parse(
                system_config(%{
-                 "repos" => [
+                 "repositories" => [
                    repo_config("app"),
                    repo_config("app")
                  ]
@@ -357,7 +355,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert {:error, {:invalid_symphony_config, default_message}} =
              SystemSchema.parse(
                system_config(%{
-                 "repos" => [
+                 "repositories" => [
                    repo_config("first", %{"default" => true}),
                    repo_config("second", %{"default" => true})
                  ]
@@ -375,27 +373,29 @@ defmodule SymphonyElixir.ConfigSplitTest do
              SystemSchema.parse(system_config(%{"routing" => []}))
 
     assert {:error, {:invalid_symphony_config, empty_repos_message}} =
-             SystemSchema.parse(system_config(%{"repos" => []}))
+             SystemSchema.parse(system_config(%{"repositories" => []}))
 
     assert empty_repos_message =~ "repos"
     assert empty_repos_message =~ "can't be blank"
   end
 
-  test "system schema applies operator aliases and expands repo paths" do
+  test "system schema maps nested operator config and resolves repo workflow paths" do
     assert {:ok, system_config} =
              SystemSchema.parse(
                system_config(%{
-                 "dispatch" => %{"max_concurrent" => 3},
-                 "token_budget" => %{"max_per_issue" => 100, "total_per_day" => 200},
-                 "repos" => [
-                   repo_config("app", %{"path" => "relative/app", "workflow" => "config/Workflow.md"})
-                 ]
+                 "agent" => %{
+                   "runtime" => "codex",
+                   "command" => "codex app-server",
+                   "concurrency" => %{"max_total" => 3},
+                   "limits" => %{"tokens_per_issue" => 100, "tokens_per_day" => 200}
+                 },
+                 "repositories" => [repo_config("app", %{"workflow" => "relative/app/config/Workflow.md"})]
                })
              )
 
     assert %SystemSchema{repos: [repo]} = system_config
-    assert repo.path == Path.expand("relative/app")
-    assert SystemSchema.repo_workflow_path(repo) == Path.expand("config/Workflow.md", repo.path)
+    assert is_nil(repo.path)
+    assert SystemSchema.repo_workflow_path(repo) == Path.expand("relative/app/config/Workflow.md", SymphonyElixir.Workflow.symphony_file_path() |> Path.dirname())
 
     config_map = SystemSchema.to_config_map(system_config)
     assert get_in(config_map, ["agent", "max_concurrent_agents"]) == 3
@@ -409,11 +409,11 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert {:ok, system_config} =
              SystemSchema.parse(
                system_config(%{
-                 "repos" => [
+                 "repositories" => [
                    %{
-                     "name" => "app",
+                     "key" => "app",
                      "workflow" => "workflows/app.md",
-                     "team" => "Test"
+                     "route" => %{"team" => "Test"}
                    }
                  ]
                })
@@ -430,17 +430,18 @@ defmodule SymphonyElixir.ConfigSplitTest do
     primary_clone = Path.join(root, "primary")
 
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
-    workspace:
+    issues:
+      provider: memory
+    workspaces:
       root: #{workspace_root}
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: app
+    repositories:
+      - key: app
         workflow: #{SystemSchema.repo_workflow_path(repo)}
-        team: Test
+        route:
+          team: Test
         workspace:
           strategy: worktree
           repo: #{primary_clone}
@@ -461,25 +462,25 @@ defmodule SymphonyElixir.ConfigSplitTest do
     api_repo = write_repo!(root, "api", "API prompt\n")
 
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
-    workspace:
+    issues:
+      provider: memory
+    workspaces:
       strategy: worktree
       repo: #{Path.join(root, "primary")}
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: web
-        path: #{web_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
+    repositories:
+      - key: web
+        workflow: #{Path.join(web_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
         default: true
-      - name: api
-        path: #{api_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
-        labels: ["api"]
+      - key: api
+        workflow: #{Path.join(api_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
+          labels: ["api"]
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -516,23 +517,23 @@ defmodule SymphonyElixir.ConfigSplitTest do
     api_repo = write_repo!(root, "api", "API prompt\n")
 
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: valid
-        path: #{valid_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
+    repositories:
+      - key: valid
+        workflow: #{Path.join(valid_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
         default: true
-      - name: api
-        path: #{api_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
-        labels:
-          - api
+      - key: api
+        workflow: #{Path.join(api_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
+          labels:
+            - api
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -583,23 +584,23 @@ defmodule SymphonyElixir.ConfigSplitTest do
       """)
 
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: web
-        path: #{web_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
+    repositories:
+      - key: web
+        workflow: #{Path.join(web_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
         default: true
-      - name: api
-        path: #{api_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
-        labels:
-          - api
+      - key: api
+        workflow: #{Path.join(api_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
+          labels:
+            - api
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -634,16 +635,16 @@ defmodule SymphonyElixir.ConfigSplitTest do
       """)
 
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: api
-        path: #{api_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
+    repositories:
+      - key: api
+        workflow: #{Path.join(api_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -685,27 +686,27 @@ defmodule SymphonyElixir.ConfigSplitTest do
       """)
 
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     verification:
       enabled: true
       port_allocation:
         range: [4400, 4402]
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: web
-        path: #{web_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
+    repositories:
+      - key: web
+        workflow: #{Path.join(web_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
         default: true
-      - name: api
-        path: #{api_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
-        labels:
-          - api
+      - key: api
+        workflow: #{Path.join(api_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
+          labels:
+            - api
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -733,23 +734,23 @@ defmodule SymphonyElixir.ConfigSplitTest do
       """)
 
     write_symphony_text!(root, """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: web
-        path: #{web_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
+    repositories:
+      - key: web
+        workflow: #{Path.join(web_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
         default: true
-      - name: api
-        path: #{api_repo.path}
-        workflow: WORKFLOW.md
-        team: Test
-        labels:
-          - api
+      - key: api
+        workflow: #{Path.join(api_repo.path, "WORKFLOW.md")}
+        route:
+          team: Test
+          labels:
+            - api
     """)
 
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
@@ -840,15 +841,17 @@ defmodule SymphonyElixir.ConfigSplitTest do
   end
 
   defp write_symphony!(root, repos) do
-    File.write!(Path.join(root, "symphony.yml"), """
-    tracker:
-      kind: memory
-    agent:
-      kind: codex
-      command: codex app-server
-    repos:
-    #{repos_yaml(repos)}
-    """)
+    File.write!(
+      Path.join(root, "symphony.yml"),
+      """
+      issues:
+        provider: memory
+      agent:
+        runtime: codex
+        command: codex app-server
+      repositories:
+      """ <> repos_yaml(repos)
+    )
   end
 
   defp write_symphony_text!(root, content) do
@@ -859,16 +862,14 @@ defmodule SymphonyElixir.ConfigSplitTest do
     poll_interval_ms = Keyword.fetch!(opts, :poll_interval_ms)
 
     """
-    tracker:
-      kind: memory
-    polling:
-      interval_ms: #{poll_interval_ms}
+    issues:
+      provider: memory
+      poll_interval_ms: #{poll_interval_ms}
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-    #{repos_yaml(repos)}
-    """
+    repositories:
+    """ <> repos_yaml(repos)
   end
 
   defp repos_yaml(repos) do
@@ -877,42 +878,56 @@ defmodule SymphonyElixir.ConfigSplitTest do
     |> Enum.map_join("", fn {repo, index} ->
       routing_yaml =
         if index == 0 do
-          "    default: true\n"
+          ["    default: true"]
         else
-          "    labels:\n      - #{repo.name}\n"
+          ["      labels:", "        - #{repo.name}"]
         end
 
-      """
-        - name: #{repo.name}
-          path: #{repo.path}
-          workflow: WORKFLOW.md
-          team: Test
-      #{routing_yaml}\
-      """
+      [
+        "  - key: #{repo.name}",
+        "    workflow: #{Path.join(repo.path, "WORKFLOW.md")}",
+        "    route:",
+        "      team: Test"
+      ]
+      |> Kernel.++(routing_yaml)
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
     end)
   end
 
   defp system_config(overrides) do
     Map.merge(
       %{
-        "tracker" => %{"kind" => "memory"},
-        "agent" => %{"kind" => "codex", "command" => "codex app-server"},
-        "repos" => [repo_config("app")]
+        "issues" => %{"provider" => "memory"},
+        "agent" => %{"runtime" => "codex", "command" => "codex app-server"},
+        "repositories" => [repo_config("app")]
       },
       overrides
     )
   end
 
   defp repo_config(name, overrides \\ %{}) do
-    Map.merge(
-      %{
-        "name" => name,
-        "path" => "tmp/#{name}",
-        "workflow" => "WORKFLOW.md",
-        "team" => "Test"
-      },
-      overrides
-    )
+    path = Map.get(overrides, "path")
+    workflow = Map.get(overrides, "workflow", "tmp/#{name}/WORKFLOW.md")
+
+    workflow = if is_binary(path) and Path.type(workflow) != :absolute, do: Path.join(path, workflow), else: workflow
+
+    %{
+      "key" => name,
+      "workflow" => workflow,
+      "route" => %{"team" => "Test"}
+    }
+    |> Map.merge(Map.drop(overrides, ["name", "path", "team", "projects", "labels", "assignee"]))
+    |> maybe_put_route("team", Map.get(overrides, "team"))
+    |> maybe_put_route("projects", Map.get(overrides, "projects"))
+    |> maybe_put_route("labels", Map.get(overrides, "labels"))
+    |> maybe_put_route("assignee", Map.get(overrides, "assignee"))
+  end
+
+  defp maybe_put_route(repo, _key, nil), do: repo
+
+  defp maybe_put_route(repo, key, value) do
+    Map.update(repo, "route", %{key => value}, &Map.put(&1, key, value))
   end
 
   defp write_repo!(root, name, workflow_content) do

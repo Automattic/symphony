@@ -5482,16 +5482,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     File.write!(Workflow.workflow_file_path(), "Prompt\n")
 
     File.write!(Workflow.symphony_file_path(), """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: default
-        path: #{Path.dirname(Workflow.workflow_file_path())}
-        workflow: #{Path.basename(Workflow.workflow_file_path())}
-        team: Test
+    repositories:
+      - key: default
+        workflow: #{Workflow.workflow_file_path()}
+        route:
+          team: Test
     """)
 
     if Process.whereis(SymphonyElixir.WorkflowStore) do

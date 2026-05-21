@@ -146,10 +146,10 @@ Symphony is easiest to port when kept in these layers:
 
 ### 3.3 External Dependencies
 
-- Issue tracker API (Linear for `tracker.kind: linear` in this specification version).
+- Issue tracker API (Linear for `issues.provider: linear` in this specification version).
 - Local filesystem for workspaces and logs.
 - OPTIONAL workspace population tooling (for example Git CLI, if used).
-- Coding-agent executable that supports the configured `agent.kind` (`codex` app-server or
+- Coding-agent executable that supports the configured `agent.runtime` (`codex` app-server or
   `claude` CLI adapter in the Elixir implementation).
 - Host environment authentication for the issue tracker and coding agent.
 
@@ -359,7 +359,7 @@ and observability, not as a second concurrent scheduler.
   - Use the sanitized value for the issue workspace directory name.
 - `Repo Workspace Key`
   - Derive from `repo_key` with the same sanitization.
-  - The Elixir implementation nests issue workspaces under `workspace.root/<repo_key>/<issue_key>`.
+  - The Elixir implementation nests issue workspaces under `workspaces.root/<repo_key>/<issue_key>`.
 - `Normalized Issue State`
   - Compare states after `lowercase`.
 - `Session ID`
@@ -369,10 +369,10 @@ and observability, not as a second concurrent scheduler.
 
 The current Elixir implementation splits service configuration across two files:
 
-- `symphony.yml` is the operator config. It is plain YAML and owns tracker settings, polling,
+- `symphony.yml` is the operator config. It is plain YAML and owns issue-source settings, polling,
   global workspace root/lifecycle settings, per-repo workspace population settings, agent
-  command/runtime settings, observability, pollers, notification settings, gates, and the
-  supervised `repos:` list.
+  command/runtime settings, dashboard settings, pull-request pollers, notification settings, gates,
+  and the supervised `repositories:` list.
 - `WORKFLOW.md` is repo-local policy. It is Markdown with optional YAML front matter and owns the
   issue prompt body plus optional mode-specific prompt branches in repo-local front matter.
 
@@ -387,18 +387,16 @@ Repo workflow path precedence:
 
 1. The CLI does not accept a workflow path. The orchestrator resolves repo workflows from
    `symphony.yml` once it loads.
-2. After `symphony.yml` loads, each repo workflow path is resolved from its `repos:` entry.
+2. After `symphony.yml` loads, each repo workflow path is resolved from its `repositories:` entry.
 
 Loader behavior:
 
 - If `symphony.yml` cannot be read, return `missing_symphony_file`.
 - If a repo workflow cannot be read, return `missing_workflow_file`.
-- `repos.workflow` defaults to `WORKFLOW.md`. Absolute workflow paths are used directly. Relative
-  workflow paths are resolved relative to `repos.path` when that legacy field is configured,
-  otherwise relative to the directory containing `symphony.yml`.
-- `repos.path`, when present, is expanded to an absolute path.
+- `repositories[].workflow` defaults to `WORKFLOW.md`. Absolute workflow paths are used directly.
+  Relative workflow paths are resolved relative to the directory containing `symphony.yml`.
 - The application selects a primary repo as the one marked `default: true`, otherwise the first
-  repo in `repos:`.
+  repo in `repositories:`.
 
 Runtime selection:
 
@@ -410,30 +408,28 @@ Runtime selection:
 ### 5.2 `symphony.yml` File Format
 
 `symphony.yml` is plain YAML and MUST decode to a map/object. Empty files decode to an empty map,
-but startup validation will fail unless required fields such as `repos:` are supplied.
+but startup validation will fail unless required fields such as `repositories:` are supplied.
 
 Top-level keys accepted by the Elixir implementation:
 
-- `tracker`
-- `polling`
-- `watchdog`
-- `workspace`
-- `worker`
+- `issues`
+- `repositories`
+- `workspaces`
+- `workers`
+- `github`
 - `agent`
-- `observability`
-- `pr_review`
-- `ci`
+- `pre_push_review`
+- `pull_requests`
 - `verification`
-- `server`
-- `quality_gate`
-- `learnings`
-- `review_agent`
+- `dashboard`
+- `issue_gate`
+- `watchdog`
+- `dependency_audit`
 - `notifications`
-- `repos`
-- `dispatch` (alias for selected `agent` settings)
-- `token_budget` (alias for selected `agent` budget settings)
 
-Unknown top-level keys in `symphony.yml` are rejected.
+Unknown top-level keys in `symphony.yml` are rejected. Pre-release aliases such as `tracker`,
+`repos`, `workspace`, `pr_review`, `ci`, `quality_gate`, `review_agent`, `dependencies`,
+`observability`, and `server` are also rejected with migration guidance.
 
 ### 5.3 Repo `WORKFLOW.md` File Format
 
@@ -470,42 +466,33 @@ values to the runtime settings for that repo. Nested repo-local maps are merged 
 config so repos can override only their dev-server command while inheriting process-wide
 verification defaults such as port allocation.
 
-#### 5.4.1 `repos` (list)
+#### 5.4.1 `repositories` (list)
 
-Each entry under `repos:` declares a repository supervised by this Symphony process. At least one
-entry is required.
+Each entry under `repositories:` declares a repository supervised by this Symphony process. At least
+one entry is required.
 
 Fields:
 
-- `name` (string)
+- `key` (string)
   - REQUIRED.
   - Unique repo route name.
   - Surfaced as `repo_key` in run-store records, dashboard/API payloads, transcript URLs, and
     workspace paths.
-- `path` (path string)
-  - OPTIONAL.
-  - Legacy local checkout path used only as the base for relative `workflow` paths; expanded to an
-    absolute path when `symphony.yml` is parsed.
 - `workflow` (path string)
   - Default: `WORKFLOW.md`.
-  - Resolved relative to `path` when set, otherwise relative to the directory containing
-    `symphony.yml`, unless absolute.
+  - Resolved relative to the directory containing `symphony.yml`, unless absolute.
 - `workspace` (object)
   - OPTIONAL per-repo workspace population settings.
   - `strategy` MAY be `clone` or `worktree`.
   - `repo` is REQUIRED when the effective strategy is `worktree`; it points at that repo's primary
     clone used for `git worktree add`.
   - `fetch_before_dispatch` controls whether the primary clone fetches `origin` before worktree
-    creation.
-- `team` (string)
-  - OPTIONAL Linear team key or team ID for this repo route.
-- `projects` (list of strings)
-  - OPTIONAL Linear project names, slugs, or IDs for this repo route.
-- `labels` (list of strings)
-  - OPTIONAL Linear label names for this repo route.
-  - Per-repo route labels use AND semantics: all configured labels must be present.
-- `assignee` (string)
-  - OPTIONAL Linear user ID, email/name value supported by the implementation, or `me`.
+- `route` (object)
+  - OPTIONAL Linear selectors for this repo route.
+  - `team`: Linear team key or team ID.
+  - `projects`: Linear project names, slugs, or IDs.
+  - `labels`: Linear label names. Per-repo route labels use AND semantics.
+  - `assignee`: Linear user ID, email/name value supported by the implementation, or `me`.
 - `default` (boolean)
   - Default: `false`.
   - At most one repo can be default.
@@ -515,64 +502,60 @@ Fields:
 Validation:
 
 - Repo names MUST be unique.
-- `repos:` MUST contain at least one entry.
+- `repositories:` MUST contain at least one entry.
 - At most one repo may set `default: true`.
 - With multiple repos, unscoped non-default repos are rejected.
 - Identical match rules across repos are rejected.
 - Ambiguous team catch-all routing is rejected unless the catch-all route is explicitly marked
   `default: true`.
 - More than one default repo for the same team is rejected.
-- With multiple repos, a global `workspace.strategy: worktree` is invalid unless every repo provides
-  an explicit `repos[].workspace.strategy` override.
+- With multiple repos, a global `workspaces.strategy: worktree` is invalid unless every repo
+  provides an explicit `repositories[].workspace.strategy` override.
 
-#### 5.4.2 `tracker` (object)
+#### 5.4.2 `issues` (object)
 
 Fields:
 
-- `kind` (string)
+- `provider` (string)
   - REQUIRED for dispatch.
   - Current supported values: `linear`, `memory`
-- `endpoint` (string)
-  - Default for `tracker.kind == "linear"`: `https://api.linear.app/graphql`
-- `api_key` (string)
+- `poll_interval_ms` (integer)
+  - Default: `30000`
+  - Changes SHOULD be re-applied at runtime and affect future tick scheduling without restart.
+- `linear.endpoint` (string)
+  - Default for `provider == "linear"`: `https://api.linear.app/graphql`
+- `linear.api_key` (string)
   - MAY be a literal token or `$VAR_NAME`.
-  - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
+  - Canonical environment variable for `provider == "linear"`: `LINEAR_API_KEY`.
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
-- `project_slug` (string)
-  - OPTIONAL when `tracker.kind == "linear"`.
-  - At least one of `project_slug`, `team`, or non-empty `labels` is REQUIRED
-    for dispatch when `tracker.kind == "linear"`.
-- `team` (string)
+- `linear.scope.project_slug` (string)
+  - OPTIONAL when `provider == "linear"`.
+- `linear.scope.team` (string)
   - OPTIONAL Linear team key or team ID.
-- `labels` (list of strings)
+- `linear.scope.labels` (list of strings)
   - OPTIONAL Linear label names. Candidate issue polling treats multiple labels
     with OR semantics.
-- `assignee` (string)
+- `linear.assignee` (string)
   - OPTIONAL Linear user ID, user match value, or `me` to resolve the current API viewer.
-- `active_states` (list of strings)
+- `states.active` (list of strings)
   - Default: `Todo`, `In Progress`
-- `terminal_states` (list of strings)
+- `states.terminal` (list of strings)
   - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
 
-Elixir implementation note: when `repos` is configured, Linear candidate polling is performed per
+For Linear, at least one of `linear.scope.project_slug`, `linear.scope.team`, non-empty
+`linear.scope.labels`, or repo-level route selectors is REQUIRED for dispatch.
+
+Elixir implementation note: when `repositories` is configured, Linear candidate polling is performed per
 repo with one server-side issue filter per repo. The service does not widen this into a team-union
 query. Duplicate issue IDs across repo result sets are classified as conflicts and excluded from
-dispatch. Repo-level `team`, `projects`, `labels`, and `assignee` selectors are optional; a single
-unscoped repo, or an explicit default repo, can rely on the tracker-level Linear scope. Repo polls
-are staggered across the configured `polling.interval_ms`, so the scheduler ticks roughly every
-`interval_ms / repo_count` while each healthy repo is still polled once per full interval. Dispatch
+dispatch. Repo-level route selectors are optional; a single unscoped repo, or an explicit default
+repo, can rely on the issue-level Linear scope. Repo polls are staggered across the configured
+`issues.poll_interval_ms`, so the scheduler ticks roughly every `interval_ms / repo_count` while
+each healthy repo is still polled once per full interval. Dispatch
 stays empty until every repo cache has warmed once; after three consecutive cold failures for a repo,
 that repo is treated as warmed with an empty result so healthy repos can keep dispatching.
 
-#### 5.4.3 `polling` (object)
-
-Fields:
-
-- `interval_ms` (integer)
-  - Default: `30000`
-  - Changes SHOULD be re-applied at runtime and affect future tick scheduling without restart.
-
-#### 5.4.4 `workspace` (object)
+#### 5.4.3 `workspaces` (object)
 
 Fields:
 
@@ -583,30 +566,20 @@ Fields:
     implementation this is relative to the current process working directory.
   - Workspace containment checks normalize paths to absolute paths before use.
 - `strategy`, `repo`, `fetch_before_dispatch`
-  - Backward-compatible defaults for `repos[].workspace`.
-  - New multi-repo configs SHOULD set these under each repo instead of globally.
+  - Defaults for `repositories[].workspace`.
+  - Multi-repo configs SHOULD set worktree population under each repo instead of globally.
   - `strategy` defaults to `clone`; `fetch_before_dispatch` defaults to `true`.
-- `lifecycle` (object)
+- `cleanup` (object)
   - Optional workspace lifecycle guardrails.
-  - `age_gc_enabled` defaults to `true`.
+  - `enabled` defaults to `true`.
   - `max_age_days` defaults to `14`; local workspaces older than this MAY be reclaimed even when
     their associated issue is not terminal, except for currently running workspaces.
-  - `gc_interval_ms` defaults to `3600000` and controls how often the running service scans for
+  - `interval_ms` defaults to `3600000` and controls how often the running service scans for
     stale workspaces.
   - `min_free_bytes` is unset by default. When set to a positive integer, new dispatch SHOULD pause
-    while `workspace.root` free space is below that threshold or cannot be checked.
+    while `workspaces.root` free space is below that threshold or cannot be checked.
   - `orphan_action` defaults to `log`; supported values are `log`, `delete`, and `trash`.
-  - `trash_dir` defaults to `.trash` and is interpreted under `workspace.root`.
-- `sandbox.allow_read_paths` (list of strings)
-  - Default: `[]`.
-  - Advanced escape hatch for exact sandbox path entries that should be subtracted from the shared
-    default read-deny list when the implementation renders agent sandbox settings.
-  - Empty, blank, duplicate, and non-string entries are normalized away by the Elixir implementation.
-  - This MUST NOT override the Codex runtime auth/config read denies for `~/.codex/auth.json`,
-    `~/.codex/config.toml`, and `~/.codex/AGENTS.md`.
-  - Elixir evidence: `lib/symphony_elixir/config/schema.ex`,
-    `lib/symphony_elixir/agent_sandbox_config.ex`, and
-    `test/symphony_elixir/agent_sandbox_config_test.exs`.
+  - `trash_dir` defaults to `.trash` and is interpreted under `workspaces.root`.
 - `attachments.allowed_hosts` (list of hostnames)
   - Default: `["github.com"]`.
   - Used by scoped Linear attachment URL tools to allow exact HTTP(S) attachment hosts.
@@ -619,6 +592,21 @@ Fields:
     rejected if they contain path separators or control characters.
   - Elixir evidence: `lib/symphony_elixir/config/schema.ex` and
     `test/symphony_elixir/workspace_and_config_test.exs`.
+
+#### 5.4.4 `agent.permissions.filesystem.allow_read_paths` (list)
+
+Fields:
+
+- `allow_read_paths` (list of strings)
+  - Default: `[]`.
+  - Advanced escape hatch for exact sandbox path entries that should be subtracted from the shared
+    default read-deny list when the implementation renders agent sandbox settings.
+  - Empty, blank, duplicate, and non-string entries are normalized away by the Elixir implementation.
+  - This MUST NOT override the Codex runtime auth/config read denies for `~/.codex/auth.json`,
+    `~/.codex/config.toml`, and `~/.codex/AGENTS.md`.
+  - Elixir evidence: `lib/symphony_elixir/config/schema.ex`,
+    `lib/symphony_elixir/agent_sandbox_config.ex`, and
+    `test/symphony_elixir/agent_sandbox_config_test.exs`.
 
 #### 5.4.5 `verification` (object)
 
@@ -660,32 +648,45 @@ Allocation records are durable run-store data so restart reconciliation can pres
 previously started dev-server process is still alive and reclaim them once that process is verified
 gone.
 
-#### 5.4.6 `pr_review` (object)
+#### 5.4.6 `pull_requests` (object)
 
 Fields:
 
-- `mode` (`tracker` or `polling`)
-  - Default: `tracker`.
-  - `tracker` preserves the existing tracker-state-driven review loop.
-  - `polling` starts a PR review poller alongside the orchestrator.
-- `cooldown_minutes` (integer)
+- `enabled` (boolean)
+  - Default: `false`.
+  - `false` preserves tracker-state-driven review behavior.
+  - `true` starts a PR review poller alongside the orchestrator.
+- `poll_interval_ms` (integer)
+  - Default: falls back to `issues.poll_interval_ms`.
+  - Shared by PR review polling and CI polling when checks are enabled.
+- `review_comments.rework_delay_minutes` (integer)
   - Polling-mode default: `10`.
   - Applies only in `polling` mode before moving an issue back to an active state for requested changes.
-- `stale_days` (integer)
+- `review_comments.stale_after_days` (integer)
   - Polling-mode default: `7`.
   - Applies only in `polling` mode before reclaiming idle tracked PR workspaces.
-- `ignored_users` (list of strings)
+- `review_comments.ignored_reviewers` (list of strings)
   - Polling-mode default: `[]`.
   - Extra GitHub users whose comments do not trigger PR review rework dispatch.
   - The effective ignored set in `polling` mode is the union of `ignored_users`, the
     auto-detected current `gh` user (when `gh api user` succeeds), and the PR author returned
     by `gh pr view`. Operators do not need to configure their own identity here.
-- `auto_reply` (boolean)
+- `review_comments.reply_after_addressing` (boolean)
   - Polling-mode default: `false`.
-- `auto_request_review` (boolean)
+- `review_comments.request_review_after_push` (boolean)
   - Polling-mode default: `false`.
+- `checks.enabled` (boolean)
+  - Default: `false`.
+- `checks.log_excerpt_lines` (integer)
+  - Default: `200`.
+- `checks.retry_failed_once` (boolean)
+  - Default: `true`.
+- `checks.max_fix_attempts` (integer)
+  - Default: `3`.
+- `checks.escalate_to_state` (string)
+  - Default: `In Review`.
 
-Polling-only options are ignored when `mode` is not `polling`. CI failure dispatch is driven only
+Review-comment options are ignored when `enabled` is not `true`. CI failure dispatch is driven only
 by failed status checks and ignores comment authorship; the ignored reviewer set above does not
 affect CI escalation.
 
@@ -726,7 +727,7 @@ Fields:
 
 Fields:
 
-- `kind` (string)
+- `runtime` (string)
   - REQUIRED.
   - Supported values: `codex`, `claude`.
 - `command` (string shell command)
@@ -735,32 +736,32 @@ Fields:
   - For Claude, the command is parsed as a CLI invocation and the runtime appends Claude Code
     stream-json arguments for each turn.
   - Launch semantics are adapter-specific; see Section 10.1.
-- `max_concurrent_agents` (integer)
+- `concurrency.max_total` (integer)
   - Default: `10`
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
-- `max_turns` (positive integer)
+- `limits.max_turns` (positive integer)
   - Default: `20`
   - Limits the number of coding-agent turns within one worker session.
   - Invalid values fail configuration validation.
-- `max_retry_backoff_ms` (integer)
+- `limits.retry_backoff_max_ms` (integer)
   - Default: `300000` (5 minutes)
   - Changes SHOULD be re-applied at runtime and affect future retry scheduling.
-- `max_concurrent_agents_by_state` (map `state_name -> positive integer`)
+- `concurrency.max_by_issue_state` (map `state_name -> positive integer`)
   - Default: empty map.
   - State keys are normalized (`lowercase`) for lookup.
   - Invalid entries (blank state names, non-positive, or non-integer values) fail configuration
     validation.
-- `max_tokens_per_issue` (integer or null)
+- `limits.tokens_per_issue` (integer or null)
   - Default: `500000`.
   - Explicit `null` disables the per-issue cap.
-- `max_tokens_per_day` (integer or null)
+- `limits.tokens_per_day` (integer or null)
   - Default: `5000000`.
   - Explicit `null` disables the daily cap.
-- `include_project_guides` (boolean)
+- `prompts.include_project_guides` (boolean)
   - Default: `true`.
   - When enabled, implementations MAY append a `## Project conventions` section to the rendered
     workflow prompt using workspace-local prose guide files.
-- `project_guide_files` (list of relative paths or null)
+- `prompts.project_guide_files` (list of relative paths or null)
   - Default: `null`, meaning adapter defaults apply.
   - Elixir adapter defaults: `["CLAUDE.md"]` for Claude, `[]` for Codex.
   - Entries MUST be relative workspace paths, MUST NOT contain parent directory segments, and
@@ -770,8 +771,8 @@ Fields:
 
 #### 5.4.9 Agent Protocol Fields
 
-These fields live under `agent`. For Codex-owned config values such as `approval_policy`,
-`thread_sandbox`, and `turn_sandbox_policy`, supported values are defined by the targeted Codex
+These fields live under `agent.permissions`. For Codex-owned config values such as
+`approval_policy`, `filesystem.sandbox`, and `filesystem.turn_policy`, supported values are defined by the targeted Codex
 app-server version. Implementors SHOULD treat them as pass-through Codex config values rather than
 relying on a hand-maintained enum in this spec. To inspect the installed Codex schema, run
 `codex app-server generate-json-schema --out <dir>` and inspect the relevant definitions referenced
@@ -784,13 +785,13 @@ fields locally if they want stricter startup checks.
   - Elixir Codex default:
     `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`.
   - Elixir accepts Codex string/object values supported by the targeted app-server, except
-    `agent.approval_policy="never"` is rejected for Codex. Use `auto_approve_all` for unattended
+    `agent.permissions.approval_policy="never"` is rejected for Codex. Use `auto_approve_all` for unattended
     auto-approval.
   - Elixir evidence: `lib/symphony_elixir/config/schema.ex` and
     `test/symphony_elixir/workspace_and_config_test.exs`.
-- `thread_sandbox` (Codex `SandboxMode` value)
+- `filesystem.sandbox` (Codex `SandboxMode` value)
   - Default: `workspace-write`.
-- `turn_sandbox_policy` (Codex `SandboxPolicy` value)
+- `filesystem.turn_policy` (Codex `SandboxPolicy` value)
   - Default: implementation-defined.
   - Runtime note: when the policy type is `workspaceWrite`, implementations MUST ensure the
     current issue workspace remains writable (when a workspace path is available) even when callers
@@ -801,7 +802,7 @@ fields locally if they want stricter startup checks.
     itself (for example `git rev-parse --git-dir --git-common-dir`). For linked worktree workspace
     strategies where those roots are not discoverable at runtime, implementations MUST include the
     primary clone `.git` metadata root as a fallback.
-- `network_access` (object)
+- `network` (object)
   - Default `mode`: `allowlist`.
   - `mode`: one of `allowlist`, `open`, or `block`.
     - `allowlist`: network is denied by default and implementations MUST pass the effective
@@ -814,7 +815,7 @@ fields locally if they want stricter startup checks.
   - `denied_domains` MUST take precedence over both built-in and user-provided domains.
   - The Elixir Claude adapter writes equivalent sandbox/network settings to `.claude/settings.json`
     in the issue workspace for the duration of a session.
-- `sandbox_runtime` (object, Codex-only)
+- `outer_sandbox` (object, Codex-only)
   - Default `kind`: `none`.
   - `kind`: one of `none` or `srt`.
     - `none`: no outer sandbox wrapper.
@@ -831,7 +832,7 @@ fields locally if they want stricter startup checks.
     instructions.
   - SRT wraps the whole Codex process tree and therefore SHOULD be documented as an additional OS
     guardrail rather than a complete credential isolation boundary for the Codex runtime itself.
-  - Implementations MUST reject `kind: srt` with `network_access.mode: open` unless the targeted
+  - Implementations MUST reject `runtime: srt` with `network.mode: open` unless the targeted
     SRT version provides a valid unrestricted-network representation.
   - Implementations MUST reject `kind: srt` for non-Codex adapters and MAY reject it for remote
     worker launch modes that cannot access the generated temporary settings file.
@@ -873,7 +874,7 @@ Fields:
     agent session, run `after_run`, record the run as timed out, emit a `run_stuck` semantic event,
     and schedule retry through the normal retry queue/backoff.
 
-#### 5.4.11 `worker` (object)
+#### 5.4.11 `workers` (object)
 
 Fields:
 
@@ -883,11 +884,11 @@ Fields:
 - `max_concurrent_agents_per_host` (positive integer, OPTIONAL)
   - Shared per-host cap for configured SSH hosts.
 
-#### 5.4.12 `observability` (object)
+#### 5.4.12 `dashboard` (object)
 
 Fields:
 
-- `dashboard_enabled` (boolean)
+- `enabled` (boolean)
   - Default: `true`.
 - `refresh_ms` (positive integer)
   - Default: `1000`.
@@ -898,7 +899,7 @@ Fields:
 - `transcript_buffer_size` (non-negative integer)
   - Default: `200`.
 
-#### 5.4.13 `server` (object)
+Listener fields also live under `dashboard`:
 
 Fields:
 
@@ -907,37 +908,34 @@ Fields:
 - `host` (string)
   - Default: `127.0.0.1`.
 
-#### 5.4.14 `ci` (object)
+#### 5.4.13 `pull_requests.checks` (object)
 
 Fields:
 
 - `enabled` (boolean)
   - Default: `false`.
-- `poll_interval_ms` (positive integer, OPTIONAL)
 - `log_excerpt_lines` (positive integer)
   - Default: `200`.
-- `flaky_retry` (boolean)
+- `retry_failed_once` (boolean)
   - Default: `true`.
-- `max_retries` (non-negative integer)
+- `max_fix_attempts` (non-negative integer)
   - Default: `3`.
-- `escalation_state` (string)
+- `escalate_to_state` (string)
   - Default: `In Review`.
   - Blank values normalize back to `In Review`.
 
-#### 5.4.15 `quality_gate` (object)
+#### 5.4.14 `issue_gate` (object)
 
 Fields:
 
 - `enabled` (boolean)
-  - Default: `true`.
+  - Default: `false`.
 - `provider` (`anthropic` or `openai`)
   - Default: `anthropic`.
 - `model` (string)
   - Default: `claude-haiku-4-5-20251001`.
-- `min_score` (integer 1..10)
+- `pass_threshold` (integer 1..10)
   - Default: `6`.
-- `pass_threshold` (integer 1..10, OPTIONAL)
-  - When unset, `min_score` is used as the pass threshold.
 - `clarification_floor` (integer 1..10, OPTIONAL)
   - When set, it MUST be lower than the effective pass threshold.
 - `max_clarification_rounds` (positive integer)
@@ -945,7 +943,7 @@ Fields:
 - `on_error` (`pass` or `skip`)
   - Default: `pass`.
 
-#### 5.4.16 `learnings` (object)
+#### 5.4.15 `pull_requests.learnings` (object)
 
 Fields:
 
@@ -960,13 +958,13 @@ Fields:
 - `max_per_run` (integer 0..3)
   - Default: `3`.
 
-#### 5.4.17 `review_agent` (object)
+#### 5.4.16 `pre_push_review` (object)
 
 Fields:
 
 - `enabled` (boolean)
   - Default: `false`.
-- `kind` (`codex` or `claude`)
+- `runtime` (`codex` or `claude`)
   - REQUIRED when `enabled` is true.
 - `command` (string)
   - REQUIRED when `enabled` is true.
@@ -987,15 +985,15 @@ separately from the aggregate run token total.
 Reviewer outcome handling MUST distinguish terminal blocks from inconclusive reviewer runs.
 Verified `block` verdicts with at least one grounded finding SHOULD terminate the worker with a
 dedicated `review_agent_blocked` exit, post the block reason/findings to the tracker, move the issue
-to the configured human-review escalation state (`ci.escalation_state`), and avoid scheduling another
-orchestrator retry. If that tracker transition fails, Symphony SHOULD still release its local issue
-claim rather than leaving the issue stuck as running. Reviewer parse failures, turn-budget failures,
-or validation/self-check paths that remove all findings SHOULD be classified as
+to the configured human-review escalation state (`pull_requests.checks.escalate_to_state`), and avoid
+scheduling another orchestrator retry. If that tracker transition fails, Symphony SHOULD still release
+its local issue claim rather than leaving the issue stuck as running. Reviewer parse failures,
+turn-budget failures, or validation/self-check paths that remove all findings SHOULD be classified as
 `review_agent_inconclusive`; Symphony SHOULD retry the reviewer once with a fresh reviewer session,
 then downgrade to `request_changes` with a non-convergence note instead of retrying the full executor
 run.
 
-#### 5.4.18 `notifications` (object)
+#### 5.4.17 `notifications` (object)
 
 Fields:
 
@@ -1036,7 +1034,7 @@ Template input variables:
   - `null`/absent on first attempt.
   - Integer on retry or continuation run.
 - `agent` (object)
-  - `kind`: configured `agent.kind` (`codex` or `claude`).
+  - `kind`: configured `agent.runtime` (`codex` or `claude`).
   - `display_name`: human-facing agent name (`Codex` or `Claude`).
   - `update_label`: dashboard/update label such as `Codex update` or `Claude update`.
   - `workpad_heading`: Linear workpad heading such as `## Codex Workpad` or
@@ -1089,7 +1087,7 @@ Configuration is resolved in this order:
 
 1. Select and load `symphony.yml` (explicit runtime setting, otherwise cwd default).
 2. Parse YAML into a raw operator config map.
-3. Coerce and validate the operator config with the system schema, including `repos:` routing
+3. Coerce and validate the operator config with the system schema, including `repositories:` routing
    validation.
 4. Select the repo for this settings lookup:
    - explicit `repo_key` for routed issue work;
@@ -1122,7 +1120,7 @@ Dynamic reload behavior:
   last known good workflow when reload fails.
 - `symphony.yml` is re-read through the config layer during runtime operations such as dispatch,
   watchdog handling, and snapshots.
-- Changes to `symphony.yml` values that affect OTP child topology, including the `repos:` list,
+- Changes to `symphony.yml` values that affect OTP child topology, including the `repositories:` list,
   primary repo selection, PR/CI poller enablement, verification supervisors, and HTTP listener
   binding, require restart unless the implementation explicitly supports live rebind/re-supervision.
 - The orchestrator refreshes selected live state from config, including polling cadence and global
@@ -1161,20 +1159,20 @@ Validation checks:
 - The primary repo workflow file can be loaded and parsed.
 - For routed dispatch, the matched repo workflow file can be loaded and parsed.
 - Repo routing rules are valid.
-- `tracker.kind` is present and supported.
-- `agent.kind` is present and supported.
+- `issues.provider` is present and supported.
+- `agent.runtime` is present and supported.
 - `agent.command` is present and non-empty.
-- `tracker.api_key` is present after `$` resolution when `tracker.kind == "linear"`.
-- At least one Linear scoping filter is present when `tracker.kind == "linear"`. Core scope comes
-  from `tracker.project_slug`, `tracker.team`, or non-empty `tracker.labels`; implementations with
-  per-repo polling MAY also count repo-level `team`, `projects`, `labels`, or `assignee` selectors.
-- Blank `tracker.project_slug`, `tracker.team`, and `tracker.labels` entries do not count as
-  configured Linear scoping filters.
-- `agent.approval_policy="never"` is invalid when `agent.kind == "codex"`; use
+- `issues.linear.api_key` is present after `$` resolution when `issues.provider == "linear"`.
+- At least one Linear scoping filter is present when `issues.provider == "linear"`. Core scope comes
+  from `issues.linear.scope.project_slug`, `issues.linear.scope.team`, or non-empty
+  `issues.linear.scope.labels`; implementations with per-repo polling MAY also count repo-level
+  route selectors.
+- Blank issue-level scope entries do not count as configured Linear scoping filters.
+- `agent.permissions.approval_policy="never"` is invalid when `agent.runtime == "codex"`; use
   `auto_approve_all` for unattended auto-approval.
-- `agent.sandbox_runtime.kind == "srt"` is valid only when `agent.kind == "codex"` and
-  `agent.network_access.mode != "open"`.
-- `workspace.attachments.public_upload_extensions` entries must be plain file extensions.
+- `agent.permissions.outer_sandbox.runtime == "srt"` is valid only when `agent.runtime == "codex"`
+  and `agent.permissions.network.mode != "open"`.
+- `workspaces.attachments.public_upload_extensions` entries must be plain file extensions.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
 
@@ -1182,40 +1180,38 @@ This section is intentionally redundant so a coding agent can implement the conf
 Extension fields are documented in the extension section that defines them. Core conformance does
 not require recognizing or validating extension fields unless that extension is implemented.
 
-- `repos`: non-empty list of repo route entries, REQUIRED
-- `repos[].name`: unique string, REQUIRED
-- `repos[].path`: optional legacy path string used as the base for relative workflow paths
-- `repos[].workflow`: path string, default `WORKFLOW.md`
-- `repos[].workspace.strategy`: optional `clone` or `worktree`
-- `repos[].workspace.repo`: optional path string, required when the effective strategy is `worktree`
-- `repos[].workspace.fetch_before_dispatch`: optional boolean
-- `repos[].team`: optional Linear team key or team ID
-- `repos[].projects`: optional list of Linear project names/slugs/IDs
-- `repos[].labels`: optional list of Linear label names with route-level AND semantics
-- `repos[].assignee`: optional Linear assignee selector
-- `repos[].default`: boolean, default `false`
-- `tracker.kind`: string, REQUIRED, currently `linear` or `memory`
-- `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
-- `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, OPTIONAL when `tracker.kind=linear`
-- `tracker.team`: optional Linear team key or team ID when `tracker.kind=linear`
-- `tracker.labels`: optional list of Linear label names when `tracker.kind=linear`
-- At least one of `tracker.project_slug`, `tracker.team`, non-empty `tracker.labels`, or an
-  implementation-supported repo-level Linear selector is REQUIRED when `tracker.kind=linear`
-- Blank `tracker.project_slug`, `tracker.team`, and `tracker.labels` entries are ignored for the
-  Linear scoping requirement.
-- `tracker.assignee`: optional string or `$VAR`, canonical env `LINEAR_ASSIGNEE` when
-  `tracker.kind=linear`; `"me"` resolves the current Linear viewer
-- `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
-- `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
-- `polling.interval_ms`: integer, default `30000`
-- `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
-- `repos[].workspace.strategy`: `clone` or `worktree`, defaulting through global `workspace.strategy`
-  or `clone`
-- `repos[].workspace.repo`: path to that repo's primary clone when the effective strategy is
+- `repositories`: non-empty list of repo route entries, REQUIRED
+- `repositories[].key`: unique string, REQUIRED
+- `repositories[].workflow`: path string, default `WORKFLOW.md`
+- `repositories[].workspace.strategy`: optional `clone` or `worktree`
+- `repositories[].workspace.repo`: optional path string, required when the effective strategy is
   `worktree`
-- `repos[].workspace.fetch_before_dispatch`: boolean, defaulting through global
-  `workspace.fetch_before_dispatch` or `true`
+- `repositories[].workspace.fetch_before_dispatch`: optional boolean
+- `repositories[].route.team`: optional Linear team key or team ID
+- `repositories[].route.projects`: optional list of Linear project names/slugs/IDs
+- `repositories[].route.labels`: optional list of Linear label names with route-level AND semantics
+- `repositories[].route.assignee`: optional Linear assignee selector
+- `repositories[].default`: boolean, default `false`
+- `issues.provider`: string, REQUIRED, currently `linear` or `memory`
+- `issues.linear.endpoint`: string, default `https://api.linear.app/graphql` when provider is linear
+- `issues.linear.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when provider is linear
+- `issues.linear.scope.project_slug`: string, OPTIONAL when provider is linear
+- `issues.linear.scope.team`: optional Linear team key or team ID
+- `issues.linear.scope.labels`: optional list of Linear label names
+- At least one issue-level or repository route selector is REQUIRED when provider is linear.
+- `issues.linear.assignee`: optional string or `$VAR`, canonical env `LINEAR_ASSIGNEE`;
+  `"me"` resolves the current Linear viewer
+- `issues.states.active`: list of strings, default `["Todo", "In Progress"]`
+- `issues.states.terminal`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
+- `issues.poll_interval_ms`: integer, default `30000`
+- `workspaces.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
+- `repositories[].workspace.strategy`: `clone` or `worktree`, defaulting through global
+  `workspaces.strategy`
+  or `clone`
+- `repositories[].workspace.repo`: path to that repo's primary clone when the effective strategy is
+  `worktree`
+- `repositories[].workspace.fetch_before_dispatch`: boolean, defaulting through global
+  `workspaces.fetch_before_dispatch` or `true`
 - `verification.enabled`: boolean, default `false`
 - `verification.port_allocation.range`: two-integer inclusive range, default `[4000, 4099]`
 - `verification.dev_server.start_cmd`: shell command or null
@@ -1228,70 +1224,69 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.after_run`: shell script or null
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
-- `agent.max_concurrent_agents`: integer, default `10`
-- `agent.max_turns`: integer, default `20`
-- `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
-- `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
-- `agent.max_tokens_per_issue`: integer or null, default `500000`; explicit null disables the cap
-- `agent.max_tokens_per_day`: integer or null, default `5000000`; explicit null disables the cap
-- `agent.kind`: `codex` or `claude`, REQUIRED
+- `agent.concurrency.max_total`: integer, default `10`
+- `agent.concurrency.max_by_issue_state`: map of positive integers, default `{}`
+- `agent.limits.max_turns`: integer, default `20`
+- `agent.limits.retry_backoff_max_ms`: integer, default `300000` (5m)
+- `agent.limits.tokens_per_issue`: integer or null, default `500000`; explicit null disables the cap
+- `agent.limits.tokens_per_day`: integer or null, default `5000000`; explicit null disables the cap
+- `agent.runtime`: `codex` or `claude`, REQUIRED
 - `agent.command`: shell command string, REQUIRED
-- `agent.include_project_guides`: boolean, default `true`
-- `agent.project_guide_files`: list of relative paths or null, default `null`
-- `agent.approval_policy`: agent approval policy, default depends on `agent.kind`
-- `agent.thread_sandbox`: Codex `SandboxMode` value, default `workspace-write`
-- `agent.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined
-- `agent.network_access.mode`: `allowlist`, `open`, or `block`, default `allowlist`
-- `agent.network_access.allowed_domains`: list of additional allowed domains, default `[]`
-- `agent.network_access.denied_domains`: list of domains removed from the effective allowlist, default `[]`
-- `agent.sandbox_runtime.kind`: `none` or `srt`, default `none`
-- `agent.sandbox_runtime.command`: SRT command string, default `srt`
-- `agent.turn_timeout_ms`: integer, default `3600000`
-- `agent.read_timeout_ms`: integer, default `30000`
-- `agent.stall_timeout_ms`: integer, default `300000`
-- `agent.command_timeout_ms`: integer, default `600000`
+- `agent.prompts.include_project_guides`: boolean, default `true`
+- `agent.prompts.project_guide_files`: list of relative paths or null, default `null`
+- `agent.permissions.approval_policy`: agent approval policy, default depends on `agent.runtime`
+- `agent.permissions.filesystem.sandbox`: Codex `SandboxMode` value, default `workspace-write`
+- `agent.permissions.filesystem.turn_policy`: Codex `SandboxPolicy` value, default implementation-defined
+- `agent.permissions.network.mode`: `allowlist`, `open`, or `block`, default `allowlist`
+- `agent.permissions.network.allowed_domains`: list of additional allowed domains, default `[]`
+- `agent.permissions.network.denied_domains`: list of domains removed from the effective allowlist, default `[]`
+- `agent.permissions.outer_sandbox.runtime`: `none` or `srt`, default `none`
+- `agent.permissions.outer_sandbox.command`: SRT command string, default `srt`
+- `agent.timeouts.turn_ms`: integer, default `3600000`
+- `agent.timeouts.read_ms`: integer, default `30000`
+- `agent.timeouts.stall_ms`: integer, default `300000`
+- `agent.timeouts.command_ms`: integer, default `600000`
 - `watchdog.enabled`: boolean, default `true`
 - `watchdog.tick_interval_ms`: integer, default `60000`
 - `watchdog.no_progress_threshold_ms`: integer, default `600000`
-- `worker.ssh_hosts`: list of strings, default `[]`
-- `worker.max_concurrent_agents_per_host`: positive integer or null
-- `observability.dashboard_enabled`: boolean, default `true`
-- `observability.refresh_ms`: integer, default `1000`
-- `observability.render_interval_ms`: integer, default `16`
-- `observability.snapshot_publish_ms`: integer, default `500`
-- `observability.transcript_buffer_size`: integer, default `200`
-- `pr_review.mode`: `tracker` or `polling`, default `tracker`
-- `pr_review.cooldown_minutes`: polling-mode integer, default `10`
-- `pr_review.stale_days`: polling-mode integer, default `7`
-- `pr_review.ignored_users`: polling-mode list of strings, default `[]`; combined with
+- `workers.ssh_hosts`: list of strings, default `[]`
+- `workers.max_concurrent_agents_per_host`: positive integer or null
+- `dashboard.enabled`: boolean, default `true`
+- `dashboard.refresh_ms`: integer, default `1000`
+- `dashboard.render_interval_ms`: integer, default `16`
+- `dashboard.snapshot_publish_ms`: integer, default `500`
+- `dashboard.transcript_buffer_size`: integer, default `200`
+- `pull_requests.enabled`: boolean, default `false`
+- `pull_requests.poll_interval_ms`: positive integer or null; falls back to `issues.poll_interval_ms`
+- `pull_requests.review_comments.rework_delay_minutes`: polling-mode integer, default `10`
+- `pull_requests.review_comments.stale_after_days`: polling-mode integer, default `7`
+- `pull_requests.review_comments.ignored_reviewers`: polling-mode list of strings, default `[]`; combined with
   the auto-detected current `gh` user and PR author
-- `pr_review.auto_reply`: polling-mode boolean, default `false`
-- `pr_review.auto_request_review`: polling-mode boolean, default `false`
-- `ci.enabled`: boolean, default `false`
-- `ci.poll_interval_ms`: positive integer or null
-- `ci.log_excerpt_lines`: integer, default `200`
-- `ci.flaky_retry`: boolean, default `true`
-- `ci.max_retries`: integer, default `3`
-- `ci.escalation_state`: string, default `In Review`
-- `server.port`: non-negative integer or null
-- `server.host`: string, default `127.0.0.1`
-- `quality_gate.enabled`: boolean, default `true`
-- `quality_gate.provider`: `anthropic` or `openai`, default `anthropic`
-- `quality_gate.model`: string, default `claude-haiku-4-5-20251001`
-- `quality_gate.min_score`: integer, default `6`
-- `quality_gate.pass_threshold`: integer or null
-- `quality_gate.clarification_floor`: integer or null
-- `quality_gate.max_clarification_rounds`: integer, default `2`
-- `quality_gate.on_error`: `pass` or `skip`, default `pass`
-- `learnings.enabled`: boolean, default `false`
-- `learnings.provider`: `anthropic` or `openai`, default `anthropic`
-- `learnings.model`: string, default `claude-haiku-4-5-20251001`
-- `learnings.max_total_per_repo`: integer, default `500`
-- `learnings.max_per_run`: integer, default `3`
-- `review_agent.enabled`: boolean, default `false`
-- `review_agent.kind`: `codex` or `claude`, required when enabled
-- `review_agent.command`: string, required when enabled
-- `review_agent.max_iterations`: integer, default `1`
+- `pull_requests.review_comments.reply_after_addressing`: polling-mode boolean, default `false`
+- `pull_requests.review_comments.request_review_after_push`: polling-mode boolean, default `false`
+- `pull_requests.checks.enabled`: boolean, default `false`
+- `pull_requests.checks.log_excerpt_lines`: integer, default `200`
+- `pull_requests.checks.retry_failed_once`: boolean, default `true`
+- `pull_requests.checks.max_fix_attempts`: integer, default `3`
+- `pull_requests.checks.escalate_to_state`: string, default `In Review`
+- `dashboard.port`: non-negative integer or null
+- `dashboard.host`: string, default `127.0.0.1`
+- `issue_gate.enabled`: boolean, default `false`
+- `issue_gate.provider`: `anthropic` or `openai`, default `anthropic`
+- `issue_gate.model`: string, default `claude-haiku-4-5-20251001`
+- `issue_gate.pass_threshold`: integer, default `6`
+- `issue_gate.clarification_floor`: integer or null
+- `issue_gate.max_clarification_rounds`: integer, default `2`
+- `issue_gate.on_error`: `pass` or `skip`, default `pass`
+- `pull_requests.learnings.enabled`: boolean, default `false`
+- `pull_requests.learnings.provider`: `anthropic` or `openai`, default `anthropic`
+- `pull_requests.learnings.model`: string, default `claude-haiku-4-5-20251001`
+- `pull_requests.learnings.max_total_per_repo`: integer, default `500`
+- `pull_requests.learnings.max_per_run`: integer, default `3`
+- `pre_push_review.enabled`: boolean, default `false`
+- `pre_push_review.runtime`: `codex` or `claude`, required when enabled
+- `pre_push_review.command`: string, required when enabled
+- `pre_push_review.max_iterations`: integer, default `1`
 - `notifications.enabled`: boolean, default `false`
 - `notifications.redact_titles`: boolean, default `false`
 - `notifications.channels`: list of Slack/webhook channel configs, default `[]`
@@ -1403,8 +1398,8 @@ Distinct terminal reasons are important because retry logic and logs differ.
 
 ### 7.5 PR Review Poller
 
-When `pr_review.mode == "tracker"`, Symphony uses only the tracker-state loop above. When
-`pr_review.mode == "polling"`, the application additionally starts a `PrReviewPoller`
+When `pull_requests.enabled` is `false`, Symphony uses only the tracker-state review loop. When
+`pull_requests.enabled` is `true`, the application additionally starts a `PrReviewPoller`
 GenServer.
 
 The poller:
@@ -1412,7 +1407,7 @@ The poller:
 - discovers issues in `In Review` with attached GitHub PR URLs;
 - records each PR URL, issue id, and workspace path in the durable run store;
 - polls GitHub for review decisions and PR closure;
-- waits `pr_review.cooldown_minutes` after requested-change activity before moving the issue
+- waits `pull_requests.review_comments.rework_delay_minutes` after requested-change activity before moving the issue
   back to `In Progress` for orchestrator-owned rework handling;
 - detects GitHub merge conflict signals (`mergeable == "CONFLICTING"` or
   `mergeStateStatus == "DIRTY"`), deduplicates by head/base identity, stores conflict context,
@@ -1420,7 +1415,7 @@ The poller:
 - moves the issue back to `In Progress` when GitHub reports approval so the orchestrator starts
   the merge/landing workflow through the normal run path;
 - removes tracked workspaces and durable review records when PRs close or remain idle beyond
-  `pr_review.stale_days`.
+  `pull_requests.review_comments.stale_after_days`.
 
 The orchestrator continues to own active-state dispatch, retry, run-store run records, and
 dashboard-visible agent execution. The PR review poller owns only polling-mode GitHub polling,
@@ -1431,7 +1426,7 @@ state transitions, and tracked PR cleanup.
 ### 8.1 Poll Loop
 
 At startup, the service validates config, performs startup cleanup, schedules an immediate tick, and
-then repeats every `polling.interval_ms`.
+then repeats every `issues.poll_interval_ms`.
 
 The effective poll interval SHOULD be updated when config changes are re-applied.
 
@@ -1546,11 +1541,11 @@ When the service starts:
 
 1. Query tracker for issues in terminal states.
 2. For each returned issue identifier, remove the corresponding workspace directory.
-3. Query tracked active/terminal issues plus durable run/retry records and scan `workspace.root`
+3. Query tracked active/terminal issues plus durable run/retry records and scan `workspaces.root`
    for local orphan directories.
 4. For each orphan directory, log the selected action and then log, delete, or move it to
-   `workspace.lifecycle.trash_dir` according to `workspace.lifecycle.orphan_action`.
-5. Run age-based GC for local workspaces older than `workspace.lifecycle.max_age_days`.
+   `workspaces.cleanup.trash_dir` according to `workspaces.cleanup.orphan_action`.
+5. Run age-based GC for local workspaces older than `workspaces.cleanup.max_age_days`.
 6. If any tracker, run-store, or filesystem read required for startup cleanup fails, log a warning
    and continue startup without deleting workspaces whose ownership could not be determined.
 
@@ -1562,11 +1557,11 @@ This prevents stale terminal workspaces from accumulating after restarts.
 
 Workspace root:
 
-- `workspace.root` (normalized absolute path)
+- `workspaces.root` (normalized absolute path)
 
 Per-issue workspace path:
 
-- `<workspace.root>/<sanitized_issue_identifier>`
+- `<workspaces.root>/<repo_key>/<sanitized_issue_identifier>`
 
 Workspace persistence:
 
@@ -1587,7 +1582,7 @@ Algorithm summary:
 
 1. Sanitize identifier to `workspace_key`.
 2. Compute workspace path under workspace root.
-3. Resolve the issue's repo route and effective `repos[].workspace` settings.
+3. Resolve the issue's repo route and effective `repositories[].workspace` settings.
 4. If the effective workspace strategy is `clone`, ensure the workspace path exists as a directory.
 5. If the effective workspace strategy is `worktree`:
    - Validate that repo route's primary clone is configured for the current host.
@@ -1692,8 +1687,8 @@ Current Elixir sandbox behavior:
   forms for home-relative deny paths as defense in depth.
 - Codex native `workspace_write` config renders command-sandbox read denies for
   `~/.codex/auth.json`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md`; operator
-  `workspace.sandbox.allow_read_paths` entries cannot re-allow these runtime auth/config files.
-  With `agent.sandbox_runtime.kind: none`, enforcement of the native profile deny list is
+  `agent.permissions.filesystem.allow_read_paths` entries cannot re-allow these runtime auth/config
+  files. With `agent.permissions.outer_sandbox.runtime: none`, enforcement of the native profile deny list is
   best-effort as described in Section 5.4.9.
 - SRT sandbox settings allow Codex to write its runtime state directory under `~/.codex`, but
   deny-write the sensitive/static Codex files `auth.json`, `config.toml`, and `AGENTS.md`.
@@ -1706,8 +1701,8 @@ Current Elixir sandbox behavior:
     and `worktrees/*/config.worktree` patterns. These deny rules apply regardless of layout.
   - SRT settings MUST allow writes to `<git_dir>/objects` for clone workspaces and linked
     worktrees. This keeps `git add`, `git commit`, and similar staging operations working under
-    SRT. Under the default linked-worktree layout (`workspace.strategy: worktree`,
-    `workspace.repo: <source>`), those writes target the source repository's shared
+    SRT. Under the default linked-worktree layout (`workspaces.strategy: worktree`,
+    `workspaces.repo: <source>`), those writes target the source repository's shared
     `<source>/.git/objects` database. This is an explicit cleanup/blast-radius tradeoff: object
     writes may outlive workspace cleanup until Git GC, while higher-risk mutable Git metadata
     remains write-protected.
@@ -1725,7 +1720,7 @@ Elixir evidence: `lib/symphony_elixir/agent_sandbox_config.ex`,
 ## 10. Agent Runner Protocol (Coding Agent Integration)
 
 This section defines Symphony's language-neutral responsibilities when integrating the configured
-coding-agent adapter. The Elixir implementation selects the adapter from `agent.kind`:
+coding-agent adapter. The Elixir implementation selects the adapter from `agent.runtime`:
 
 - `codex` uses the Codex app-server JSON-RPC stream over stdio.
 - `claude` uses the Claude Code CLI stream-json output format and writes temporary
@@ -1734,9 +1729,9 @@ coding-agent adapter. The Elixir implementation selects the adapter from `agent.
 Protocol source of truth:
 
 - Implementations MUST send messages that are valid for the configured adapter's protocol.
-- For `agent.kind: codex`, implementations MUST consult the targeted Codex app-server
+- For `agent.runtime: codex`, implementations MUST consult the targeted Codex app-server
   documentation or generated schema instead of treating this specification as a protocol schema.
-- For `agent.kind: claude`, implementations MUST consume Claude Code stream-json events and map
+- For `agent.runtime: claude`, implementations MUST consume Claude Code stream-json events and map
   them into Symphony runtime events.
 - If this specification appears to conflict with the targeted agent protocol, the agent protocol
   controls protocol shape and transport behavior.
@@ -1753,9 +1748,9 @@ Subprocess launch parameters:
 
 Notes:
 
-- The Elixir implementation requires an explicit `agent.command`.
+- The Elixir implementation requires explicit `agent.runtime` and `agent.command`.
 - Codex local launch invokes `bash -lc <agent.command>` in the workspace. When
-  `agent.sandbox_runtime.kind: srt`, the local command is wrapped as
+  `agent.permissions.outer_sandbox.runtime: srt`, the local command is wrapped as
   `<srt command> --settings <temporary-settings.json> <agent.command>`. Codex remote launch runs
   the configured command after `cd <workspace>` over SSH stdio.
 - Codex local SRT launch uses a random `127.0.0.1` TCP listener for Symphony's implicit MCP server
@@ -1946,7 +1941,7 @@ Scoped Linear tool extension contract:
 
 - Purpose: expose narrow, current-issue Linear reads and writes using Symphony's configured tracker
   auth for the current session.
-- Availability: only meaningful when `tracker.kind == "linear"` and valid Linear auth is configured.
+- Availability: only meaningful when `issues.provider == "linear"` and valid Linear auth is configured.
 - Tool names MUST be safe for the targeted protocol's tool-name schema; dotted names such as
   `linear.get_current_issue` MUST NOT be advertised to Codex Responses API sessions.
 - Tools MUST be scoped server-side to the current issue; prompt-supplied issue id arguments MUST be
@@ -2011,10 +2006,10 @@ User-input-required policy:
 
 Timeouts:
 
-- `agent.read_timeout_ms`: request/response timeout during startup and sync requests
-- `agent.turn_timeout_ms`: total turn stream timeout
-- `agent.stall_timeout_ms`: enforced by orchestrator for runs that have not emitted a first event
-- `agent.command_timeout_ms`: Claude command/tool-use timeout after a streamed tool-use event
+- `agent.timeouts.read_ms`: request/response timeout during startup and sync requests
+- `agent.timeouts.turn_ms`: total turn stream timeout
+- `agent.timeouts.stall_ms`: enforced by orchestrator for runs that have not emitted a first event
+- `agent.timeouts.command_ms`: Claude command/tool-use timeout after a streamed tool-use event
 - `watchdog.no_progress_threshold_ms`: enforced by orchestrator based on last transcript event time
 
 Error mapping (RECOMMENDED normalized categories):
@@ -2068,22 +2063,22 @@ An implementation MUST support these tracker adapter operations:
 
 ### 11.2 Query Semantics (Linear)
 
-Linear-specific requirements for `tracker.kind == "linear"`:
+Linear-specific requirements for `issues.provider == "linear"`:
 
-- `tracker.kind == "linear"`
+- `issues.provider == "linear"`
 - GraphQL endpoint (default `https://api.linear.app/graphql`)
 - Auth token sent in `Authorization` header
-- `tracker.project_slug` maps to Linear project `slugId` when set
-- `tracker.team` maps to Linear team `key` or `id`, chosen by whether the value
+- `issues.linear.scope.project_slug` maps to Linear project `slugId` when set
+- `issues.linear.scope.team` maps to Linear team `key` or `id`, chosen by whether the value
   has canonical UUID shape, case-insensitively
-- `tracker.labels` maps to `labels: { some: { name: { in: [...] } } }`
+- `issues.linear.scope.labels` maps to `labels: { some: { name: { in: [...] } } }`
 - Candidate issue queries build one GraphQL `IssueFilter` variable dynamically,
   omitting unconfigured keys instead of sending null operands.
-- If `tracker.assignee` is set, `fetch_candidate_issues()` returns only issues whose Linear
+- If `issues.linear.assignee` is set, `fetch_candidate_issues()` returns only issues whose Linear
   assignee matches the configured value by adding `assignee: { id: { in: [...] } }`
   to the server-side candidate filter. The special value `"me"` resolves the current viewer ID.
 - Issue-state refresh still uses the by-id query without an assignee filter and returns requested
-  issues that no longer match `tracker.assignee`, with normalized `assigned_to_worker=false`, so
+  issues that no longer match `issues.linear.assignee`, with normalized `assigned_to_worker=false`, so
   reassignment can stop active workers.
 - Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
 - Pagination REQUIRED for candidate issues
@@ -2359,21 +2354,21 @@ If implemented:
 
 Extension config:
 
-- `server.port` (integer, OPTIONAL)
+- `dashboard.port` (integer, OPTIONAL)
   - Enables or pins the HTTP server extension, depending on implementation defaults.
   - `0` requests an ephemeral port for local development and tests.
-  - CLI `--port` overrides `server.port` when both are present.
+  - CLI `--port` overrides `dashboard.port` when both are present.
 
 Enablement (extension):
 
 - Implementations MAY start the HTTP server by default.
 - Start the HTTP server when a CLI `--port` argument is provided.
-- Start the HTTP server when `server.port` is present in `symphony.yml`.
-- The `server` top-level key is owned by this extension.
-- Positive `server.port` values bind that port.
+- Start the HTTP server when `dashboard.port` is present in `symphony.yml`.
+- The `dashboard` top-level key owns this extension's listener settings.
+- Positive `dashboard.port` values bind that port.
 - Implementations SHOULD bind loopback by default (`127.0.0.1` or host equivalent) unless explicitly
   configured otherwise.
-- Changes to HTTP listener settings (for example `server.port`) do not need to hot-rebind;
+- Changes to HTTP listener settings (for example `dashboard.port`) do not need to hot-rebind;
   restart-required behavior is conformant.
 
 #### 13.8.1 Human-Readable Dashboard (`/`)
@@ -3146,7 +3141,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Operator config path precedence:
   - explicit `--config`/runtime path is used when provided
   - cwd default is `symphony.yml` when no explicit runtime path is provided
-- Repo workflow path resolution uses `repos[].path` plus `repos[].workflow`. The CLI does not
+- Repo workflow path resolution uses `repositories[].workflow`. The CLI does not
   accept a workflow path; it is read only from `symphony.yml`.
 - Repo workflow file changes are detected and trigger re-read/re-apply without restart
 - Repo-scoped settings and prompt rendering select the workflow for the routed `repo_key`
@@ -3158,15 +3153,15 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Invalid YAML front matter returns typed error
 - Front matter non-map returns typed error
 - Config defaults apply when OPTIONAL values are missing
-- `tracker.kind` validation enforces currently supported kinds (`linear`, `memory`)
-- `tracker.api_key` works (including `$VAR` indirection)
-- `$VAR` resolution works for tracker API key and path values
+- `issues.provider` validation enforces currently supported kinds (`linear`, `memory`)
+- `issues.linear.api_key` works (including `$VAR` indirection)
+- `$VAR` resolution works for issue provider API key and path values
 - `~` path expansion works
-- `agent.kind` and `agent.command` are required
+- `agent.runtime` and `agent.command` are required
 - `agent.command` is preserved as a shell command string
-- Codex `agent.approval_policy="never"` is rejected; `auto_approve_all` is the unattended
+- Codex `agent.permissions.approval_policy="never"` is rejected; `auto_approve_all` is the unattended
   auto-approval switch
-- `agent.sandbox_runtime.kind="srt"` is rejected for non-Codex agents and with open network mode
+- `agent.permissions.outer_sandbox.runtime="srt"` is rejected for non-Codex agents and with open network mode
 - Workspace attachment public-upload extensions are normalized and validated as extensions
 - Per-state concurrency override map normalizes state names and rejects invalid values
 - Prompt template renders `issue`, `attempt`, `agent`, and `repo_key`
@@ -3231,13 +3226,13 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.5 Coding-Agent Adapter Client
 
-- Launch command uses workspace cwd and follows the `agent.kind` adapter launch semantics.
+- Launch command uses workspace cwd and follows the `agent.runtime` adapter launch semantics.
 - Codex launch invokes `bash -lc <agent.command>` locally, optionally wrapped by the configured
-  `agent.sandbox_runtime`.
+  `agent.permissions.outer_sandbox`.
 - Codex launch preserves configured args while injecting the generated `workspace_write`
   permission profile
 - Claude launch parses `agent.command`, appends stream-json print arguments, feeds prompt input over
-  stdin from a private temporary file, and enforces `agent.command_timeout_ms` after streamed
+  stdin from a private temporary file, and enforces `agent.timeouts.command_ms` after streamed
   tool-use events.
 - Claude prompt text is not present in local process argv or remote SSH argv
 - Session startup follows the configured adapter protocol.
@@ -3337,17 +3332,17 @@ Use the same validation profiles as Section 17:
 - `WORKFLOW.md` loader with YAML front matter + prompt body split
 - Typed config layer with defaults and `$` resolution
 - Dynamic `WORKFLOW.md` watch/reload/re-apply for config and prompt
-- `repos:` schema supports multi-repo route definitions and validation
+- `repositories:` schema supports multi-repo route definitions and validation
 - Polling orchestrator with single-authority mutable state
 - Issue tracker client with candidate fetch + state refresh + terminal fetch
 - Workspace manager with sanitized per-issue workspaces
 - Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
-- Coding-agent adapter client for configured `agent.kind`
-- Agent launch command config (`agent.kind`, `agent.command`)
+- Coding-agent adapter client for configured `agent.runtime`
+- Agent launch command config (`agent.runtime`, `agent.command`)
 - Strict prompt rendering with `issue`, `attempt`, `agent`, and `repo_key` variables
 - Exponential retry queue with continuation retries after normal exit
-- Configurable retry backoff cap (`agent.max_retry_backoff_ms`, default 5m)
+- Configurable retry backoff cap (`agent.limits.retry_backoff_max_ms`, default 5m)
 - Reconciliation that stops runs on terminal/non-active tracker states
 - Workspace cleanup for terminal issues (startup sweep + active transition)
 - Structured logs with `issue_id`, `issue_identifier`, and `session_id`
@@ -3355,7 +3350,7 @@ Use the same validation profiles as Section 17:
 
 ### 18.2 RECOMMENDED Extensions (Not REQUIRED for Conformance)
 
-- HTTP server extension honors CLI `--port` over `server.port`, uses a safe default bind host, and
+- HTTP server extension honors CLI `--port` over `dashboard.port`, uses a safe default bind host, and
   exposes the baseline endpoints/error semantics in Section 13.8 if shipped.
 - Scoped Linear client-side tool extensions expose current-issue Linear reads and writes through the
   agent session using configured Symphony auth.
@@ -3379,19 +3374,19 @@ orchestrator but executes worker runs on one or more remote hosts over SSH.
 
 Extension config:
 
-- `worker.ssh_hosts` (list of SSH host strings, OPTIONAL)
+- `workers.ssh_hosts` (list of SSH host strings, OPTIONAL)
   - When omitted, work runs locally.
-- `worker.max_concurrent_agents_per_host` (positive integer, OPTIONAL)
+- `workers.max_concurrent_agents_per_host` (positive integer, OPTIONAL)
   - Shared per-host cap applied across configured SSH hosts.
 
 ### A.1 Execution Model
 
 - The orchestrator remains the single source of truth for polling, claims, retries, and
   reconciliation.
-- `worker.ssh_hosts` provides the candidate SSH destinations for remote execution.
+- `workers.ssh_hosts` provides the candidate SSH destinations for remote execution.
 - Each worker run is assigned to one host at a time, and that host becomes part of the run's
   effective execution identity along with the issue workspace.
-- `workspace.root` is interpreted on the remote host, not on the orchestrator host.
+- `workspaces.root` is interpreted on the remote host, not on the orchestrator host.
 - The coding-agent app-server is launched over SSH stdio instead of as a local subprocess, so the
   orchestrator still owns the session lifecycle even though commands execute remotely.
 - Continuation turns inside one worker lifetime SHOULD stay on the same host and workspace.
@@ -3404,7 +3399,7 @@ Extension config:
 - SSH hosts MAY be treated as a pool for dispatch.
 - Implementations MAY prefer the previously used host on retries when that host is still
   available.
-- `worker.max_concurrent_agents_per_host` is an OPTIONAL shared per-host cap across configured SSH
+- `workers.max_concurrent_agents_per_host` is an OPTIONAL shared per-host cap across configured SSH
   hosts.
 - When all SSH hosts are at capacity, dispatch SHOULD wait rather than silently falling back to a
   different execution mode.

@@ -1,204 +1,178 @@
-# Symphony operator config — Codex runner.
-# See docs/configuration.md for the full reference. Every valid block is
-# represented below; commented values show the schema default.
+# Symphony operator config - Codex runner.
+# See docs/configuration.md for the full reference. Commented values show defaults
+# or optional advanced knobs.
 
-tracker:
-  kind: linear
-  # endpoint: https://api.linear.app/graphql # Linear API endpoint override.
-  # api_key: $LINEAR_API_KEY                 # Defaults to LINEAR_API_KEY in env.
-  # project_slug: my-project                 # Global Linear project slug when repos do not set projects.
-  # team: ENG                                # Global Linear team key or ID.
-  # labels: [codex]                          # Global Linear labels; repo labels add tighter routing.
-  assignee: me
-  active_states:
-    - Todo
-    - In Progress
-    - Merging
-    - Rework
-  terminal_states:
-    - Closed
-    - Cancelled
-    - Canceled
-    - Duplicate
-    - Done
-    - Won't Do
+issues:
+  provider: linear
+  poll_interval_ms: 15000
+  linear:
+    # endpoint: https://api.linear.app/graphql
+    # api_key: $LINEAR_API_KEY
+    assignee: me
+    scope:
+      # project_slug: my-project
+      # team: ENG
+      # labels: [codex]
+  states:
+    active: [Todo, In Progress, Merging, Rework]
+    terminal: [Closed, Cancelled, Canceled, Duplicate, Done, "Won't Do"]
 
-repos:
-  - name: symphony
-    # default: true                          # Fallback repo when an issue does not match another repo route.
-    # path: ~/Projects/symphony              # Legacy base path for resolving workflow.
-    # base_branch: main                      # Review-agent comparison branch; defaults to origin/HEAD or origin/main.
-    # team: ENG                              # Repo-level Linear team selector.
-    # labels: [backend]                      # Repo-level Linear label selector.
-    # assignee: me                           # Repo-level Linear assignee selector.
-    projects: ["building-the-harness-ai-agents-that-ship-production-code-safely-f469eb38bbc5"]
+repositories:
+  - key: symphony
+    # default: true
+    # base_branch: main
     workflow: WORKFLOW.md
+    route:
+      # team: ENG
+      # labels: [backend]
+      # assignee: me
+      projects: ["building-the-harness-ai-agents-that-ship-production-code-safely-f469eb38bbc5"]
     workspace:
-      strategy: worktree                     # clone | worktree
-      repo: ~/Projects/symphony              # Primary clone path when strategy: worktree.
+      strategy: worktree
+      repo: ~/Projects/symphony
       fetch_before_dispatch: true
 
-workspace:
+workspaces:
   root: ~/Projects/symphony-workspaces
-  # strategy: clone                          # Global default: clone or worktree. Prefer per-repo workspace for multi-repo configs.
-  # repo: ~/Projects/symphony                # Required only when a global worktree strategy is used.
-  # fetch_before_dispatch: true              # Fetch origin before each worktree dispatch.
-  # sandbox:
-  #   allow_read_paths: []                   # Codex-effective; Claude adapter does not pass these through yet.
+  # strategy: clone
+  # repo: ~/Projects/symphony
+  # fetch_before_dispatch: true
   # attachments:
-  #   allowed_hosts: [github.com]            # Hosts trusted for issue attachment downloads.
+  #   allowed_hosts: [github.com]
   #   public_upload_extensions: [.png, .jpg, .jpeg, .gif, .webp, .svg, .pdf]
-  lifecycle:
-    # age_gc_enabled: true                   # Remove old local workspaces on the cleanup interval.
+  cleanup:
+    # enabled: true
     max_age_days: 14
-    gc_interval_ms: 3600000
-    # min_free_bytes: 10737418240            # Pause new dispatch when workspace storage drops below this.
-    orphan_action: log                       # log | delete | trash
+    interval_ms: 3600000
+    # min_free_bytes: 10737418240
+    orphan_action: log
     trash_dir: .trash
 
-# worker:
-#   ssh_hosts: []                            # SSH worker hosts, for example devbox-01 or devbox-01:2222.
-#   max_concurrent_agents_per_host: 2        # Per-host dispatch cap.
+# workers:
+#   ssh_hosts: []
+#   max_concurrent_agents_per_host: 2
 
 # github:
-#   enterprise_hosts: []                     # GitHub Enterprise hosts accepted in repo and PR URLs.
-#   failed_run_log_max_bytes: 65536          # Cap on the failed-step log excerpt returned via the MCP tool.
+#   enterprise_hosts: []
+#   failed_run_log_max_bytes: 65536
 
 agent:
-  kind: codex
+  runtime: codex
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
-  max_concurrent_agents: 10
-  # max_concurrent_agents_by_state:
-  #   rework: 2                              # Per-Linear-state concurrency override.
-  max_turns: 8
-  # max_retry_backoff_ms: 300000             # Maximum retry delay after failed runs.
-  max_tokens_per_issue: 100000000            # null disables this cap.
-  max_tokens_per_day: 1000000000             # null disables this cap.
-
-  # Codex-only sandbox knobs ---------------------------------------------------
-  approval_policy: auto_approve_all          # untrusted | on-failure | on-request | auto_approve_all | object-form reject
-  thread_sandbox: workspace-write            # read-only | workspace-write | danger-full-access
-  turn_sandbox_policy:
-    type: workspaceWrite
-    networkAccess: true
-    # writableRoots: []                      # Symphony adds the issue workspace and git metadata roots at runtime.
-  sandbox_runtime:
-    kind: srt                                 # none | srt (Codex-only outer SRT wrapper)
-    command: srt
-    enable_weaker_network_isolation: false
-
-  # Network policy -------------------------------------------------------------
-  network_access:
-    mode: allowlist                          # allowlist | open | block; open is rejected when sandbox_runtime.kind=srt.
-    # allowed_domains: []                    # Extra domains agents may reach in allowlist mode.
-    # denied_domains: []                     # Domains blocked even if built in or allowed above.
-
-  # MCP plumbing ---------------------------------------------------------------
+  concurrency:
+    max_total: 10
+    # max_by_issue_state:
+    #   rework: 2
+  limits:
+    max_turns: 8
+    retry_backoff_max_ms: 300000
+    tokens_per_issue: 100000000
+    tokens_per_day: 1000000000
+  prompts:
+    # include_project_guides: true
+    # project_guide_files:
+  permissions:
+    approval_policy: auto_approve_all
+    filesystem:
+      sandbox: workspace-write
+      turn_policy:
+        type: workspaceWrite
+        networkAccess: true
+        # writableRoots: []
+      # allow_read_paths: []
+    network:
+      mode: allowlist
+      # allowed_domains: []
+      # denied_domains: []
+    outer_sandbox:
+      runtime: srt
+      command: srt
+      enable_weaker_network_isolation: false
   mcp:
-    inherit: none                            # none | allowlist | all (all = Codex only)
-    # allowed_servers: []                    # Required (non-empty) when inherit: allowlist.
-    # servers: {}                            # Map of name → declaration. Reserved name: symphony.
-    #   filesystem:
-    #     transport: stdio
-    #     command: npx
-    #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/Projects"]
-    #     env: {}                            # $VAR resolves from orchestrator env at config-load time.
-    #     runtimes: [codex]                  # Restrict to a subset of [claude, codex].
+    inherit: none
+    # allowed_servers: []
+    # servers: {}
+  timeouts:
+    # turn_ms: 3600000
+    # read_ms: 30000
+    # stall_ms: 300000
+    # command_ms: 600000
 
-  # Timeouts -------------------------------------------------------------------
-  # turn_timeout_ms: 3600000                 # Maximum time for one agent turn.
-  # read_timeout_ms: 30000                    # App-server response read timeout.
-  # stall_timeout_ms: 300000                 # No-progress timeout before retry handling.
-  # command_timeout_ms: 600000               # Maximum time for one shell command; 0 disables this guard.
-
-review_agent:
+pre_push_review:
   enabled: true
-  # kind: codex
-  # command: codex app-server
-  kind: claude
+  runtime: claude
   command: claude --model claude-opus-4-7 --dangerously-skip-permissions
   max_iterations: 1
 
-polling:
-  interval_ms: 15000
-
-pr_review:
-  mode: polling                              # tracker (default) | polling
-  cooldown_minutes: 1                     # Polling: wait before responding to review comments.
-  # stale_days: 7                            # Polling: stop watching closed or idle PRs after this many days.
-  # ignored_users: []                        # Polling: GitHub users to ignore as reviewers. The current `gh` user and PR author are auto-ignored when detected.
-  auto_reply: true                        # Polling: reply to addressed review comments.
-  # auto_request_review: false               # Polling: request another review after pushing rework.
-
-ci:
-  enabled: true                              # Requires pr_review.mode: polling.
-  poll_interval_ms: 30000                    # Falls back to polling.interval_ms when omitted.
-  log_excerpt_lines: 200
-  flaky_retry: true
-  max_retries: 3
-  escalation_state: In Review
+pull_requests:
+  enabled: true
+  poll_interval_ms: 30000
+  review_comments:
+    rework_delay_minutes: 1
+    # stale_after_days: 7
+    # ignored_reviewers: []
+    reply_after_addressing: true
+    # request_review_after_push: false
+  checks:
+    enabled: true
+    log_excerpt_lines: 200
+    retry_failed_once: true
+    max_fix_attempts: 3
+    escalate_to_state: In Review
+  # learnings:
+  #   enabled: false
+  #   provider: anthropic
+  #   model: claude-haiku-4-5-20251001
+  #   max_total_per_repo: 500
+  #   max_per_run: 3
 
 # verification:
-#   enabled: false                           # Dev-server verification before agent turns.
+#   enabled: false
 #   port_allocation:
-#     range: [4000, 4099]                    # Ports exposed as SYMPHONY_VERIFICATION_PORT.
-#   dev_server:                              # Usually better in the repo's WORKFLOW.md.
+#     range: [4000, 4099]
+#   dev_server:
 #     start_cmd: "pnpm dev --port $SYMPHONY_VERIFICATION_PORT"
 #     health_check_url: "http://localhost:${SYMPHONY_VERIFICATION_PORT}/healthz"
 #     health_timeout_ms: 30000
-#     stop_signal: TERM                      # TERM | INT | QUIT | HUP | KILL
+#     stop_signal: TERM
 #     stop_timeout_ms: 10000
 
-# server:
-#   host: 127.0.0.1                          # Dashboard host; CLI --host overrides.
-#   port: 0                                  # 0 = ephemeral; CLI --port overrides.
+dashboard:
+  # enabled: true
+  # host: 127.0.0.1
+  # port: 0
+  # refresh_ms: 1000
+  # render_interval_ms: 16
+  # snapshot_publish_ms: 500
+  transcript_buffer_size: 200
 
-quality_gate:
+issue_gate:
   enabled: false
-  provider: anthropic                        # anthropic | openai
+  provider: anthropic
   model: claude-haiku-4-5-20251001
-  pass_threshold: 6                          # 1-10; scores >= this dispatch.
-  clarification_floor: 4                     # 1-(pass_threshold-1); scores in band ask for clarification.
+  pass_threshold: 6
+  clarification_floor: 4
   max_clarification_rounds: 2
-  # min_score: 6                             # Legacy alias used only when pass_threshold is unset.
-  on_error: pass                             # pass dispatches on scorer failure; skip retries later.
-
-learnings:
-  enabled: false                             # Requires pr_review.mode: polling.
-  provider: anthropic                        # anthropic | openai
-  model: claude-haiku-4-5-20251001
-  max_total_per_repo: 500
-  max_per_run: 3                             # 0-3 inclusive.
+  on_error: pass
 
 watchdog:
   enabled: true
   tick_interval_ms: 60000
   no_progress_threshold_ms: 600000
 
-observability:
-  # dashboard_enabled: true                  # Start the local dashboard unless disabled.
-  # refresh_ms: 1000                         # Dashboard polling interval.
-  # render_interval_ms: 16                   # Transcript rendering throttle.
-  transcript_buffer_size: 200
-
-# dependencies:
-#   allow_registries: []                     # Extra package registries trusted by the dependency audit.
-#   allow_git_sources: []                    # Extra git dependency sources trusted by the dependency audit.
-#   allow_path_sources: []                   # Extra local path dependency sources trusted by the dependency audit.
+# dependency_audit:
+#   allow_registries: []
+#   allow_git_sources: []
+#   allow_path_sources: []
 
 notifications:
   enabled: true
-  # redact_titles: false                     # Hide issue and PR titles in outgoing notifications.
+  # redact_titles: false
   channels:
     - kind: slack
       webhook_url: $SLACK_WEBHOOK_URL
-      # Supported events: pr_opened, awaiting_review, run_failed, run_stuck,
-      # issue_completed, budget_exceeded, dependency_pending_approval,
-      # reviewer_commented, rework_pushed, ci_failed, ci_escalated.
       events: [pr_opened, awaiting_review, run_failed, budget_exceeded]
     # - kind: webhook
     #   url: $NOTIFY_WEBHOOK_URL
-    #   allow_private: false                 # Set true only for trusted private/internal webhook hosts.
+    #   allow_private: false
     #   events: [run_failed, ci_failed]
-    #   headers:
-    #     Authorization: $NOTIFY_AUTH_HEADER

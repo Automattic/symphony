@@ -455,13 +455,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     File.write!(workflow_file, "Test prompt\n")
 
     File.write!(symphony_file, """
-    workspace:
+    issues:
+      provider: memory
+    workspaces:
       strategy: "worktree"
       repo: #{inspect(primary_repo)}
       fetch_before_dispatch: false
-    repos:
-      - name: "default"
-        path: #{inspect(primary_repo)}
+    repositories:
+      - key: "default"
         workflow: "WORKFLOW.md"
         default: true
     """)

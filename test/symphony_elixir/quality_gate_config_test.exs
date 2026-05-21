@@ -3,7 +3,7 @@ defmodule SymphonyElixir.QualityGateConfigTest do
 
   alias SymphonyElixir.Config.Schema
 
-  describe "quality_gate config" do
+  describe "issue_gate config" do
     test "defaults to disabled when section is absent" do
       assert {:ok, %Schema{quality_gate: gate}} = Config.settings()
       refute gate.enabled
@@ -36,23 +36,6 @@ defmodule SymphonyElixir.QualityGateConfigTest do
       assert gate.clarification_floor == 4
       assert gate.max_clarification_rounds == 3
       assert gate.on_error == "skip"
-    end
-
-    test "keeps min_score as a backwards-compatible threshold field" do
-      write_workflow_file!(Workflow.workflow_file_path(),
-        quality_gate: %{
-          enabled: true,
-          provider: "anthropic",
-          model: "claude-haiku-4-5-20251001",
-          min_score: 7
-        }
-      )
-
-      assert :ok = Config.validate!()
-      assert {:ok, %Schema{quality_gate: gate}} = Config.settings()
-      assert gate.min_score == 7
-      assert gate.pass_threshold == nil
-      assert gate.clarification_floor == nil
     end
 
     test "uses provider and model defaults when enabled section omits them" do
@@ -109,18 +92,18 @@ defmodule SymphonyElixir.QualityGateConfigTest do
       assert message =~ "skip"
     end
 
-    test "rejects out-of-range min_score" do
+    test "rejects out-of-range pass_threshold" do
       write_workflow_file!(Workflow.workflow_file_path(),
         quality_gate: %{
           enabled: true,
           provider: "anthropic",
           model: "x",
-          min_score: 0
+          pass_threshold: 11
         }
       )
 
       assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-      assert message =~ "min_score"
+      assert message =~ "pass_threshold"
     end
 
     test "rejects clarification_floor at or above the effective pass threshold" do

@@ -882,6 +882,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     embedded_schema do
       field(:mode, :string, default: "tracker")
+      field(:poll_interval_ms, :integer)
       field(:cooldown_minutes, :integer)
       field(:stale_days, :integer)
       field(:ignored_users, {:array, :string}, default: [])
@@ -894,7 +895,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         polling_attrs(attrs),
-        [:mode, :cooldown_minutes, :stale_days, :ignored_users, :auto_reply, :auto_request_review],
+        [:mode, :poll_interval_ms, :cooldown_minutes, :stale_days, :ignored_users, :auto_reply, :auto_request_review],
         empty_values: []
       )
       |> put_polling_defaults()
@@ -913,6 +914,8 @@ defmodule SymphonyElixir.Config.Schema do
           Map.drop(attrs, [
             "cooldown_minutes",
             :cooldown_minutes,
+            "poll_interval_ms",
+            :poll_interval_ms,
             "stale_days",
             :stale_days,
             "ignored_users",
@@ -961,6 +964,7 @@ defmodule SymphonyElixir.Config.Schema do
       if get_field(changeset, :mode) == "polling" do
         changeset
         |> validate_required([:cooldown_minutes, :stale_days])
+        |> validate_number(:poll_interval_ms, greater_than: 0)
         |> validate_number(:cooldown_minutes, greater_than: 0)
         |> validate_number(:stale_days, greater_than: 0)
       else
@@ -1606,7 +1610,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp reject_removed_keys(config) do
     if Map.has_key?(config, "self_review") do
-      {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
+      {:error, {:invalid_workflow_config, "`self_review` has been removed; use `pre_push_review` in symphony.yml instead"}}
     else
       :ok
     end

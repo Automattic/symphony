@@ -90,7 +90,7 @@ defmodule SymphonyElixir.Config.RepoWorkflowSchema do
 
   defp reject_removed_keys(config) do
     if Map.has_key?(config, "self_review") do
-      {:error, {:invalid_repo_workflow_config, "`self_review` has been removed; use `review_agent` in symphony.yml instead"}}
+      {:error, {:invalid_repo_workflow_config, "`self_review` has been removed; use `pre_push_review` in symphony.yml instead"}}
     else
       :ok
     end

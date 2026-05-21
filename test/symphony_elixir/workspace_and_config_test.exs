@@ -355,17 +355,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       """)
 
       File.write!(Workflow.symphony_file_path(), """
-      tracker:
-        kind: memory
-      workspace:
+      issues:
+        provider: memory
+      workspaces:
         root: #{workspace_root}
       agent:
-        kind: codex
+        runtime: codex
         command: codex app-server
-      repos:
-        - name: api
+      repositories:
+        - key: api
           workflow: #{workflow_path}
-          team: Test
+          route:
+            team: Test
           workspace:
             strategy: worktree
             repo: #{primary_repo}
@@ -4288,16 +4289,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     File.write!(Workflow.workflow_file_path(), "Prompt\n")
 
     File.write!(Workflow.symphony_file_path(), """
-    tracker:
-      kind: memory
+    issues:
+      provider: memory
     agent:
-      kind: codex
+      runtime: codex
       command: codex app-server
-    repos:
-      - name: default
-        path: #{Path.dirname(Workflow.workflow_file_path())}
-        workflow: #{Path.basename(Workflow.workflow_file_path())}
-        team: Test
+    repositories:
+      - key: default
+        workflow: #{Workflow.workflow_file_path()}
+        route:
+          team: Test
     """)
 
     reload_workflow_store()

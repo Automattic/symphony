@@ -114,23 +114,22 @@ defmodule SymphonyElixir.TestSupport do
     {:ok, {config, prompt}} = SymphonyElixir.Workflow.parse_document(workflow_content(overrides))
 
     repo_config = Map.take(config, ["hooks", "prompts", "verification"])
-    repos = Map.get(config, "repos")
-    tracker_team = get_in(config, ["tracker", "team"])
+    repos = Map.get(config, "repositories")
+    tracker_team = get_in(config, ["issues", "linear", "scope", "team"])
     default_team = if is_binary(tracker_team) and String.trim(tracker_team) != "", do: tracker_team, else: "Test"
 
     default_repos = [
       %{
-        "name" => "default",
-        "path" => Path.dirname(path),
-        "workflow" => Path.basename(path),
-        "team" => default_team
+        "key" => "default",
+        "workflow" => path,
+        "route" => %{"team" => default_team}
       }
     ]
 
     system_config =
       config
       |> Map.drop(["hooks", "prompts", "verification"])
-      |> Map.put("repos", repos || default_repos)
+      |> Map.put("repositories", repos || default_repos)
 
     {system_config, repo_config, prompt}
   end
@@ -628,76 +627,79 @@ defmodule SymphonyElixir.TestSupport do
     sections =
       [
         "---",
-        "tracker:",
-        "  kind: #{yaml_value(tracker_kind)}",
-        "  endpoint: #{yaml_value(tracker_endpoint)}",
-        "  api_key: #{yaml_value(tracker_api_token)}",
-        "  project_slug: #{yaml_value(tracker_project_slug)}",
-        "  team: #{yaml_value(tracker_team)}",
-        "  labels: #{yaml_value(tracker_labels)}",
-        "  assignee: #{yaml_value(tracker_assignee)}",
-        "  active_states: #{yaml_value(tracker_active_states)}",
-        "  terminal_states: #{yaml_value(tracker_terminal_states)}",
-        "polling:",
-        "  interval_ms: #{yaml_value(poll_interval_ms)}",
+        issues_yaml(%{
+          kind: tracker_kind,
+          endpoint: tracker_endpoint,
+          api_token: tracker_api_token,
+          project_slug: tracker_project_slug,
+          team: tracker_team,
+          labels: tracker_labels,
+          assignee: tracker_assignee,
+          active_states: tracker_active_states,
+          terminal_states: tracker_terminal_states,
+          interval_ms: poll_interval_ms
+        }),
         watchdog_yaml(watchdog),
-        "workspace:",
-        "  root: #{yaml_value(workspace_root)}",
-        "  strategy: #{yaml_value(workspace_strategy)}",
-        "  repo: #{yaml_value(workspace_repo)}",
-        "  fetch_before_dispatch: #{yaml_value(workspace_fetch_before_dispatch)}",
-        workspace_attachments && "  attachments: #{yaml_value(workspace_attachments)}",
-        workspace_sandbox && "  sandbox: #{yaml_value(workspace_sandbox)}",
-        workspace_lifecycle && "  lifecycle: #{yaml_value(workspace_lifecycle)}",
+        workspaces_yaml(
+          workspace_root,
+          workspace_strategy,
+          workspace_repo,
+          workspace_fetch_before_dispatch,
+          workspace_attachments,
+          workspace_lifecycle
+        ),
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
         github && "github: #{yaml_value(github)}",
-        "agent:",
-        "  kind: #{yaml_value(agent_kind)}",
-        "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
-        "  max_turns: #{yaml_value(max_turns)}",
-        "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
-        "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
-        "  max_tokens_per_issue: #{yaml_value(max_tokens_per_issue)}",
-        "  max_tokens_per_day: #{yaml_value(max_tokens_per_day)}",
-        "  command: #{yaml_value(agent_command)}",
-        "  approval_policy: #{yaml_value(agent_approval_policy)}",
-        "  include_project_guides: #{yaml_value(agent_include_project_guides)}",
-        "  project_guide_files: #{yaml_value(agent_project_guide_files)}",
-        "  thread_sandbox: #{yaml_value(agent_thread_sandbox)}",
-        "  turn_sandbox_policy: #{yaml_value(agent_turn_sandbox_policy)}",
-        kv("mcp", Keyword.get(config, :agent_mcp)),
-        agent_network_access && "  network_access: #{yaml_value(agent_network_access)}",
-        agent_sandbox_runtime && "  sandbox_runtime: #{yaml_value(agent_sandbox_runtime)}",
-        "  turn_timeout_ms: #{yaml_value(agent_turn_timeout_ms)}",
-        "  read_timeout_ms: #{yaml_value(agent_read_timeout_ms)}",
-        "  stall_timeout_ms: #{yaml_value(agent_stall_timeout_ms)}",
-        "  command_timeout_ms: #{yaml_value(agent_command_timeout_ms)}",
+        agent_yaml(%{
+          kind: agent_kind,
+          command: agent_command,
+          max_concurrent_agents: max_concurrent_agents,
+          max_concurrent_agents_by_state: max_concurrent_agents_by_state,
+          max_turns: max_turns,
+          max_retry_backoff_ms: max_retry_backoff_ms,
+          max_tokens_per_issue: max_tokens_per_issue,
+          max_tokens_per_day: max_tokens_per_day,
+          turn_timeout_ms: agent_turn_timeout_ms,
+          read_timeout_ms: agent_read_timeout_ms,
+          stall_timeout_ms: agent_stall_timeout_ms,
+          command_timeout_ms: agent_command_timeout_ms,
+          include_project_guides: agent_include_project_guides,
+          project_guide_files: agent_project_guide_files,
+          approval_policy: agent_approval_policy,
+          thread_sandbox: agent_thread_sandbox,
+          turn_sandbox_policy: agent_turn_sandbox_policy,
+          workspace_sandbox: workspace_sandbox,
+          network_access: agent_network_access,
+          sandbox_runtime: agent_sandbox_runtime,
+          mcp: Keyword.get(config, :agent_mcp)
+        }),
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         prompts_yaml(prompts),
-        observability_yaml(
+        dashboard_yaml(
           observability_enabled,
           observability_refresh_ms,
           observability_render_interval_ms,
           observability_snapshot_publish_ms,
-          observability_transcript_buffer_size
+          observability_transcript_buffer_size,
+          server_port,
+          server_host
         ),
-        pr_review_yaml(
+        pull_requests_yaml(
           pr_review_mode,
           pr_review_cooldown_minutes,
           pr_review_stale_days,
           pr_review_ignored_users,
           pr_review_auto_reply,
-          pr_review_auto_request_review
+          pr_review_auto_request_review,
+          ci,
+          learnings
         ),
-        ci_yaml(ci),
         verification_yaml(verification),
-        server_yaml(server_port, server_host),
         quality_gate_yaml(quality_gate),
-        learnings_yaml(learnings),
         review_agent_yaml(review_agent),
-        dependencies && "dependencies: #{yaml_value(dependencies)}",
+        dependencies && "dependency_audit: #{yaml_value(dependencies)}",
         notifications_yaml(notifications),
-        repos && "repos: #{yaml_value(repos)}",
+        repos && "repositories: #{yaml_value(normalize_test_repositories(repos))}",
         "---",
         prompt
       ]
@@ -749,19 +751,128 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
+  defp issues_yaml(config) do
+    [
+      "issues:",
+      "  provider: #{yaml_value(config.kind)}",
+      "  poll_interval_ms: #{yaml_value(config.interval_ms)}",
+      "  linear:",
+      "    endpoint: #{yaml_value(config.endpoint)}",
+      "    api_key: #{yaml_value(config.api_token)}",
+      "    assignee: #{yaml_value(config.assignee)}",
+      "    scope:",
+      "      project_slug: #{yaml_value(config.project_slug)}",
+      "      team: #{yaml_value(config.team)}",
+      "      labels: #{yaml_value(config.labels)}",
+      "  states:",
+      "    active: #{yaml_value(config.active_states)}",
+      "    terminal: #{yaml_value(config.terminal_states)}"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp workspaces_yaml(root, strategy, repo, fetch_before_dispatch, attachments, lifecycle) do
+    [
+      "workspaces:",
+      "  root: #{yaml_value(root)}",
+      "  strategy: #{yaml_value(strategy)}",
+      "  repo: #{yaml_value(repo)}",
+      "  fetch_before_dispatch: #{yaml_value(fetch_before_dispatch)}",
+      attachments && "  attachments: #{yaml_value(attachments)}",
+      lifecycle && "  cleanup: #{yaml_value(normalize_workspace_cleanup(lifecycle))}"
+    ]
+    |> Enum.reject(&(&1 in [nil, false]))
+    |> Enum.join("\n")
+  end
+
+  defp normalize_workspace_cleanup(lifecycle) do
+    lifecycle = map_from(lifecycle)
+
+    %{}
+    |> maybe_put(:enabled, lifecycle_value(lifecycle, :age_gc_enabled, :enabled))
+    |> maybe_put(:max_age_days, Map.get(lifecycle, :max_age_days))
+    |> maybe_put(:interval_ms, lifecycle_value(lifecycle, :gc_interval_ms, :interval_ms))
+    |> maybe_put(:min_free_bytes, Map.get(lifecycle, :min_free_bytes))
+    |> maybe_put(:orphan_action, Map.get(lifecycle, :orphan_action))
+    |> maybe_put(:trash_dir, Map.get(lifecycle, :trash_dir))
+  end
+
+  defp lifecycle_value(lifecycle, primary_key, fallback_key) do
+    cond do
+      Map.has_key?(lifecycle, primary_key) -> Map.get(lifecycle, primary_key)
+      Map.has_key?(lifecycle, fallback_key) -> Map.get(lifecycle, fallback_key)
+      true -> nil
+    end
+  end
+
   defp worker_yaml(ssh_hosts, max_concurrent_agents_per_host)
        when ssh_hosts in [nil, []] and is_nil(max_concurrent_agents_per_host),
        do: nil
 
   defp worker_yaml(ssh_hosts, max_concurrent_agents_per_host) do
     [
-      "worker:",
+      "workers:",
       ssh_hosts not in [nil, []] && "  ssh_hosts: #{yaml_value(ssh_hosts)}",
       !is_nil(max_concurrent_agents_per_host) &&
         "  max_concurrent_agents_per_host: #{yaml_value(max_concurrent_agents_per_host)}"
     ]
     |> Enum.reject(&(&1 in [nil, false]))
     |> Enum.join("\n")
+  end
+
+  defp agent_yaml(config) do
+    filesystem = normalize_agent_filesystem(config.thread_sandbox, config.turn_sandbox_policy, config.workspace_sandbox)
+    outer_sandbox = normalize_outer_sandbox(config.sandbox_runtime)
+
+    [
+      "agent:",
+      "  runtime: #{yaml_value(config.kind)}",
+      "  command: #{yaml_value(config.command)}",
+      "  concurrency:",
+      "    max_total: #{yaml_value(config.max_concurrent_agents)}",
+      "    max_by_issue_state: #{yaml_value(config.max_concurrent_agents_by_state)}",
+      "  limits:",
+      "    max_turns: #{yaml_value(config.max_turns)}",
+      "    retry_backoff_max_ms: #{yaml_value(config.max_retry_backoff_ms)}",
+      "    tokens_per_issue: #{yaml_value(config.max_tokens_per_issue)}",
+      "    tokens_per_day: #{yaml_value(config.max_tokens_per_day)}",
+      "  timeouts:",
+      "    turn_ms: #{yaml_value(config.turn_timeout_ms)}",
+      "    read_ms: #{yaml_value(config.read_timeout_ms)}",
+      "    stall_ms: #{yaml_value(config.stall_timeout_ms)}",
+      "    command_ms: #{yaml_value(config.command_timeout_ms)}",
+      "  prompts:",
+      "    include_project_guides: #{yaml_value(config.include_project_guides)}",
+      "    project_guide_files: #{yaml_value(config.project_guide_files)}",
+      "  permissions:",
+      "    approval_policy: #{yaml_value(config.approval_policy)}",
+      "    filesystem: #{yaml_value(filesystem)}",
+      config.network_access && "    network: #{yaml_value(config.network_access)}",
+      outer_sandbox && "    outer_sandbox: #{yaml_value(outer_sandbox)}",
+      config.mcp && "  mcp: #{yaml_value(config.mcp)}"
+    ]
+    |> Enum.reject(&(&1 in [nil, false]))
+    |> Enum.join("\n")
+  end
+
+  defp normalize_agent_filesystem(thread_sandbox, turn_sandbox_policy, workspace_sandbox) do
+    workspace_sandbox = if is_nil(workspace_sandbox), do: %{}, else: map_from(workspace_sandbox)
+
+    %{}
+    |> maybe_put(:sandbox, thread_sandbox)
+    |> maybe_put(:turn_policy, turn_sandbox_policy)
+    |> maybe_put(:allow_read_paths, Map.get(workspace_sandbox, :allow_read_paths))
+  end
+
+  defp normalize_outer_sandbox(nil), do: nil
+
+  defp normalize_outer_sandbox(sandbox_runtime) do
+    sandbox_runtime = map_from(sandbox_runtime)
+
+    %{}
+    |> maybe_put(:runtime, Map.get(sandbox_runtime, :kind) || Map.get(sandbox_runtime, :runtime))
+    |> maybe_put(:command, Map.get(sandbox_runtime, :command))
+    |> maybe_put(:enable_weaker_network_isolation, Map.get(sandbox_runtime, :enable_weaker_network_isolation))
   end
 
   defp watchdog_yaml(nil), do: nil
@@ -778,51 +889,96 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
-  defp observability_yaml(enabled, refresh_ms, render_interval_ms, snapshot_publish_ms, transcript_buffer_size) do
+  defp dashboard_yaml(enabled, refresh_ms, render_interval_ms, snapshot_publish_ms, transcript_buffer_size, port, host) do
     [
-      "observability:",
-      "  dashboard_enabled: #{yaml_value(enabled)}",
+      "dashboard:",
+      "  enabled: #{yaml_value(enabled)}",
       "  refresh_ms: #{yaml_value(refresh_ms)}",
       "  render_interval_ms: #{yaml_value(render_interval_ms)}",
       "  snapshot_publish_ms: #{yaml_value(snapshot_publish_ms)}",
-      "  transcript_buffer_size: #{yaml_value(transcript_buffer_size)}"
+      "  transcript_buffer_size: #{yaml_value(transcript_buffer_size)}",
+      port && "  port: #{yaml_value(port)}",
+      host && "  host: #{yaml_value(host)}"
     ]
+    |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 
-  defp pr_review_yaml(mode, cooldown_minutes, stale_days, ignored_users, auto_reply, auto_request_review) do
+  defp pull_requests_yaml(mode, cooldown_minutes, stale_days, ignored_users, auto_reply, auto_request_review, ci, learnings) do
+    ci = if is_nil(ci), do: %{}, else: map_from(ci)
+    enabled = pull_requests_enabled_value(mode)
+
     [
-      "pr_review:",
-      "  mode: #{yaml_value(mode)}",
-      !is_nil(cooldown_minutes) && "  cooldown_minutes: #{yaml_value(cooldown_minutes)}",
-      !is_nil(stale_days) && "  stale_days: #{yaml_value(stale_days)}",
-      !is_nil(ignored_users) && "  ignored_users: #{yaml_value(ignored_users)}",
-      !is_nil(auto_reply) && "  auto_reply: #{yaml_value(auto_reply)}",
-      !is_nil(auto_request_review) && "  auto_request_review: #{yaml_value(auto_request_review)}"
+      "pull_requests:",
+      "  enabled: #{yaml_value(enabled)}",
+      "  poll_interval_ms: #{yaml_value(Map.get(ci, :poll_interval_ms))}",
+      "  review_comments:",
+      "    rework_delay_minutes: #{yaml_value(cooldown_minutes)}",
+      "    stale_after_days: #{yaml_value(stale_days)}",
+      "    ignored_reviewers: #{yaml_value(ignored_users)}",
+      "    reply_after_addressing: #{yaml_value(auto_reply)}",
+      "    request_review_after_push: #{yaml_value(auto_request_review)}",
+      checks_yaml(ci),
+      learnings && "  learnings: #{yaml_value(learnings)}"
     ]
     |> Enum.reject(&(&1 in [nil, false]))
     |> Enum.join("\n")
   end
 
-  defp ci_yaml(nil), do: nil
+  defp pull_requests_enabled_value("polling"), do: true
+  defp pull_requests_enabled_value("tracker"), do: false
+  defp pull_requests_enabled_value(nil), do: nil
+  defp pull_requests_enabled_value(value), do: value
 
-  defp ci_yaml(opts) when is_list(opts) or is_map(opts) do
-    config = map_from(opts)
+  defp checks_yaml(ci) when map_size(ci) == 0, do: nil
 
-    fields =
-      [
-        kv("enabled", Map.get(config, :enabled)),
-        kv("poll_interval_ms", Map.get(config, :poll_interval_ms)),
-        kv("log_excerpt_lines", Map.get(config, :log_excerpt_lines)),
-        kv("flaky_retry", Map.get(config, :flaky_retry)),
-        kv("max_retries", Map.get(config, :max_retries)),
-        kv("escalation_state", Map.get(config, :escalation_state))
-      ]
-      |> Enum.reject(&is_nil/1)
+  defp checks_yaml(ci) do
+    [
+      "  checks:",
+      "    enabled: #{yaml_value(Map.get(ci, :enabled))}",
+      "    log_excerpt_lines: #{yaml_value(Map.get(ci, :log_excerpt_lines))}",
+      "    retry_failed_once: #{yaml_value(Map.get(ci, :flaky_retry))}",
+      "    max_fix_attempts: #{yaml_value(Map.get(ci, :max_retries))}",
+      "    escalate_to_state: #{yaml_value(Map.get(ci, :escalation_state))}"
+    ]
+    |> Enum.join("\n")
+  end
 
-    case fields do
-      [] -> nil
-      lines -> Enum.join(["ci:" | lines], "\n")
+  defp normalize_test_repositories(repos) do
+    Enum.map(repos, &normalize_test_repository/1)
+  end
+
+  defp normalize_test_repository(repo) when is_list(repo) or is_map(repo) do
+    repo = map_from(repo)
+    route = normalize_test_repository_route(repo)
+    workspace = Map.get(repo, :workspace) || Map.get(repo, "workspace")
+
+    %{}
+    |> maybe_put(:key, Map.get(repo, :key) || Map.get(repo, "key") || Map.get(repo, :name) || Map.get(repo, "name"))
+    |> maybe_put(:workflow, normalize_test_repository_workflow(repo))
+    |> maybe_put(:base_branch, Map.get(repo, :base_branch) || Map.get(repo, "base_branch"))
+    |> maybe_put(:default, Map.get(repo, :default) || Map.get(repo, "default"))
+    |> maybe_put(:route, route)
+    |> maybe_put(:workspace, workspace)
+  end
+
+  defp normalize_test_repository_route(repo) do
+    %{}
+    |> maybe_put(:team, Map.get(repo, :team) || Map.get(repo, "team"))
+    |> maybe_put(:projects, Map.get(repo, :projects) || Map.get(repo, "projects"))
+    |> maybe_put(:labels, Map.get(repo, :labels) || Map.get(repo, "labels"))
+    |> maybe_put(:assignee, Map.get(repo, :assignee) || Map.get(repo, "assignee"))
+  end
+
+  defp normalize_test_repository_workflow(repo) do
+    workflow = Map.get(repo, :workflow) || Map.get(repo, "workflow")
+    path = Map.get(repo, :path) || Map.get(repo, "path")
+
+    cond do
+      is_nil(workflow) -> nil
+      is_nil(path) -> workflow
+      Path.type(workflow) == :absolute -> workflow
+      true -> Path.join(path, workflow)
     end
   end
 
@@ -864,43 +1020,9 @@ defmodule SymphonyElixir.TestSupport do
     end
   end
 
-  defp server_yaml(nil, nil), do: nil
-
-  defp server_yaml(port, host) do
-    [
-      "server:",
-      port && "  port: #{yaml_value(port)}",
-      host && "  host: #{yaml_value(host)}"
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join("\n")
-  end
-
   defp quality_gate_yaml(nil), do: nil
 
   defp quality_gate_yaml(opts) when is_list(opts) or is_map(opts) do
-    fields =
-      [
-        kv("enabled", Map.get(map_from(opts), :enabled)),
-        kv("provider", Map.get(map_from(opts), :provider)),
-        kv("model", Map.get(map_from(opts), :model)),
-        kv("min_score", Map.get(map_from(opts), :min_score)),
-        kv("pass_threshold", Map.get(map_from(opts), :pass_threshold)),
-        kv("clarification_floor", Map.get(map_from(opts), :clarification_floor)),
-        kv("max_clarification_rounds", Map.get(map_from(opts), :max_clarification_rounds)),
-        kv("on_error", Map.get(map_from(opts), :on_error))
-      ]
-      |> Enum.reject(&is_nil/1)
-
-    case fields do
-      [] -> nil
-      lines -> Enum.join(["quality_gate:" | lines], "\n")
-    end
-  end
-
-  defp learnings_yaml(nil), do: nil
-
-  defp learnings_yaml(opts) when is_list(opts) or is_map(opts) do
     config = map_from(opts)
 
     fields =
@@ -908,14 +1030,16 @@ defmodule SymphonyElixir.TestSupport do
         kv("enabled", Map.get(config, :enabled)),
         kv("provider", Map.get(config, :provider)),
         kv("model", Map.get(config, :model)),
-        kv("max_total_per_repo", Map.get(config, :max_total_per_repo)),
-        kv("max_per_run", Map.get(config, :max_per_run))
+        kv("pass_threshold", Map.get(config, :pass_threshold)),
+        kv("clarification_floor", Map.get(config, :clarification_floor)),
+        kv("max_clarification_rounds", Map.get(config, :max_clarification_rounds)),
+        kv("on_error", Map.get(config, :on_error))
       ]
       |> Enum.reject(&is_nil/1)
 
     case fields do
       [] -> nil
-      lines -> Enum.join(["learnings:" | lines], "\n")
+      lines -> Enum.join(["issue_gate:" | lines], "\n")
     end
   end
 
@@ -927,7 +1051,7 @@ defmodule SymphonyElixir.TestSupport do
     fields =
       [
         kv("enabled", Map.get(config, :enabled)),
-        kv("kind", Map.get(config, :kind)),
+        kv("runtime", Map.get(config, :kind)),
         kv("command", Map.get(config, :command)),
         kv("max_iterations", Map.get(config, :max_iterations))
       ]
@@ -935,7 +1059,7 @@ defmodule SymphonyElixir.TestSupport do
 
     case fields do
       [] -> nil
-      lines -> Enum.join(["review_agent:" | lines], "\n")
+      lines -> Enum.join(["pre_push_review:" | lines], "\n")
     end
   end
 
@@ -1012,6 +1136,10 @@ defmodule SymphonyElixir.TestSupport do
 
   defp map_from(opts) when is_list(opts), do: Enum.into(opts, %{})
   defp map_from(opts) when is_map(opts), do: opts
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, %{} = value) when map_size(value) == 0, do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp kv(_name, nil), do: nil
   defp kv(name, value), do: "  #{name}: #{yaml_value(value)}"

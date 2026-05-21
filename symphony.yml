@@ -107,18 +107,20 @@ agent:
 
   # Timeouts -------------------------------------------------------------------
   # turn_timeout_ms: 3600000                 # Maximum time for one agent turn.
-  # read_timeout_ms: 5000                    # App-server response read timeout.
+  # read_timeout_ms: 30000                    # App-server response read timeout.
   # stall_timeout_ms: 300000                 # No-progress timeout before retry handling.
   # command_timeout_ms: 600000               # Maximum time for one shell command; 0 disables this guard.
 
 review_agent:
   enabled: true
+  # kind: codex
+  # command: codex app-server
   kind: claude
   command: claude --model claude-opus-4-7 --dangerously-skip-permissions
   max_iterations: 1
 
 polling:
-  interval_ms: 30000
+  interval_ms: 15000
 
 pr_review:
   mode: polling                              # tracker (default) | polling

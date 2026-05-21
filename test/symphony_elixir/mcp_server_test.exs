@@ -103,6 +103,10 @@ defmodule SymphonyElixir.McpServerTest do
   end
 
   test "sessions started after init create managed socket directories" do
+    preserve_socket_root_overrides()
+    Application.delete_env(:symphony_elixir, :mcp_socket_root)
+    System.delete_env("SYMPHONY_MCP_SOCKET_ROOT")
+
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
@@ -149,23 +153,18 @@ defmodule SymphonyElixir.McpServerTest do
   end
 
   test "sessions fall back to :mcp_socket_root application env when no opt is supplied" do
+    preserve_socket_root_overrides()
+
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
     custom_root = "/tmp/sym-app-#{System.unique_integer([:positive])}"
     File.mkdir_p!(custom_root)
 
-    prior = Application.get_env(:symphony_elixir, :mcp_socket_root)
+    System.delete_env("SYMPHONY_MCP_SOCKET_ROOT")
     Application.put_env(:symphony_elixir, :mcp_socket_root, custom_root)
 
-    on_exit(fn ->
-      case prior do
-        nil -> Application.delete_env(:symphony_elixir, :mcp_socket_root)
-        value -> Application.put_env(:symphony_elixir, :mcp_socket_root, value)
-      end
-
-      File.rm_rf(custom_root)
-    end)
+    on_exit(fn -> File.rm_rf(custom_root) end)
 
     {:ok, session} =
       McpServer.start_session(%{workspace: System.tmp_dir!()},
@@ -332,6 +331,76 @@ defmodule SymphonyElixir.McpServerTest do
       close_socket(socket)
       McpServer.stop_session(session, server: server)
     end
+  end
+
+  test "managed Unix socket eperm falls back to token-authenticated loopback TCP" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    test_pid = self()
+
+    unix_socket_open_fun = fn path ->
+      send(test_pid, {:unix_socket_attempted, path})
+      {:error, {:mcp_socket_open_failed, :eperm}}
+    end
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        shim_path: "/tmp/shim",
+        unix_socket_open_fun: unix_socket_open_fun
+      )
+
+    assert_receive {:unix_socket_attempted, attempted_path}
+
+    assert session.transport == :tcp
+    assert session.socket_path == nil
+    assert session.socket_dir == nil
+    assert session.tcp_host == "127.0.0.1"
+    assert is_integer(session.tcp_port)
+    refute File.exists?(Path.dirname(attempted_path))
+
+    socket = connect_tcp!(session.tcp_port, session.token)
+
+    try do
+      response = request!(socket, 1, "tools/list")
+      tool_names = response["result"]["tools"] |> Enum.map(& &1["name"])
+
+      assert "linear_get_current_issue" in tool_names
+      assert "github_get_pr_checks" in tool_names
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "explicit Unix socket eperm is reported without TCP fallback" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    unix_socket_open_fun = fn _path -> {:error, {:mcp_socket_open_failed, :eperm}} end
+
+    assert {:error, {:mcp_socket_open_failed, :eperm}} =
+             McpServer.start_session(%{workspace: System.tmp_dir!()},
+               server: server,
+               socket_path: socket_path(),
+               shim_path: "/tmp/shim",
+               unix_socket_open_fun: unix_socket_open_fun
+             )
+  end
+
+  test "managed Unix socket bind errors other than :eperm do not silently fall back to TCP" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    unix_socket_open_fun = fn _path -> {:error, {:mcp_socket_open_failed, :eaddrinuse}} end
+
+    assert {:error, {:mcp_socket_open_failed, :eaddrinuse}} =
+             McpServer.start_session(%{workspace: System.tmp_dir!()},
+               server: server,
+               shim_path: "/tmp/shim",
+               unix_socket_open_fun: unix_socket_open_fun
+             )
   end
 
   test "read-only tool scope hides and rejects Linear and GitHub write tools" do
@@ -954,6 +1023,23 @@ defmodule SymphonyElixir.McpServerTest do
 
   defp socket_path do
     Path.join(System.tmp_dir!(), "symphony-mcp-test-#{System.unique_integer([:positive])}.sock")
+  end
+
+  defp preserve_socket_root_overrides do
+    prior_app = Application.get_env(:symphony_elixir, :mcp_socket_root)
+    prior_env = System.get_env("SYMPHONY_MCP_SOCKET_ROOT")
+
+    on_exit(fn ->
+      case prior_app do
+        nil -> Application.delete_env(:symphony_elixir, :mcp_socket_root)
+        value -> Application.put_env(:symphony_elixir, :mcp_socket_root, value)
+      end
+
+      case prior_env do
+        nil -> System.delete_env("SYMPHONY_MCP_SOCKET_ROOT")
+        value -> System.put_env("SYMPHONY_MCP_SOCKET_ROOT", value)
+      end
+    end)
   end
 
   defp connect!(path, token) do

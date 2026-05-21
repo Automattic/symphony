@@ -890,7 +890,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:budget_daily_used, 2)
     end)
 
-    usage = %{input_tokens: 12, cached_input_tokens: 4, output_tokens: 5, total_tokens: 17}
+    usage = %{
+      input_tokens: 18,
+      uncached_input_tokens: 12,
+      cached_input_tokens: 4,
+      cache_creation_input_tokens: 2,
+      output_tokens: 5,
+      total_tokens: 23
+    }
+
     update = AppServer.event_to_update({:turn_completed, usage})
 
     send(pid, {:codex_worker_update, issue_id, update})
@@ -898,23 +906,27 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = get_orchestrator_state(pid)
     running = Map.fetch!(state.running, issue_id)
 
-    assert running.codex_input_tokens == 12
+    assert running.codex_input_tokens == 18
+    assert running.uncached_input_tokens == 12
     assert running.codex_cached_input_tokens == 4
+    assert running.cache_creation_input_tokens == 2
     assert running.codex_output_tokens == 5
-    assert running.codex_total_tokens == 17
+    assert running.codex_total_tokens == 23
     assert running.last_codex_event == :turn_completed
     assert running.transcript_buffer_size == 1
 
-    assert state.codex_totals.input_tokens == 12
+    assert state.codex_totals.input_tokens == 18
+    assert state.codex_totals.uncached_input_tokens == 12
     assert state.codex_totals.cached_input_tokens == 4
+    assert state.codex_totals.cache_creation_input_tokens == 2
     assert state.codex_totals.output_tokens == 5
-    assert state.codex_totals.total_tokens == 17
-    assert state.budget_daily_used == 19
+    assert state.codex_totals.total_tokens == 23
+    assert state.budget_daily_used == 25
 
     send(pid, {:DOWN, process_ref, :process, self(), :normal})
     completed_state = get_orchestrator_state(pid)
 
-    assert completed_state.completed_run_metadata[issue_id].tokens.total_tokens == 17
+    assert completed_state.completed_run_metadata[issue_id].tokens.total_tokens == 23
   end
 
   test "orchestrator accounts reviewer token usage separately while preserving totals" do
@@ -1001,8 +1013,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert completed_state.completed_run_metadata[issue_id].reviewer_tokens == %{
              input_tokens: 8,
-             cached_input_tokens: 3,
              uncached_input_tokens: 5,
+             cached_input_tokens: 3,
+             cache_creation_input_tokens: 0,
              output_tokens: 5,
              total_tokens: 13
            }
@@ -1089,8 +1102,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                       payload: %{
                         tokens: %{
                           input_tokens: 5,
-                          cached_input_tokens: 2,
                           uncached_input_tokens: 3,
+                          cached_input_tokens: 2,
+                          cache_creation_input_tokens: 0,
                           output_tokens: 3,
                           total_tokens: 8
                         }
@@ -1382,7 +1396,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_input_tokens == 200
+    assert snapshot_entry.uncached_input_tokens == 50
     assert snapshot_entry.codex_cached_input_tokens == 150
+    assert snapshot_entry.cache_creation_input_tokens == 0
     assert snapshot_entry.codex_output_tokens == 100
     assert snapshot_entry.codex_total_tokens == 300
   end
@@ -1459,6 +1475,240 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.codex_input_tokens == 10
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 14
+  end
+
+  test "orchestrator converts legacy last-reported input counters before splitting cached input" do
+    issue_id = "issue-legacy-token-usage"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-223B",
+      title: "Legacy token usage",
+      description: "Convert legacy full-input counters into uncached counters",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-223B"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :LegacyTokenUsageOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 200,
+      codex_cached_input_tokens: 150,
+      codex_output_tokens: 100,
+      codex_total_tokens: 300,
+      codex_last_reported_input_tokens: 200,
+      codex_last_reported_cached_input_tokens: 150,
+      codex_last_reported_output_tokens: 100,
+      codex_last_reported_total_tokens: 300,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "thread/tokenUsage/updated",
+           "params" => %{
+             "tokenUsage" => %{
+               "total" => %{
+                 "input_tokens" => 260,
+                 "cached_input_tokens" => 190,
+                 "output_tokens" => 120,
+                 "total_tokens" => 380
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.uncached_input_tokens == 70
+    assert snapshot_entry.cached_input_tokens == 190
+    assert snapshot_entry.codex_input_tokens == 260
+    assert snapshot_entry.codex_output_tokens == 120
+    assert snapshot_entry.codex_total_tokens == 380
+  end
+
+  test "orchestrator normalizes equivalent codex and claude cache usage into comparable uncached buckets" do
+    codex_issue = %Issue{
+      id: "issue-codex-token-parity",
+      identifier: "MT-CODEX-PARITY",
+      title: "Codex token parity",
+      description: "Compare Codex token semantics",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-CODEX-PARITY"
+    }
+
+    claude_issue = %Issue{
+      id: "issue-claude-token-parity",
+      identifier: "MT-CLAUDE-PARITY",
+      title: "Claude token parity",
+      description: "Compare Claude token semantics",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-CLAUDE-PARITY"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ProviderTokenParityOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+    started_at = DateTime.utc_now()
+
+    running = %{
+      codex_issue.id => running_entry_for_token_test(codex_issue, started_at),
+      claude_issue.id => running_entry_for_token_test(claude_issue, started_at)
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, running)
+      |> Map.put(:claimed, MapSet.union(initial_state.claimed, MapSet.new(Map.keys(running))))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, codex_issue.id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "codex/event/token_count",
+           "params" => %{
+             "msg" => %{
+               "payload" => %{
+                 "info" => %{
+                   "total_token_usage" => %{
+                     "input_tokens" => 12_000,
+                     "cached_input_tokens" => 10_000,
+                     "output_tokens" => 500,
+                     "total_tokens" => 12_500
+                   }
+                 }
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, claude_issue.id,
+       AppServer.event_to_update(
+         {:token_usage,
+          %{
+            input_tokens: 12_400,
+            uncached_input_tokens: 2_000,
+            cached_input_tokens: 10_000,
+            cache_creation_input_tokens: 400,
+            output_tokens: 500,
+            total_tokens: 12_900
+          }}
+       )}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    entries_by_identifier = Map.new(snapshot.running, &{&1.identifier, &1})
+
+    assert entries_by_identifier["MT-CODEX-PARITY"].uncached_input_tokens == 2_000
+    assert entries_by_identifier["MT-CODEX-PARITY"].cached_input_tokens == 10_000
+    assert entries_by_identifier["MT-CODEX-PARITY"].cache_creation_input_tokens == 0
+    assert entries_by_identifier["MT-CODEX-PARITY"].output_tokens == 500
+
+    assert entries_by_identifier["MT-CLAUDE-PARITY"].uncached_input_tokens == 2_000
+    assert entries_by_identifier["MT-CLAUDE-PARITY"].cached_input_tokens == 10_000
+    assert entries_by_identifier["MT-CLAUDE-PARITY"].cache_creation_input_tokens == 400
+    assert entries_by_identifier["MT-CLAUDE-PARITY"].output_tokens == 500
+  end
+
+  test "legacy Claude usage keeps input tokens as uncached when cache buckets are present" do
+    issue_id = "issue-legacy-claude-usage"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-CLAUDE-LEGACY",
+      title: "Legacy Claude usage",
+      description: "Track Claude legacy cache fields",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-CLAUDE-LEGACY"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :LegacyClaudeUsageOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+    started_at = DateTime.utc_now()
+    running_entry = running_entry_for_token_test(issue, started_at)
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       AppServer.event_to_update(
+         {:token_usage,
+          %{
+            input_tokens: 800,
+            cache_read_input_tokens: 9_200,
+            cache_creation_input_tokens: 400,
+            output_tokens: 600,
+            total_tokens: 11_000
+          }}
+       )}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [entry]} = snapshot
+
+    assert entry.uncached_input_tokens == 800
+    assert entry.cached_input_tokens == 9_200
+    assert entry.cache_creation_input_tokens == 400
+    assert entry.output_tokens == 600
   end
 
   test "orchestrator token accounting ignores last_token_usage without cumulative totals" do
@@ -1589,6 +1839,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       identifier: issue.identifier,
       issue: issue,
       session_id: "thread-budget",
+      agent_module: StopSessionAgent,
+      agent_session: %{recipient: self()},
       turn_count: 0,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -1673,13 +1925,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert run_record.tokens == %{
              input_tokens: 7,
-             cached_input_tokens: 0,
              uncached_input_tokens: 7,
+             cached_input_tokens: 0,
+             cache_creation_input_tokens: 0,
              output_tokens: 5,
              total_tokens: 12
            }
 
     refute Process.alive?(worker_pid)
+    assert_receive :agent_stop_session_called
 
     assert_receive {:notification_event,
                     %SymphonyElixir.Notifications.Event{
@@ -2277,6 +2531,75 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert [%{run_id: ^run_id, status: "stopped", error: "agent stopped by operator"}] =
              RunStore.list_runs()
+  end
+
+  test "terminal running issue stops agent session while removing workspace" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-orchestrator-terminal-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root
+    )
+
+    issue = %Issue{
+      id: "issue-terminal-cleanup",
+      identifier: "MT-DONE",
+      title: "Terminal cleanup",
+      description: "Stop session when terminal reconciliation removes workspace",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-DONE"
+    }
+
+    workspace = Path.join([workspace_root, "default", issue.identifier])
+    File.mkdir_p!(workspace)
+
+    orchestrator_name = Module.concat(__MODULE__, :TerminalCleanupOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      terminate_task_supervisor_children()
+
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+
+      File.rm_rf(workspace_root)
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-terminal-cleanup"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        workspace_path: workspace,
+        session_id: "thread-terminal-cleanup",
+        agent_module: StopSessionAgent,
+        agent_session: %{recipient: self()},
+        turn_count: 1
+      })
+
+    put_running_run!(issue, run_id, started_at, %{
+      workspace_path: workspace,
+      session_id: "thread-terminal-cleanup"
+    })
+
+    put_running_entry(pid, issue, running_entry)
+    terminal_issue = %{issue | state: "Done"}
+
+    :sys.replace_state(pid, fn state ->
+      Orchestrator.reconcile_issue_states_for_test([terminal_issue], state)
+    end)
+
+    assert_receive :agent_stop_session_called
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :shutdown}
+
+    assert %{running: []} = GenServer.call(pid, :snapshot)
+    refute File.exists?(workspace)
   end
 
   test "stop_running records stop_session cleanup failures in run history" do
@@ -3630,9 +3953,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     running_entry = %{
       pid: worker_pid,
       ref: make_ref(),
+      repo_key: Config.repo_key!(),
+      run_id: "run-stall",
       identifier: "MT-STALL",
       issue: %Issue{id: issue_id, identifier: "MT-STALL", state: "In Progress"},
       session_id: "thread-stall-turn-stall",
+      agent_module: StopSessionAgent,
+      agent_session: %{recipient: self()},
       last_codex_message: nil,
       last_codex_timestamp: nil,
       last_codex_event: nil,
@@ -3652,6 +3979,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = get_orchestrator_state(pid)
 
     refute Process.alive?(worker_pid)
+    assert_receive :agent_stop_session_called
     refute Map.has_key?(state.running, issue_id)
 
     assert %{
@@ -3749,7 +4077,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          retrying: [],
          awaiting_clarification: [],
          skipped: [],
-         codex_totals: %{input_tokens: 120, output_tokens: 30, total_tokens: 150, seconds_running: 9},
+         codex_totals: %{
+           input_tokens: 120,
+           cached_input_tokens: 100,
+           output_tokens: 30,
+           total_tokens: 150,
+           seconds_running: 9
+         },
          rate_limits: nil,
          polling: %{next_poll_in_ms: 5_000}
        }, System.monotonic_time(:millisecond) - 5_000, System.system_time(:millisecond) - 5_000}
@@ -3784,7 +4118,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
         assert plain =~ "Snapshot: stale 0m 5s (1 missed refresh, orchestrator mailbox "
         assert plain =~ "No active agents"
-        assert plain =~ "Tokens: in 120 | out 30 | total 150"
+        assert plain =~ "Tokens: new 20 | cached 100 | created 0 | out 30"
         refute plain =~ "Orchestrator snapshot unavailable"
 
         StatusDashboard.notify_update(dashboard_name)
@@ -4569,7 +4903,30 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     assert StatusDashboard.humanize_codex_message(wrapped) =~ "turn completed"
-    assert StatusDashboard.humanize_codex_message(wrapped) =~ "in 10"
+    assert StatusDashboard.humanize_codex_message(wrapped) =~ "new 10"
+  end
+
+  test "status dashboard formats legacy Claude input tokens as new tokens with cache buckets" do
+    message = %{
+      event: :notification,
+      message: %{
+        "method" => "thread/tokenUsage/updated",
+        "params" => %{
+          "tokenUsage" => %{
+            "total" => %{
+              "input_tokens" => 800,
+              "cache_read_input_tokens" => 9_200,
+              "cache_creation_input_tokens" => 400,
+              "output_tokens" => 600,
+              "total_tokens" => 11_000
+            }
+          }
+        }
+      }
+    }
+
+    assert StatusDashboard.humanize_codex_message(message) ==
+             "thread token usage updated (new 800, cached 9,200, created 400, out 600, total 11,000)"
   end
 
   test "status dashboard formats recovered malformed command completions" do
@@ -4939,6 +5296,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   defp wait_for_run_record(predicate, timeout_ms \\ 500) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_run_record(predicate, deadline_ms)
+  end
+
+  defp running_entry_for_token_test(%Issue{} = issue, %DateTime{} = started_at) do
+    %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
   end
 
   defp do_wait_for_run_record(predicate, deadline_ms) do

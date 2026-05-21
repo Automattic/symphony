@@ -125,8 +125,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
       assert {:turn_completed, result} = AppServer.parse_event(line)
       assert result.input_tokens == 100
+      assert result.uncached_input_tokens == 100
       assert result.output_tokens == 50
       assert result.cached_input_tokens == 0
+      assert result.cache_creation_input_tokens == 0
       assert result.total_tokens == 150
     end
 
@@ -270,12 +272,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
     test "parses assistant event with cache_read_input_tokens" do
       line =
-        ~s({"type":"assistant","message":{"id":"msg-cache","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":50}},"session_id":"sess-cache"})
+        ~s({"type":"assistant","message":{"id":"msg-cache","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":50,"cache_creation_input_tokens":4}},"session_id":"sess-cache"})
 
       assert {:multi,
               [
                 {:agent_text, "hi"},
-                {:token_usage_delta, %{input_tokens: 3, output_tokens: 2, cached_input_tokens: 50}}
+                {:token_usage_delta,
+                 %{
+                   input_tokens: 57,
+                   uncached_input_tokens: 3,
+                   output_tokens: 2,
+                   cached_input_tokens: 50,
+                   cache_creation_input_tokens: 4
+                 }}
               ]} = AppServer.parse_event(line)
     end
 

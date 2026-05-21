@@ -302,11 +302,11 @@ agent:
   disable.
 - The per-issue cap stops only the over-budget issue without retrying; the daily cap pauses new
   dispatch for the day while already-running agents continue.
-- Codex app-server reporting feeds the structured event path most completely; **Claude is
-  best-effort** until its usage events are normalized. Symphony warns if a budget is active with
-  a command that may not report token usage.
-- The dashboard surfaces daily usage, daily remaining headroom, and per-issue usage. Cached vs
-  fresh input tokens are distinguished when the agent reports them.
+- Codex app-server and Claude stream-json usage events are normalized into uncached input, cached
+  input, cache-creation input, and output buckets. Symphony warns if a budget is active with a
+  command that may not report token usage.
+- The dashboard surfaces daily usage, daily remaining headroom, and per-issue usage. Cached,
+  cache-created, fresh input, and output tokens are shown separately when reported.
 
 **Project guides:**
 
@@ -360,6 +360,9 @@ An optional outer-sandbox wrapper using `@anthropic-ai/sandbox-runtime`.
 - With SRT enabled, Symphony exposes its implicit local MCP server on a random `127.0.0.1`
   loopback TCP port instead of a Unix socket, because SRT's macOS profile blocks sandboxed Unix
   socket connects. The MCP server still requires the per-session token before accepting messages.
+- Outside SRT, Symphony prefers a managed Unix socket. If the OS denies that managed socket bind
+  with `EPERM`, Symphony falls back to a random `127.0.0.1` loopback TCP port. Explicit socket
+  paths remain strict and report the bind error.
 - Symphony emits `enableWeakerNestedSandbox: true` for Linux/Docker compatibility.
   `enable_weaker_network_isolation` maps directly to the same SRT setting; keep it `false`
   unless required.
@@ -420,9 +423,17 @@ A set var substitutes the value; an empty var drops the entry; a missing var kee
   `linear_*` tools, preventing large echoed `userMessage` events from wedging the app-server
   stdout stream. Symphony also injects Codex-only guidance to run noisy validation commands
   through a log file and print only the exit status plus a short tail, reducing the chance that
-  large `aggregatedOutput` events hit Codex app-server stdio write limits. During initialize,
-  Symphony also opts out of Codex `turn/diff/updated` notifications, whose aggregated diffs can
-  become too large for the stdio stream on broad changes.
+  large `aggregatedOutput` events hit Codex app-server stdio write limits. Symphony also injects
+  `tool_output_token_limit=4096` into Codex launches so completed command lifecycle payloads stay
+  below the app-server's practical stdio frame size. During initialize, Symphony opts out of Codex
+  `turn/diff/updated`, `item/commandExecution/outputDelta`, and `item/fileChange/outputDelta`
+  notifications, whose aggregated diffs and streaming output can become too large for the stdio
+  stream on broad changes. Executor sessions additionally opt out of `item/agentMessage/delta`;
+  read-only reviewer sessions keep agent-message deltas enabled so reviewer JSON can still be
+  reconstructed from streamed text. Terminal `item/completed` notifications remain enabled for
+  command tracking, and Symphony compacts known noisy string fields before forwarding them to the
+  transcript/audit pipeline. Linear comment create/update dynamic tools return compact
+  acknowledgements rather than echoing full comment bodies back into Codex.
 - **Codex remote workers:** `inherit: allowlist` and `inherit: all` are rejected (Symphony only
   reads the orchestrator's host config). Declare servers explicitly under `servers`.
 - **Claude:** `inherit: allowlist` reads only the top-level `mcpServers` map in
@@ -600,8 +611,16 @@ Disabled by default. Requires `pr_review.mode: polling`. When `enabled: true` Sy
 - If the rerun also fails, Symphony stores a truncated failed-job log excerpt, emits a CI failure
   notification, moves the Linear issue back to `In Progress`, and injects the CI failure context
   into the first agent prompt.
-- After `max_retries` dispatched attempts, the issue moves to `escalation_state` and emits a CI
-  escalation notification.
+- `ci_retry_count` accumulates across CI failures and only resets when CI goes green. After
+  `max_retries` dispatched attempts the issue moves to `escalation_state` and emits a CI escalation
+  notification.
+- A new head SHA (e.g. an agent pushed a fix that still failed CI) gets its own fresh dispatch and
+  rerun budget: `dispatched_shas` / `rerun_attempted_shas` clear and an `escalated` status
+  downgrades back to `watching`. The lifetime `ci_retry_count` is preserved so escalation still
+  triggers after enough total attempts.
+- Subsequent polls on a SHA that has already been dispatched stay `already_handled` even after
+  `max_retries`, so the in-flight agent run is not killed by an escalation racing against its own
+  dispatch.
 
 ### `learnings`
 

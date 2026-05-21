@@ -17,6 +17,34 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server normalizes nested Codex total_token_usage metadata" do
+    payload = %{
+      "method" => "codex/event/token_count",
+      "params" => %{
+        "msg" => %{
+          "payload" => %{
+            "info" => %{
+              "total_token_usage" => %{
+                "input_tokens" => 12_000,
+                "cached_input_tokens" => 10_000,
+                "output_tokens" => 500,
+                "total_tokens" => 12_500
+              }
+            }
+          }
+        }
+      }
+    }
+
+    assert %{usage: usage} = AppServer.usage_metadata_for_test(payload)
+    assert usage.input_tokens == 12_000
+    assert usage.uncached_input_tokens == 2_000
+    assert usage.cached_input_tokens == 10_000
+    assert usage.cache_creation_input_tokens == 0
+    assert usage.output_tokens == 500
+    assert usage.total_tokens == 12_500
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -206,7 +234,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server opts out of bulky turn diff notifications during initialize" do
+  test "app server opts out of high-volume executor notifications during initialize" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -265,7 +293,78 @@ defmodule SymphonyElixir.AppServerTest do
         |> Jason.decode!()
 
       assert get_in(initialize_payload, ["params", "capabilities", "optOutNotificationMethods"]) == [
-               "turn/diff/updated"
+               "turn/diff/updated",
+               "item/commandExecution/outputDelta",
+               "item/fileChange/outputDelta",
+               "item/agentMessage/delta"
+             ]
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server keeps agent message deltas enabled for read-only reviewer sessions" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-review-notification-opt-out-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-REVIEW-NOTIFY")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-review-notification-opt-out.trace")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-review-notify"}}}'
+            ;;
+          *)
+            sleep 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace, tool_scope: :read_only)
+      assert :ok = AppServer.stop_session(session)
+
+      [initialize_line | _rest] =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+
+      initialize_payload =
+        initialize_line
+        |> String.trim_leading("JSON:")
+        |> Jason.decode!()
+
+      assert get_in(initialize_payload, ["params", "capabilities", "optOutNotificationMethods"]) == [
+               "turn/diff/updated",
+               "item/commandExecution/outputDelta",
+               "item/fileChange/outputDelta"
              ]
     after
       File.rm_rf(test_root)
@@ -1289,7 +1388,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       trace = File.read!(trace_file)
       assert trace =~ "SRT_ARGV:--settings "
-      assert trace =~ "CODEX_ARGV:--config default_permissions=\"workspace_write\""
+      assert trace =~ "CODEX_ARGV:--config tool_output_token_limit=4096"
+      assert trace =~ "--config default_permissions=\"workspace_write\""
       assert trace =~ "--config permissions.workspace_write.filesystem="
       refute trace =~ "\":project_roots\""
       assert trace =~ "--config permissions.workspace_write.network={\"enabled\"=true,\"mode\"=\"limited\"}"
@@ -1882,7 +1982,6 @@ defmodule SymphonyElixir.AppServerTest do
                          event: :command_completed_recovered,
                          recovery: :malformed_command_completion
                        }}
-
       assert_received {:app_server_message, %{event: :turn_completed}}
     after
       File.rm_rf(test_root)
@@ -4087,6 +4186,76 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server fails fast when redirected stderr reports stdout transport failure" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stderr-stdout-failure-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-98")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-98"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-98","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '2026-05-20T09:14:16Z ERROR codex_app_server_transport::transport::stdio: Failed to write to stdout: Resource temporarily unavailable (os error 35)' >&2
+            sleep 1
+            ;;
+          *)
+            sleep 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_turn_timeout_ms: 1_000
+      )
+
+      issue = %Issue{
+        id: "issue-stderr-stdout-failure",
+        identifier: "MT-98",
+        title: "Redirected stderr stdout failure",
+        description: "Ensure stderr-tail transport failures do not wait for the watchdog",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-98",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
+      assert {:error, {:codex_stdio_write_failed, message}} =
+               AppServer.run(workspace, "Capture redirected stderr stdout failure", issue, on_message: on_message)
+
+      assert message =~ "Failed to write to stdout"
+      assert message =~ "Resource temporarily unavailable"
+      assert_received {:app_server_message, %{event: :transport_failed, reason: :codex_stdio_write_failed}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server treats ANSI-coded codex transport errors as stdout write failures" do
     test_root =
       Path.join(
@@ -4753,5 +4922,136 @@ defmodule SymphonyElixir.AppServerTest do
       url: "https://example.org/issues/#{identifier}",
       labels: ["backend"]
     }
+  end
+
+  describe "compact_notification_payload/2" do
+    @threshold 8_192
+
+    test "passes small payloads through with the original raw bytes intact" do
+      small = String.duplicate("a", 100)
+      payload = command_completion_payload(%{"aggregatedOutput" => small})
+      raw = "<original-raw>"
+
+      assert {^payload, ^raw} = AppServer.compact_notification_payload(payload, raw)
+    end
+
+    test "leaves payloads at the byte-size threshold unchanged" do
+      exactly = String.duplicate("a", @threshold)
+      payload = command_completion_payload(%{"aggregatedOutput" => exactly})
+
+      assert {^payload, "raw"} = AppServer.compact_notification_payload(payload, "raw")
+    end
+
+    test "trims large aggregatedOutput while preserving head and tail markers" do
+      head_marker = String.duplicate("A", 200)
+      tail_marker = String.duplicate("Z", 200)
+      middle = String.duplicate("M", @threshold * 2)
+      original = head_marker <> middle <> tail_marker
+      payload = command_completion_payload(%{"aggregatedOutput" => original})
+
+      assert {compacted, raw} = AppServer.compact_notification_payload(payload, "ignored")
+
+      trimmed = get_in(compacted, ["params", "item", "aggregatedOutput"])
+      assert String.starts_with?(trimmed, head_marker)
+      assert String.ends_with?(trimmed, tail_marker)
+      assert trimmed =~ "[truncated"
+      assert byte_size(trimmed) < byte_size(original)
+      # Raw must round-trip through Jason so downstream consumers see the trimmed shape.
+      assert Jason.decode!(raw) == compacted
+    end
+
+    test "round-trips multibyte UTF-8 payloads without dropping back to original raw" do
+      # 4-byte codepoints; cutting at 4096 bytes will land mid-codepoint unless the helper pulls
+      # back to a boundary.
+      utf8 = String.duplicate("🐙", div(@threshold, 4) + 10)
+      payload = command_completion_payload(%{"aggregatedOutput" => utf8})
+
+      assert {compacted, raw} = AppServer.compact_notification_payload(payload, "<unused>")
+
+      trimmed = get_in(compacted, ["params", "item", "aggregatedOutput"])
+      assert String.valid?(trimmed)
+      assert trimmed =~ "[truncated"
+      # Raw must reflect the compacted payload, not the original raw, when compaction happened.
+      assert Jason.decode!(raw) == compacted
+      refute raw == "<unused>"
+    end
+
+    test "trims every aliased noisy field on the item" do
+      large = String.duplicate("x", @threshold * 2)
+
+      for field <- ~w(aggregatedOutput aggregated_output output stdout stderr diff) do
+        payload = command_completion_payload(%{field => large})
+
+        assert {compacted, _raw} = AppServer.compact_notification_payload(payload, "raw")
+
+        trimmed = get_in(compacted, ["params", "item", field])
+        assert byte_size(trimmed) < byte_size(large), "#{field} should have been trimmed"
+        assert trimmed =~ "[truncated"
+      end
+    end
+
+    test "leaves values just over the threshold alone when truncation would inflate the field" do
+      # head + tail + marker can exceed the input when the input is only marginally over the cap.
+      barely = String.duplicate("y", @threshold + 1)
+      payload = command_completion_payload(%{"aggregatedOutput" => barely})
+
+      assert {^payload, "raw"} = AppServer.compact_notification_payload(payload, "raw")
+    end
+
+    test "leaves non-string fields alone even when an aliased key exists" do
+      payload = command_completion_payload(%{"aggregatedOutput" => %{"unexpected" => "shape"}})
+
+      assert {^payload, "raw"} = AppServer.compact_notification_payload(payload, "raw")
+    end
+
+    defp command_completion_payload(item_fields) do
+      %{
+        "method" => "item/completed",
+        "params" => %{
+          "item" =>
+            Map.merge(
+              %{"id" => "cmd-1", "type" => "commandExecution", "status" => "completed"},
+              item_fields
+            )
+        }
+      }
+    end
+  end
+
+  describe "flush_stderr_transport_messages/1" do
+    test "drains stale codex_stderr_transport_failed messages so the next turn is not poisoned" do
+      port = Port.open({:spawn, "true"}, [:binary, :exit_status])
+
+      try do
+        send(self(), {:codex_stderr_transport_failed, port, make_ref(), {:codex_stdio_write_failed, "stale 1"}})
+        send(self(), {:codex_stderr_transport_failed, port, make_ref(), {:codex_stdio_write_failed, "stale 2"}})
+
+        assert :ok = AppServer.flush_stderr_transport_messages(port)
+
+        refute_received {:codex_stderr_transport_failed, ^port, _ref, _reason}
+      after
+        if Port.info(port), do: Port.close(port)
+      end
+    end
+
+    test "leaves unrelated messages and messages for other ports in the mailbox" do
+      port = Port.open({:spawn, "true"}, [:binary, :exit_status])
+      other_port = Port.open({:spawn, "true"}, [:binary, :exit_status])
+
+      try do
+        send(self(), {:other_message, :keep_me})
+        send(self(), {:codex_stderr_transport_failed, other_port, make_ref(), {:codex_stdio_write_failed, "different port"}})
+        send(self(), {:codex_stderr_transport_failed, port, make_ref(), {:codex_stdio_write_failed, "drained"}})
+
+        assert :ok = AppServer.flush_stderr_transport_messages(port)
+
+        assert_received {:other_message, :keep_me}
+        assert_received {:codex_stderr_transport_failed, ^other_port, _ref, _reason}
+        refute_received {:codex_stderr_transport_failed, ^port, _ref, _reason}
+      after
+        if Port.info(port), do: Port.close(port)
+        if Port.info(other_port), do: Port.close(other_port)
+      end
+    end
   end
 end

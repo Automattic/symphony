@@ -361,8 +361,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <%= if issue_budget_limited?(@payload.budget.per_issue_limit) do %>
                           <span class="muted">Budget: <%= format_issue_budget_remaining(entry.tokens.total_tokens, @payload.budget.per_issue_limit) %> left</span>
                         <% end %>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
-                        <span class="muted">Uncached <%= format_int(entry.tokens.uncached_input_tokens) %> / Cached <%= format_int(entry.tokens.cached_input_tokens) %></span>
+                        <span class="muted">New <%= format_int(entry.tokens.uncached_input_tokens) %> / Cached <%= format_int(entry.tokens.cached_input_tokens) %></span>
+                        <span class="muted">Created <%= format_int(entry.tokens.cache_creation_input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
                     </td>
                     <td class="links-cell">

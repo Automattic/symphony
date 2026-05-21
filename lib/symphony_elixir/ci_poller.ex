@@ -242,10 +242,17 @@ defmodule SymphonyElixir.CiPoller do
 
   defp handle_ci_failure(record, ci_status, failed_checks, settings, opts, now) do
     commit_sha = Map.get(ci_status, :commit_sha)
+    record = reset_for_new_sha(record, commit_sha, opts, now)
 
     cond do
       flaky_retry?(settings) and not rerun_attempted_for_sha?(record, commit_sha) ->
         rerun_failed_ci(record, ci_status, failed_checks, settings, opts, now)
+
+      dispatched_for_sha?(record, commit_sha) ->
+        attrs =
+          ci_status_attrs(record, ci_status, %{status: "failure_already_handled", failed_checks: failed_checks}, now)
+
+        complete_ci_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), commit_sha})
 
       ci_retry_count(record) >= settings.ci.max_retries and Map.get(record, :status) != "escalated" ->
         escalate_ci_failure(record, ci_status, failed_checks, settings, opts, now)
@@ -256,16 +263,45 @@ defmodule SymphonyElixir.CiPoller do
 
         complete_ci_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), commit_sha})
 
-      dispatched_for_sha?(record, commit_sha) ->
-        attrs =
-          ci_status_attrs(record, ci_status, %{status: "failure_already_handled", failed_checks: failed_checks}, now)
-
-        complete_ci_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), commit_sha})
-
       true ->
         dispatch_ci_failure(record, ci_status, failed_checks, settings, opts, now)
     end
   end
+
+  # On a new head SHA, the previous SHA's dispatch/rerun history no longer applies:
+  # clear it so the new commit gets a fresh dispatch + rerun budget. Lifetime
+  # `ci_retry_count` is intentionally preserved so escalation still triggers
+  # after enough failed attempts across SHAs (it resets on green).
+  defp reset_for_new_sha(record, commit_sha, opts, now) do
+    if new_commit_sha?(record, commit_sha) do
+      reset_attrs = %{
+        dispatched_shas: [],
+        rerun_attempted_shas: [],
+        status: downgrade_status_for_new_sha(Map.get(record, :status)),
+        updated_at: now
+      }
+
+      run_store = Keyword.get(opts, :run_store, RunStore)
+
+      case update_ci_check(run_store, record, reset_attrs) do
+        :ok -> Map.merge(record, reset_attrs)
+        _other -> record
+      end
+    else
+      record
+    end
+  end
+
+  defp new_commit_sha?(record, commit_sha) do
+    last_observed = Map.get(record, :last_observed_sha)
+
+    is_binary(commit_sha) and commit_sha != "" and
+      is_binary(last_observed) and last_observed != "" and
+      last_observed != commit_sha
+  end
+
+  defp downgrade_status_for_new_sha("escalated"), do: "watching"
+  defp downgrade_status_for_new_sha(status), do: status
 
   defp rerun_failed_ci(record, ci_status, failed_checks, settings, opts, now) do
     github = Keyword.get(opts, :github, PullRequest)
@@ -913,8 +949,7 @@ defmodule SymphonyElixir.CiPoller do
   defp normalize_status(_value), do: nil
 
   defp poll_error_attrs(record, reason, opts, now) do
-    %{status: "poll_error"}
-    |> Map.merge(error_backoff_attrs(record, reason, opts, now))
+    error_backoff_attrs(record, reason, opts, now)
   end
 
   defp error_backoff_attrs(record, reason, opts, now) do

@@ -596,8 +596,16 @@ Disabled by default. Requires `pr_review.mode: polling`. When `enabled: true` Sy
 - If the rerun also fails, Symphony stores a truncated failed-job log excerpt, emits a CI failure
   notification, moves the Linear issue back to `In Progress`, and injects the CI failure context
   into the first agent prompt.
-- After `max_retries` dispatched attempts, the issue moves to `escalation_state` and emits a CI
-  escalation notification.
+- `ci_retry_count` accumulates across CI failures and only resets when CI goes green. After
+  `max_retries` dispatched attempts the issue moves to `escalation_state` and emits a CI escalation
+  notification.
+- A new head SHA (e.g. an agent pushed a fix that still failed CI) gets its own fresh dispatch and
+  rerun budget: `dispatched_shas` / `rerun_attempted_shas` clear and an `escalated` status
+  downgrades back to `watching`. The lifetime `ci_retry_count` is preserved so escalation still
+  triggers after enough total attempts.
+- Subsequent polls on a SHA that has already been dispatched stay `already_handled` even after
+  `max_retries`, so the in-flight agent run is not killed by an escalation racing against its own
+  dispatch.
 
 ### `learnings`
 

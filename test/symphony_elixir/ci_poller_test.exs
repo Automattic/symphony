@@ -259,7 +259,7 @@ defmodule SymphonyElixir.CiPollerTest do
     assert_receive {:fetch_failed_log, "987"}
     refute_receive {:issue_state_update, _, _}
 
-    assert [%{status: "poll_error", ci_retry_count: 0, dispatched_shas: [], error: "{:failed_log_unavailable, \"987\", :log_not_ready}"}] =
+    assert [%{status: "rerun_requested", ci_retry_count: 0, dispatched_shas: [], error: "{:failed_log_unavailable, \"987\", :log_not_ready}"}] =
              RunStore.list_ci_checks()
   end
 
@@ -550,7 +550,112 @@ defmodule SymphonyElixir.CiPollerTest do
              CiPoller.poll_once(tracker: FakeTracker, github: FailingGitHub, now: now)
 
     refute_receive {:issue_state_update, _, _}
-    assert [%{status: "poll_error", error: ":rate_limited"}] = RunStore.list_ci_checks()
+    assert [%{status: "watching", error: ":rate_limited"}] = RunStore.list_ci_checks()
+  end
+
+  test "new head SHA clears dispatched/rerun history and downgrades escalated status" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :ci_test_status, failed_status("def456"))
+    put_run(issue, now)
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "escalated",
+               ci_retry_count: 2,
+               dispatched_shas: ["abc123"],
+               rerun_attempted_shas: ["abc123"],
+               last_observed_sha: "abc123",
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:rerun_requested, "issue-2401", "987"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    assert_receive {:rerun_failed, "987"}
+
+    assert [
+             %{
+               status: "rerun_requested",
+               ci_retry_count: 2,
+               dispatched_shas: [],
+               rerun_attempted_shas: ["def456"],
+               last_observed_sha: "def456"
+             }
+           ] = RunStore.list_ci_checks()
+  end
+
+  test "dispatched SHA is protected from escalation on the next poll" do
+    # Race-protection: after a dispatch lands, the next poll for the same SHA
+    # must not escalate (and kill the in-flight agent run).
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :ci_test_status, failed_status("abc123"))
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      ci: %{enabled: true, log_excerpt_lines: 3, max_retries: 1, escalation_state: "In Review"}
+    )
+
+    put_run(issue, now)
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "dispatch_requested",
+               ci_retry_count: 1,
+               rerun_attempted_shas: ["abc123"],
+               dispatched_shas: ["abc123"],
+               last_observed_sha: "abc123",
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:already_handled, "issue-2401", "abc123"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    refute_receive {:issue_state_update, _, _}
+    assert [%{status: "failure_already_handled", ci_retry_count: 1}] = RunStore.list_ci_checks()
+  end
+
+  test "escalated status survives a transient poll error" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [])
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "escalated",
+               ci_retry_count: 3,
+               dispatched_shas: ["abc123"],
+               rerun_attempted_shas: ["abc123"],
+               last_observed_sha: "abc123",
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:poll_error, "issue-2401", :rate_limited}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FailingGitHub, now: DateTime.add(now, 1, :minute))
+
+    assert [%{status: "escalated", ci_retry_count: 3, error: ":rate_limited"}] = RunStore.list_ci_checks()
   end
 
   defp in_review_issue do

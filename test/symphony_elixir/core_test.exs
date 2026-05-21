@@ -1158,9 +1158,12 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms, repo_key: "api"} = state.retry_attempts[issue_id]
+    assert %{attempt: 1, due_at_ms: due_at_ms, repo_key: "api", delay_type: :continuation} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
     assert_due_in_range(due_at_ms, 250, 1_100)
+
+    assert [%{issue_id: ^issue_id, repo_key: "api", delay_type: :continuation}] =
+             RunStore.list_retries("api")
   end
 
   test "active issue with completed PR is watched instead of immediately re-dispatched" do

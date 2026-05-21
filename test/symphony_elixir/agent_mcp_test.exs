@@ -90,6 +90,30 @@ defmodule SymphonyElixir.AgentMcpTest do
     assert block =~ "PATH = "
   end
 
+  test "symphony MCP shim env omits PATH when host PATH is unset" do
+    session = %{
+      id: "mcp-test-no-path",
+      transport: :unix,
+      socket_path: "/tmp/symphony-mcp.sock",
+      token: "session-token"
+    }
+
+    prior_path = System.get_env("PATH")
+    System.delete_env("PATH")
+
+    on_exit(fn ->
+      case prior_path do
+        nil -> System.delete_env("PATH")
+        value -> System.put_env("PATH", value)
+      end
+    end)
+
+    env = AgentMcp.symphony_claude_config(session, session.socket_path, "/tmp/shim")["env"]
+
+    assert env == %{"SYMPHONY_MCP_SESSION_TOKEN" => "session-token"}
+    refute Map.has_key?(env, "PATH")
+  end
+
   test "Claude raw server config normalizes transport-specific entries" do
     assert AgentMcp.normalize_claude_server_config(%{
              "command" => "node",

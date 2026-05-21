@@ -53,10 +53,12 @@ defmodule SymphonyElixir.Codex.AppServer do
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
+  @type stdout_pump :: %{pid: pid(), ref: reference()} | nil
   @type stderr_tail :: %{pid: pid(), ref: reference()} | nil
 
   @type session :: %{
           port: port(),
+          stdout_pump: stdout_pump(),
           metadata: map(),
           approval_policy: String.t() | map(),
           auto_approve_requests: boolean(),
@@ -109,13 +111,14 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path, tool_scope) do
     case start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
-      {:ok, port, codex_home, launch_cleanup_paths, remote_codex_home, stderr_tail} ->
+      {:ok, port, stdout_pump, codex_home, launch_cleanup_paths, remote_codex_home, stderr_tail} ->
         launch_context = %{
           codex_home: codex_home,
           cleanup_paths: launch_cleanup_paths,
           mcp_session: mcp_session,
           remote_shim_path: remote_shim_path,
           remote_codex_home: remote_codex_home,
+          stdout_pump: stdout_pump,
           stderr_tail: stderr_tail,
           tool_scope: tool_scope
         }
@@ -146,6 +149,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            mcp_session: mcp_session,
            remote_shim_path: remote_shim_path,
            remote_codex_home: remote_codex_home,
+           stdout_pump: stdout_pump,
            stderr_tail: stderr_tail,
            tool_scope: tool_scope
          }
@@ -157,6 +161,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:ok,
        %{
          port: port,
+         stdout_pump: stdout_pump,
          metadata: metadata,
          approval_policy: session_policies.approval_policy,
          auto_approve_requests: session_policies.auto_approve_requests,
@@ -176,7 +181,7 @@ defmodule SymphonyElixir.Codex.AppServer do
        }}
     else
       {:error, reason} ->
-        stop_port(port)
+        stop_port(port, stdout_pump)
         stop_stderr_tail(stderr_tail)
         McpConfig.sync_cloud_requirements_cache(codex_home)
         cleanup_launch_paths(launch_cleanup_paths)
@@ -332,7 +337,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port} = session) when is_port(port) do
-    stop_port(port)
+    stop_port(port, Map.get(session, :stdout_pump))
     stop_stderr_tail(Map.get(session, :stderr_tail))
     McpConfig.sync_cloud_requirements_cache(Map.get(session, :codex_home))
     cleanup_launch_paths(Map.get(session, :launch_cleanup_paths, []))
@@ -461,9 +466,16 @@ defmodule SymphonyElixir.Codex.AppServer do
           ]
         )
 
-      stderr_tail = start_stderr_tail(stderr_log_path, port)
+      case start_stdout_pump(port) do
+        {:ok, stdout_pump} ->
+          stderr_tail = start_stderr_tail(stderr_log_path, port)
 
-      {:ok, port, codex_home, codex_home.cleanup_paths ++ launch_cleanup_paths, nil, stderr_tail}
+          {:ok, port, stdout_pump, codex_home, codex_home.cleanup_paths ++ launch_cleanup_paths, nil, stderr_tail}
+
+        {:error, reason} ->
+          stop_port(port)
+          {:error, reason}
+      end
     else
       {:error, {:local_codex_home_command_failed, reason, cleanup_paths}} ->
         cleanup_launch_paths(cleanup_paths)
@@ -486,7 +498,14 @@ defmodule SymphonyElixir.Codex.AppServer do
              env: AgentEnv.build(),
              reverse_forwards: mcp_reverse_forwards(mcp_session, remote_socket_path)
            ) do
-      {:ok, port, nil, [], remote_codex_home, nil}
+      case start_stdout_pump(port) do
+        {:ok, stdout_pump} ->
+          {:ok, port, stdout_pump, nil, [], remote_codex_home, nil}
+
+        {:error, reason} ->
+          stop_port(port)
+          {:error, reason}
+      end
     end
   end
 
@@ -1120,6 +1139,23 @@ defmodule SymphonyElixir.Codex.AppServer do
          turn_stream_state
        ) do
     receive do
+      {:codex_stdout_line, ^port, _ref, line} ->
+        complete_line = pending_line <> to_string(line)
+
+        handle_incoming(
+          port,
+          on_message,
+          complete_line,
+          timeout_ms,
+          tool_executor,
+          auto_approve_requests,
+          approval_context,
+          turn_stream_state
+        )
+
+      {:codex_stdout_exit, ^port, _ref, status} ->
+        {:error, {:port_exit, status}}
+
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
 
@@ -3568,6 +3604,13 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp with_timeout_response(port, request_id, timeout_ms, pending_line) do
     receive do
+      {:codex_stdout_line, ^port, _ref, line} ->
+        complete_line = pending_line <> to_string(line)
+        handle_response(port, request_id, complete_line, timeout_ms)
+
+      {:codex_stdout_exit, ^port, _ref, status} ->
+        {:error, {:port_exit, status}}
+
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
         handle_response(port, request_id, complete_line, timeout_ms)
@@ -3650,7 +3693,101 @@ defmodule SymphonyElixir.Codex.AppServer do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
 
-  defp stop_port(port) when is_port(port) do
+  defp stop_port(port, stdout_pump \\ nil)
+
+  defp stop_port(port, %{pid: pid, ref: ref}) when is_port(port) and is_pid(pid) and is_reference(ref) do
+    if Process.alive?(pid) do
+      send(pid, {:close_stdout_port, self(), ref})
+
+      receive do
+        {:stdout_port_closed, ^port, ^ref} -> :ok
+      after
+        1_000 ->
+          Process.exit(pid, :kill)
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp stop_port(port, _stdout_pump) when is_port(port) do
+    case :erlang.port_info(port) do
+      :undefined ->
+        :ok
+
+      _ ->
+        try do
+          Port.close(port)
+          :ok
+        rescue
+          ArgumentError ->
+            :ok
+        end
+    end
+  end
+
+  @spec start_stdout_pump(port()) :: {:ok, stdout_pump()} | {:error, term()}
+  defp start_stdout_pump(port) when is_port(port) do
+    owner = self()
+    ref = make_ref()
+
+    pid =
+      spawn(fn ->
+        stdout_pump_loop(%{
+          owner: owner,
+          owner_monitor_ref: Process.monitor(owner),
+          port: port,
+          ref: ref,
+          pending_line: ""
+        })
+      end)
+
+    try do
+      true = Port.connect(port, pid)
+      {:ok, %{pid: pid, ref: ref}}
+    rescue
+      exception ->
+        Process.exit(pid, :kill)
+        {:error, {:stdout_pump_connect_failed, Exception.message(exception)}}
+    end
+  end
+
+  defp stdout_pump_loop(%{port: port, owner: owner, owner_monitor_ref: owner_ref, ref: ref} = state) do
+    receive do
+      {^port, {:data, {:eol, chunk}}} ->
+        send(owner, {:codex_stdout_line, port, ref, state.pending_line <> to_string(chunk)})
+        stdout_pump_loop(%{state | pending_line: ""})
+
+      {^port, {:data, {:noeol, chunk}}} ->
+        stdout_pump_loop(%{state | pending_line: state.pending_line <> to_string(chunk)})
+
+      {^port, {:exit_status, status}} ->
+        maybe_send_stdout_pending_line(state)
+        send(owner, {:codex_stdout_exit, port, ref, status})
+        :ok
+
+      {:close_stdout_port, caller, ^ref} ->
+        close_owned_port(port)
+        send(caller, {:stdout_port_closed, port, ref})
+        :ok
+
+      {:DOWN, ^owner_ref, :process, ^owner, _reason} ->
+        close_owned_port(port)
+        :ok
+
+      _message ->
+        stdout_pump_loop(state)
+    end
+  end
+
+  defp maybe_send_stdout_pending_line(%{pending_line: ""}), do: :ok
+
+  defp maybe_send_stdout_pending_line(%{owner: owner, port: port, ref: ref, pending_line: pending_line}) do
+    send(owner, {:codex_stdout_line, port, ref, pending_line})
+  end
+
+  defp close_owned_port(port) do
     case :erlang.port_info(port) do
       :undefined ->
         :ok

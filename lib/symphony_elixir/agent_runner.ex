@@ -493,10 +493,6 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp handle_review_agent_result(%{verdict: :block} = result, _run_context, _config, _opts) do
-    {:error, {:review_agent_blocked, ReviewAgent.block_payload(result)}}
-  end
-
   defp handle_review_agent_inconclusive(run_context, config, round, reason) do
     if review_agent_inconclusive_retry_available?(run_context) do
       Logger.info("Reviewer agent was inconclusive for #{issue_context(run_context.issue)} reason=#{inspect(reason)}; retrying reviewer once with a fresh session")

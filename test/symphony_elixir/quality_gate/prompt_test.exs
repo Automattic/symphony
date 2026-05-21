@@ -25,7 +25,7 @@ defmodule SymphonyElixir.QualityGate.PromptTest do
         identifier: "ACME-100",
         title: "Add quality gate",
         description: "Filter issues before queuing.",
-        labels: ["backend", "rsm"],
+        labels: ["backend", "acme"],
         state: "Todo",
         url: "https://example.org/ACME-100",
         updated_at: ~U[2026-05-05 03:00:00Z]
@@ -36,7 +36,7 @@ defmodule SymphonyElixir.QualityGate.PromptTest do
       assert prompt =~ "ACME-100"
       assert prompt =~ "Add quality gate"
       assert prompt =~ "Filter issues before queuing"
-      assert prompt =~ "backend, rsm"
+      assert prompt =~ "backend, acme"
       assert prompt =~ "Todo"
     end
 

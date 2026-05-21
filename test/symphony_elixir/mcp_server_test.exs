@@ -333,7 +333,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     git_runner = fn ["branch", "--show-current"], opts ->
       send(test_pid, {:git_called, opts})
-      {"feature/rsm-3052", 0}
+      {"feature/acme-3052", 0}
     end
 
     gh_runner = fn args, opts ->
@@ -384,7 +384,7 @@ defmodule SymphonyElixir.McpServerTest do
                "--repo",
                "acme/symphony",
                "--head",
-               "feature/rsm-3052",
+               "feature/acme-3052",
                "--title",
                "ACME-3052",
                "--body",
@@ -420,7 +420,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     git_runner = fn args, opts ->
       send(test_pid, {:git_called, args, opts})
-      {"feature/rsm-3220", 0}
+      {"feature/acme-3220", 0}
     end
 
     gh_runner = fn args, opts ->
@@ -509,7 +509,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     git_runner = fn args, opts ->
       send(test_pid, {:git_called, args, opts})
-      {"feature/rsm-3220", 0}
+      {"feature/acme-3220", 0}
     end
 
     gh_runner = fn args, opts ->

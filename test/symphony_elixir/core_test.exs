@@ -1613,7 +1613,7 @@ defmodule SymphonyElixir.CoreTest do
              "state" => %{"name" => "Todo"},
              "team" => %{"key" => "ACME", "name" => "Acme Team"},
              "project" => %{"id" => "project-1", "name" => "Harness"},
-             "branchName" => "rsm-1-run-one-issue",
+             "branchName" => "acme-1-run-one-issue",
              "url" => "https://linear.app/example/issue/ACME-1",
              "attachments" => %{"nodes" => []},
              "assignee" => %{"id" => "user-1"},

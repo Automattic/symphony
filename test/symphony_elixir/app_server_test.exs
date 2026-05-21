@@ -1288,7 +1288,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       codex_config = File.read!(codex_config_copy)
       assert codex_config =~ ~s(args = ["--tcp-host", "127.0.0.1", "--tcp-port", )
-      assert codex_config =~ ~s(env = { SYMPHONY_MCP_SESSION_TOKEN = )
+      assert codex_config =~ ~s(SYMPHONY_MCP_SESSION_TOKEN = )
+      assert codex_config =~ "PATH = "
       refute codex_config =~ "--socket"
       refute codex_config =~ "--session"
     after
@@ -1900,6 +1901,7 @@ defmodule SymphonyElixir.AppServerTest do
                      "linear_get_current_issue" in tool_names and
                        "linear_update_state" in tool_names and
                        "github_create_pull_request" in tool_names and
+                       "github_fetch_origin" in tool_names and
                        "github_list_pr_reviews" in tool_names and
                        "github_push_branch" in tool_names and
                        "linear_set_assignee" not in tool_names and

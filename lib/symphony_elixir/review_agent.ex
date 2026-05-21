@@ -5,7 +5,7 @@ defmodule SymphonyElixir.ReviewAgent do
 
   require Logger
 
-  alias SymphonyElixir.{Config, PromptSafety, SSH}
+  alias SymphonyElixir.{AgentLabels, Config, PromptSafety, SSH}
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.ReviewAgent.Context
@@ -65,12 +65,49 @@ defmodule SymphonyElixir.ReviewAgent do
   end
 
   @spec approval_prompt(result()) :: String.t()
-  def approval_prompt(_result) do
+  def approval_prompt(result), do: approval_prompt(result, [])
+
+  @spec approval_prompt(result(), keyword()) :: String.t()
+  def approval_prompt(_result, opts) do
     """
     Reviewer agent approved the committed diff.
 
-    Continue the normal workflow push and PR handoff now. Do not run another implementation pass before pushing unless a required local validation gate fails.
+    Continue the normal workflow push and PR handoff now. Use the validation evidence already
+    collected for the reviewed diff. Do not stop at the reviewer-agent gate again unless code
+    changes after this approval.
+
+    #{approval_handoff_tool_guidance(Keyword.get(opts, :settings))}
     """
+  end
+
+  @doc false
+  @spec approval_handoff_tool_guidance(Schema.t() | map() | nil) :: String.t()
+  def approval_handoff_tool_guidance(settings) do
+    case configured_agent_kind(settings) do
+      "claude" ->
+        """
+        Use Claude's Symphony MCP GitHub tools for PR handoff:
+        - `mcp__symphony__github_get_pull_request`
+        - `mcp__symphony__github_push_branch`
+        - `mcp__symphony__github_create_pull_request`
+
+        Do not search for these with ToolSearch or deferred-tool discovery. If the
+        `mcp__symphony__github_*` tools are not visible in this session, stop and report that
+        the Symphony MCP GitHub tools are unavailable. Avoid raw `gh` or `git push`; do not use
+        SSH as a fallback.
+        """
+
+      _kind ->
+        """
+        Use Codex's scoped Symphony GitHub tools for PR handoff:
+        - `github_get_pull_request`
+        - `github_push_branch`
+        - `github_create_pull_request`
+
+        If these scoped tools are not visible in this session, stop and report that the Symphony
+        GitHub tools are unavailable. Avoid raw `gh` or `git push`; do not use SSH as a fallback.
+        """
+    end
   end
 
   @spec request_changes_prompt(result()) :: String.t()
@@ -94,10 +131,16 @@ defmodule SymphonyElixir.ReviewAgent do
   def block_reason(%{comments: [comment | _]}) when is_binary(comment), do: comment
   def block_reason(_result), do: "review_agent blocked the run"
 
+  defp configured_agent_kind(%Schema{agent: %{kind: kind}}), do: AgentLabels.normalize_kind(kind)
+  defp configured_agent_kind(%{agent: %{kind: kind}}), do: AgentLabels.normalize_kind(kind)
+  defp configured_agent_kind(%{agent: %{"kind" => kind}}), do: AgentLabels.normalize_kind(kind)
+  defp configured_agent_kind(_settings), do: nil
+
   defp source_material(issue, workspace, _settings, opts) do
     worker_host = Keyword.get(opts, :worker_host)
     comparison_base = comparison_base(workspace, opts, worker_host)
-    git_range = "#{comparison_base}..HEAD"
+    range_base = merge_base(workspace, comparison_base, worker_host)
+    git_range = "#{range_base}..HEAD"
     git_fun = fn args -> git(workspace, args, worker_host) end
 
     Context.build(issue, workspace, git_range, opts, git_fun)
@@ -325,6 +368,18 @@ defmodule SymphonyElixir.ReviewAgent do
       {:error, reason} ->
         Logger.info("ReviewAgent origin/HEAD unresolved, falling back to origin/main reason=#{inspect(reason)}")
         "origin/main"
+    end
+  end
+
+  defp merge_base(workspace, comparison_base, worker_host) do
+    case git(workspace, ["merge-base", comparison_base, "HEAD"], worker_host) do
+      {:ok, output} ->
+        output |> String.trim() |> blank_fallback(comparison_base)
+
+      {:error, reason} ->
+        Logger.info("ReviewAgent merge-base unresolved, falling back to #{comparison_base} reason=#{inspect(reason)}")
+
+        comparison_base
     end
   end
 

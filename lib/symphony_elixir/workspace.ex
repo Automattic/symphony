@@ -540,7 +540,7 @@ defmodule SymphonyElixir.Workspace do
 
   @spec free_bytes(worker_host()) :: {:ok, non_neg_integer()} | {:error, term()}
   def free_bytes(nil) do
-    root = Config.settings!().workspace.root
+    root = Path.expand(Config.settings!().workspace.root)
 
     with :ok <- File.mkdir_p(root),
          {output, 0} <- System.cmd("df", ["-Pk", root], stderr_to_stdout: true),
@@ -646,7 +646,7 @@ defmodule SymphonyElixir.Workspace do
   def local_workspace_entries(repo_key) when is_binary(repo_key) do
     settings = Config.settings!()
     safe_repo_key = safe_identifier(repo_key)
-    root = Path.join(settings.workspace.root, safe_repo_key)
+    root = Path.join(Path.expand(settings.workspace.root), safe_repo_key)
     trash_dir = settings.workspace.lifecycle.trash_dir |> Path.split() |> List.first()
 
     cond do
@@ -746,7 +746,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp trash_lifecycle_workspace(entry, reason, lifecycle) do
-    root = Config.settings!().workspace.root
+    root = Path.expand(Config.settings!().workspace.root)
     trash_root = Path.join([root, entry.repo_key, lifecycle.trash_dir])
     destination = unique_trash_destination(trash_root, entry.identifier)
 
@@ -900,6 +900,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp workspace_path_for_issue(safe_repo_key, safe_id, nil) when is_binary(safe_repo_key) and is_binary(safe_id) do
     Config.settings!().workspace.root
+    |> Path.expand()
     |> Path.join(safe_repo_key)
     |> Path.join(safe_id)
     |> PathSafety.canonicalize()

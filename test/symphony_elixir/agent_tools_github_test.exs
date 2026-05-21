@@ -17,6 +17,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     assert {:error, :missing_github_origin_repo} = GitHub.list_pr_review_comments(%{})
     assert {:error, :missing_github_origin_repo} = GitHub.list_pr_reviews(%{})
     assert {:error, :missing_github_origin_repo} = GitHub.get_failed_run_log(%{})
+    assert {:error, :missing_workspace} = GitHub.fetch_origin(%{})
     assert {:error, :missing_workspace} = GitHub.push_branch(%{})
   end
 
@@ -34,6 +35,9 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
     assert {:error, :workspace_not_found} =
              GitHub.push_branch(%{command_security: %{origin_repo: "acme/symphony", workspace: missing_workspace}}, [])
+
+    assert {:error, :workspace_not_found} =
+             GitHub.fetch_origin(%{command_security: %{origin_repo: "acme/symphony", workspace: missing_workspace}}, [])
   end
 
   test "pull request body tools reject high-confidence secret prefixes before calling GitHub" do
@@ -241,6 +245,84 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
       assert {:error, :origin_url_mismatch} =
                GitHub.push_branch(scoped_context(workspace))
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "fetch_origin fetches the configured origin only" do
+    workspace = tmp_workspace!("github-agent-fetch-origin")
+
+    try do
+      git_runner = fn
+        ["remote", "get-url", "origin"], opts ->
+          assert opts[:cd] == workspace
+          {"git@github.com:acme/symphony.git\n", 0}
+
+        ["fetch", "origin"], opts ->
+          assert opts[:cd] == workspace
+          {"From github.com:acme/symphony\n   abc123..def456  main -> origin/main\n", 0}
+      end
+
+      assert {:ok, %{"remote" => "origin", "output" => output}} =
+               GitHub.fetch_origin(scoped_context(workspace), git_runner: git_runner)
+
+      assert output =~ "main -> origin/main"
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "fetch_origin refuses when current origin differs from captured session origin" do
+    workspace = tmp_workspace!("github-agent-fetch-retargeted-origin")
+
+    try do
+      git_runner = fn
+        ["remote", "get-url", "origin"], _opts -> {"ssh://attacker.example/repo.git\n", 0}
+        ["fetch", "origin"], _opts -> flunk("fetch should not run when origin is retargeted")
+      end
+
+      assert {:error, :origin_url_mismatch} =
+               GitHub.fetch_origin(scoped_context(workspace), git_runner: git_runner)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "fetch_origin sanitizes fetch failure output" do
+    workspace = tmp_workspace!("github-agent-fetch-origin-failure")
+    home_path = Path.join(Path.expand("~"), ".ssh/config")
+    raw_output = "Bad owner or permissions on #{home_path}\n" <> <<255>> <> String.duplicate("x", 5_000)
+
+    try do
+      git_runner = fn
+        ["remote", "get-url", "origin"], _opts -> {"git@github.com:acme/symphony.git\n", 0}
+        ["fetch", "origin"], _opts -> {raw_output, 128}
+      end
+
+      assert {:error, {:git_fetch_failed, 128, output}} =
+               GitHub.fetch_origin(scoped_context(workspace), git_runner: git_runner)
+
+      assert output =~ "~/.ssh/config"
+      assert output =~ "... (truncated)"
+      refute output =~ Path.expand("~")
+      refute output =~ <<255>>
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "fetch_origin surfaces git runner errors" do
+    workspace = tmp_workspace!("github-agent-fetch-origin-runner-error")
+
+    try do
+      git_runner = fn
+        ["remote", "get-url", "origin"], _opts -> {"git@github.com:acme/symphony.git\n", 0}
+        ["fetch", "origin"], _opts -> {:error, :git_boom}
+      end
+
+      assert {:error, :git_boom} =
+               GitHub.fetch_origin(scoped_context(workspace), git_runner: git_runner)
     after
       File.rm_rf(workspace)
     end
@@ -774,6 +856,23 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     }
 
     assert {:error, {:unsupported_for_ssh_worker, :github_push_branch}} = GitHub.push_branch(context)
+  end
+
+  test "fetch_origin is explicitly unsupported for ssh workers" do
+    remote_workspace = "/remote/workspaces/MT-3187"
+
+    context = %{
+      workspace: remote_workspace,
+      command_security: %{
+        origin_repo: "acme/symphony",
+        origin_url: "git@github.com:acme/symphony.git",
+        current_branch: "auto/RSM-3187",
+        workspace: remote_workspace,
+        worker_host: "worker-01"
+      }
+    }
+
+    assert {:error, {:unsupported_for_ssh_worker, :github_fetch_origin}} = GitHub.fetch_origin(context)
   end
 
   test "captured remote branch errors are surfaced before pull request lookup" do

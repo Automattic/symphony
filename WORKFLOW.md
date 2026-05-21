@@ -113,6 +113,10 @@ than shelling out to `gh`. `Bash(gh:*)` is denied for some agent runtimes
 the configured origin repo and accept no owner/repo/PR arguments — Symphony
 injects the scope server-side.
 
+When remote refs need refreshing, use `github_fetch_origin()` instead of trying
+to read SSH config or credential files from the sandbox. It accepts no
+arguments and fetches only the workspace's verified `origin` remote.
+
 Do not craft raw Linear GraphQL from prompts. If a required Linear or GitHub
 operation is outside the available tool set, pause and record the gap in the
 workpad instead of synthesising a `gh` call or widening the prompt-facing API.

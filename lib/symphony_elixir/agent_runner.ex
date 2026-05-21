@@ -28,6 +28,7 @@ defmodule SymphonyElixir.AgentRunner do
   @dev_server_pid_key {__MODULE__, :verification_dev_server_pid}
   @dependency_review_state "In Review"
   @codex_stdio_prompt_soft_limit 12_000
+  @terminal_agent_setup_error_marker "missing_required_mcp_tools"
 
   @type worker_host :: String.t() | nil
 
@@ -48,8 +49,19 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+
+        if terminal_agent_setup_error?(reason) do
+          exit({:terminal_agent_setup_error, reason})
+        else
+          raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        end
     end
+  end
+
+  defp terminal_agent_setup_error?(reason) do
+    reason
+    |> inspect()
+    |> String.contains?(@terminal_agent_setup_error_marker)
   end
 
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
@@ -240,7 +252,7 @@ defmodule SymphonyElixir.AgentRunner do
       issue_state_fetcher: issue_state_fetcher
     } = run_context
 
-    prompt = run_context.next_prompt || build_turn_prompt(issue, opts, turn_number, max_turns)
+    prompt = run_context.next_prompt || build_turn_prompt(issue, opts, turn_number, max_turns, run_context.review_agent)
     run_context = %{run_context | next_prompt: nil}
     audit_prompt_sent(issue, Keyword.get(opts, :run_id), prompt, turn_number, max_turns, agent_module, opts)
 
@@ -429,7 +441,7 @@ defmodule SymphonyElixir.AgentRunner do
            phase: :complete,
            request_change_rounds: review_agent_request_change_rounds(run_context)
          },
-         next_prompt: ReviewAgent.approval_prompt(result)
+         next_prompt: ReviewAgent.approval_prompt(result, run_context.opts)
      }}
   end
 
@@ -542,10 +554,10 @@ defmodule SymphonyElixir.AgentRunner do
   @doc false
   @spec build_first_turn_prompt(map(), keyword()) :: String.t()
   def build_first_turn_prompt(issue, opts) do
-    build_turn_prompt(issue, opts, 1, Keyword.get(opts, :max_turns, 1))
+    build_turn_prompt(issue, opts, 1, Keyword.get(opts, :max_turns, 1), initial_review_agent_state())
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+  defp build_turn_prompt(issue, opts, 1, _max_turns, _review_agent_state) do
     prompt_opts =
       opts
       |> put_reviewer_comments(issue)
@@ -555,7 +567,7 @@ defmodule SymphonyElixir.AgentRunner do
     maybe_compact_codex_initial_prompt(prompt, issue, prompt_opts)
   end
 
-  defp build_turn_prompt(_issue, opts, turn_number, max_turns) do
+  defp build_turn_prompt(_issue, opts, turn_number, max_turns, review_agent_state) do
     agent_name =
       opts
       |> Keyword.get(:settings)
@@ -570,13 +582,23 @@ defmodule SymphonyElixir.AgentRunner do
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
-    #{review_agent_continuation_guard(opts)}
+    #{review_agent_continuation_guard(opts, review_agent_state)}
     """
   end
 
-  defp review_agent_continuation_guard(opts) do
-    case Keyword.get(opts, :settings) do
-      %{review_agent: %{enabled: true}} ->
+  defp review_agent_continuation_guard(opts, review_agent_state) do
+    case {Keyword.get(opts, :settings), review_agent_state} do
+      {%{review_agent: %{enabled: true}}, %{phase: :complete}} ->
+        """
+
+        Review-agent gate status:
+
+        - Reviewer-agent approval has already been injected for this run.
+        - Do not stop at the reviewer-agent gate again; complete the normal push/PR handoff unless code changes after approval or a true auth/permission blocker prevents handoff.
+        #{ReviewAgent.approval_handoff_tool_guidance(Keyword.get(opts, :settings))}
+        """
+
+      {%{review_agent: %{enabled: true}}, _review_agent_state} ->
         """
 
         Review-agent gate reminder:

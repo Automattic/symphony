@@ -1403,6 +1403,62 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 39_000, 40_500)
   end
 
+  test "terminal agent setup errors comment and do not schedule retry" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+    end)
+
+    issue_id = "issue-terminal-setup"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :TerminalSetupFailureOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      repo_key: "api",
+      identifier: "MT-TERMINAL",
+      retry_attempt: 2,
+      issue: %Issue{id: issue_id, identifier: "MT-TERMINAL", state: "In Progress", repo_key: "api"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    reason =
+      {:terminal_agent_setup_error, {:turn_failed, "missing_required_mcp_tools: required Symphony GitHub MCP tools are not available"}}
+
+    send(pid, {:DOWN, ref, :process, self(), reason})
+
+    assert_receive {:memory_tracker_comment, ^issue_id, comment}, 500
+    assert comment =~ "did not expose"
+    assert comment =~ "required Symphony GitHub MCP tools"
+    assert comment =~ "missing_required_mcp_tools"
+
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute Map.has_key?(state.running, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+  end
+
   test "first abnormal worker exit waits before retrying" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
@@ -3158,13 +3214,15 @@ defmodule SymphonyElixir.CoreTest do
       assert length(turn_texts) == 2
       assert Enum.at(turn_texts, 0) =~ "Review-agent gate:"
       assert Enum.at(turn_texts, 1) =~ "Reviewer agent approved the committed diff"
+      assert Enum.at(turn_texts, 1) =~ "github_push_branch"
+      assert Enum.at(turn_texts, 1) =~ "Avoid raw `gh` or `git push`"
     after
       clear_review_agent_env!()
       File.rm_rf(test_root)
     end
   end
 
-  test "agent runner preserves the review-agent gate in later continuation prompts" do
+  test "agent runner preserves approved review-agent handoff in later continuation prompts" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -3194,9 +3252,12 @@ defmodule SymphonyElixir.CoreTest do
       turn_texts = review_agent_turn_texts!(trace_file)
       assert length(turn_texts) == 3
       assert Enum.at(turn_texts, 1) =~ "Reviewer agent approved the committed diff"
-      assert Enum.at(turn_texts, 2) =~ "Review-agent gate reminder:"
-      assert Enum.at(turn_texts, 2) =~ "has not already received a reviewer-agent approval prompt"
-      assert Enum.at(turn_texts, 2) =~ "Ending the turn at that gate is expected"
+      assert Enum.at(turn_texts, 2) =~ "Review-agent gate status:"
+      assert Enum.at(turn_texts, 2) =~ "Reviewer-agent approval has already been injected"
+      assert Enum.at(turn_texts, 2) =~ "Do not stop at the reviewer-agent gate again"
+      assert Enum.at(turn_texts, 2) =~ "github_create_pull_request"
+      refute Enum.at(turn_texts, 2) =~ "has not already received a reviewer-agent approval prompt"
+      refute Enum.at(turn_texts, 2) =~ "Ending the turn at that gate is expected"
     after
       clear_review_agent_env!()
       File.rm_rf(test_root)

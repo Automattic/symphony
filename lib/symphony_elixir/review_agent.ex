@@ -99,7 +99,8 @@ defmodule SymphonyElixir.ReviewAgent do
   defp source_material(issue, workspace, _settings, opts) do
     worker_host = Keyword.get(opts, :worker_host)
     comparison_base = comparison_base(workspace, opts, worker_host)
-    git_range = "#{comparison_base}..HEAD"
+    range_base = merge_base(workspace, comparison_base, worker_host)
+    git_range = "#{range_base}..HEAD"
     git_fun = fn args -> git(workspace, args, worker_host) end
 
     Context.build(issue, workspace, git_range, opts, git_fun)
@@ -327,6 +328,18 @@ defmodule SymphonyElixir.ReviewAgent do
       {:error, reason} ->
         Logger.info("ReviewAgent origin/HEAD unresolved, falling back to origin/main reason=#{inspect(reason)}")
         "origin/main"
+    end
+  end
+
+  defp merge_base(workspace, comparison_base, worker_host) do
+    case git(workspace, ["merge-base", comparison_base, "HEAD"], worker_host) do
+      {:ok, output} ->
+        output |> String.trim() |> blank_fallback(comparison_base)
+
+      {:error, reason} ->
+        Logger.info("ReviewAgent merge-base unresolved, falling back to #{comparison_base} reason=#{inspect(reason)}")
+
+        comparison_base
     end
   end
 

@@ -984,6 +984,15 @@ findings cannot be verified against the reviewer diff/context, and SHOULD run on
 self-check turn before accepting blocking findings. Reviewer token usage SHOULD be tracked
 separately from the aggregate run token total.
 
+Reviewer outcome handling MUST distinguish terminal blocks from inconclusive reviewer runs.
+Verified `block` verdicts with at least one grounded finding SHOULD terminate the worker with a
+dedicated `review_agent_blocked` exit, post the block reason/findings to the tracker, move the issue
+to a human-review state, and avoid scheduling another orchestrator retry. Reviewer parse failures,
+turn-budget failures, or validation/self-check paths that remove all findings SHOULD be classified as
+`review_agent_inconclusive`; Symphony SHOULD retry the reviewer once with a fresh reviewer session,
+then downgrade to `request_changes` with a non-convergence note instead of retrying the full
+executor run.
+
 #### 5.4.18 `notifications` (object)
 
 Fields:

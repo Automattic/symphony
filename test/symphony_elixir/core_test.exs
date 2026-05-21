@@ -3430,7 +3430,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "agent runner blocks when review-agent max iterations is reached" do
+  test "agent runner retries reviewer once and downgrades when review-agent max iterations is reached" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -3452,22 +3452,25 @@ defmodule SymphonyElixir.CoreTest do
         first_correction,
         first_correction,
         second_correction,
+        second_correction,
+        second_correction,
         second_correction
       ])
 
-      assert_raise RuntimeError, ~r/review_agent.max_iterations reached/, fn ->
-        AgentRunner.run(review_agent_issue(), self(),
-          workspace_path: repo,
-          issue_state_fetcher: review_agent_state_fetcher(self(), 4),
-          issue_enricher: no_op_issue_enricher(),
-          review_agent_module: ReviewAgentSequenceAppServer
-        )
-      end
+      assert :ok =
+               AgentRunner.run(review_agent_issue(), self(),
+                 workspace_path: repo,
+                 issue_state_fetcher: review_agent_state_fetcher(self(), 4),
+                 issue_enricher: no_op_issue_enricher(),
+                 review_agent_module: ReviewAgentSequenceAppServer
+               )
 
       assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}
       assert_receive {:review_agent_call, 4, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 5, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 6, _session, _prompt, _issue, _opts}
 
       assert_receive {:codex_worker_update, "issue-review-agent-runner",
                       %{
@@ -3488,10 +3491,24 @@ defmodule SymphonyElixir.CoreTest do
                         }
                       }}
 
-      refute_receive {:review_agent_call, 5, _session, _prompt, _issue, _opts}, 50
+      assert_receive {:codex_worker_update, "issue-review-agent-runner",
+                      %{
+                        event: :review_agent_verdict,
+                        agent_phase: :reviewer,
+                        payload: %{
+                          verdict: :request_changes,
+                          round: 2,
+                          max_iterations: 1,
+                          reason: "reviewer did not converge",
+                          comments: ["reviewer did not converge"]
+                        }
+                      }}
+
+      refute_receive {:review_agent_call, 7, _session, _prompt, _issue, _opts}, 50
 
       turn_texts = review_agent_turn_texts!(trace_file)
-      assert length(turn_texts) == 2
+      assert length(turn_texts) == 3
+      assert Enum.at(turn_texts, 2) =~ "reviewer did not converge"
       refute Enum.any?(turn_texts, &String.contains?(&1, "Reviewer agent approved"))
     after
       clear_review_agent_env!()
@@ -3515,14 +3532,15 @@ defmodule SymphonyElixir.CoreTest do
       block = review_agent_block_response("Unsafe to continue.")
       put_review_agent_responses!([block, block])
 
-      assert_raise RuntimeError, ~r/Unsafe to continue/, fn ->
-        AgentRunner.run(review_agent_issue(), self(),
-          workspace_path: repo,
-          issue_state_fetcher: review_agent_state_fetcher(self(), 3),
-          issue_enricher: no_op_issue_enricher(),
-          review_agent_module: ReviewAgentSequenceAppServer
-        )
-      end
+      assert {:review_agent_blocked, %{reason: "Unsafe to continue.", findings: [_finding]}} =
+               catch_exit(
+                 AgentRunner.run(review_agent_issue(), self(),
+                   workspace_path: repo,
+                   issue_state_fetcher: review_agent_state_fetcher(self(), 3),
+                   issue_enricher: no_op_issue_enricher(),
+                   review_agent_module: ReviewAgentSequenceAppServer
+                 )
+               )
 
       assert_receive {:codex_worker_update, "issue-review-agent-runner",
                       %{

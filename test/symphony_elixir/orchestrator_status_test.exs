@@ -5130,6 +5130,68 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(worker_pid, :finish)
   end
 
+  test "review-agent blocked exit comments, moves to Needs Human, and does not schedule retry" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", tracker_api_token: nil)
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "issue-review-agent-blocked",
+      identifier: "MT-REVIEW-BLOCKED",
+      title: "Review agent blocked",
+      state: "In Progress"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ReviewAgentBlockedOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: stop_process(pid)
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-review-agent-blocked"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        session_id: "thread-review-agent-blocked"
+      })
+
+    put_running_run!(issue, run_id, started_at, %{session_id: "thread-review-agent-blocked"})
+    put_running_entry(pid, issue, running_entry)
+
+    reason =
+      {:review_agent_blocked,
+       %{
+         reason: "Unsafe to continue.",
+         findings: [
+           %{
+             summary: "Breaks the retry contract.",
+             file: "lib/example.ex",
+             line_range: {10, 12},
+             suggested_fix: "Return a terminal review-agent block."
+           }
+         ],
+         comments: ["Breaks the retry contract."]
+       }}
+
+    send(pid, {:DOWN, worker_ref, :process, worker_pid, reason})
+
+    assert_receive {:memory_tracker_comment, "issue-review-agent-blocked", body}, 1_000
+    assert body =~ "reviewer agent returned a verified blocking verdict"
+    assert body =~ "Reason: Unsafe to continue."
+    assert body =~ "Breaks the retry contract. (lib/example.ex:10-12)"
+
+    assert_receive {:memory_tracker_state_update, "issue-review-agent-blocked", "Needs Human"}, 1_000
+
+    completed_state = wait_for_orchestrator_state(pid, &(map_size(&1.running) == 0), 1_000)
+    refute Map.has_key?(completed_state.retry_attempts, issue.id)
+    refute MapSet.member?(completed_state.claimed, issue.id)
+    assert %{state: "Needs Human"} = completed_state.watching[issue.id]
+
+    send(worker_pid, :finish)
+  end
+
   defp put_budget_exhausted_run(attrs) do
     total_tokens = Map.fetch!(attrs, :total_tokens)
 

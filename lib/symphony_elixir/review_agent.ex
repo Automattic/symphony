@@ -46,7 +46,7 @@ defmodule SymphonyElixir.ReviewAgent do
          {:ok, source} <- source_material(issue, workspace, settings, opts),
          {:ok, verdict} <- run_reviewer_agent(issue, workspace, settings, source, opts),
          {:ok, grounded_verdict} <- validate_findings(verdict, source) do
-      {:ok, Map.put(grounded_verdict, :source, source)}
+      finalize_verdict(grounded_verdict, source)
     else
       false -> {:ok, %{verdict: :approve, comments: [], reason: "review_agent disabled"}}
       {:error, reason} -> {:error, reason}
@@ -85,7 +85,7 @@ defmodule SymphonyElixir.ReviewAgent do
     |> split_valid_findings()
     |> case do
       {[], failures} ->
-        {:error, {:review_agent_unverifiable, %{verdict: verdict, failures: failures}}}
+        {:error, {:review_agent_inconclusive, {:review_agent_unverifiable, %{verdict: verdict, failures: failures}}}}
 
       {valid_findings, _failures} ->
         {:ok, result |> Map.put(:findings, valid_findings) |> put_grounded_comments()}
@@ -215,6 +215,21 @@ defmodule SymphonyElixir.ReviewAgent do
   def block_reason(%{comments: [comment | _]}) when is_binary(comment), do: comment
   def block_reason(_result), do: "review_agent blocked the run"
 
+  @spec block_payload(result()) :: map()
+  def block_payload(result) when is_map(result) do
+    %{
+      reason: block_reason(result),
+      findings: Map.get(result, :findings, []),
+      comments: Map.get(result, :comments, [])
+    }
+  end
+
+  defp finalize_verdict(%{verdict: :block} = verdict, _source) do
+    {:error, {:review_agent_blocked, block_payload(verdict)}}
+  end
+
+  defp finalize_verdict(verdict, source), do: {:ok, Map.put(verdict, :source, source)}
+
   defp configured_agent_kind(%Schema{agent: %{kind: kind}}), do: AgentLabels.normalize_kind(kind)
   defp configured_agent_kind(%{agent: %{kind: kind}}), do: AgentLabels.normalize_kind(kind)
   defp configured_agent_kind(%{agent: %{"kind" => kind}}), do: AgentLabels.normalize_kind(kind)
@@ -277,8 +292,30 @@ defmodule SymphonyElixir.ReviewAgent do
 
   defp run_review_turn(agent_module, session, prompt, issue, message_collector, turn_opts) do
     case agent_module.run_turn(session, prompt, issue, turn_opts) do
-      {:ok, result} -> result |> response_payload(message_collector) |> pick_review_response()
-      {:error, reason} -> {:error, {:review_agent_failed, reason}}
+      {:ok, result} ->
+        result
+        |> response_payload(message_collector)
+        |> pick_review_response()
+        |> classify_review_turn_result()
+
+      {:error, reason} ->
+        {:error, classify_review_turn_failure(reason)}
+    end
+  end
+
+  defp classify_review_turn_result({:ok, _result} = ok), do: ok
+
+  defp classify_review_turn_result({:error, {:malformed_review_agent_response, _reason} = reason}) do
+    {:error, {:review_agent_inconclusive, reason}}
+  end
+
+  defp classify_review_turn_result({:error, reason}), do: {:error, reason}
+
+  defp classify_review_turn_failure(reason) do
+    if iteration_limit?(reason) do
+      {:review_agent_inconclusive, {:max_iterations, reason}}
+    else
+      {:review_agent_failed, reason}
     end
   end
 
@@ -306,6 +343,12 @@ defmodule SymphonyElixir.ReviewAgent do
         else
           {:error, {:review_agent_failed, reason}}
         end
+
+      {:error, {:review_agent_inconclusive, {:max_iterations, reason}}} ->
+        {:error, {:review_agent_inconclusive, {:self_check_max_iterations, reason}}}
+
+      {:error, {:review_agent_inconclusive, _reason} = reason} ->
+        {:error, reason}
     end
   end
 
@@ -332,6 +375,10 @@ defmodule SymphonyElixir.ReviewAgent do
   defp maybe_put_comments(json, _result), do: json
 
   defp self_check_iteration_limit?(reason) do
+    iteration_limit?(reason)
+  end
+
+  defp iteration_limit?(reason) do
     reason
     |> inspect()
     |> String.downcase()

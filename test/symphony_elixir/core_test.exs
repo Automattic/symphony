@@ -2303,6 +2303,30 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Attempt: 2 of 3"
     assert prompt =~ "merge it into the head branch"
     assert prompt =~ "END UNTRUSTED PR CONFLICT"
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        pr_conflict: %{
+          head_ref: "auto/MT-706",
+          base_ref: "main",
+          observed_at: "2026-05-01T09:00:00Z",
+          retry_count: 0,
+          max_retries: 0
+        }
+      )
+
+    assert prompt =~ "Observed at: 2026-05-01T09:00:00Z"
+    assert prompt =~ "Attempt: 1 of 3"
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        pr_conflict: %{
+          head_ref: "auto/MT-706",
+          base_ref: "main"
+        }
+      )
+
+    assert prompt =~ "Observed at: unknown"
   end
 
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do

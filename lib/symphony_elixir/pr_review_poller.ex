@@ -647,13 +647,9 @@ defmodule SymphonyElixir.PrReviewPoller do
       normalize_decision(Map.get(activity, :merge_state_status)) == @dirty_merge_state
   end
 
-  defp merge_conflict?(_activity), do: false
-
   defp unsupported_cross_repo?(activity) when is_map(activity) do
     Map.get(activity, :is_cross_repository) == true
   end
-
-  defp unsupported_cross_repo?(_activity), do: false
 
   defp conflict_key(activity) when is_map(activity) do
     head = Map.get(activity, :head_ref_oid) || Map.get(activity, :head_ref_name) || "unknown-head"
@@ -662,16 +658,12 @@ defmodule SymphonyElixir.PrReviewPoller do
     "#{head}|#{base}"
   end
 
-  defp conflict_key(_activity), do: nil
-
   defp conflict_state_present?(record) when is_map(record) do
     Map.get(record, :conflict_context) not in [nil, %{}] or
       Map.get(record, :last_conflict_key) not in [nil, ""] or
       conflict_retry_count(record) > 0 or
       string_list(Map.get(record, :dispatched_conflict_keys, [])) != []
   end
-
-  defp conflict_state_present?(_record), do: false
 
   defp conflict_retry_count(record) when is_map(record) do
     case Map.get(record, :conflict_retry_count) do

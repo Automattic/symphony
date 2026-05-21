@@ -35,7 +35,8 @@ defmodule SymphonyElixir.SensitivePath do
     "~/.node_repl_history",
     "~/.codex/auth.json",
     "~/.codex/config.toml",
-    "~/.codex/AGENTS.md"
+    "~/.codex/AGENTS.md",
+    "~/.codex/cloud-requirements-cache.json"
   ]
 
   @sensitive_path_segments [
@@ -58,7 +59,8 @@ defmodule SymphonyElixir.SensitivePath do
     "/var/root/",
     "/.codex/auth.json/",
     "/.codex/config.toml/",
-    "/.codex/AGENTS.md/"
+    "/.codex/AGENTS.md/",
+    "/.codex/cloud-requirements-cache.json/"
   ]
 
   @sensitive_path_basenames [

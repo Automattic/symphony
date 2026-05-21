@@ -156,6 +156,7 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
              )
 
     assert runtime_home.home_path == generated_home
+    assert runtime_home.host_codex_home == host_codex_home
     assert File.read!(runtime_home.config_path) =~ "[mcp_servers.symphony]"
     assert File.read_link!(Path.join(generated_home, "auth.json")) == Path.join(host_codex_home, "auth.json")
 
@@ -219,6 +220,121 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     refute File.exists?(Path.join(runtime_home.home_path, "auth.json"))
     refute File.exists?(Path.join(runtime_home.home_path, "cloud-requirements-cache.json"))
     assert File.read!(runtime_home.config_path) =~ "[mcp_servers.symphony]"
+  end
+
+  test "sync_cloud_requirements_cache persists refreshed generated cache to host home" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-cloud-cache-sync-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    host_codex_home = Path.join(test_root, "host-codex")
+    generated_home = Path.join(test_root, "generated-codex-home")
+    File.mkdir_p!(generated_home)
+
+    generated_cache = cloud_requirements_cache("2026-05-21T11:00:00Z", "new")
+    File.write!(Path.join(generated_home, "cloud-requirements-cache.json"), generated_cache)
+
+    McpConfig.sync_cloud_requirements_cache(%{
+      home_path: generated_home,
+      host_codex_home: host_codex_home
+    })
+
+    assert File.read!(Path.join(host_codex_home, "cloud-requirements-cache.json")) == generated_cache
+  end
+
+  test "sync_cloud_requirements_cache keeps a fresher host cache" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-cloud-cache-stale-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    host_codex_home = Path.join(test_root, "host-codex")
+    generated_home = Path.join(test_root, "generated-codex-home")
+    File.mkdir_p!(host_codex_home)
+    File.mkdir_p!(generated_home)
+
+    host_cache = cloud_requirements_cache("2026-05-21T12:00:00Z", "host")
+    generated_cache = cloud_requirements_cache("2026-05-21T11:00:00Z", "generated")
+    File.write!(Path.join(host_codex_home, "cloud-requirements-cache.json"), host_cache)
+    File.write!(Path.join(generated_home, "cloud-requirements-cache.json"), generated_cache)
+
+    McpConfig.sync_cloud_requirements_cache(%{
+      home_path: generated_home,
+      host_codex_home: host_codex_home
+    })
+
+    assert File.read!(Path.join(host_codex_home, "cloud-requirements-cache.json")) == host_cache
+  end
+
+  test "sync_cloud_requirements_cache skips missing and invalid generated caches" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-cloud-cache-invalid-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    host_codex_home = Path.join(test_root, "host-codex")
+    generated_home = Path.join(test_root, "generated-codex-home")
+    File.mkdir_p!(host_codex_home)
+    File.mkdir_p!(generated_home)
+
+    McpConfig.sync_cloud_requirements_cache(%{
+      home_path: generated_home,
+      host_codex_home: host_codex_home
+    })
+
+    refute File.exists?(Path.join(host_codex_home, "cloud-requirements-cache.json"))
+
+    File.write!(Path.join(generated_home, "cloud-requirements-cache.json"), "not json")
+
+    McpConfig.sync_cloud_requirements_cache(%{
+      home_path: generated_home,
+      host_codex_home: host_codex_home
+    })
+
+    refute File.exists?(Path.join(host_codex_home, "cloud-requirements-cache.json"))
+
+    File.write!(Path.join(generated_home, "cloud-requirements-cache.json"), "{}")
+
+    McpConfig.sync_cloud_requirements_cache(%{
+      home_path: generated_home,
+      host_codex_home: host_codex_home
+    })
+
+    refute File.exists?(Path.join(host_codex_home, "cloud-requirements-cache.json"))
+  end
+
+  test "sync_cloud_requirements_cache overwrites an invalid host cache" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-cloud-cache-invalid-host-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    host_codex_home = Path.join(test_root, "host-codex")
+    generated_home = Path.join(test_root, "generated-codex-home")
+    File.mkdir_p!(host_codex_home)
+    File.mkdir_p!(generated_home)
+
+    generated_cache = cloud_requirements_cache("2026-05-21T11:00:00Z", "new")
+    File.write!(Path.join(generated_home, "cloud-requirements-cache.json"), generated_cache)
+    File.write!(Path.join(host_codex_home, "cloud-requirements-cache.json"), "{}")
+
+    McpConfig.sync_cloud_requirements_cache(%{
+      home_path: generated_home,
+      host_codex_home: host_codex_home
+    })
+
+    assert File.read!(Path.join(host_codex_home, "cloud-requirements-cache.json")) == generated_cache
+  end
+
+  test "sync_cloud_requirements_cache logs and continues when host cache write fails" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-codex-mcp-cloud-cache-write-fail-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    file_parent = Path.join(test_root, "file-parent")
+    host_codex_home = Path.join(file_parent, "host-codex")
+    generated_home = Path.join(test_root, "generated-codex-home")
+    File.mkdir_p!(generated_home)
+    File.write!(file_parent, "not a directory")
+    File.write!(Path.join(generated_home, "cloud-requirements-cache.json"), cloud_requirements_cache("2026-05-21T11:00:00Z", "new"))
+
+    assert :ok =
+             McpConfig.sync_cloud_requirements_cache(%{
+               home_path: generated_home,
+               host_codex_home: host_codex_home
+             })
   end
 
   test "build_config supports default host home lookup and fallback settings shape" do
@@ -306,5 +422,18 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
       @mcp_session.shim_path,
       host_codex_home: host_codex_home
     )
+  end
+
+  defp cloud_requirements_cache(expires_at, signature) do
+    Jason.encode!(%{
+      "signed_payload" => %{
+        "cached_at" => "2026-05-21T10:00:00Z",
+        "expires_at" => expires_at,
+        "chatgpt_user_id" => "user-test",
+        "account_id" => "account-test",
+        "contents" => nil
+      },
+      "signature" => signature
+    })
   end
 end

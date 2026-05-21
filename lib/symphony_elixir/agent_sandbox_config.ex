@@ -131,7 +131,8 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   @codex_runtime_deny_read_paths [
     "~/.codex/auth.json",
     "~/.codex/config.toml",
-    "~/.codex/AGENTS.md"
+    "~/.codex/AGENTS.md",
+    "~/.codex/cloud-requirements-cache.json"
   ]
 
   @doc false

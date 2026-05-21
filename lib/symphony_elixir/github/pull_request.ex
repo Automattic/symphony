@@ -172,8 +172,6 @@ defmodule SymphonyElixir.GitHub.PullRequest do
     end
   end
 
-  defp decode_reply_payload(_output), do: {:error, :invalid_reply_payload}
-
   @spec reply_to_comment(String.t(), comment(), String.t(), keyword()) :: :ok | {:error, term()}
   def reply_to_comment(pr_url, comment, body, opts \\ []) do
     cond do

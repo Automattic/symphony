@@ -1962,6 +1962,20 @@ defmodule SymphonyElixir.ExtensionsTest do
       timestamp: DateTime.utc_now()
     }
 
+    buffered_completed_agent_event = %{
+      event: :notification,
+      payload: %{
+        "method" => "item/completed",
+        "params" => %{
+          "item" => %{
+            "type" => "agentMessage",
+            "text" => "buffered Codex complete"
+          }
+        }
+      },
+      timestamp: DateTime.utc_now()
+    }
+
     buffered_tool_call_event = %{
       event: :notification,
       payload: %{
@@ -2008,12 +2022,13 @@ defmodule SymphonyElixir.ExtensionsTest do
           |> Map.put(:transcript_buffer, [
             buffered_agent_event,
             buffered_agent_continuation_event,
+            buffered_completed_agent_event,
             buffered_tool_call_event,
             buffered_progress_event,
             buffered_progress_continuation_event,
             buffered_tool_result_event
           ])
-          |> Map.put(:transcript_buffer_size, 6)
+          |> Map.put(:transcript_buffer_size, 7)
         ]
       end)
 
@@ -2045,8 +2060,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_filter_pressed(html, "agent-text", true)
     assert_filter_pressed(html, "error", true)
     assert html =~ ~s(phx-click="toggle_filter")
-    assert html =~ "buffered Claude hello again"
-    assert html =~ "transcript-event-agent-text"
+    # Completed item/agentMessage replaces the in-flight merged-delta entry rather than
+    # appending a second one — without this guard reviewer messages would render twice.
+    assert html =~ "buffered Codex complete"
+    refute html =~ "buffered Claude hello again"
+    assert length(Regex.scan(~r/transcript-event-agent-text/, html)) == 1
     assert html =~ "Tool call"
     assert html =~ "linear_graphql"
     assert html =~ "transcript-event-tool-call"

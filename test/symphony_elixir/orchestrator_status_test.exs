@@ -1839,6 +1839,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       identifier: issue.identifier,
       issue: issue,
       session_id: "thread-budget",
+      agent_module: StopSessionAgent,
+      agent_session: %{recipient: self()},
       turn_count: 0,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -1931,6 +1933,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
 
     refute Process.alive?(worker_pid)
+    assert_receive :agent_stop_session_called
 
     assert_receive {:notification_event,
                     %SymphonyElixir.Notifications.Event{
@@ -2528,6 +2531,75 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert [%{run_id: ^run_id, status: "stopped", error: "agent stopped by operator"}] =
              RunStore.list_runs()
+  end
+
+  test "terminal running issue stops agent session while removing workspace" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-orchestrator-terminal-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root
+    )
+
+    issue = %Issue{
+      id: "issue-terminal-cleanup",
+      identifier: "MT-DONE",
+      title: "Terminal cleanup",
+      description: "Stop session when terminal reconciliation removes workspace",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-DONE"
+    }
+
+    workspace = Path.join([workspace_root, "default", issue.identifier])
+    File.mkdir_p!(workspace)
+
+    orchestrator_name = Module.concat(__MODULE__, :TerminalCleanupOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      terminate_task_supervisor_children()
+
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+
+      File.rm_rf(workspace_root)
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-terminal-cleanup"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        workspace_path: workspace,
+        session_id: "thread-terminal-cleanup",
+        agent_module: StopSessionAgent,
+        agent_session: %{recipient: self()},
+        turn_count: 1
+      })
+
+    put_running_run!(issue, run_id, started_at, %{
+      workspace_path: workspace,
+      session_id: "thread-terminal-cleanup"
+    })
+
+    put_running_entry(pid, issue, running_entry)
+    terminal_issue = %{issue | state: "Done"}
+
+    :sys.replace_state(pid, fn state ->
+      Orchestrator.reconcile_issue_states_for_test([terminal_issue], state)
+    end)
+
+    assert_receive :agent_stop_session_called
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :shutdown}
+
+    assert %{running: []} = GenServer.call(pid, :snapshot)
+    refute File.exists?(workspace)
   end
 
   test "stop_running records stop_session cleanup failures in run history" do
@@ -3881,9 +3953,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     running_entry = %{
       pid: worker_pid,
       ref: make_ref(),
+      repo_key: Config.repo_key!(),
+      run_id: "run-stall",
       identifier: "MT-STALL",
       issue: %Issue{id: issue_id, identifier: "MT-STALL", state: "In Progress"},
       session_id: "thread-stall-turn-stall",
+      agent_module: StopSessionAgent,
+      agent_session: %{recipient: self()},
       last_codex_message: nil,
       last_codex_timestamp: nil,
       last_codex_event: nil,
@@ -3903,6 +3979,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = get_orchestrator_state(pid)
 
     refute Process.alive?(worker_pid)
+    assert_receive :agent_stop_session_called
     refute Map.has_key?(state.running, issue_id)
 
     assert %{

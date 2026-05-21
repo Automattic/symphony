@@ -1747,6 +1747,9 @@ Notes:
 - Codex local SRT launch uses a random `127.0.0.1` TCP listener for Symphony's implicit MCP server
   instead of a Unix socket, because the SRT macOS profile denies sandboxed Unix socket connects.
   The listener remains token-authenticated and bound to loopback only.
+- Codex local non-SRT launch prefers a managed Unix socket for Symphony's implicit MCP server. If
+  the OS denies managed Unix socket binding with `EPERM`, the implementation falls back to a random
+  `127.0.0.1` TCP listener. Explicit Unix socket paths remain strict and surface the bind error.
 - Codex launch preserves the configured command while injecting `--config` overrides for
   `default_permissions="workspace_write"` and the generated `permissions.workspace_write.*`
   profile. Runtime launch paths render workspace-local filesystem entries with the validated
@@ -1763,9 +1766,17 @@ Notes:
   prompt file and cleans it up with a trap.
 - Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
   using fields supported by the configured adapter.
-- The Codex adapter opts out of `turn/diff/updated` notifications during initialize so broad
-  aggregated diffs do not overload the app-server stdio stream; terminal turn events and smaller
-  item-level notifications remain enabled.
+- The Codex adapter opts out of `turn/diff/updated`,
+  `item/commandExecution/outputDelta`, and `item/fileChange/outputDelta` notifications during
+  initialize so broad aggregated diffs and streaming command/file output do not overload the
+  app-server stdio stream. Executor sessions also opt out of `item/agentMessage/delta`; read-only
+  reviewer sessions keep those deltas enabled because Codex reviewer JSON may only be available
+  through streamed text. Codex launches also receive `tool_output_token_limit=4096` so completed
+  command lifecycle payloads do not echo broad command output back into the app-server stream.
+  Terminal `item/completed` notifications remain enabled for command tracking, but known noisy
+  string fields are compacted before forwarding to Symphony's transcript/audit pipeline. Linear
+  comment create/update dynamic tools return compact acknowledgements instead of echoing full
+  comment bodies back into the Codex app-server stream.
 
 Elixir evidence: `lib/symphony_elixir/codex/app_server.ex`,
 `lib/symphony_elixir/claude_code/app_server.ex`,

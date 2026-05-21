@@ -39,6 +39,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   """
 
   @codex_profile "workspace_write"
+  @codex_tool_output_token_limit 4096
 
   @deny_read_paths [
     "/Volumes",
@@ -158,6 +159,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   @spec codex_config_overrides(String.t(), [String.t()], [String.t()], [String.t()], keyword()) :: [String.t()]
   def codex_config_overrides(network_mode, allowed_domains, allow_read_paths \\ [], extra_deny_read_paths \\ [], opts \\ []) do
     [
+      "tool_output_token_limit=#{@codex_tool_output_token_limit}",
       ~s(default_permissions="#{@codex_profile}"),
       "permissions.#{@codex_profile}.filesystem=#{codex_filesystem_policy(allow_read_paths, extra_deny_read_paths, opts)}",
       "permissions.#{@codex_profile}.network=#{codex_network_policy(network_mode)}",

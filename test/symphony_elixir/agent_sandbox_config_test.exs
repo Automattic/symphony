@@ -219,6 +219,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     overrides = AgentSandboxConfig.codex_config_overrides("allowlist", ["github.com", "api.openai.com"], [], [], workspace: workspace)
 
     assert ~s(default_permissions="workspace_write") in overrides
+    assert "tool_output_token_limit=4096" in overrides
     assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
     refute filesystem =~ ~s(":project_roots")
     assert filesystem =~ ~s("#{workspace}"="write")

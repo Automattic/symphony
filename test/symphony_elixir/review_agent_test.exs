@@ -154,7 +154,12 @@ defmodule SymphonyElixir.ReviewAgentTest do
       }
 
       assert {:ok, %{verdict: :approve, comments: []}} =
-               ReviewAgent.evaluate(issue, repo, Config.settings!(), review_agent_module: RuntimeTupleWithStreamingReviewer)
+               ReviewAgent.evaluate(
+                 issue,
+                 repo,
+                 Config.settings!(),
+                 review_agent_module: RuntimeTupleWithStreamingReviewer
+               )
     after
       File.rm_rf(test_root)
     end

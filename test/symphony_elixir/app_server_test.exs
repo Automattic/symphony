@@ -3791,6 +3791,71 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server treats ANSI-coded codex transport errors as stdout write failures" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stdout-ansi-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-97")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-97"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-97","status":"inProgress","items":[]}}}'
+            printf '\\033[2m2026-05-20T09:14:16.420328Z\\033[0m \\033[31mERROR\\033[0m \\033[2mcodex_app_server_transport::transport::stdio\\033[0m\\033[2m:\\033[0m Failed to write to stdout: Resource temporarily unavailable (os error 35)\\n'
+            sleep 1
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-stdout-ansi",
+        identifier: "MT-97",
+        title: "ANSI stdout failure",
+        description: "Tracing-subscriber colorized errors must still trigger the transport abort",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-97",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:codex_stdio_write_failed, message}} =
+               AppServer.run(workspace, "Capture ANSI stdout failure", issue)
+
+      assert message =~ "Failed to write to stdout"
+      assert message =~ "Resource temporarily unavailable"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server does not treat unrelated log lines mentioning stdout writes as transport failures" do
     test_root =
       Path.join(
@@ -3847,6 +3912,76 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Benign stdout mention", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server does not treat malformed protocol payloads containing stdout text as transport failures" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stdout-payload-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-96")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-96"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-96","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"type":"commandExecution","aggregatedOutput":"test line codex_app_server_transport::transport::stdio: Failed to write to stdout: Resource temporarily unavailable'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-stdout-payload",
+        identifier: "MT-96",
+        title: "Stdout text in payload",
+        description: "Ensure command output text is not classified as a transport failure",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-96",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Benign stdout text in payload", issue, on_message: on_message)
+
+      assert_received {:app_server_message, %{event: :malformed, payload: payload}}
+      assert payload =~ "codex_app_server_transport::transport::stdio"
+      assert_received {:app_server_message, %{event: :turn_completed}}
+      refute_received {:app_server_message, %{event: :transport_failed}}
     after
       File.rm_rf(test_root)
     end

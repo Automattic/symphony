@@ -55,6 +55,7 @@ defmodule SymphonyElixir.McpServerTest do
       )
 
     stale_managed_dir = managed_socket_dir("stale-control")
+
     outside_glob_dir =
       Path.join(
         Path.dirname(managed_socket_base()),
@@ -136,6 +137,7 @@ defmodule SymphonyElixir.McpServerTest do
                session.socket_dir,
                Path.join(managed_socket_base(), "symphony-mcp-")
              )
+
       assert File.dir?(session.socket_dir)
       assert File.exists?(session.socket_path)
     after

@@ -12,6 +12,10 @@ defmodule SymphonyElixir.McpServer do
   @protocol_version "2025-06-18"
   @auth_header "symphony-session-token"
   @header_separator "\r\n\r\n"
+  @managed_socket_root "/tmp"
+  @managed_socket_prefix "symphony-mcp-"
+  @shim_prefix "symphony-mcp-shim-"
+  @orphaned_socket_dir_grace_seconds 5
 
   @type session :: %{
           id: String.t(),
@@ -64,6 +68,7 @@ defmodule SymphonyElixir.McpServer do
 
   @impl true
   def init(_opts) do
+    reap_orphaned_socket_dirs()
     {:ok, %{sessions: %{}, tokens: %{}, acceptors: %{}}}
   end
 
@@ -190,7 +195,7 @@ defmodule SymphonyElixir.McpServer do
 
       _ ->
         segment = run_id_segment(opts) || id
-        dir = Path.join("/tmp", "symphony-mcp-#{segment}")
+        dir = Path.join(@managed_socket_root, "#{@managed_socket_prefix}#{segment}")
         {:ok, dir, Path.join(dir, "sock")}
     end
   end
@@ -313,7 +318,64 @@ defmodule SymphonyElixir.McpServer do
   defp remove_socket_dir(_dir), do: :ok
 
   defp managed_socket_dir?(dir) do
-    String.starts_with?(dir, "/tmp/symphony-mcp-")
+    String.starts_with?(dir, Path.join(@managed_socket_root, @managed_socket_prefix))
+  end
+
+  defp reap_orphaned_socket_dirs do
+    @managed_socket_root
+    |> Path.join("#{@managed_socket_prefix}*")
+    |> Path.wildcard()
+    |> Enum.each(&reap_orphaned_socket_dir/1)
+  end
+
+  defp reap_orphaned_socket_dir(path) do
+    cond do
+      String.starts_with?(Path.basename(path), @shim_prefix) ->
+        :ok
+
+      File.dir?(path) and orphaned_socket_dir?(path) ->
+        _ = File.rm_rf(path)
+        :ok
+
+      true ->
+        :ok
+    end
+  end
+
+  defp orphaned_socket_dir?(dir) do
+    socket_path = Path.join(dir, "sock")
+
+    case File.lstat(socket_path) do
+      {:ok, %{type: :regular}} -> true
+      {:ok, _stat} -> socket_liveness(socket_path) == :stale
+      {:error, :enoent} -> managed_socket_dir_old_enough?(dir)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp managed_socket_dir_old_enough?(dir) do
+    case File.stat(dir, time: :posix) do
+      {:ok, %{mtime: mtime}} -> System.system_time(:second) - mtime >= @orphaned_socket_dir_grace_seconds
+      {:error, _reason} -> false
+    end
+  end
+
+  defp socket_liveness(path) do
+    case :socket.open(:local, :stream) do
+      {:ok, socket} ->
+        try do
+          case :socket.connect(socket, %{family: :local, path: path}) do
+            :ok -> :accepting
+            {:error, reason} when reason in [:enoent, :econnrefused, :eprototype, :einval] -> :stale
+            {:error, _reason} -> :unknown
+          end
+        after
+          close_socket(socket)
+        end
+
+      {:error, _reason} ->
+        :unknown
+    end
   end
 
   defp compute_remote_socket_path(_id, _opts, %{transport: :tcp}), do: nil

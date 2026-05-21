@@ -330,4 +330,40 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert prompt =~ "Codex transport output guard:"
     assert prompt =~ "make all"
   end
+
+  test "compact prompt appends merge conflict instructions and metadata" do
+    prompt =
+      PromptBuilder.build_compact_prompt(
+        %{
+          identifier: "ACME-3716",
+          title: "Resolve conflict",
+          state: "In Progress",
+          url: "https://linear.example/issue/ACME-3716/example",
+          repo_key: "default"
+        },
+        pr_conflict: %{
+          pr_url: "https://github.com/example/repo/pull/3716",
+          pr_title: "Resolve conflict",
+          head_ref: "auto/ACME-3716",
+          head_sha: "head-sha",
+          base_ref: "main",
+          base_sha: "base-sha",
+          mergeable: "CONFLICTING",
+          merge_state_status: "DIRTY",
+          conflict_key: "head-sha|base-sha",
+          observed_at: "2026-05-01T09:00:00Z",
+          retry_count: 2,
+          max_retries: 3
+        }
+      )
+
+    assert prompt =~ "You are working on Linear ticket `ACME-3716`."
+    assert prompt =~ "PR merge conflict:"
+    assert prompt =~ "BEGIN UNTRUSTED PR CONFLICT"
+    assert prompt =~ "PR: https://github.com/example/repo/pull/3716"
+    assert prompt =~ "Head branch: auto/ACME-3716"
+    assert prompt =~ "Base branch: main"
+    assert prompt =~ "Attempt: 2 of 3"
+    assert prompt =~ "resolve conflicts semantically"
+  end
 end

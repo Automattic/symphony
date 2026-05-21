@@ -244,6 +244,7 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert filesystem =~ ~s("~/.codex/auth.json"="none")
     assert filesystem =~ ~s("~/.codex/config.toml"="none")
     assert filesystem =~ ~s("~/.codex/AGENTS.md"="none")
+    assert filesystem =~ ~s("~/.codex/cloud-requirements-cache.json"="none")
     refute filesystem =~ "~/.codex/sessions"
     refute filesystem =~ ~s("~/.claude"=)
 
@@ -280,13 +281,15 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     overrides =
       AgentSandboxConfig.codex_config_overrides("allowlist", [], [], [
         Path.join(codex_home, "auth.json"),
-        Path.join(codex_home, "config.toml")
+        Path.join(codex_home, "config.toml"),
+        Path.join(codex_home, "cloud-requirements-cache.json")
       ])
 
     filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
 
     assert filesystem =~ ~s("#{Path.join(codex_home, "auth.json")}"="none")
     assert filesystem =~ ~s("#{Path.join(codex_home, "config.toml")}"="none")
+    assert filesystem =~ ~s("#{Path.join(codex_home, "cloud-requirements-cache.json")}"="none")
   end
 
   test "Codex allowlist config emits both tilde and absolute forms of home-relative deny paths (defense-in-depth)" do
@@ -567,17 +570,20 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
         "~/.codex",
         "~/.codex/auth.json",
         "~/.codex/config.toml",
-        "~/.codex/AGENTS.md"
+        "~/.codex/AGENTS.md",
+        "~/.codex/cloud-requirements-cache.json"
       ])
 
     assert filesystem = Enum.find(overrides, &String.starts_with?(&1, "permissions.workspace_write.filesystem="))
     assert filesystem =~ ~s("~/.codex/auth.json"="none")
     assert filesystem =~ ~s("~/.codex/config.toml"="none")
     assert filesystem =~ ~s("~/.codex/AGENTS.md"="none")
+    assert filesystem =~ ~s("~/.codex/cloud-requirements-cache.json"="none")
     refute filesystem =~ ~s("~/.codex"="read")
     refute filesystem =~ ~s("~/.codex/auth.json"="read")
     refute filesystem =~ ~s("~/.codex/config.toml"="read")
     refute filesystem =~ ~s("~/.codex/AGENTS.md"="read")
+    refute filesystem =~ ~s("~/.codex/cloud-requirements-cache.json"="read")
   end
 
   test "Codex filesystem config normalizes malformed operator allow_read_paths" do

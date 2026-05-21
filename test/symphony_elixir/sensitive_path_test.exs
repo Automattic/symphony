@@ -49,6 +49,7 @@ defmodule SymphonyElixir.SensitivePathTest do
       "~/.codex/auth.json",
       "~/.codex/config.toml",
       "~/.codex/AGENTS.md",
+      "~/.codex/cloud-requirements-cache.json",
       "/Users/test/.netrc",
       "/Users/test/.git-credentials",
       "/Users/test/.npmrc",
@@ -67,7 +68,8 @@ defmodule SymphonyElixir.SensitivePathTest do
       "/Users/test/.bash_history",
       "/Users/test/.codex/auth.json",
       "/Users/test/.codex/config.toml",
-      "/Users/test/.codex/AGENTS.md"
+      "/Users/test/.codex/AGENTS.md",
+      "/Users/test/.codex/cloud-requirements-cache.json"
     ]
 
     for path <- denied_paths do

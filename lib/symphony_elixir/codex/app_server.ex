@@ -44,6 +44,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           workspace: Path.t(),
           worker_host: String.t() | nil,
           command_security: map(),
+          codex_home: McpConfig.runtime_home() | nil,
           launch_cleanup_paths: [Path.t()],
           mcp_session: McpServer.session() | nil,
           mcp_remote_shim_path: Path.t() | nil,
@@ -85,8 +86,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path, tool_scope) do
     case start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
-      {:ok, port, launch_cleanup_paths, remote_codex_home} ->
+      {:ok, port, codex_home, launch_cleanup_paths, remote_codex_home} ->
         launch_context = %{
+          codex_home: codex_home,
           cleanup_paths: launch_cleanup_paths,
           mcp_session: mcp_session,
           remote_shim_path: remote_shim_path,
@@ -115,6 +117,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          worker_host,
          settings,
          %{
+           codex_home: codex_home,
            cleanup_paths: launch_cleanup_paths,
            mcp_session: mcp_session,
            remote_shim_path: remote_shim_path,
@@ -138,6 +141,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          workspace: workspace,
          worker_host: worker_host,
          command_security: command_security_context(workspace, worker_host),
+         codex_home: codex_home,
          launch_cleanup_paths: launch_cleanup_paths,
          mcp_session: mcp_session,
          mcp_remote_shim_path: remote_shim_path,
@@ -147,6 +151,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     else
       {:error, reason} ->
         stop_port(port)
+        McpConfig.sync_cloud_requirements_cache(codex_home)
         cleanup_launch_paths(launch_cleanup_paths)
         cleanup_remote_shim(worker_host, remote_shim_path)
         cleanup_remote_codex_home(worker_host, remote_codex_home)
@@ -301,6 +306,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port} = session) when is_port(port) do
     stop_port(port)
+    McpConfig.sync_cloud_requirements_cache(Map.get(session, :codex_home))
     cleanup_launch_paths(Map.get(session, :launch_cleanup_paths, []))
     cleanup_remote_shim(Map.get(session, :worker_host), Map.get(session, :mcp_remote_shim_path))
     cleanup_remote_codex_home(Map.get(session, :worker_host), Map.get(session, :mcp_remote_codex_home))
@@ -424,7 +430,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           ]
         )
 
-      {:ok, port, codex_home.cleanup_paths ++ launch_cleanup_paths, nil}
+      {:ok, port, codex_home, codex_home.cleanup_paths ++ launch_cleanup_paths, nil}
     else
       {:error, {:local_codex_home_command_failed, reason, cleanup_paths}} ->
         cleanup_launch_paths(cleanup_paths)
@@ -447,7 +453,7 @@ defmodule SymphonyElixir.Codex.AppServer do
              env: AgentEnv.build(),
              reverse_forwards: mcp_reverse_forwards(mcp_session, remote_socket_path)
            ) do
-      {:ok, port, [], remote_codex_home}
+      {:ok, port, nil, [], remote_codex_home}
     end
   end
 
@@ -755,7 +761,8 @@ defmodule SymphonyElixir.Codex.AppServer do
     [
       Path.join(codex_home, "auth.json"),
       Path.join(codex_home, "config.toml"),
-      Path.join(codex_home, "AGENTS.md")
+      Path.join(codex_home, "AGENTS.md"),
+      Path.join(codex_home, "cloud-requirements-cache.json")
     ]
   end
 

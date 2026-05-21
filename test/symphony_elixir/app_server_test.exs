@@ -156,6 +156,7 @@ defmodule SymphonyElixir.AppServerTest do
       printf '%s' "$CODEX_HOME" > "#{codex_home_trace}"
       printf '%s\\n' "$@" > "#{argv_trace}"
       cat "$CODEX_HOME/config.toml" > "#{config_copy}"
+      printf '%s' '{"signed_payload":{"cached_at":"2026-05-21T10:00:00Z","expires_at":"2026-05-21T11:00:00Z","chatgpt_user_id":"user-test","account_id":"account-test","contents":null},"signature":"generated"}' > "$CODEX_HOME/cloud-requirements-cache.json"
       if [ -L "$CODEX_HOME/auth.json" ]; then
         printf 'symlink' > "#{auth_link_trace}"
       fi
@@ -198,6 +199,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv =~ Path.join(codex_home, "config.toml")
 
       assert :ok = AppServer.stop_session(session)
+      assert File.read!(Path.join(host_codex_home, "cloud-requirements-cache.json")) =~ ~s("signature":"generated")
       refute File.exists?(codex_home)
     after
       File.rm_rf(test_root)

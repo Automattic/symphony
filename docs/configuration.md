@@ -254,8 +254,8 @@ file like `~/.ssh/known_hosts`.
 > also emitted as explicit `allowRead` carve-outs). The current Claude adapter does **not** pass
 > these entries into its temporary settings, so treat this list as Codex-effective until that gap
 > is closed. Do not use it for agent runtime credential stores under `~/.codex` or `~/.claude`:
-> Symphony keeps `~/.codex/auth.json`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md` in the
-> managed deny list even if listed here.
+> Symphony keeps `~/.codex/auth.json`, `~/.codex/config.toml`, `~/.codex/AGENTS.md`, and
+> `~/.codex/cloud-requirements-cache.json` in the managed deny list even if listed here.
 
 ### `agent`
 
@@ -409,10 +409,11 @@ A set var substitutes the value; an empty var drops the entry; a missing var kee
   (symphony + inherited + declared servers) and a symlink to the operator's `~/.codex/auth.json`
   when present (skipped with a warning if missing). If the operator has a Codex
   `cloud-requirements-cache.json`, Symphony copies it into the temporary home so Codex can load
-  workspace-managed policy requirements without writing back to the host cache. The generated path
-  is added to the sandbox filesystem deny-read list so the agent cannot read its own
-  `auth.json`/`config.toml`/`AGENTS.md`. Remote workers also receive a per-session
-  `/tmp/symphony-codex-home-<id>` directory; Symphony tears both down at session stop.
+  workspace-managed policy requirements. If Codex refreshes that cache during the session, Symphony
+  syncs the fresher copy back to the operator's Codex home before deleting the temporary home. The
+  generated path is added to the sandbox filesystem deny-read list so the agent cannot read its own
+  `auth.json`/`config.toml`/`AGENTS.md`/cloud requirements cache. Remote workers also receive a
+  per-session `/tmp/symphony-codex-home-<id>` directory; Symphony tears both down at session stop.
 - **Codex prompt transport:** when the fully rendered first-turn prompt is larger than Symphony's
   app-server stdio soft limit, Symphony sends a compact bootstrap prompt instead. The compact
   prompt keeps the hard security rules and directs Codex to load issue details through scoped

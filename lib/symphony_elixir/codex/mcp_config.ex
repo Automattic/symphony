@@ -9,8 +9,11 @@ defmodule SymphonyElixir.Codex.McpConfig do
   @type runtime_home :: %{
           home_path: Path.t(),
           config_path: Path.t(),
-          cleanup_paths: [Path.t()]
+          cleanup_paths: [Path.t()],
+          host_codex_home: Path.t() | nil
         }
+
+  @cloud_requirements_cache_file "cloud-requirements-cache.json"
 
   @spec write_home(Schema.t(), map(), keyword()) :: {:ok, runtime_home()} | {:error, term()}
   def write_home(settings, mcp_session, opts \\ []) do
@@ -33,13 +36,42 @@ defmodule SymphonyElixir.Codex.McpConfig do
          :ok <- File.chmod(config_path, 0o600),
          :ok <- link_auth_json(home_path, host_codex_home),
          :ok <- copy_cloud_requirements_cache(home_path, host_codex_home) do
-      {:ok, %{home_path: home_path, config_path: config_path, cleanup_paths: [home_path]}}
+      {:ok,
+       %{
+         home_path: home_path,
+         config_path: config_path,
+         cleanup_paths: [home_path],
+         host_codex_home: host_codex_home
+       }}
     else
       {:error, reason} ->
         _ = File.rm_rf(home_path)
         {:error, reason}
     end
   end
+
+  @spec sync_cloud_requirements_cache(term()) :: :ok
+  def sync_cloud_requirements_cache(%{home_path: home_path, host_codex_home: host_codex_home})
+      when is_binary(home_path) and is_binary(host_codex_home) do
+    source = Path.join(home_path, @cloud_requirements_cache_file)
+    destination = Path.join(host_codex_home, @cloud_requirements_cache_file)
+
+    cond do
+      not File.regular?(source) ->
+        :ok
+
+      not valid_cloud_requirements_cache?(source) ->
+        :ok
+
+      stale_or_same_cloud_requirements_cache?(source, destination) ->
+        :ok
+
+      true ->
+        persist_cloud_requirements_cache(source, destination)
+    end
+  end
+
+  def sync_cloud_requirements_cache(_runtime_home), do: :ok
 
   @spec build_config(Schema.t(), map(), Path.t() | nil, Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def build_config(settings, mcp_session, socket_path, shim_path, opts \\ []) do
@@ -128,8 +160,8 @@ defmodule SymphonyElixir.Codex.McpConfig do
   end
 
   defp copy_cloud_requirements_cache(home_path, host_codex_home) do
-    source = Path.join(host_codex_home, "cloud-requirements-cache.json")
-    destination = Path.join(home_path, "cloud-requirements-cache.json")
+    source = Path.join(host_codex_home, @cloud_requirements_cache_file)
+    destination = Path.join(home_path, @cloud_requirements_cache_file)
 
     case File.cp(source, destination) do
       :ok ->
@@ -142,6 +174,50 @@ defmodule SymphonyElixir.Codex.McpConfig do
 
       {:error, reason} ->
         {:error, {:codex_cloud_requirements_cache_copy_failed, source, reason}}
+    end
+  end
+
+  defp stale_or_same_cloud_requirements_cache?(source, destination) do
+    with true <- File.regular?(destination),
+         {:ok, source_expires_at} <- cloud_requirements_cache_expires_at(source),
+         {:ok, destination_expires_at} <- cloud_requirements_cache_expires_at(destination) do
+      DateTime.compare(source_expires_at, destination_expires_at) != :gt
+    else
+      false -> false
+      _result -> false
+    end
+  end
+
+  defp valid_cloud_requirements_cache?(path) do
+    match?({:ok, _expires_at}, cloud_requirements_cache_expires_at(path))
+  end
+
+  defp cloud_requirements_cache_expires_at(path) do
+    with {:ok, contents} <- File.read(path),
+         {:ok, %{"signed_payload" => %{"expires_at" => expires_at}}} <- Jason.decode(contents),
+         {:ok, expires_at, _offset} <- DateTime.from_iso8601(expires_at) do
+      {:ok, expires_at}
+    else
+      {:error, reason} -> {:error, reason}
+      _result -> {:error, :invalid_cloud_requirements_cache}
+    end
+  end
+
+  defp persist_cloud_requirements_cache(source, destination) do
+    temp_destination = "#{destination}.symphony-#{System.unique_integer([:positive])}.tmp"
+
+    with :ok <- File.mkdir_p(Path.dirname(destination)),
+         :ok <- File.cp(source, temp_destination),
+         :ok <- File.chmod(temp_destination, 0o600),
+         :ok <- File.rename(temp_destination, destination) do
+      :ok
+    else
+      {:error, reason} ->
+        _ = File.rm(temp_destination)
+
+        Logger.warning("Codex cloud requirements cache sync failed source=#{source} destination=#{destination} reason=#{inspect(reason)}")
+
+        :ok
     end
   end
 

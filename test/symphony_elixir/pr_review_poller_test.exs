@@ -447,7 +447,16 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       :pr_review_test_activity,
       open_activity(latest_review_at,
         review_decision: "CHANGES_REQUESTED",
-        comments: [%{kind: "inline_comment", author: "reviewer", body: "Please split this.", url: "https://github.com/example/repo/pull/1780#discussion_r1"}]
+        comments: [
+          %{
+            kind: "inline_comment",
+            author: "reviewer",
+            body: "Please split this.",
+            url: "https://github.com/example/repo/pull/1780#discussion_r1",
+            created_at: latest_review_at,
+            updated_at: latest_review_at
+          }
+        ]
       )
     )
 
@@ -463,7 +472,16 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       :pr_review_test_activity,
       open_activity(latest_review_at,
         review_decision: "CHANGES_REQUESTED",
-        comments: [%{kind: "inline_comment", author: "reviewer", body: "Please split this.", url: "https://github.com/example/repo/pull/1780#discussion_r1"}]
+        comments: [
+          %{
+            kind: "inline_comment",
+            author: "reviewer",
+            body: "Please split this.",
+            url: "https://github.com/example/repo/pull/1780#discussion_r1",
+            created_at: latest_review_at,
+            updated_at: latest_review_at
+          }
+        ]
       )
     )
 
@@ -658,7 +676,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [%{status: "cooling_down", pending_last_addressed_comment_id: "comment-1"}] = RunStore.list_pr_reviews()
   end
 
-  test "configured bot and agent users do not trigger comment rework" do
+  test "configured ignored users do not trigger comment rework" do
     now = ~U[2026-05-01 09:00:00Z]
     latest_comment_at = DateTime.add(now, -31, :minute)
 
@@ -667,8 +685,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       pr_review_mode: "polling",
       pr_review_cooldown_minutes: 30,
       pr_review_stale_days: 7,
-      pr_review_github_user: "agent-user",
-      pr_review_bot_users: ["symphony-bot"]
+      pr_review_ignored_users: ["symphony-bot", "agent-user"]
     )
 
     Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
@@ -680,17 +697,147 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       open_activity(latest_comment_at,
         comments: [
           %{id: "bot-comment", kind: "comment", author: "symphony-bot", body: "Automated status.", created_at: latest_comment_at},
-          %{id: "self-comment", kind: "comment", author: "agent-user", body: "Agent follow-up.", created_at: latest_comment_at}
+          %{id: "configured-comment", kind: "comment", author: "agent-user", body: "Operator follow-up.", created_at: latest_comment_at}
         ]
       )
     )
 
     assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
-             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               current_gh_user: nil,
+               now: now
+             )
 
     refute_receive {:issue_state_update, _, _}
     assert [%{status: "watching"} = record] = RunStore.list_pr_reviews()
     refute Map.has_key?(record, :pending_last_addressed_comment_id)
+  end
+
+  test "PR author comments do not trigger comment rework" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        pr_author: "pr-author",
+        comments: [
+          %{id: "author-comment", kind: "comment", author: "pr-author", body: "Self follow-up.", created_at: latest_comment_at}
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               current_gh_user: nil,
+               now: now
+             )
+
+    refute_receive {:issue_state_update, _, _}
+    assert [%{status: "watching"} = record] = RunStore.list_pr_reviews()
+    refute Map.has_key?(record, :pending_last_addressed_comment_id)
+  end
+
+  test "current gh user comments do not trigger comment rework when detected" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        pr_author: "someone-else",
+        comments: [
+          %{id: "self-comment", kind: "comment", author: "symphony-operator", body: "Self follow-up.", created_at: latest_comment_at}
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               current_gh_user: "symphony-operator",
+               now: now
+             )
+
+    refute_receive {:issue_state_update, _, _}
+    assert [%{status: "watching"}] = RunStore.list_pr_reviews()
+  end
+
+  test "human reviewer comment still triggers rework after cooldown when PR author differs" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_ignored_users: ["symphony-bot"]
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        pr_author: "pr-author",
+        comments: [
+          %{id: "author-comment", kind: "comment", author: "pr-author", body: "Self follow-up.", created_at: latest_comment_at},
+          %{id: "bot-comment", kind: "comment", author: "symphony-bot", body: "Automated status.", created_at: latest_comment_at},
+          %{
+            id: "reviewer-comment",
+            kind: "inline_comment",
+            author: "human-reviewer",
+            body: "Please split this.",
+            path: "lib/example.ex",
+            line: 42,
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               current_gh_user: "symphony-operator",
+               now: now
+             )
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert [%{pending_reviewer_comments: [%{id: "reviewer-comment"}]}] = RunStore.list_pr_reviews()
   end
 
   test "last addressed comment cursor deduplicates comments across later polls" do
@@ -1057,7 +1204,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       pr_review_mode: "polling",
       pr_review_cooldown_minutes: 30,
       pr_review_stale_days: 7,
-      pr_review_github_user: "agent-user",
+      pr_review_ignored_users: ["agent-user"],
       pr_review_auto_reply: true,
       pr_review_auto_request_review: true
     )
@@ -1091,7 +1238,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       pr_review_mode: "polling",
       pr_review_cooldown_minutes: 30,
       pr_review_stale_days: 7,
-      pr_review_github_user: "agent-user",
+      pr_review_ignored_users: ["agent-user"],
       pr_review_auto_reply: true,
       pr_review_auto_request_review: true
     )
@@ -1157,7 +1304,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       pr_review_mode: "polling",
       pr_review_cooldown_minutes: 30,
       pr_review_stale_days: 7,
-      pr_review_github_user: "agent-user",
+      pr_review_ignored_users: ["agent-user"],
       pr_review_auto_reply: true
     )
 
@@ -1212,7 +1359,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       pr_review_mode: "polling",
       pr_review_cooldown_minutes: 30,
       pr_review_stale_days: 7,
-      pr_review_github_user: "agent-user",
+      pr_review_ignored_users: ["agent-user"],
       pr_review_auto_reply: true
     )
 
@@ -1386,6 +1533,187 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                last_review_activity_at: ^review_activity_at
              }
            ] = RunStore.list_pr_reviews()
+  end
+
+  test "bodyless changes_requested review after a handled review bumps last_review_activity_at and redispatches rework" do
+    now = ~U[2026-05-01 09:00:00Z]
+    old_review_at = DateTime.add(now, -180, :minute)
+    last_action_at = DateTime.add(old_review_at, 30, :minute)
+    new_review_at = DateTime.add(now, -45, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        last_action: "rework",
+        last_action_at: last_action_at,
+        last_activity_at: old_review_at,
+        last_review_activity_at: old_review_at
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(new_review_at,
+        review_decision: "CHANGES_REQUESTED",
+        latest_review_activity_at: new_review_at,
+        comments: [
+          %{
+            id: "bodyless-review",
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "human-reviewer",
+            body: "",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-2",
+            created_at: new_review_at,
+            updated_at: new_review_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               now: now
+             )
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert [
+             %{
+               status: "rework_requested",
+               last_review_activity_at: ^new_review_at
+             }
+           ] = RunStore.list_pr_reviews()
+  end
+
+  test "ignored author comments after a handled changes-requested review do not redispatch rework" do
+    now = ~U[2026-05-01 09:00:00Z]
+    reviewer_activity_at = DateTime.add(now, -120, :minute)
+    last_action_at = DateTime.add(now, -50, :minute)
+    author_comment_at = DateTime.add(now, -35, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        last_action: "rework",
+        last_action_at: last_action_at,
+        last_activity_at: reviewer_activity_at,
+        last_review_activity_at: reviewer_activity_at,
+        last_addressed_comment_id: "reviewer-comment"
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(author_comment_at,
+        pr_author: "pr-author",
+        review_decision: "CHANGES_REQUESTED",
+        latest_review_activity_at: author_comment_at,
+        comments: [
+          %{
+            id: "reviewer-comment",
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "human-reviewer",
+            body: "Please address.",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-1",
+            created_at: reviewer_activity_at,
+            updated_at: reviewer_activity_at
+          },
+          %{
+            id: "author-followup",
+            kind: "comment",
+            author: "pr-author",
+            body: "Pinging for review.",
+            created_at: author_comment_at,
+            updated_at: author_comment_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:already_handled, "issue-1780", :rework}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               current_gh_user: nil,
+               now: now
+             )
+
+    refute_receive {:issue_state_update, _, _}
+
+    assert [
+             %{
+               status: "watching",
+               last_activity_at: ^author_comment_at,
+               last_review_activity_at: ^reviewer_activity_at
+             }
+           ] = RunStore.list_pr_reviews()
+  end
+
+  test "CHANGES_REQUESTED reviews from ignored or current gh users do not redispatch rework after cooldown" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_review_at = DateTime.add(now, -31, :minute)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_ignored_users: ["symphony-bot"]
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_review_at,
+        pr_author: "pr-author",
+        review_decision: "CHANGES_REQUESTED",
+        latest_review_activity_at: latest_review_at,
+        comments: [
+          %{
+            id: "operator-review",
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "symphony-operator",
+            body: "Nudging this back to draft.",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-1",
+            created_at: latest_review_at,
+            updated_at: latest_review_at
+          },
+          %{
+            id: "bot-review",
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "symphony-bot",
+            body: "Automated nudge.",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-2",
+            created_at: latest_review_at,
+            updated_at: latest_review_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               current_gh_user: "symphony-operator",
+               now: now
+             )
+
+    refute_receive {:issue_state_update, _, _}
+    assert [%{status: "watching"}] = RunStore.list_pr_reviews()
   end
 
   test "records issue state transition errors without crashing the poll" do
@@ -2100,6 +2428,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       pr_number: Keyword.get(opts, :pr_number, 1780),
       pr_title: Keyword.get(opts, :pr_title, "Ship review manager"),
       pr_description: Keyword.get(opts, :pr_description, "PR body"),
+      pr_author: Keyword.get(opts, :pr_author),
       state: Keyword.get(opts, :state, "OPEN"),
       review_decision: Keyword.get(opts, :review_decision),
       latest_activity_at: latest_activity_at,

@@ -124,8 +124,7 @@ pr_review:
   mode: polling                              # tracker (default) | polling
   cooldown_minutes: 1                     # Polling: wait before responding to review comments.
   # stale_days: 7                            # Polling: stop watching closed or idle PRs after this many days.
-  # github_user: your-github-user            # Polling: current operator user, used for review filtering.
-  # bot_users: []                            # Polling: GitHub users ignored as bot reviewers.
+  # ignored_users: []                        # Polling: GitHub users to ignore as reviewers. The current `gh` user and PR author are auto-ignored when detected.
   auto_reply: true                        # Polling: reply to addressed review comments.
   # auto_request_review: false               # Polling: request another review after pushing rework.
 

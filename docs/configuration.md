@@ -254,8 +254,8 @@ file like `~/.ssh/known_hosts`.
 > also emitted as explicit `allowRead` carve-outs). The current Claude adapter does **not** pass
 > these entries into its temporary settings, so treat this list as Codex-effective until that gap
 > is closed. Do not use it for agent runtime credential stores under `~/.codex` or `~/.claude`:
-> Symphony keeps `~/.codex/auth.json`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md` in the
-> managed deny list even if listed here.
+> Symphony keeps `~/.codex/auth.json`, `~/.codex/config.toml`, `~/.codex/AGENTS.md`, and
+> `~/.codex/cloud-requirements-cache.json` in the managed deny list even if listed here.
 
 ### `agent`
 
@@ -409,17 +409,20 @@ A set var substitutes the value; an empty var drops the entry; a missing var kee
   (symphony + inherited + declared servers) and a symlink to the operator's `~/.codex/auth.json`
   when present (skipped with a warning if missing). If the operator has a Codex
   `cloud-requirements-cache.json`, Symphony copies it into the temporary home so Codex can load
-  workspace-managed policy requirements without writing back to the host cache. The generated path
-  is added to the sandbox filesystem deny-read list so the agent cannot read its own
-  `auth.json`/`config.toml`/`AGENTS.md`. Remote workers also receive a per-session
-  `/tmp/symphony-codex-home-<id>` directory; Symphony tears both down at session stop.
+  workspace-managed policy requirements. If Codex refreshes that cache during the session, Symphony
+  syncs the fresher copy back to the operator's Codex home before deleting the temporary home. The
+  generated path is added to the sandbox filesystem deny-read list so the agent cannot read its own
+  `auth.json`/`config.toml`/`AGENTS.md`/cloud requirements cache. Remote workers also receive a
+  per-session `/tmp/symphony-codex-home-<id>` directory; Symphony tears both down at session stop.
 - **Codex prompt transport:** when the fully rendered first-turn prompt is larger than Symphony's
   app-server stdio soft limit, Symphony sends a compact bootstrap prompt instead. The compact
   prompt keeps the hard security rules and directs Codex to load issue details through scoped
   `linear_*` tools, preventing large echoed `userMessage` events from wedging the app-server
   stdout stream. Symphony also injects Codex-only guidance to run noisy validation commands
   through a log file and print only the exit status plus a short tail, reducing the chance that
-  large `aggregatedOutput` events hit Codex app-server stdio write limits.
+  large `aggregatedOutput` events hit Codex app-server stdio write limits. During initialize,
+  Symphony also opts out of Codex `turn/diff/updated` notifications, whose aggregated diffs can
+  become too large for the stdio stream on broad changes.
 - **Codex remote workers:** `inherit: allowlist` and `inherit: all` are rejected (Symphony only
   reads the orchestrator's host config). Declare servers explicitly under `servers`.
 - **Claude:** `inherit: allowlist` reads only the top-level `mcpServers` map in
@@ -474,10 +477,13 @@ single-agent shape.
 - `max_iterations` (default `1`) controls how many `request_changes` correction passes are allowed
   before Symphony blocks the run with the reviewer's latest reason.
 - The reviewer is told to stop before push, runs in the same workspace with read-only Linear and
-  GitHub tools, and must return a structured JSON verdict. `approve` injects a push handoff
-  prompt and later continuations keep that approved handoff state instead of reintroducing the
-  stop-before-push gate; `request_changes` injects reviewer comments into one more executor pass
-  while `max_iterations` allows it; `block` fails the worker run without pushing.
+  GitHub tools, and must return a structured JSON verdict. Blocking or change-request verdicts
+  must ground each finding with a file, line range, quoted snippet, summary, and suggested fix;
+  Symphony verifies those snippets against the reviewer diff/context and runs one bounded
+  self-check turn before accepting blocking findings. `approve` injects a push handoff prompt and
+  later continuations keep that approved handoff state instead of reintroducing the stop-before-push
+  gate; `request_changes` injects reviewer comments into one more executor pass while
+  `max_iterations` allows it; `block` fails the worker run without pushing.
 - Reviewer token usage is tracked separately from total run token usage for observability.
 - Linear/GitHub write tools are hidden from MCP listings and rejected if called directly.
 - **Size `agent.max_turns` accordingly:** it budgets every reviewer-driven continuation turn. With
@@ -534,8 +540,7 @@ pr_review:
   # stale_days: 7
   # auto_reply: false
   # auto_request_review: false
-  # github_user: null
-  # bot_users: []
+  # ignored_users: []            # extra GitHub users to ignore as reviewers
 ```
 
 In `tracker` mode (default), Symphony reacts only to Linear state moves. In **`polling` mode**,
@@ -543,15 +548,28 @@ Symphony starts a `PrReviewPoller` process that:
 
 - Discovers in-review issues with attached GitHub PRs and records PR URL and workspace in the run
   store.
-- Waits `cooldown_minutes` (default `10`) before responding to requested changes or non-bot
-  reviewer comments.
+- Waits `cooldown_minutes` (default `10`) before responding to reviewer comments from users that
+  are not in the effective ignored set.
 - Moves approved or rework-requested issues back to `In Progress` for normal dispatch.
 - Injects unaddressed reviewer comments into the first prompt.
 - Removes tracked workspaces when PRs close or stay idle beyond `stale_days` (default `7`).
 
-`cooldown_minutes`, `stale_days`, `bot_users`, `auto_reply`, and `auto_request_review` are
-polling-only — they default to 10 minutes, 7 days, no ignored users, no GitHub replies, and no
-review re-requests when omitted.
+The effective ignored reviewer set is the union of:
+
+- `pr_review.ignored_users` (configured, defaults to `[]`),
+- the current authenticated `gh` user, when Symphony can detect it via `gh api user`,
+- the PR author returned by `gh pr view`.
+
+Configuring `ignored_users` is optional: by default, Symphony already ignores its own GitHub
+identity and the PR author so self-authored comments do not trigger rework dispatch. Add a user
+here only when you need to extend that list (for example, a CI bot that is not the PR author).
+
+`cooldown_minutes`, `stale_days`, `ignored_users`, `auto_reply`, and `auto_request_review` are
+polling-only — they default to 10 minutes, 7 days, an empty extra-ignored list, no GitHub
+replies, and no review re-requests when omitted.
+
+CI failure dispatch is driven only by failed status checks; it does not consider comment
+authorship, so the ignored set above has no effect on CI escalation.
 
 **Post-PR quiet handling:** when a run completes successfully after opening a PR and the issue is
 still active without new work arriving since the run, Symphony moves it to `In Review` and watches

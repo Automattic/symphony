@@ -445,7 +445,18 @@ defmodule SymphonyElixir.CiPollerTest do
       review_decision: "CHANGES_REQUESTED",
       latest_activity_at: DateTime.add(now, -31, :minute),
       latest_review_activity_at: DateTime.add(now, -31, :minute),
-      comments: []
+      comments: [
+        %{
+          id: "reviewer-review",
+          kind: "review",
+          state: "CHANGES_REQUESTED",
+          author: "human-reviewer",
+          body: "Please address.",
+          url: "https://github.com/example/repo/pull/2401#pullrequestreview-1",
+          created_at: DateTime.add(now, -31, :minute),
+          updated_at: DateTime.add(now, -31, :minute)
+        }
+      ]
     })
 
     assert {:ok, %{actions: [{:ci_owned, "issue-2401", :rework}]}} =

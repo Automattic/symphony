@@ -206,6 +206,72 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server opts out of bulky turn diff notifications during initialize" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-notification-opt-out-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-NOTIFY")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-notification-opt-out.trace")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-notify"}}}'
+            ;;
+          *)
+            sleep 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace)
+      assert :ok = AppServer.stop_session(session)
+
+      [initialize_line | _rest] =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
+
+      initialize_payload =
+        initialize_line
+        |> String.trim_leading("JSON:")
+        |> Jason.decode!()
+
+      assert get_in(initialize_payload, ["params", "capabilities", "optOutNotificationMethods"]) == [
+               "turn/diff/updated"
+             ]
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(
@@ -3856,6 +3922,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert message =~ "Failed to write to stdout"
       assert message =~ "Resource temporarily unavailable"
+      refute message =~ "\e["
     after
       File.rm_rf(test_root)
     end

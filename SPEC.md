@@ -1753,6 +1753,9 @@ Notes:
   prompt file and cleans it up with a trap.
 - Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
   using fields supported by the configured adapter.
+- The Codex adapter opts out of `turn/diff/updated` notifications during initialize so broad
+  aggregated diffs do not overload the app-server stdio stream; terminal turn events and smaller
+  item-level notifications remain enabled.
 
 Elixir evidence: `lib/symphony_elixir/codex/app_server.ex`,
 `lib/symphony_elixir/claude_code/app_server.ex`,

@@ -294,6 +294,16 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     end
   end
 
+  defmodule FailingWorkspace do
+    @spec remove(String.t(), String.t() | nil) :: {:error, atom(), String.t()}
+    def remove(workspace_path, worker_host) do
+      recipient = Application.fetch_env!(:symphony_elixir, :pr_review_test_recipient)
+      send(recipient, {:remove_workspace, workspace_path, worker_host})
+
+      {:error, :branch_checked_out, "error: cannot delete branch 'auto/RSM-1780' checked out at '/tmp/peer-worktree'"}
+    end
+  end
+
   setup do
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :pr_review_test_issues)
@@ -1694,6 +1704,54 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     refute_receive {:remove_workspace, _, _}, 50
     assert [] = StatefulRunStore.list_pr_reviews()
+  end
+
+  test "backs off workspace cleanup errors instead of retrying every poll" do
+    now = ~U[2026-05-01 09:00:00Z]
+    issue = in_review_issue(updated_at: now)
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, state: "MERGED"))
+
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      issue.id => review_record(now)
+    })
+
+    assert {:ok, %{actions: [{:cleanup_error, "issue-1780", :branch_checked_out}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               workspace: FailingWorkspace,
+               now: now,
+               poll_interval_ms: 5_000
+             )
+
+    assert_receive {:remove_workspace, "/tmp/workspaces/RSM-1780", nil}
+
+    assert [
+             %{
+               status: "cleanup_error",
+               consecutive_errors: 1,
+               next_poll_at: next_poll_at,
+               error: error
+             }
+           ] = StatefulRunStore.list_pr_reviews()
+
+    assert DateTime.diff(next_poll_at, now, :millisecond) == 5_000
+    assert error =~ "checked out"
+
+    assert {:ok, %{actions: [{:backing_off, "issue-1780", ^next_poll_at}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               workspace: FailingWorkspace,
+               now: DateTime.add(now, 1, :second),
+               poll_interval_ms: 5_000
+             )
+
+    refute_receive {:github_fetch, _pr_url}, 50
+    refute_receive {:remove_workspace, _, _}, 50
   end
 
   test "does not remove workspace again when cleanup mark update fails before delete failure" do

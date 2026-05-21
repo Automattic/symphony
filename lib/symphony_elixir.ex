@@ -22,6 +22,11 @@ defmodule SymphonyElixir.Application do
   alias SymphonyElixir.Config
   alias SymphonyElixir.Config.SystemSchema
 
+  @required_runtime_functions [
+    {SymphonyElixir.ProjectGuidePrompt, :append_to_prompt, 4},
+    {SymphonyElixir.ProjectGuides, :append_to_prompt, 4}
+  ]
+
   @impl true
   def start(_type, _args) do
     :ok = SymphonyElixir.CLI.maybe_configure_burrito_runtime()
@@ -56,6 +61,7 @@ defmodule SymphonyElixir.Application do
     primary_repo = SystemSchema.primary_repo(system_config)
 
     try do
+      validate_runtime_modules!()
       validate_runtime_config!()
       Application.put_env(:symphony_elixir, :primary_repo_name, primary_repo.name)
       SymphonyElixir.Workflow.set_workflow_file_path(SystemSchema.repo_workflow_path(primary_repo))
@@ -98,6 +104,31 @@ defmodule SymphonyElixir.Application do
 
   defp repo_supervisor_specs(repos) do
     Enum.map(repos, &SymphonyElixir.Repo.Supervisor.child_spec/1)
+  end
+
+  @doc false
+  @spec validate_runtime_modules!() :: :ok
+  def validate_runtime_modules! do
+    validate_runtime_modules!(@required_runtime_functions)
+  end
+
+  @doc false
+  @spec validate_runtime_modules!([{module(), atom(), non_neg_integer()}]) :: :ok
+  def validate_runtime_modules!(requirements) when is_list(requirements) do
+    Enum.each(requirements, fn {module, function, arity} ->
+      cond do
+        not Code.ensure_loaded?(module) ->
+          raise ArgumentError, message: "runtime module unavailable: #{inspect(module)}"
+
+        not function_exported?(module, function, arity) ->
+          raise ArgumentError, message: "runtime function unavailable: #{inspect(module)}.#{function}/#{arity}"
+
+        true ->
+          :ok
+      end
+    end)
+
+    :ok
   end
 
   defp validate_runtime_config! do

@@ -386,6 +386,8 @@ defmodule SymphonyElixir.PromptBuilder do
 
       - After implementation, validation, commit, and committed-diff review are complete, stop before `git push`.
       - Do not push, open a PR, or move the issue to review until Symphony injects the reviewer-agent verdict.
+      - This overrides retry or continuation guidance that says to keep working while the issue remains active; stopping at this gate is expected.
+      - Only continue to push/PR after an explicit reviewer-agent approval prompt. Do not treat missing reviewer comments as approval.
       - If the reviewer requests changes, address those comments in the same workspace and stop before push again.
       - If the reviewer approves, follow the injected continuation prompt and complete the normal push/PR handoff.
       """

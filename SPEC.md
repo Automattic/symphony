@@ -1789,6 +1789,10 @@ Startup MUST follow the configured adapter contract. Symphony additionally requi
   implementation MAY send a compact bootstrap prompt that preserves hard security instructions,
   references the current issue identifier, and instructs the agent to fetch issue description and
   comments through scoped tracker tools before planning.
+- Before the first issue-mode turn, the runtime MUST perform deterministic tracker bootstrap outside
+  the model turn: move `Todo` issues to `In Progress`, then ensure a single workpad comment exists
+  using `agent.workpad_heading`. If a `## Codex Workpad` or `## Claude Workpad` comment already
+  exists, the runtime MUST reuse it instead of creating a duplicate.
 - Start later in-worker continuation turns on the same live thread when the configured adapter
   exposes persistent thread/session context. Adapters without persistent continuation support SHOULD
   send continuation guidance and rely on workspace, workpad, and tracker state instead of assuming

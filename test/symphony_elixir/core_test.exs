@@ -2460,6 +2460,7 @@ defmodule SymphonyElixir.CoreTest do
       File.chmod!(codex_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         agent_command: "#{codex_binary} app-server"
@@ -2545,6 +2546,7 @@ defmodule SymphonyElixir.CoreTest do
       File.chmod!(codex_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         agent_command: "#{codex_binary} app-server",
@@ -2680,6 +2682,7 @@ defmodule SymphonyElixir.CoreTest do
       File.chmod!(codex_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         agent_command: "#{codex_binary} app-server"
@@ -2855,6 +2858,7 @@ defmodule SymphonyElixir.CoreTest do
       File.chmod!(codex_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         agent_command: "#{codex_binary} app-server",
@@ -2961,6 +2965,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert length(turn_texts) == 2
       assert Enum.at(turn_texts, 0) =~ "First prompt MT-247"
+      assert Enum.at(turn_texts, 0) =~ "## Codex Workpad"
       assert Enum.at(turn_texts, 0) =~ "comment=<linear_issue_comment_body>\nPrior workpad"
       assert Enum.at(turn_texts, 0) =~ "link=MT-248"
       assert Enum.at(turn_texts, 0) =~ "Unaddressed reviewer comments:"
@@ -3371,6 +3376,7 @@ defmodule SymphonyElixir.CoreTest do
       File.chmod!(codex_binary, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         agent_command: "#{codex_binary} app-server",
@@ -3817,6 +3823,7 @@ defmodule SymphonyElixir.CoreTest do
     base_branch = Keyword.get(opts, :base_branch)
 
     write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
       workspace_root: Path.dirname(codex_binary),
       agent_command: "#{codex_binary} app-server",
       max_turns: Keyword.fetch!(opts, :max_turns),

@@ -231,7 +231,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     send(pid, :run_poll_cycle)
     :sys.get_state(pid)
 
-    refute_receive {:memory_tracker_comment, "issue-reply-1", _}, 200
+    assert_bootstrap_workpad_comment("issue-reply-1")
 
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.awaiting_clarification == []
@@ -271,7 +271,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
 
     send(pid, :run_poll_cycle)
 
-    refute_receive {:memory_tracker_comment, "issue-pass-1", _}, 200
+    assert_bootstrap_workpad_comment("issue-pass-1")
 
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.skipped == []
@@ -303,7 +303,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
 
     send(pid, :run_poll_cycle)
 
-    refute_receive {:memory_tracker_comment, "issue-default-off-1", _}, 200
+    assert_bootstrap_workpad_comment("issue-default-off-1")
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.skipped == []
   end
@@ -357,7 +357,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
 
     send(pid, :run_poll_cycle)
 
-    refute_receive {:memory_tracker_comment, "issue-off-1", _}, 200
+    assert_bootstrap_workpad_comment("issue-off-1")
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.skipped == []
   end
@@ -735,5 +735,12 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
     after
       0 -> :ok
     end
+  end
+
+  defp assert_bootstrap_workpad_comment(issue_id) do
+    assert_receive {:memory_tracker_comment, ^issue_id, body}, 500
+    assert body =~ "## Codex Workpad"
+    refute body =~ "skipped"
+    refute body =~ "clarification requested"
   end
 end

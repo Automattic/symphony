@@ -1,0 +1,339 @@
+defmodule SymphonyElixir.WorkpadTest do
+  use SymphonyElixir.TestSupport
+
+  alias SymphonyElixir.Workpad
+
+  defmodule FailingCreateCommentClient do
+    @spec graphql(String.t(), map()) :: {:error, :comment_failed}
+    def graphql(_query, _variables), do: {:error, :comment_failed}
+  end
+
+  test "bootstrap two-arity reuses existing workpad comments" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", agent_kind: "claude")
+
+    issue = %Issue{
+      id: "issue-existing-workpad",
+      identifier: "MT-EXISTING",
+      title: "Existing workpad",
+      state: "In Progress",
+      comments: [%{author: "Codex", body: "## Codex Workpad\nExisting", created_at: nil}]
+    }
+
+    assert {:ok, ^issue} = Workpad.bootstrap(issue, System.tmp_dir!())
+  end
+
+  test "bootstrap moves Todo issues to In Progress before creating the workpad" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", agent_kind: "claude")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    workspace = Path.join(System.tmp_dir!(), "symphony-workpad-bootstrap")
+
+    issue = %Issue{
+      id: "issue-workpad-bootstrap",
+      identifier: "MT-WORKPAD",
+      title: "Bootstrap workpad",
+      state: "Todo"
+    }
+
+    now = ~U[2026-05-21 04:30:00Z]
+
+    assert {:ok, updated_issue} =
+             Workpad.bootstrap(issue, workspace,
+               settings: Config.settings!(),
+               now: now,
+               short_sha: "abc1234"
+             )
+
+    assert_receive {:memory_tracker_state_update, "issue-workpad-bootstrap", "In Progress"}
+    assert_receive {:memory_tracker_comment, "issue-workpad-bootstrap", body}
+
+    assert updated_issue.state == "In Progress"
+    assert [%{author: "Claude", body: ^body, created_at: ^now}] = updated_issue.comments
+    assert body =~ "## Claude Workpad"
+    assert body =~ "#{Path.expand(workspace)}@abc1234"
+    assert body =~ "Symphony created this bootstrap workpad before the first agent turn."
+  end
+
+  test "bootstrap returns an error when the Todo state update fails" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", agent_kind: "claude")
+    Application.put_env(:symphony_elixir, :memory_tracker_update_issue_state_result, {:error, :rate_limited})
+
+    issue = %Issue{
+      id: "issue-workpad-state-failed",
+      identifier: "MT-STATE-FAILED",
+      title: "State failure",
+      state: "Todo"
+    }
+
+    assert {:error, {:workpad_bootstrap_state_update_failed, :rate_limited}} =
+             Workpad.bootstrap(issue, System.tmp_dir!(), settings: Config.settings!())
+  end
+
+  test "bootstrap handles fallback settings and sparse issue comments" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "issue-sparse-workpad",
+      identifier: "MT-SPARSE",
+      title: "Sparse workpad",
+      state: nil,
+      comments: :not_loaded
+    }
+
+    assert {:ok, updated_issue} =
+             Workpad.bootstrap(issue, System.tmp_dir!(),
+               settings: %{},
+               now: ~U[2026-05-21 04:30:00Z]
+             )
+
+    assert_receive {:memory_tracker_comment, "issue-sparse-workpad", body}
+    assert [%{author: "Agent", body: ^body}] = updated_issue.comments
+    assert String.starts_with?(body, "## Agent Workpad")
+  end
+
+  test "bootstrap ignores malformed comments while searching for an existing workpad" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", agent_kind: "claude")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "issue-malformed-comments",
+      identifier: "MT-MALFORMED",
+      title: "Malformed comments",
+      state: "In Progress",
+      comments: [123]
+    }
+
+    assert {:ok, updated_issue} =
+             Workpad.bootstrap(issue, System.tmp_dir!(), settings: Config.settings!())
+
+    assert_receive {:memory_tracker_comment, "issue-malformed-comments", body}
+    assert [%{author: "Claude", body: ^body}, 123] = updated_issue.comments
+  end
+
+  test "bootstrap skips tracker comment creation when issue id is missing" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", agent_kind: "claude")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      identifier: "MT-NO-ID",
+      title: "Missing id",
+      state: "In Progress"
+    }
+
+    assert {:ok, ^issue} =
+             Workpad.bootstrap(issue, System.tmp_dir!(), settings: Config.settings!())
+
+    refute_receive {:memory_tracker_comment, _issue_id, _body}, 50
+  end
+
+  test "bootstrap skips PR-mode runs" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", agent_kind: "claude")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "issue-pr-mode",
+      identifier: "MT-PR",
+      title: "PR mode",
+      state: "Todo"
+    }
+
+    assert {:ok, ^issue} =
+             Workpad.bootstrap(issue, System.tmp_dir!(),
+               settings: Config.settings!(),
+               prompt_mode: :pr
+             )
+
+    refute_receive {:memory_tracker_state_update, "issue-pr-mode", _state}, 50
+    refute_receive {:memory_tracker_comment, "issue-pr-mode", _body}, 50
+  end
+
+  test "bootstrap reuses existing Linear workpad comments" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", agent_kind: "claude")
+
+    issue = %Issue{
+      id: "issue-existing-linear-workpad",
+      identifier: "MT-LINEAR",
+      title: "Linear workpad",
+      state: "In Progress",
+      comments: [%{author: "Reporter", body: "Recent context", created_at: nil}]
+    }
+
+    linear_client = fn query, variables, _opts ->
+      send(self(), {:linear_query, query, variables})
+
+      cond do
+        String.contains?(query, "SymphonyAgentIssueComments") ->
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" => [
+                     %{
+                       "id" => "comment-workpad",
+                       "body" => "## Codex Workpad\nExisting notes with <pending> & follow-up",
+                       "createdAt" => "2026-05-21T04:00:00Z",
+                       "updatedAt" => "2026-05-21T04:00:00Z",
+                       "user" => %{"id" => "user-1", "name" => "Codex"}
+                     }
+                   ]
+                 }
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyAgentAddComment") ->
+          flunk("bootstrap must not create a duplicate workpad")
+      end
+    end
+
+    assert {:ok, updated_issue} =
+             Workpad.bootstrap(issue, System.tmp_dir!(),
+               settings: Config.settings!(),
+               linear_client: linear_client
+             )
+
+    assert_receive {:linear_query, query, %{id: "issue-existing-linear-workpad", limit: 100}}
+    assert query =~ "SymphonyAgentIssueComments"
+
+    assert [
+             %{author: "Codex", body: "## Codex Workpad\nExisting notes with <pending> & follow-up", created_at: nil},
+             %{author: "Reporter", body: "Recent context", created_at: nil}
+           ] = updated_issue.comments
+  end
+
+  test "bootstrap returns Linear comment lookup failures" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", agent_kind: "claude")
+
+    issue = %Issue{
+      id: "issue-linear-lookup-failure",
+      identifier: "MT-LINEAR-LOOKUP",
+      title: "Linear lookup failure",
+      state: "In Progress"
+    }
+
+    linear_client = fn query, variables, _opts ->
+      send(self(), {:linear_query, query, variables})
+      {:error, :lookup_failed}
+    end
+
+    assert {:error, {:workpad_bootstrap_comment_failed, :lookup_failed}} =
+             Workpad.bootstrap(issue, System.tmp_dir!(),
+               settings: Config.settings!(),
+               linear_client: linear_client
+             )
+
+    assert_receive {:linear_query, _query, %{id: "issue-linear-lookup-failure", limit: 100}}
+  end
+
+  test "bootstrap creates a Linear workpad when none exists" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", agent_kind: "claude")
+
+    issue = %Issue{
+      id: "issue-new-linear-workpad",
+      identifier: "MT-LINEAR-NEW",
+      title: "New Linear workpad",
+      state: "In Progress"
+    }
+
+    linear_client = fn query, variables, _opts ->
+      cond do
+        String.contains?(query, "SymphonyAgentIssueComments") ->
+          send(self(), {:linear_comments_query, variables})
+          {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}}
+
+        String.contains?(query, "SymphonyAgentAddComment") ->
+          send(self(), {:linear_add_comment, variables})
+
+          {:ok,
+           %{
+             "data" => %{
+               "commentCreate" => %{
+                 "success" => true,
+                 "comment" => %{"id" => "comment-new", "body" => variables.body, "url" => "https://linear.test/comment-new"}
+               }
+             }
+           }}
+      end
+    end
+
+    assert {:ok, updated_issue} =
+             Workpad.bootstrap(issue, System.tmp_dir!(),
+               settings: Config.settings!(),
+               linear_client: linear_client,
+               now: ~U[2026-05-21 04:30:00Z]
+             )
+
+    assert_receive {:linear_comments_query, %{id: "issue-new-linear-workpad", limit: 100}}
+    assert_receive {:linear_add_comment, %{issueId: "issue-new-linear-workpad", body: body}}
+
+    assert [%{author: "Claude", body: ^body}] = updated_issue.comments
+    assert String.starts_with?(body, "## Claude Workpad")
+  end
+
+  test "bootstrap returns Linear comment creation failures" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", agent_kind: "claude")
+
+    issue = %Issue{
+      id: "issue-linear-create-failure",
+      identifier: "MT-LINEAR-CREATE",
+      title: "Linear create failure",
+      state: "In Progress"
+    }
+
+    linear_client = fn query, variables, _opts ->
+      cond do
+        String.contains?(query, "SymphonyAgentIssueComments") ->
+          {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}}
+
+        String.contains?(query, "SymphonyAgentAddComment") ->
+          send(self(), {:linear_add_comment, variables})
+          {:error, :create_failed}
+      end
+    end
+
+    assert {:error, {:workpad_bootstrap_comment_failed, :create_failed}} =
+             Workpad.bootstrap(issue, System.tmp_dir!(),
+               settings: Config.settings!(),
+               linear_client: linear_client
+             )
+
+    assert_receive {:linear_add_comment, %{issueId: "issue-linear-create-failure"}}
+  end
+
+  test "bootstrap returns tracker comment creation failures" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", agent_kind: "claude")
+    Application.put_env(:symphony_elixir, :linear_client_module, FailingCreateCommentClient)
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :linear_client_module)
+    end)
+
+    issue = %Issue{
+      id: "issue-tracker-create-failure",
+      identifier: "MT-TRACKER-CREATE",
+      title: "Tracker create failure",
+      state: "In Progress"
+    }
+
+    assert {:error, {:workpad_bootstrap_comment_failed, :comment_failed}} =
+             Workpad.bootstrap(issue, System.tmp_dir!(), settings: %{agent: %{kind: "claude"}, tracker: %{kind: "memory"}})
+  end
+
+  test "bootstrap body uses remote worker path without local expansion" do
+    assert Workpad.bootstrap_body("## Claude Workpad", "/remote/workspace",
+             worker_host: "worker-a",
+             short_sha: "def5678",
+             now: ~U[2026-05-21 04:30:00Z]
+           ) =~ "worker-a:/remote/workspace@def5678"
+
+    assert Workpad.bootstrap_body("## Codex Workpad", System.tmp_dir!()) =~ "## Codex Workpad"
+
+    assert Workpad.bootstrap_body("## Codex Workpad", "/local/workspace",
+             hostname_result: {:error, :nxdomain},
+             short_sha: "unknown-host-sha",
+             now: ~U[2026-05-21 04:30:00Z]
+           ) =~ "unknown-host:/local/workspace@unknown-host-sha"
+  end
+end

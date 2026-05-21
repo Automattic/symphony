@@ -477,10 +477,13 @@ single-agent shape.
 - `max_iterations` (default `1`) controls how many `request_changes` correction passes are allowed
   before Symphony blocks the run with the reviewer's latest reason.
 - The reviewer is told to stop before push, runs in the same workspace with read-only Linear and
-  GitHub tools, and must return a structured JSON verdict. `approve` injects a push handoff
-  prompt and later continuations keep that approved handoff state instead of reintroducing the
-  stop-before-push gate; `request_changes` injects reviewer comments into one more executor pass
-  while `max_iterations` allows it; `block` fails the worker run without pushing.
+  GitHub tools, and must return a structured JSON verdict. Blocking or change-request verdicts
+  must ground each finding with a file, line range, quoted snippet, summary, and suggested fix;
+  Symphony verifies those snippets against the reviewer diff/context and runs one bounded
+  self-check turn before accepting blocking findings. `approve` injects a push handoff prompt and
+  later continuations keep that approved handoff state instead of reintroducing the stop-before-push
+  gate; `request_changes` injects reviewer comments into one more executor pass while
+  `max_iterations` allows it; `block` fails the worker run without pushing.
 - Reviewer token usage is tracked separately from total run token usage for observability.
 - Linear/GitHub write tools are hidden from MCP listings and rejected if called directly.
 - **Size `agent.max_turns` accordingly:** it budgets every reviewer-driven continuation turn. With

@@ -1616,6 +1616,124 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "appends default Claude project guide imports to the prompt" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-project-guides-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-GUIDES")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(Path.join(workspace, "CLAUDE.md"), "Claude rule\n@AGENTS.md\n")
+        File.write!(Path.join(workspace, "AGENTS.md"), "Agent rule\n")
+        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-guides"))
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        session = local_session(workspace, test_root)
+
+        assert {:ok, _result} = AppServer.run_turn(session, "Workflow prompt", %{}, [])
+
+        stdin = File.read!(Path.join(workspace, "stdin.trace"))
+        assert stdin =~ "Workflow prompt\n\n## Project conventions"
+        assert stdin =~ "### CLAUDE.md"
+        assert stdin =~ "Claude rule"
+        assert stdin =~ "### @AGENTS.md"
+        assert stdin =~ "Agent rule"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "omits Claude project guide section when default guide is missing or disabled" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-project-guides-missing-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-GUIDES-MISSING")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-guides-missing"))
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        session = local_session(workspace, test_root)
+        assert {:ok, _result} = AppServer.run_turn(session, "No guide prompt", %{}, [])
+        assert File.read!(Path.join(workspace, "stdin.trace")) == "No guide prompt"
+
+        File.write!(Path.join(workspace, "CLAUDE.md"), "Should not appear\n")
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_include_project_guides: false
+        )
+
+        session = local_session(workspace, test_root)
+        assert {:ok, _result} = AppServer.run_turn(session, "Disabled guide prompt", %{}, [])
+        assert File.read!(Path.join(workspace, "stdin.trace")) == "Disabled guide prompt"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "Claude project guide files can be overridden explicitly" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-project-guides-explicit-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "RSM-GUIDES-EXPLICIT")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(Path.join(workspace, "AGENTS.md"), "Explicit agents rule\n")
+        File.write!(fake_claude, argv_tracing_fake_claude_script("sess-guides-explicit"))
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_project_guide_files: ["AGENTS.md"]
+        )
+
+        session = local_session(workspace, test_root)
+        assert {:ok, _result} = AppServer.run_turn(session, "Explicit prompt", %{}, [])
+
+        stdin = File.read!(Path.join(workspace, "stdin.trace"))
+        assert stdin =~ "## Project conventions"
+        assert stdin =~ "### AGENTS.md"
+        assert stdin =~ "Explicit agents rule"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "runs a successful turn when workspace and command paths contain spaces" do
       test_root =
         Path.join(
@@ -2154,6 +2272,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":500,"duration_api_ms":400,"is_error":false,"num_turns":1,"result":"Done.","session_id":"#{session_id}","total_cost_usd":0.001,"usage":{"input_tokens":#{input_tokens},"output_tokens":#{output_tokens},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
     exit 0
     """
+  end
+
+  defp local_session(workspace, test_root) do
+    %{
+      workspace: workspace,
+      metadata: %{},
+      worker_host: nil,
+      settings_path: Path.join(test_root, "settings.json"),
+      mcp_config_path: Path.join(test_root, "mcp.json"),
+      mcp_session: nil,
+      mcp_remote_socket_path: nil,
+      mcp_remote_shim_path: nil
+    }
   end
 
   defp argv_tracing_fake_claude_script(session_id) do

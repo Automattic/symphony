@@ -513,6 +513,8 @@ defmodule SymphonyElixir.TestSupport do
           agent_kind: "codex",
           agent_command: "codex app-server",
           agent_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
+          agent_include_project_guides: true,
+          agent_project_guide_files: nil,
           agent_thread_sandbox: "workspace-write",
           agent_turn_sandbox_policy: nil,
           agent_mcp: nil,
@@ -585,6 +587,8 @@ defmodule SymphonyElixir.TestSupport do
     agent_kind = Keyword.get(config, :agent_kind)
     agent_command = Keyword.get(config, :agent_command)
     agent_approval_policy = Keyword.get(config, :agent_approval_policy)
+    agent_include_project_guides = Keyword.get(config, :agent_include_project_guides)
+    agent_project_guide_files = Keyword.get(config, :agent_project_guide_files)
     agent_thread_sandbox = Keyword.get(config, :agent_thread_sandbox)
     agent_turn_sandbox_policy = Keyword.get(config, :agent_turn_sandbox_policy)
     agent_network_access = Keyword.get(config, :agent_network_access)
@@ -659,6 +663,8 @@ defmodule SymphonyElixir.TestSupport do
         "  max_tokens_per_day: #{yaml_value(max_tokens_per_day)}",
         "  command: #{yaml_value(agent_command)}",
         "  approval_policy: #{yaml_value(agent_approval_policy)}",
+        "  include_project_guides: #{yaml_value(agent_include_project_guides)}",
+        "  project_guide_files: #{yaml_value(agent_project_guide_files)}",
         "  thread_sandbox: #{yaml_value(agent_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(agent_turn_sandbox_policy)}",
         kv("mcp", Keyword.get(config, :agent_mcp)),

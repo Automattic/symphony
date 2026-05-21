@@ -2489,6 +2489,44 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert runtime_settings.auto_approve_requests == true
   end
 
+  test "config parses project guide controls and rejects unsafe guide paths" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_include_project_guides: false,
+      agent_project_guide_files: ["CLAUDE.md", "docs/AGENTS.md"]
+    )
+
+    config = Config.settings!()
+    assert config.agent.include_project_guides == false
+    assert config.agent.project_guide_files == ["CLAUDE.md", "docs/AGENTS.md"]
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_include_project_guides: "yes")
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "include_project_guides"
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_project_guide_files: ["/tmp/CLAUDE.md"])
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "project_guide_files"
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_project_guide_files: ["../AGENTS.md"])
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "project_guide_files"
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_project_guide_files: [""])
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "project_guide_files"
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_project_guide_files: ["~/CLAUDE.md"])
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "project_guide_files"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_project_guide_files: ["bad\nentry.md"]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "project_guide_files"
+  end
+
   test "codex runtime delegates turn sandboxing to SRT when sandbox runtime is enabled" do
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_sandbox_runtime: %{kind: "srt"},

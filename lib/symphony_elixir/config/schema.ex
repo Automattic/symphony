@@ -727,6 +727,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:command, :string)
 
       field(:approval_policy, StringOrMap)
+      field(:include_project_guides, :boolean, default: true)
+      field(:project_guide_files, {:array, :string})
 
       field(:thread_sandbox, :string, default: "workspace-write")
       field(:turn_sandbox_policy, :map)
@@ -754,6 +756,8 @@ defmodule SymphonyElixir.Config.Schema do
           :max_tokens_per_day,
           :command,
           :approval_policy,
+          :include_project_guides,
+          :project_guide_files,
           :thread_sandbox,
           :turn_sandbox_policy,
           :turn_timeout_ms,
@@ -774,11 +778,44 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:command_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_project_guide_files()
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
       |> cast_embed(:mcp, with: &Mcp.changeset/2)
       |> cast_embed(:network_access, with: &NetworkAccess.changeset/2)
       |> cast_embed(:sandbox_runtime, with: &SandboxRuntime.changeset/2)
+    end
+
+    defp validate_project_guide_files(changeset) do
+      validate_change(changeset, :project_guide_files, fn :project_guide_files, files ->
+        files
+        |> Enum.flat_map(&project_guide_file_errors/1)
+        |> Enum.map(&{:project_guide_files, &1})
+      end)
+    end
+
+    defp project_guide_file_errors(file) when is_binary(file) do
+      trimmed = String.trim(file)
+
+      cond do
+        trimmed == "" ->
+          ["must not contain blank entries"]
+
+        Path.type(trimmed) != :relative ->
+          ["must contain relative paths only"]
+
+        String.starts_with?(trimmed, "~") ->
+          ["must contain relative paths only"]
+
+        String.contains?(trimmed, ["\n", "\r", <<0>>]) ->
+          ["must not contain control characters"]
+
+        ".." in Path.split(trimmed) ->
+          ["must not contain parent directory segments"]
+
+        true ->
+          []
+      end
     end
   end
 

@@ -4572,6 +4572,22 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert StatusDashboard.humanize_codex_message(wrapped) =~ "in 10"
   end
 
+  test "status dashboard formats recovered malformed command completions" do
+    message = %{
+      event: :command_completed_recovered,
+      message: %{
+        payload: %{
+          "method" => "item/completed",
+          "params" => %{"item" => %{"type" => "commandExecution", "status" => "completed"}}
+        },
+        recovery: :malformed_command_completion
+      }
+    }
+
+    assert StatusDashboard.humanize_codex_message(message) ==
+             "command completed (recovered malformed Codex frame)"
+  end
+
   test "status dashboard uses shell command line as exec command status text" do
     message = %{
       event: :notification,

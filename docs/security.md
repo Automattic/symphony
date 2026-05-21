@@ -54,15 +54,12 @@ deny-list enforcement is not enough.
 
 **Git write model.** SRT settings always deny writes to the high-risk Git metadata files
 `config`, `config.worktree`, `hooks`, `info`, `packed-refs`, and any `worktrees/*/config(.worktree)`
-entries on every discovered Git metadata root. Writes to `.git/objects` are allowed only when the
-Git metadata root lives inside the per-issue workspace — the default clone layout
-(`workspace.strategy: clone`). For linked worktrees (`workspace.strategy: worktree`,
-`workspace.repo: <source>`), the shared `<source>/.git/objects` database stays write-denied by
-default so a sandboxed run cannot mutate objects visible to peer workspaces. To run `git
-add`/`git commit` under SRT in a linked-worktree setup, switch the affected workflow to a clone
-strategy or stage commits through a per-run isolated object store provisioned inside the
-workspace (for example via `GIT_OBJECT_DIRECTORY`). Operator-provisioned isolated stores outside
-the discovered metadata roots receive no implicit deny.
+entries on every discovered Git metadata root. Writes to `.git/objects` remain allowed so `git add`
+and `git commit` work in both clone workspaces and linked worktrees. For linked worktrees
+(`workspace.strategy: worktree`, `workspace.repo: <source>`), those object writes target the
+shared `<source>/.git/objects` database; this is an intentional cleanup/blast-radius tradeoff so
+SRT-wrapped Codex can commit normally while config, hooks, packed refs, and other high-risk Git
+metadata stay write-protected.
 
 ### Network access controls
 

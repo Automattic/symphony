@@ -41,7 +41,7 @@ defmodule SymphonyElixir.McpServer do
   @doc false
   @spec remote_socket_path(String.t()) :: Path.t()
   def remote_socket_path(id) when is_binary(id) do
-    Path.join("/tmp", "symphony-mcp-#{id}.sock")
+    Path.join(mcp_remote_socket_base(), "symphony-mcp-#{id}.sock")
   end
 
   @spec stop_session(session() | nil) :: :ok
@@ -198,6 +198,13 @@ defmodule SymphonyElixir.McpServer do
 
   defp mcp_socket_base do
     case Application.get_env(:symphony_elixir, :mcp_socket_base, @default_socket_base) do
+      path when is_binary(path) and path != "" -> path
+      _ -> @default_socket_base
+    end
+  end
+
+  defp mcp_remote_socket_base do
+    case Application.get_env(:symphony_elixir, :mcp_remote_socket_base, @default_socket_base) do
       path when is_binary(path) and path != "" -> path
       _ -> @default_socket_base
     end

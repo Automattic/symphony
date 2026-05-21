@@ -25,6 +25,12 @@ make all
 In sandboxed Codex workspaces, prefer a writable Hex cache location for the full gate. Dialyzer
 PLTs are project-local under `_build/plts`.
 
+MCP Unix sockets for tests are created under the configured `:mcp_socket_base`, which defaults to
+`_build/test/sockets` in test. Test startup refuses to recursively clean a socket base outside
+`_build/test`. Remote-worker reverse-forward socket paths are separate because they live on the
+worker host; they default to `/tmp` and can be overridden with `:mcp_remote_socket_base` or an
+explicit `:remote_socket_path`.
+
 ```bash
 HEX_HOME=/private/tmp/symphony-hex-home make all
 ```

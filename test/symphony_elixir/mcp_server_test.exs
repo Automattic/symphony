@@ -136,6 +136,31 @@ defmodule SymphonyElixir.McpServerTest do
     refute File.exists?(outside_socket_path)
   end
 
+  test "remote socket paths use a separately configured remote socket base" do
+    previous_remote_socket_base = Application.get_env(:symphony_elixir, :mcp_remote_socket_base)
+    Application.put_env(:symphony_elixir, :mcp_remote_socket_base, "/var/run/symphony")
+
+    on_exit(fn ->
+      restore_application_env(:mcp_remote_socket_base, previous_remote_socket_base)
+    end)
+
+    assert McpServer.remote_socket_path("abc-123") == "/var/run/symphony/symphony-mcp-abc-123.sock"
+  end
+
+  test "remote socket paths default independently from the local socket base" do
+    previous_socket_base = Application.get_env(:symphony_elixir, :mcp_socket_base)
+    previous_remote_socket_base = Application.get_env(:symphony_elixir, :mcp_remote_socket_base)
+    Application.put_env(:symphony_elixir, :mcp_socket_base, "_build/test/sockets/local-only")
+    Application.delete_env(:symphony_elixir, :mcp_remote_socket_base)
+
+    on_exit(fn ->
+      restore_application_env(:mcp_socket_base, previous_socket_base)
+      restore_application_env(:mcp_remote_socket_base, previous_remote_socket_base)
+    end)
+
+    assert McpServer.remote_socket_path("abc-123") == "/tmp/symphony-mcp-abc-123.sock"
+  end
+
   test "lists scoped tools over token-authenticated loopback TCP" do
     server = unique_server()
     start_supervised!({McpServer, name: server})

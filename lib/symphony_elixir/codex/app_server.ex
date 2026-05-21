@@ -1156,41 +1156,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:codex_stdout_exit, ^port, _ref, status} ->
         {:error, {:port_exit, status}}
 
-      {^port, {:data, {:eol, chunk}}} ->
-        complete_line = pending_line <> to_string(chunk)
-
-        handle_incoming(
-          port,
-          on_message,
-          complete_line,
-          timeout_ms,
-          tool_executor,
-          auto_approve_requests,
-          approval_context,
-          turn_stream_state
-        )
-
-      {^port, {:data, {:noeol, chunk}}} ->
-        case stream_timeout_error(timeout_ms, turn_stream_state) do
-          :ok ->
-            receive_loop(
-              port,
-              on_message,
-              timeout_ms,
-              pending_line <> to_string(chunk),
-              tool_executor,
-              auto_approve_requests,
-              approval_context,
-              turn_stream_state
-            )
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      {^port, {:exit_status, status}} ->
-        {:error, {:port_exit, status}}
-
       {:codex_stderr_transport_failed, ^port, _ref, reason} ->
         handle_stderr_transport_failure(port, on_message, reason)
     after
@@ -3611,16 +3576,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:codex_stdout_exit, ^port, _ref, status} ->
         {:error, {:port_exit, status}}
 
-      {^port, {:data, {:eol, chunk}}} ->
-        complete_line = pending_line <> to_string(chunk)
-        handle_response(port, request_id, complete_line, timeout_ms)
-
-      {^port, {:data, {:noeol, chunk}}} ->
-        with_timeout_response(port, request_id, timeout_ms, pending_line <> to_string(chunk))
-
-      {^port, {:exit_status, status}} ->
-        {:error, {:port_exit, status}}
-
       {:codex_stderr_transport_failed, ^port, _ref, reason} ->
         {:error, reason}
     after
@@ -3748,6 +3703,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:ok, %{pid: pid, ref: ref}}
     rescue
       exception ->
+        Logger.error("Failed to start Codex stdout pump: #{Exception.message(exception)}")
         Process.exit(pid, :kill)
         {:error, {:stdout_pump_connect_failed, Exception.message(exception)}}
     end
@@ -3776,7 +3732,8 @@ defmodule SymphonyElixir.Codex.AppServer do
         close_owned_port(port)
         :ok
 
-      _message ->
+      message ->
+        Logger.debug("Codex stdout pump received unexpected message: #{inspect(message)}")
         stdout_pump_loop(state)
     end
   end

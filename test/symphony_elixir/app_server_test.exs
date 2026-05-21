@@ -4216,7 +4216,7 @@ defmodule SymphonyElixir.AppServerTest do
       task = Task.async(fn -> AppServer.run(workspace, "Drain stdout burst", issue, on_message: on_message) end)
 
       assert_receive {:callback_blocked, callback_pid}, 1_000
-      assert eventually(fn -> File.exists?(marker_file) end)
+      assert eventually(fn -> File.exists?(marker_file) end, 200)
 
       send(callback_pid, :release_callback)
 

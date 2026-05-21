@@ -145,8 +145,11 @@ defmodule SymphonyElixir.Config.CacheTest do
         :sys.get_state(cache_pid)
       end)
 
-      assert_received {:watch_attempt, ^dir}
-      refute_received {:watch_attempt, ^dir}
+      # `:sys.get_state` above drains the cast handler synchronously, but use
+      # assert_receive/refute_receive with a small timeout so the assertion remains deterministic
+      # even if the cast pipeline grows an async hop in the future.
+      assert_receive {:watch_attempt, ^dir}, 100
+      refute_receive {:watch_attempt, ^dir}, 50
 
       state = :sys.get_state(Process.whereis(Cache))
       refute Map.has_key?(state.watchers, dir)

@@ -515,9 +515,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         put_in(response, ["data", field, "comment"], compact_comment_payload(comment))
 
       _comment ->
+        # `data` can be `nil` (Linear sometimes returns `{:ok, %{"data" => nil}}` because
+        # check_mutation_success treats a missing `success` key as success). `Map.get/3`'s default
+        # is only used when the key is absent, so we must guard against the nil value separately
+        # before calling `Map.keys/1`.
+        data_keys =
+          case Map.get(response, "data") do
+            data when is_map(data) -> Map.keys(data)
+            _ -> []
+          end
+
         Logger.warning(
           "Linear #{field} response missing expected comment shape; comment-body compaction skipped " <>
-            "issue_identifier=#{inspect(issue_identifier(opts))} data_keys=#{inspect(Map.keys(Map.get(response, "data", %{})))}"
+            "issue_identifier=#{inspect(issue_identifier(opts))} data_keys=#{inspect(data_keys)}"
         )
 
         response

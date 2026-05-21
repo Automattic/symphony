@@ -327,6 +327,32 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert log =~ ~s(issue_identifier="MT-DRIFT")
   end
 
+  test "add_comment tolerates Linear response with data=nil without raising" do
+    {:ok, registry} = CommentRegistry.start_link()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        response =
+          DynamicTool.execute(
+            "linear_add_comment",
+            %{"body" => "nil-data"},
+            issue: %Issue{id: "issue-current", identifier: "MT-NIL"},
+            comment_registry: registry,
+            linear_client: fn _query, _variables, _opts ->
+              # Linear can return data=nil when check_mutation_success treats a missing
+              # `success` field as success — the warning branch must not crash on it.
+              {:ok, %{"data" => nil}}
+            end
+          )
+
+        assert response["success"] == true
+      end)
+
+    assert log =~ "comment-body compaction skipped"
+    assert log =~ "data_keys=[]"
+    assert log =~ ~s(issue_identifier="MT-NIL")
+  end
+
   test "update_comment rejects comments not created in this run" do
     {:ok, registry} = CommentRegistry.start_link()
 

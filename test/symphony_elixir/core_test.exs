@@ -2862,6 +2862,62 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner refuses run when branch is checked out by another worktree" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-branch-collision-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      peer_worktree = Path.join(test_root, "peer-worktree")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      File.mkdir_p!(primary_repo)
+      git_setup = fn args -> System.cmd("git", ["-C", primary_repo | args], stderr_to_stdout: true) end
+      {_out, 0} = System.cmd("git", ["init", "-b", "main", primary_repo])
+      {_out, 0} = git_setup.(["config", "user.name", "Test User"])
+      {_out, 0} = git_setup.(["config", "user.email", "test@example.com"])
+      File.write!(Path.join(primary_repo, "README.md"), "initial\n")
+      {_out, 0} = git_setup.(["add", "README.md"])
+      {_out, 0} = git_setup.(["commit", "-m", "initial"])
+      {_out, 0} = git_setup.(["branch", "auto/MT-COLLIDE-AGENT"])
+      {_out, 0} = git_setup.(["worktree", "add", peer_worktree, "auto/MT-COLLIDE-AGENT"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      issue = %Issue{
+        id: "issue-branch-collision",
+        identifier: "PR-COLLIDE-AGENT",
+        title: "PR run collides with active issue worktree",
+        description: "Refuse with a clear error, do not crash",
+        state: "In Progress",
+        workspace_branch: "auto/MT-COLLIDE-AGENT",
+        workspace_base_ref: "auto/MT-COLLIDE-AGENT"
+      }
+
+      log =
+        capture_log(fn ->
+          assert_raise RuntimeError, ~r/branch_already_checked_out_elsewhere/, fn ->
+            AgentRunner.run(issue, nil, issue_enricher: no_op_issue_enricher())
+          end
+        end)
+
+      assert log =~ "Refusing run for"
+      assert log =~ "PR-COLLIDE-AGENT"
+      assert log =~ "branch auto/MT-COLLIDE-AGENT already checked out at"
+      assert File.exists?(peer_worktree)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner continues with a follow-up turn while the issue remains active" do
     test_root =
       Path.join(

@@ -667,6 +667,157 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "worktree create_for_issue returns a 2-tuple error when git worktree add fails" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-worktree-2tuple-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      issue = %Issue{
+        identifier: "MT-BAD-BASE",
+        workspace_branch: "auto/MT-BAD-BASE",
+        workspace_base_ref: "origin/does-not-exist"
+      }
+
+      log =
+        capture_log(fn ->
+          result = Workspace.create_for_issue(issue)
+          assert {:error, reason} = result
+          assert tuple_size(result) == 2
+          assert match?({:git_failed, _repo, _args, _status}, reason)
+        end)
+
+      assert log =~ "Workspace worktree preparation failed"
+      assert log =~ "auto/MT-BAD-BASE"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "worktree strategy refuses when the requested branch is already checked out elsewhere" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-worktree-collision-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      peer_worktree = Path.join(test_root, "peer-worktree")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo)
+      git!(primary_repo, ["branch", "auto/MT-COLLIDE"])
+      git!(primary_repo, ["worktree", "add", peer_worktree, "auto/MT-COLLIDE"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      issue = %Issue{
+        identifier: "PR-COLLIDE",
+        workspace_branch: "auto/MT-COLLIDE",
+        workspace_base_ref: "auto/MT-COLLIDE"
+      }
+
+      assert {:ok, expected_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "PR-COLLIDE"]))
+
+      assert {:error, {:branch_already_checked_out_elsewhere, branch: "auto/MT-COLLIDE", at: at, requested: ^expected_workspace}} =
+               Workspace.create_for_issue(issue)
+
+      assert {:ok, canonical_peer} = SymphonyElixir.PathSafety.canonicalize(peer_worktree)
+      assert {:ok, canonical_at} = SymphonyElixir.PathSafety.canonicalize(at)
+      assert canonical_at == canonical_peer
+
+      # The collision is detected pre-flight: the requested workspace is not
+      # populated with a worktree and the peer worktree is untouched.
+      refute File.exists?(Path.join(expected_workspace, ".git"))
+      assert File.exists?(peer_worktree)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "remote worktree creation maps branch collision script exit to the collision variant" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-worktree-collision-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+    end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      workspace_root = "/remote/workspaces"
+      workspace_repo = "/remote/primary"
+      workspace_path = "/remote/workspaces/default/PR-REMOTE-COLLIDE"
+      other_worktree = "/remote/workspaces/default/RSM-OTHER"
+
+      File.mkdir_p!(test_root)
+      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf 'workspace_branch_already_checked_out_elsewhere\\t%s\\t%s\\t%s\\n' \
+        'auto/RSM-OTHER' '#{other_worktree}' '#{workspace_path}'
+      exit 45
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: workspace_repo,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      issue = %Issue{
+        identifier: "PR-REMOTE-COLLIDE",
+        workspace_branch: "auto/RSM-OTHER",
+        workspace_base_ref: "origin/auto/RSM-OTHER"
+      }
+
+      assert {:error, {:branch_already_checked_out_elsewhere, details}} =
+               Workspace.create_for_issue(issue, "worker-01")
+
+      assert details[:branch] == "auto/RSM-OTHER"
+      assert details[:at] == other_worktree
+      assert details[:requested] == workspace_path
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(

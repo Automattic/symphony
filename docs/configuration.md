@@ -711,9 +711,9 @@ github:
   tools run in the orchestrator with orchestrator credentials. During Codex session setup,
   Symphony discovers the remote workspace's `origin` URL and current branch over SSH and uses that
   scope for `github_get_pull_request`, `github_create_pull_request`,
-  `github_update_pull_request_body`, `github_add_pr_comment`, and `github_get_pr_checks`. Git push
-  is separate: `github_push_branch` is **not** brokered for SSH workers and returns an unsupported
-  error.
+  `github_update_pull_request_body`, `github_add_pr_comment`,
+  `github_reply_to_review_comment`, and `github_get_pr_checks`. Git push is separate:
+  `github_push_branch` is **not** brokered for SSH workers and returns an unsupported error.
 
 ### `observability` and `server`
 

@@ -142,6 +142,38 @@ defmodule SymphonyElixir.GitHub.PullRequest do
 
   def rerun_failed(_run_id, _opts), do: {:error, :invalid_run_id}
 
+  def post_inline_comment_reply(pr_url, comment_id, body, opts \\ [])
+
+  @spec post_inline_comment_reply(term(), term(), term(), keyword()) :: {:ok, map()} | {:error, term()}
+  def post_inline_comment_reply(pr_url, comment_id, body, opts)
+      when is_binary(pr_url) and is_binary(comment_id) and is_binary(body) and is_list(opts) do
+    with {:ok, host, owner, repo, number} <- parse_github_pr_url(pr_url, opts),
+         {:ok, output} <-
+           run_gh(
+             github_api_args(host, "repos/#{owner}/#{repo}/pulls/#{number}/comments/#{comment_id}/replies") ++
+               ["-f", "body=#{body}"],
+             opts
+           ),
+         {:ok, payload} when is_map(payload) <- decode_reply_payload(output) do
+      {:ok, payload}
+    else
+      :error -> {:error, :invalid_pr_url}
+      {:ok, _decoded} -> {:error, :invalid_reply_payload}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def post_inline_comment_reply(_pr_url, _comment_id, _body, _opts), do: {:error, :invalid_reply}
+
+  defp decode_reply_payload(output) when is_binary(output) do
+    case Jason.decode(output) do
+      {:ok, payload} -> {:ok, payload}
+      {:error, %Jason.DecodeError{} = error} -> {:error, {:invalid_reply_payload, Exception.message(error)}}
+    end
+  end
+
+  defp decode_reply_payload(_output), do: {:error, :invalid_reply_payload}
+
   @spec reply_to_comment(String.t(), comment(), String.t(), keyword()) :: :ok | {:error, term()}
   def reply_to_comment(pr_url, comment, body, opts \\ []) do
     cond do

@@ -11,6 +11,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     assert {:error, :missing_github_origin_repo} = GitHub.create_pull_request(%{}, "Title", "Body")
     assert {:error, :missing_github_origin_repo} = GitHub.update_pull_request_body(%{}, "Body")
     assert {:error, :missing_github_origin_repo} = GitHub.add_pr_comment(%{}, "Body")
+    assert {:error, :missing_github_origin_repo} = GitHub.reply_to_review_comment(%{}, 123, "Body")
     assert {:error, :missing_github_origin_repo} = GitHub.get_pr_checks(%{})
     assert {:error, :missing_github_origin_repo} = GitHub.list_pr_comments(%{})
     assert {:error, :missing_github_origin_repo} = GitHub.list_pr_review_comments(%{})
@@ -61,6 +62,14 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
       assert {:error, :secret_pattern_detected} =
                GitHub.add_pr_comment(context, "body " <> openai_fixture(), dir: audit_dir)
+
+      assert {:error, :secret_pattern_detected} =
+               GitHub.reply_to_review_comment(context, 123, "reply " <> openai_fixture(),
+                 dir: audit_dir,
+                 gh_runner: fn _args, _opts ->
+                   flunk("GitHub should not be called for secret-bearing reply bodies")
+                 end
+               )
 
       assert [%{"event_type" => "refused_agent_action", "reason" => "secret_pattern_detected"} | _rest] =
                audit_events(audit_dir)
@@ -805,6 +814,9 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
                GitHub.add_pr_comment(scoped_context(workspace), "Body", opts)
 
       assert {:error, :missing_pull_request_url} =
+               GitHub.reply_to_review_comment(scoped_context(workspace), 123, "Body", opts)
+
+      assert {:error, :missing_pull_request_url} =
                GitHub.get_pr_checks(scoped_context(workspace), opts)
 
       assert {:error, :missing_pull_request_url} =
@@ -821,6 +833,201 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     after
       File.rm_rf(workspace)
     end
+  end
+
+  test "reply_to_review_comment posts under the named inline thread for the current PR" do
+    workspace = tmp_workspace!("github-agent-reply-review-comment")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
+          assert opts[:cd] == workspace
+
+          {Jason.encode!(%{
+             "number" => 3051,
+             "state" => "OPEN",
+             "title" => "Add tools",
+             "body" => "Body",
+             "url" => pr_url,
+             "headRefName" => "auto/RSM-3051",
+             "baseRefName" => "main"
+           }), 0}
+
+        ["api", "repos/acme/symphony/pulls/3051/comments/123/replies", "-f", "body=Addressed."], opts ->
+          assert opts[:cd] == workspace
+
+          {Jason.encode!(%{
+             "id" => 4242,
+             "node_id" => "PRRC_4242",
+             "html_url" => "#{pr_url}#discussion_r4242",
+             "body" => "Addressed."
+           }), 0}
+      end
+
+      assert {:ok,
+              %{
+                "pr_url" => ^pr_url,
+                "comment_id" => "123",
+                "reply_id" => 4242,
+                "url" => reply_url
+              }} =
+               GitHub.reply_to_review_comment(scoped_context(workspace), 123, "Addressed.",
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner
+               )
+
+      assert reply_url == "#{pr_url}#discussion_r4242"
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "reply_to_review_comment accepts numeric-string comment ids and trims surrounding whitespace" do
+    workspace = tmp_workspace!("github-agent-reply-review-comment-string-id")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["api", "repos/acme/symphony/pulls/3051/comments/9876543210/replies", "-f", "body=Addressed."], _opts ->
+          {Jason.encode!(%{"id" => 11, "html_url" => "#{pr_url}#discussion_r11"}), 0}
+      end
+
+      assert {:ok, %{"comment_id" => "9876543210", "reply_id" => 11}} =
+               GitHub.reply_to_review_comment(scoped_context(workspace), " 9876543210 ", "Addressed.",
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "reply_to_review_comment rejects blank, non-numeric, and invalid comment ids before calling gh" do
+    workspace = tmp_workspace!("github-agent-reply-review-comment-invalid-id")
+
+    try do
+      gh_runner = fn _args, _opts -> flunk("gh should not run for invalid comment ids") end
+      git_runner = fn _args, _opts -> flunk("git should not run for invalid comment ids") end
+
+      opts = [git_runner: git_runner, gh_runner: gh_runner]
+      ctx = scoped_context(workspace)
+
+      for bad <- ["", "   ", "abc", "12abc", nil, 0, -3, %{}, ["1"]] do
+        assert {:error, :invalid_comment_id} =
+                 GitHub.reply_to_review_comment(ctx, bad, "Addressed.", opts)
+      end
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "reply_to_review_comment requires a string body" do
+    workspace = tmp_workspace!("github-agent-reply-review-comment-invalid-body")
+
+    try do
+      gh_runner = fn _args, _opts -> flunk("gh should not run for invalid body") end
+      git_runner = fn _args, _opts -> flunk("git should not run for invalid body") end
+
+      assert {:error, :invalid_body} =
+               GitHub.reply_to_review_comment(scoped_context(workspace), 123, :not_a_string,
+                 git_runner: git_runner,
+                 gh_runner: gh_runner
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "reply_to_review_comment surfaces GitHub 404 for foreign comment ids as a clean error" do
+    workspace = tmp_workspace!("github-agent-reply-review-comment-404")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["api", "repos/acme/symphony/pulls/3051/comments/999/replies", "-f", "body=Hi"], _opts ->
+          {"not found\n", 1}
+      end
+
+      assert {:error, {:gh_failed, ["api", "repos/acme/symphony/pulls/3051/comments/999/replies", "-f", "body=Hi"], 1, "not found\n"}} =
+               GitHub.reply_to_review_comment(scoped_context(workspace), 999, "Hi",
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "reply_to_review_comment surfaces invalid JSON payloads from gh without raising" do
+    workspace = tmp_workspace!("github-agent-reply-review-comment-invalid-json")
+
+    try do
+      pr_url = "https://github.com/acme/symphony/pull/3051"
+
+      gh_runner = fn
+        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+        ["api", "repos/acme/symphony/pulls/3051/comments/123/replies", "-f", "body=Hi"], _opts ->
+          {"not json", 0}
+      end
+
+      assert {:error, {:invalid_reply_payload, _message}} =
+               GitHub.reply_to_review_comment(scoped_context(workspace), 123, "Hi",
+                 git_runner: branch_runner(workspace),
+                 gh_runner: gh_runner
+               )
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "reply_to_review_comment works for remote SSH-worker contexts without local git access" do
+    remote_workspace = "/remote/workspaces/MT-3187"
+    pr_url = "https://github.com/acme/symphony/pull/3187"
+
+    context = %{
+      workspace: remote_workspace,
+      command_security: %{
+        origin_repo: "acme/symphony",
+        origin_url: "git@github.com:acme/symphony.git",
+        current_branch: "auto/RSM-3187",
+        workspace: remote_workspace,
+        worker_host: "worker-01"
+      }
+    }
+
+    git_runner = fn _args, _opts -> flunk("remote SSH-worker reply must not shell out to local git") end
+
+    gh_runner = fn
+      ["pr", "view", "auto/RSM-3187", "--repo", "acme/symphony", "--json", _fields], opts ->
+        refute Keyword.has_key?(opts, :cd)
+
+        {Jason.encode!(%{
+           "number" => 3187,
+           "state" => "OPEN",
+           "url" => pr_url,
+           "headRefName" => "auto/RSM-3187",
+           "baseRefName" => "main"
+         }), 0}
+
+      ["api", "repos/acme/symphony/pulls/3187/comments/42/replies", "-f", "body=Acked."], opts ->
+        refute Keyword.has_key?(opts, :cd)
+        {Jason.encode!(%{"id" => 7, "html_url" => "#{pr_url}#discussion_r7"}), 0}
+    end
+
+    assert {:ok, %{"pr_url" => ^pr_url, "comment_id" => "42", "reply_id" => 7}} =
+             GitHub.reply_to_review_comment(context, 42, "Acked.", git_runner: git_runner, gh_runner: gh_runner)
   end
 
   defp issue_comment(pr_url) do

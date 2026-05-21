@@ -1605,12 +1605,10 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp reject_removed_keys(config) do
-    cond do
-      Map.has_key?(config, "self_review") ->
-        {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
-
-      true ->
-        :ok
+    if Map.has_key?(config, "self_review") do
+      {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
+    else
+      :ok
     end
   end
 

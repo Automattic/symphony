@@ -26,6 +26,7 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
       ["pr", "view", ^pr_url, "--json", fields], opts ->
         assert fields ==
                  "number,state,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,headRefOid,baseRefOid,isCrossRepository,updatedAt,comments,reviews,title,body,url,author"
+
         assert opts[:stderr_to_stdout]
 
         {Jason.encode!(%{

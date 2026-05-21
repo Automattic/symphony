@@ -514,17 +514,41 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp review_action(record, activity, latest_activity_at, unaddressed_comments, ignored_users, settings, now) do
     review_decision = normalize_decision(Map.get(activity, :review_decision))
     changes_requested? = changes_requested_decision?(review_decision, activity, ignored_users)
+
     cond do
-      merged_pr_state?(Map.get(activity, :state)) -> :merged
-      closed_pr_state?(Map.get(activity, :state)) -> :closed
-      true -> open_review_action(record, activity, latest_activity_at, unaddressed_comments, changes_requested?, settings, now)
+      merged_pr_state?(Map.get(activity, :state)) ->
+        :merged
+
+      closed_pr_state?(Map.get(activity, :state)) ->
+        :closed
+
+      true ->
+        open_review_action(
+          record,
+          activity,
+          latest_activity_at,
+          unaddressed_comments,
+          changes_requested?,
+          settings,
+          now
+        )
     end
   end
 
   defp open_review_action(record, activity, latest_activity_at, unaddressed_comments, changes_requested?, settings, now) do
     case conflict_review_action(record, activity) do
-      nil -> reviewer_activity_action(activity, latest_activity_at, unaddressed_comments, changes_requested?, settings, now)
-      action -> action
+      nil ->
+        reviewer_activity_action(
+          activity,
+          latest_activity_at,
+          unaddressed_comments,
+          changes_requested?,
+          settings,
+          now
+        )
+
+      action ->
+        action
     end
   end
 

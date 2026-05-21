@@ -498,7 +498,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_abnormal_agent_exit(%State{} = state, issue_id, running_entry, session_id, reason) do
-    error = "agent exited: #{inspect(reason)}"
+    error = "agent exited: #{agent_exit_reason_summary(reason)}"
     persist_run_completion(running_entry, terminal_status_for_reason(reason), error)
 
     cond do
@@ -539,6 +539,24 @@ defmodule SymphonyElixir.Orchestrator do
         })
     end
   end
+
+  defp agent_exit_reason_summary({%RuntimeError{message: message}, _stacktrace}) when is_binary(message) do
+    strip_ansi(message)
+  end
+
+  defp agent_exit_reason_summary({%{__exception__: true} = exception, _stacktrace}) do
+    exception
+    |> Exception.message()
+    |> strip_ansi()
+  end
+
+  defp agent_exit_reason_summary(reason) do
+    reason
+    |> inspect()
+    |> strip_ansi()
+  end
+
+  defp strip_ansi(text) when is_binary(text), do: String.replace(text, ~r/\x1b\[[0-9;]*m/, "")
 
   defp terminal_agent_setup_error?({:terminal_agent_setup_error, _reason}), do: true
 

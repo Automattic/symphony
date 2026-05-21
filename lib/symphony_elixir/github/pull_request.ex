@@ -23,6 +23,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
           pr_number: non_neg_integer() | nil,
           pr_title: String.t() | nil,
           pr_description: String.t() | nil,
+          pr_author: String.t() | nil,
           state: String.t() | nil,
           review_decision: String.t() | nil,
           mergeable: String.t() | nil,
@@ -71,6 +72,20 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       do_fetch_activity(pr_url, opts)
     else
       {:error, :invalid_pr_url}
+    end
+  end
+
+  @spec current_user(keyword()) :: {:ok, String.t()} | {:error, term()}
+  def current_user(opts \\ []) when is_list(opts) do
+    case run_gh(["api", "user", "--jq", ".login"], opts) do
+      {:ok, output} ->
+        case String.trim(output) do
+          "" -> {:error, :empty_current_user}
+          login -> {:ok, login}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -267,6 +282,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
          pr_number: Map.get(pr, "number"),
          pr_title: Map.get(pr, "title"),
          pr_description: Map.get(pr, "body"),
+         pr_author: get_in(pr, ["author", "login"]),
          state: Map.get(pr, "state"),
          review_decision: Map.get(pr, "reviewDecision"),
          mergeable: normalize_id(Map.get(pr, "mergeable")),
@@ -320,7 +336,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       "view",
       pr_url,
       "--json",
-      "number,state,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,headRefOid,baseRefOid,isCrossRepository,updatedAt,comments,reviews,title,body,url"
+      "number,state,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,headRefOid,baseRefOid,isCrossRepository,updatedAt,comments,reviews,title,body,url,author"
     ]
 
     with {:ok, output} <- run_gh(args, opts),

@@ -736,7 +736,7 @@ defmodule SymphonyElixir.Config.Schema do
       embeds_one(:network_access, NetworkAccess, on_replace: :update, defaults_to_struct: true)
       embeds_one(:sandbox_runtime, SandboxRuntime, on_replace: :update, defaults_to_struct: true)
       field(:turn_timeout_ms, :integer, default: 3_600_000)
-      field(:read_timeout_ms, :integer, default: 5_000)
+      field(:read_timeout_ms, :integer, default: 30_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
       field(:command_timeout_ms, :integer, default: 600_000)
     end
@@ -884,8 +884,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:mode, :string, default: "tracker")
       field(:cooldown_minutes, :integer)
       field(:stale_days, :integer)
-      field(:github_user, :string)
-      field(:bot_users, {:array, :string}, default: [])
+      field(:ignored_users, {:array, :string}, default: [])
       field(:auto_reply, :boolean, default: false)
       field(:auto_request_review, :boolean, default: false)
     end
@@ -895,10 +894,11 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         polling_attrs(attrs),
-        [:mode, :cooldown_minutes, :stale_days, :github_user, :bot_users, :auto_reply, :auto_request_review],
+        [:mode, :cooldown_minutes, :stale_days, :ignored_users, :auto_reply, :auto_request_review],
         empty_values: []
       )
       |> put_polling_defaults()
+      |> normalize_ignored_users()
       |> validate_required([:mode])
       |> validate_inclusion(:mode, @modes)
       |> validate_polling_options()
@@ -915,10 +915,8 @@ defmodule SymphonyElixir.Config.Schema do
             :cooldown_minutes,
             "stale_days",
             :stale_days,
-            "github_user",
-            :github_user,
-            "bot_users",
-            :bot_users,
+            "ignored_users",
+            :ignored_users,
             "auto_reply",
             :auto_reply,
             "auto_request_review",
@@ -932,12 +930,23 @@ defmodule SymphonyElixir.Config.Schema do
         changeset
         |> put_default(:cooldown_minutes, @default_cooldown_minutes)
         |> put_default(:stale_days, @default_stale_days)
-        |> put_default(:bot_users, [])
+        |> put_default(:ignored_users, [])
         |> put_default(:auto_reply, false)
         |> put_default(:auto_request_review, false)
       else
         changeset
       end
+    end
+
+    defp normalize_ignored_users(changeset) do
+      update_change(changeset, :ignored_users, fn
+        values when is_list(values) ->
+          values
+          |> Enum.filter(&is_binary/1)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+      end)
     end
 
     defp put_default(changeset, field, default) do
@@ -1567,13 +1576,10 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
-    config =
-      config
-      |> normalize_keys()
-      |> drop_nil_values()
+    normalized = normalize_keys(config)
 
-    with :ok <- reject_removed_keys(config),
-         {:ok, settings} <- apply_schema_changes(config),
+    with :ok <- reject_removed_keys(normalized),
+         {:ok, settings} <- apply_schema_changes(drop_nil_values(normalized)),
          :ok <- validate_finalized_settings(settings) do
       {:ok, settings}
     else
@@ -1599,10 +1605,12 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp reject_removed_keys(config) do
-    if Map.has_key?(config, "self_review") do
-      {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
-    else
-      :ok
+    cond do
+      Map.has_key?(config, "self_review") ->
+        {:error, {:invalid_workflow_config, "`self_review` has been removed; use `review_agent` instead"}}
+
+      true ->
+        :ok
     end
   end
 

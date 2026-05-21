@@ -66,6 +66,19 @@ defmodule SymphonyElixir.ReviewAgent.ContextTest do
       assert {:error, :boom} =
                Context.build(issue(), "/tmp/anywhere", "origin/main..HEAD", [], failing_git)
     end
+
+    test "looks up evidence at a changed file line range without shelling out again" do
+      repo = changed_repo!("feature.txt", "quoted context line\n")
+
+      assert {:ok, source} =
+               Context.build(issue(), repo, "origin/main..HEAD", [], git_fun(repo))
+
+      assert {:ok, %{path: "feature.txt", line_range: {1, 1}, text: "quoted context line", source: :diff}} =
+               Context.lookup_evidence(source, "feature.txt", {1, 1})
+
+      assert {:error, {:file_not_in_review_context, "missing.txt"}} =
+               Context.lookup_evidence(source, "missing.txt", {1, 1})
+    end
   end
 
   defp issue do

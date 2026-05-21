@@ -668,16 +668,20 @@ Fields:
 - `stale_days` (integer)
   - Polling-mode default: `7`.
   - Applies only in `polling` mode before reclaiming idle tracked PR workspaces.
-- `github_user` (string, OPTIONAL)
-  - Polling-mode option.
-- `bot_users` (list of strings)
+- `ignored_users` (list of strings)
   - Polling-mode default: `[]`.
+  - Extra GitHub users whose comments do not trigger PR review rework dispatch.
+  - The effective ignored set in `polling` mode is the union of `ignored_users`, the
+    auto-detected current `gh` user (when `gh api user` succeeds), and the PR author returned
+    by `gh pr view`. Operators do not need to configure their own identity here.
 - `auto_reply` (boolean)
   - Polling-mode default: `false`.
 - `auto_request_review` (boolean)
   - Polling-mode default: `false`.
 
-Polling-only options are ignored when `mode` is not `polling`.
+Polling-only options are ignored when `mode` is not `polling`. CI failure dispatch is driven only
+by failed status checks and ignores comment authorship; the ignored reviewer set above does not
+affect CI escalation.
 
 #### 5.4.7 `github` (object)
 
@@ -840,7 +844,7 @@ fields locally if they want stricter startup checks.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
-  - Default: `5000`
+  - Default: `30000`
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
@@ -968,7 +972,11 @@ SHOULD stop before pushing, the reviewer SHOULD receive issue context plus the c
 the reviewer MUST return a structured verdict of `approve`, `request_changes`, or `block`. Reviewer
 sessions SHOULD expose only read-only scoped Linear/GitHub tools. An `approve` verdict SHOULD keep
 later executor continuations in push/PR handoff mode rather than reintroducing the pre-push reviewer
-gate. Reviewer token usage SHOULD be tracked separately from the aggregate run token total.
+gate. `request_changes` and `block` verdicts SHOULD include evidence-backed findings with file,
+line range, quoted snippet, summary, and suggested fix; Symphony SHOULD reject verdicts whose
+findings cannot be verified against the reviewer diff/context, and SHOULD run one bounded
+self-check turn before accepting blocking findings. Reviewer token usage SHOULD be tracked
+separately from the aggregate run token total.
 
 #### 5.4.18 `notifications` (object)
 
@@ -1222,7 +1230,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.sandbox_runtime.kind`: `none` or `srt`, default `none`
 - `agent.sandbox_runtime.command`: SRT command string, default `srt`
 - `agent.turn_timeout_ms`: integer, default `3600000`
-- `agent.read_timeout_ms`: integer, default `5000`
+- `agent.read_timeout_ms`: integer, default `30000`
 - `agent.stall_timeout_ms`: integer, default `300000`
 - `agent.command_timeout_ms`: integer, default `600000`
 - `watchdog.enabled`: boolean, default `true`
@@ -1238,8 +1246,8 @@ not require recognizing or validating extension fields unless that extension is 
 - `pr_review.mode`: `tracker` or `polling`, default `tracker`
 - `pr_review.cooldown_minutes`: polling-mode integer, default `10`
 - `pr_review.stale_days`: polling-mode integer, default `7`
-- `pr_review.github_user`: polling-mode string or null
-- `pr_review.bot_users`: polling-mode list of strings, default `[]`
+- `pr_review.ignored_users`: polling-mode list of strings, default `[]`; combined with
+  the auto-detected current `gh` user and PR author
 - `pr_review.auto_reply`: polling-mode boolean, default `false`
 - `pr_review.auto_request_review`: polling-mode boolean, default `false`
 - `ci.enabled`: boolean, default `false`
@@ -1752,6 +1760,9 @@ Notes:
   prompt file and cleans it up with a trap.
 - Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
   using fields supported by the configured adapter.
+- The Codex adapter opts out of `turn/diff/updated` notifications during initialize so broad
+  aggregated diffs do not overload the app-server stdio stream; terminal turn events and smaller
+  item-level notifications remain enabled.
 
 Elixir evidence: `lib/symphony_elixir/codex/app_server.ex`,
 `lib/symphony_elixir/claude_code/app_server.ex`,

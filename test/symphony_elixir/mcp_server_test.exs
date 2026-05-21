@@ -81,13 +81,18 @@ defmodule SymphonyElixir.McpServerTest do
   end
 
   test "startup reaper leaves a live managed socket directory alone" do
+    workspace = test_socket_base("workspace-live-reaper")
+    shim_path = Path.join(workspace, "shim")
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(workspace) end)
+
     first_server = unique_server()
     start_supervised!({McpServer, name: first_server}, id: first_server)
 
     {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
+      McpServer.start_session(%{workspace: workspace},
         server: first_server,
-        shim_path: "/tmp/shim"
+        shim_path: shim_path
       )
 
     second_server = unique_server()
@@ -112,13 +117,18 @@ defmodule SymphonyElixir.McpServerTest do
   end
 
   test "sessions started after init create managed socket directories" do
+    workspace = test_socket_base("workspace-managed-dir")
+    shim_path = Path.join(workspace, "shim")
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(workspace) end)
+
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
     {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
+      McpServer.start_session(%{workspace: workspace},
         server: server,
-        shim_path: "/tmp/shim"
+        shim_path: shim_path
       )
 
     try do

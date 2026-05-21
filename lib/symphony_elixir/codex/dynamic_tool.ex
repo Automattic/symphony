@@ -125,6 +125,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
     },
     %{
+      "name" => "github_fetch_origin",
+      "description" => "Fetch the configured origin remote for the current workspace.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => false, "properties" => %{}}
+    },
+    %{
       "name" => "github_create_pull_request",
       "description" => "Create a pull request from the current workspace branch to the configured origin repo default branch.",
       "inputSchema" => %{
@@ -227,6 +232,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "linear_attach_url" => ["url", "title"],
     "linear_attach_file" => ["local_path", "title", "make_public"],
     "github_get_pull_request" => [],
+    "github_fetch_origin" => [],
     "github_create_pull_request" => ["title", "body", "draft"],
     "github_update_pull_request_body" => ["body"],
     "github_add_pr_comment" => ["body"],
@@ -251,6 +257,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     "linear.attach_url" => "linear_attach_url",
     "linear.attach_file" => "linear_attach_file",
     "github.get_pull_request" => "github_get_pull_request",
+    "github.fetch_origin" => "github_fetch_origin",
     "github.create_pull_request" => "github_create_pull_request",
     "github.update_pull_request_body" => "github_update_pull_request_body",
     "github.add_pr_comment" => "github_add_pr_comment",
@@ -373,6 +380,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp execute_github_tool("github_get_pull_request", context, _args, opts), do: GitHub.get_pull_request(context, opts)
+  defp execute_github_tool("github_fetch_origin", context, _args, opts), do: GitHub.fetch_origin(context, opts)
 
   defp execute_github_tool("github_create_pull_request", context, args, opts) do
     GitHub.create_pull_request(context, Map.get(args, "title"), Map.get(args, "body"), Map.get(args, "draft"), opts)
@@ -676,6 +684,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "error" => %{
         "code" => "unsupported_for_ssh_worker",
         "message" => "github_push_branch is not supported for SSH worker sessions. Symphony brokers GitHub PR API operations only; git push must use a separate secure push path."
+      }
+    }
+  end
+
+  defp tool_error_payload({:unsupported_for_ssh_worker, :github_fetch_origin}) do
+    %{
+      "error" => %{
+        "code" => "unsupported_for_ssh_worker",
+        "message" => "github_fetch_origin is not supported for SSH worker sessions. Symphony only brokers local workspace fetches through this tool."
+      }
+    }
+  end
+
+  defp tool_error_payload({:git_fetch_failed, status, output}) do
+    %{
+      "error" => %{
+        "code" => "git_fetch_failed",
+        "message" => "git fetch origin failed.",
+        "status" => status,
+        "output" => output
       }
     }
   end

@@ -1900,6 +1900,7 @@ defmodule SymphonyElixir.AppServerTest do
                      "linear_get_current_issue" in tool_names and
                        "linear_update_state" in tool_names and
                        "github_create_pull_request" in tool_names and
+                       "github_fetch_origin" in tool_names and
                        "github_list_pr_reviews" in tool_names and
                        "github_push_branch" in tool_names and
                        "linear_set_assignee" not in tool_names and

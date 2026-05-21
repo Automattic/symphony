@@ -15,6 +15,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
 
   @pr_view_fields "number,state,title,body,url,headRefName,baseRefName"
   @failed_conclusions MapSet.new(["ACTION_REQUIRED", "CANCELLED", "FAILURE", "STARTUP_FAILURE", "TIMED_OUT"])
+  @max_git_output_bytes 4_096
 
   @type context :: %{
           optional(:issue) => map() | nil,
@@ -27,6 +28,19 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   @spec get_pull_request(context(), keyword()) :: {:ok, map()} | {:error, term()}
   def get_pull_request(context, opts \\ []) do
     view_current_pull_request(context, opts)
+  end
+
+  @spec fetch_origin(context(), keyword()) :: {:ok, map()} | {:error, term()}
+  def fetch_origin(context, opts \\ []) do
+    if ssh_worker?(context) do
+      {:error, {:unsupported_for_ssh_worker, :github_fetch_origin}}
+    else
+      with {:ok, workspace} <- workspace(context),
+           :ok <- verify_current_origin(context, workspace, opts),
+           {:ok, output} <- run_fetch_origin(workspace, opts) do
+        {:ok, %{"remote" => "origin", "output" => output |> sanitize_git_output() |> String.trim()}}
+      end
+    end
   end
 
   @spec create_pull_request(context(), term(), term(), term(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -272,6 +286,19 @@ defmodule SymphonyElixir.AgentTools.GitHub do
     end
   end
 
+  defp run_fetch_origin(workspace, opts) do
+    case run_git(["fetch", "origin"], workspace, opts) do
+      {:ok, output} ->
+        {:ok, output}
+
+      {:error, {:git_failed, ["fetch", "origin"], status, output}} ->
+        {:error, {:git_fetch_failed, status, sanitize_git_output(output)}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp current_origin_url(workspace, opts) do
     with {:ok, output} <- run_git(["remote", "get-url", "origin"], workspace, opts),
          origin_url when is_binary(origin_url) <- output |> String.trim() |> blank_to_nil() do
@@ -386,6 +413,35 @@ defmodule SymphonyElixir.AgentTools.GitHub do
       prefix
     else
       take_valid_prefix(log, max_bytes - 1)
+    end
+  end
+
+  defp sanitize_git_output(output) do
+    output
+    |> IO.iodata_to_binary()
+    |> redact_home_path()
+    |> clamp_valid_output(@max_git_output_bytes)
+  end
+
+  defp redact_home_path(output) do
+    :binary.replace(output, Path.expand("~"), "~", [:global])
+  end
+
+  defp clamp_valid_output(output, max_bytes) when byte_size(output) <= max_bytes do
+    valid_output_prefix(output, byte_size(output))
+  end
+
+  defp clamp_valid_output(output, max_bytes) do
+    valid_output_prefix(output, max_bytes) <> "... (truncated)"
+  end
+
+  defp valid_output_prefix(output, max_bytes) do
+    prefix = binary_part(output, 0, min(byte_size(output), max_bytes))
+
+    if String.valid?(prefix) do
+      prefix
+    else
+      valid_output_prefix(output, max_bytes - 1)
     end
   end
 

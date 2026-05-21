@@ -78,7 +78,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   test "update_state resolves against the current issue team and updates current issue only" do
     test_pid = self()
-    issue = %Issue{id: "issue-current", identifier: "RSM-1"}
+    issue = %Issue{id: "issue-current", identifier: "ACME-1"}
 
     response =
       DynamicTool.execute(
@@ -591,7 +591,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
@@ -601,7 +601,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "--repo",
           "acme/symphony",
           "--head",
-          "auto/RSM-3051",
+          "auto/ACME-3051",
           "--title",
           "Add tools",
           "--body",
@@ -624,7 +624,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       assert %{
                "url" => "https://github.com/acme/symphony/pull/3051",
                "repo" => "acme/symphony",
-               "head" => "auto/RSM-3051"
+               "head" => "auto/ACME-3051"
              } = Jason.decode!(response["output"])
     after
       File.rm_rf(workspace)
@@ -693,13 +693,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
 
         ["remote", "get-url", "origin"], opts ->
           assert opts[:cd] == workspace
           {"git@github.com:acme/symphony.git\n", 0}
 
-        ["push", "origin", "auto/RSM-3051"], opts ->
+        ["push", "origin", "auto/ACME-3051"], opts ->
           assert opts[:cd] == workspace
           {"pushed\n", 0}
       end
@@ -712,7 +712,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         )
 
       assert response["success"] == true
-      assert %{"remote" => "origin", "branch" => "auto/RSM-3051"} = Jason.decode!(response["output"])
+      assert %{"remote" => "origin", "branch" => "auto/ACME-3051"} = Jason.decode!(response["output"])
     after
       File.rm_rf(workspace)
     end
@@ -725,13 +725,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
 
         ["remote", "get-url", "origin"], opts ->
           assert opts[:cd] == workspace
           {"git@github.com:acme/symphony.git\n", 0}
 
-        ["push", "origin", "auto/RSM-3051"], opts ->
+        ["push", "origin", "auto/ACME-3051"], opts ->
           assert opts[:cd] == workspace
           {"pushed\n", 0}
       end
@@ -744,7 +744,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         )
 
       assert response["success"] == true
-      assert %{"remote" => "origin", "branch" => "auto/RSM-3051"} = Jason.decode!(response["output"])
+      assert %{"remote" => "origin", "branch" => "auto/ACME-3051"} = Jason.decode!(response["output"])
     after
       File.rm_rf(workspace)
     end
@@ -757,11 +757,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", fields], opts ->
           assert opts[:cd] == workspace
           assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -771,7 +771,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "title" => "Add tools",
              "body" => "Body",
              "url" => "https://github.com/acme/symphony/pull/3051",
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
       end
@@ -787,7 +787,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       assert %{
                "url" => "https://github.com/acme/symphony/pull/3051",
-               "headRefName" => "auto/RSM-3051",
+               "headRefName" => "auto/ACME-3051",
                "baseRefName" => "main"
              } = Jason.decode!(response["output"])
     after
@@ -799,7 +799,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     remote_workspace = "/remote/workspaces/MT-3187"
 
     gh_runner = fn
-      ["pr", "view", "auto/RSM-3187", "--repo", "acme/symphony", "--json", fields], opts ->
+      ["pr", "view", "auto/ACME-3187", "--repo", "acme/symphony", "--json", fields], opts ->
         refute Keyword.has_key?(opts, :cd)
         assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -809,7 +809,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            "title" => "Remote PR",
            "body" => "Body",
            "url" => "https://github.com/acme/symphony/pull/3187",
-           "headRefName" => "auto/RSM-3187",
+           "headRefName" => "auto/ACME-3187",
            "baseRefName" => "main"
          }), 0}
     end
@@ -824,7 +824,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         command_security: %{
           origin_repo: "acme/symphony",
           origin_url: "git@github.com:acme/symphony.git",
-          current_branch: "auto/RSM-3187",
+          current_branch: "auto/ACME-3187",
           workspace: remote_workspace,
           worker_host: "worker-01"
         },
@@ -847,7 +847,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         command_security: %{
           origin_repo: "acme/symphony",
           origin_url: "git@github.com:acme/symphony.git",
-          current_branch: "auto/RSM-3187",
+          current_branch: "auto/ACME-3187",
           workspace: remote_workspace,
           worker_host: "worker-01"
         }
@@ -874,11 +874,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", fields], opts ->
           assert opts[:cd] == workspace
           assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -888,7 +888,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "title" => "Add tools",
              "body" => "Old body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -920,11 +920,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", fields], opts ->
           assert opts[:cd] == workspace
           assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -934,7 +934,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "title" => "Add tools",
              "body" => "Body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -966,11 +966,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
           assert opts[:cd] == workspace
 
           {Jason.encode!(%{
@@ -979,7 +979,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "title" => "Add tools",
              "body" => "Body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -1061,11 +1061,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       git_runner = fn
-        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+        ["branch", "--show-current"], _opts -> {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["api", "repos/acme/symphony/pulls/3051/comments/123/replies", "-f", "body=Hi"], _opts ->
@@ -1095,11 +1095,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", fields], opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", fields], opts ->
           assert opts[:cd] == workspace
           assert fields == "number,state,title,body,url,headRefName,baseRefName"
 
@@ -1109,7 +1109,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "title" => "Add tools",
              "body" => "Body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -1162,11 +1162,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
           assert opts[:cd] == workspace
 
           {Jason.encode!(%{
@@ -1175,7 +1175,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              "title" => "Add tools",
              "body" => "Body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -1237,18 +1237,18 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{
              "number" => 3051,
              "state" => "OPEN",
              "title" => "Add tools",
              "body" => "Body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -1298,11 +1298,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       git_runner = fn
-        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+        ["branch", "--show-current"], _opts -> {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->

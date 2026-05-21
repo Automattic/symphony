@@ -39,7 +39,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
   test "pull request body tools reject high-confidence secret prefixes before calling GitHub" do
     workspace = tmp_workspace!("github-agent-secret-scan")
     audit_dir = Path.join(workspace, "audit")
-    context = scoped_context(workspace) |> Map.put(:issue, %{"id" => "issue-secret", "identifier" => "RSM-3189"})
+    context = scoped_context(workspace) |> Map.put(:issue, %{"id" => "issue-secret", "identifier" => "ACME-3189"})
 
     try do
       for token <- secret_fixtures() do
@@ -119,7 +119,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       git_runner = fn
         ["branch", "--show-current"], opts ->
           assert opts[:cd] == workspace
-          {"auto/RSM-3051\n", 0}
+          {"auto/ACME-3051\n", 0}
       end
 
       gh_runner = fn
@@ -129,7 +129,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
           "--repo",
           "acme/symphony",
           "--head",
-          "auto/RSM-3051",
+          "auto/ACME-3051",
           "--title",
           "Title",
           "--body",
@@ -146,7 +146,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
           "--repo",
           "acme/symphony",
           "--head",
-          "auto/RSM-3051",
+          "auto/ACME-3051",
           "--title",
           "Title",
           "--body",
@@ -157,13 +157,13 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
           {"https://github.com/acme/symphony/pull/3051\n", 0}
       end
 
-      assert {:ok, %{"draft" => true, "head" => "auto/RSM-3051"}} =
+      assert {:ok, %{"draft" => true, "head" => "auto/ACME-3051"}} =
                GitHub.create_pull_request(scoped_context(workspace), "Title", "Body", true,
                  git_runner: git_runner,
                  gh_runner: gh_runner
                )
 
-      assert {:ok, %{"draft" => false, "head" => "auto/RSM-3051"}} =
+      assert {:ok, %{"draft" => false, "head" => "auto/ACME-3051"}} =
                GitHub.create_pull_request(scoped_context(workspace), "Title", "Body with nil draft", nil,
                  git_runner: git_runner,
                  gh_runner: gh_runner
@@ -200,9 +200,9 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
     try do
       ok_tuple_runner = fn
-        ["branch", "--show-current"], _opts -> {:ok, "auto/RSM-3051\n"}
+        ["branch", "--show-current"], _opts -> {:ok, "auto/ACME-3051\n"}
         ["remote", "get-url", "origin"], _opts -> {:ok, "git@github.com:acme/symphony.git\n"}
-        ["push", "origin", "auto/RSM-3051"], _opts -> {:ok, "pushed\n"}
+        ["push", "origin", "auto/ACME-3051"], _opts -> {:ok, "pushed\n"}
       end
 
       error_tuple_runner = fn
@@ -210,9 +210,9 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       end
 
       nonzero_runner = fn
-        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+        ["branch", "--show-current"], _opts -> {"auto/ACME-3051\n", 0}
         ["remote", "get-url", "origin"], _opts -> {"git@github.com:acme/symphony.git\n", 0}
-        ["push", "origin", "auto/RSM-3051"], _opts -> {"rejected\n", 1}
+        ["push", "origin", "auto/ACME-3051"], _opts -> {"rejected\n", 1}
       end
 
       raising_runner = fn _args, _opts -> :erlang.error(:enoent) end
@@ -223,7 +223,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       assert {:error, :git_boom} =
                GitHub.push_branch(scoped_context(workspace), git_runner: error_tuple_runner)
 
-      assert {:error, {:git_failed, ["push", "origin", "auto/RSM-3051"], 1, "rejected\n"}} =
+      assert {:error, {:git_failed, ["push", "origin", "auto/ACME-3051"], 1, "rejected\n"}} =
                GitHub.push_branch(scoped_context(workspace), git_runner: nonzero_runner)
 
       assert {:error, {:git_unavailable, _message}} =
@@ -255,7 +255,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     try do
       File.mkdir_p!(workspace)
       git!(test_root, ["init", "--bare", origin])
-      git!(workspace, ["init", "-b", "auto/RSM-3051"])
+      git!(workspace, ["init", "-b", "auto/ACME-3051"])
       git!(workspace, ["config", "user.name", "Test User"])
       git!(workspace, ["config", "user.email", "test@example.com"])
       File.write!(Path.join(workspace, "README.md"), "safe push\n")
@@ -272,9 +272,9 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         }
       }
 
-      assert {:ok, %{"branch" => "auto/RSM-3051", "remote" => "origin"}} = GitHub.push_branch(context)
+      assert {:ok, %{"branch" => "auto/ACME-3051", "remote" => "origin"}} = GitHub.push_branch(context)
       refute File.exists?(proof)
-      assert String.trim(git!(origin, ["rev-parse", "refs/heads/auto/RSM-3051"])) != ""
+      assert String.trim(git!(origin, ["rev-parse", "refs/heads/auto/ACME-3051"])) != ""
     after
       File.rm_rf(test_root)
     end
@@ -285,9 +285,9 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
     try do
       git_runner = fn
-        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+        ["branch", "--show-current"], _opts -> {"auto/ACME-3051\n", 0}
         ["remote", "get-url", "origin"], _opts -> {"ssh://attacker.example/repo.git\n", 0}
-        ["push", "origin", "auto/RSM-3051"], _opts -> flunk("push should not run when origin is retargeted")
+        ["push", "origin", "auto/ACME-3051"], _opts -> flunk("push should not run when origin is retargeted")
       end
 
       assert {:error, :origin_url_mismatch} =
@@ -302,9 +302,9 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
     try do
       git_runner = fn
-        ["branch", "--show-current"], _opts -> {"auto/RSM-3051\n", 0}
+        ["branch", "--show-current"], _opts -> {"auto/ACME-3051\n", 0}
         ["remote", "get-url", "origin"], _opts -> {"\n", 0}
-        ["push", "origin", "auto/RSM-3051"], _opts -> flunk("push should not run without a provable origin")
+        ["push", "origin", "auto/ACME-3051"], _opts -> flunk("push should not run without a provable origin")
       end
 
       assert {:error, :origin_url_mismatch} =
@@ -321,17 +321,17 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       git_runner = branch_runner(workspace)
 
       list_payload_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {"[]", 0}
       end
 
       invalid_json_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {"not json", 0}
       end
 
       gh_error_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {:error, :gh_failed}
       end
 
@@ -359,7 +359,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
     try do
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "github.example.com/acme/symphony", "--json", _fields], opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "github.example.com/acme/symphony", "--json", _fields], opts ->
           assert opts[:cd] == workspace
           {Jason.encode!(%{"number" => 3051, "url" => "https://github.example.com/acme/symphony/pull/3051"}), 0}
       end
@@ -390,7 +390,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       command_security: %{
         origin_repo: "acme/symphony",
         origin_url: "git@github.com:acme/symphony.git",
-        current_branch: "auto/RSM-3187",
+        current_branch: "auto/ACME-3187",
         workspace: remote_workspace,
         worker_host: "worker-01"
       }
@@ -399,7 +399,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     git_runner = fn _args, _opts -> flunk("remote PR tools should not shell out to local git") end
 
     gh_runner = fn
-      ["pr", "view", "auto/RSM-3187", "--repo", "acme/symphony", "--json", fields], opts ->
+      ["pr", "view", "auto/ACME-3187", "--repo", "acme/symphony", "--json", fields], opts ->
         refute Keyword.has_key?(opts, :cd)
         assert fields == "number,state,title,body,url,headRefName,baseRefName"
         send(test_pid, :viewed_remote_pr)
@@ -410,11 +410,11 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
            "title" => "Remote PR",
            "body" => "Body",
            "url" => pr_url,
-           "headRefName" => "auto/RSM-3187",
+           "headRefName" => "auto/ACME-3187",
            "baseRefName" => "main"
          }), 0}
 
-      ["pr", "create", "--repo", "acme/symphony", "--head", "auto/RSM-3187", "--title", "Title", "--body", "Body"], opts ->
+      ["pr", "create", "--repo", "acme/symphony", "--head", "auto/ACME-3187", "--title", "Title", "--body", "Body"], opts ->
         refute Keyword.has_key?(opts, :cd)
         send(test_pid, :created_remote_pr)
         {pr_url <> "\n", 0}
@@ -445,7 +445,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
     assert {:ok, %{"url" => ^pr_url}} = GitHub.get_pull_request(context, git_runner: git_runner, gh_runner: gh_runner)
 
-    assert {:ok, %{"url" => ^pr_url, "head" => "auto/RSM-3187"}} =
+    assert {:ok, %{"url" => ^pr_url, "head" => "auto/ACME-3187"}} =
              GitHub.create_pull_request(context, "Title", "Body", false, git_runner: git_runner, gh_runner: gh_runner)
 
     assert {:ok, %{"url" => ^pr_url}} =
@@ -471,14 +471,14 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{
              "number" => 3051,
              "state" => "OPEN",
              "title" => "Add tools",
              "body" => "Body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -517,14 +517,14 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{
              "number" => 3051,
              "state" => "OPEN",
              "title" => "Add tools",
              "body" => "Body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -572,7 +572,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
@@ -613,7 +613,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
@@ -656,7 +656,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
@@ -694,7 +694,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
@@ -732,7 +732,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
@@ -767,7 +767,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       command_security: %{
         origin_repo: "acme/symphony",
         origin_url: "git@github.com:acme/symphony.git",
-        current_branch: "auto/RSM-3187",
+        current_branch: "auto/ACME-3187",
         workspace: remote_workspace,
         worker_host: "worker-01"
       }
@@ -801,8 +801,8 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
 
     try do
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
-          {Jason.encode!(%{"number" => 3051, "headRefName" => "auto/RSM-3051"}), 0}
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(%{"number" => 3051, "headRefName" => "auto/ACME-3051"}), 0}
       end
 
       opts = [git_runner: branch_runner(workspace), gh_runner: gh_runner]
@@ -842,7 +842,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
           assert opts[:cd] == workspace
 
           {Jason.encode!(%{
@@ -851,7 +851,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
              "title" => "Add tools",
              "body" => "Body",
              "url" => pr_url,
-             "headRefName" => "auto/RSM-3051",
+             "headRefName" => "auto/ACME-3051",
              "baseRefName" => "main"
            }), 0}
 
@@ -891,7 +891,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["api", "repos/acme/symphony/pulls/3051/comments/9876543210/replies", "-f", "body=Addressed."], _opts ->
@@ -951,7 +951,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["api", "repos/acme/symphony/pulls/3051/comments/999/replies", "-f", "body=Hi"], _opts ->
@@ -975,7 +975,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       pr_url = "https://github.com/acme/symphony/pull/3051"
 
       gh_runner = fn
-        ["pr", "view", "auto/RSM-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
+        ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
         ["api", "repos/acme/symphony/pulls/3051/comments/123/replies", "-f", "body=Hi"], _opts ->
@@ -1001,7 +1001,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
       command_security: %{
         origin_repo: "acme/symphony",
         origin_url: "git@github.com:acme/symphony.git",
-        current_branch: "auto/RSM-3187",
+        current_branch: "auto/ACME-3187",
         workspace: remote_workspace,
         worker_host: "worker-01"
       }
@@ -1010,14 +1010,14 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     git_runner = fn _args, _opts -> flunk("remote SSH-worker reply must not shell out to local git") end
 
     gh_runner = fn
-      ["pr", "view", "auto/RSM-3187", "--repo", "acme/symphony", "--json", _fields], opts ->
+      ["pr", "view", "auto/ACME-3187", "--repo", "acme/symphony", "--json", _fields], opts ->
         refute Keyword.has_key?(opts, :cd)
 
         {Jason.encode!(%{
            "number" => 3187,
            "state" => "OPEN",
            "url" => pr_url,
-           "headRefName" => "auto/RSM-3187",
+           "headRefName" => "auto/ACME-3187",
            "baseRefName" => "main"
          }), 0}
 
@@ -1076,7 +1076,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     fn
       ["branch", "--show-current"], opts ->
         assert opts[:cd] == workspace
-        {"auto/RSM-3051\n", 0}
+        {"auto/ACME-3051\n", 0}
     end
   end
 

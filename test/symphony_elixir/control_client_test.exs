@@ -74,9 +74,9 @@ defmodule SymphonyElixir.ControlClientTest do
   test "stop_running POSTs the issue identifier" do
     parent = self()
 
-    assert {:ok, _} = ControlClient.stop_running("RSM-1", default_opts(parent))
+    assert {:ok, _} = ControlClient.stop_running("ACME-1", default_opts(parent))
 
-    assert_received {:posted, "http://127.0.0.1:9999/api/v1/control/stop", %{issue_identifier: "RSM-1"}, _token}
+    assert_received {:posted, "http://127.0.0.1:9999/api/v1/control/stop", %{issue_identifier: "ACME-1"}, _token}
   end
 
   test "dispatch_pr forwards target and intent" do
@@ -110,7 +110,7 @@ defmodule SymphonyElixir.ControlClientTest do
     body = %{"error" => %{"code" => "invalid_request"}}
 
     assert {:error, {:invalid_request, ^body}} =
-             ControlClient.stop_running("RSM-?", default_opts(parent, 422, body))
+             ControlClient.stop_running("ACME-?", default_opts(parent, 422, body))
   end
 
   test "maps HTTP 401 to {:error, {:unauthorized, body}}" do

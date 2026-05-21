@@ -92,16 +92,16 @@ defmodule Mix.Tasks.SymphonyControlTaskTest do
     Application.put_env(
       :symphony_elixir,
       :control_task_test_result,
-      {:ok, %{stopped: true, issue_id: "issue-1", issue_identifier: "RSM-1"}}
+      {:ok, %{stopped: true, issue_id: "issue-1", issue_identifier: "ACME-1"}}
     )
 
     output =
       capture_io(fn ->
-        assert :ok = Stop.run(["RSM-1"])
+        assert :ok = Stop.run(["ACME-1"])
       end)
 
-    assert output =~ "Stopped running issue: RSM-1"
-    assert_receive {:stop, "RSM-1"}
+    assert output =~ "Stopped running issue: ACME-1"
+    assert_receive {:stop, "ACME-1"}
   end
 
   test "pr task sends target and intent through the control client" do

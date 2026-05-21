@@ -155,7 +155,7 @@ when commands are ambiguous, writes `WORKFLOW.md`, and validates it with Symphon
 Run a single issue synchronously without starting the poll loop or dashboard:
 
 ```bash
-./bin/symphony run RSM-123 --timeout 30m --no-retry
+./bin/symphony run ACME-123 --timeout 30m --no-retry
 ```
 
 One-shot runs use the same `symphony.yml` and repo `WORKFLOW.md` resolution as service mode, create
@@ -253,7 +253,7 @@ The CLI reaches the running daemon over an HTTP control plane on the same port a
 ```bash
 mise exec -- mix symphony.pause "deploy window"
 mise exec -- mix symphony.resume
-mise exec -- mix symphony.stop RSM-123
+mise exec -- mix symphony.stop ACME-123
 mise exec -- mix symphony.pr 123 --intent "address review comments"
 ```
 

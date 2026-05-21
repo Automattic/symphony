@@ -245,7 +245,7 @@ defmodule SymphonyElixir.CiPollerTest do
                issue_identifier: issue.identifier,
                issue_url: issue.url,
                pr_url: List.first(issue.pr_urls),
-               workspace_path: "/tmp/workspaces/RSM-2401",
+               workspace_path: "/tmp/workspaces/ACME-2401",
                status: "rerun_requested",
                ci_retry_count: 0,
                rerun_attempted_shas: ["abc123"],
@@ -275,7 +275,7 @@ defmodule SymphonyElixir.CiPollerTest do
       issue_identifier: issue.identifier,
       issue_url: issue.url,
       pr_url: List.first(issue.pr_urls),
-      workspace_path: "/tmp/workspaces/RSM-2401",
+      workspace_path: "/tmp/workspaces/ACME-2401",
       status: "rerun_requested",
       ci_retry_count: 0,
       rerun_attempted_shas: ["abc123"],
@@ -313,7 +313,7 @@ defmodule SymphonyElixir.CiPollerTest do
                issue_identifier: issue.identifier,
                issue_url: issue.url,
                pr_url: List.first(issue.pr_urls),
-               workspace_path: "/tmp/workspaces/RSM-2401",
+               workspace_path: "/tmp/workspaces/ACME-2401",
                status: "dispatch_requested",
                ci_retry_count: 1,
                rerun_attempted_shas: ["def456"],
@@ -346,7 +346,7 @@ defmodule SymphonyElixir.CiPollerTest do
                issue_identifier: issue.identifier,
                issue_url: issue.url,
                pr_url: List.first(issue.pr_urls),
-               workspace_path: "/tmp/workspaces/RSM-2401",
+               workspace_path: "/tmp/workspaces/ACME-2401",
                status: "dispatch_requested",
                ci_retry_count: 2,
                dispatched_shas: ["abc123"],
@@ -381,7 +381,7 @@ defmodule SymphonyElixir.CiPollerTest do
                issue_identifier: issue.identifier,
                issue_url: issue.url,
                pr_url: List.first(issue.pr_urls),
-               workspace_path: "/tmp/workspaces/RSM-2401",
+               workspace_path: "/tmp/workspaces/ACME-2401",
                status: "rerun_requested",
                consecutive_errors: 2,
                ci_retry_count: 0,
@@ -432,9 +432,9 @@ defmodule SymphonyElixir.CiPollerTest do
              RunStore.put_pr_review(%{
                repo_key: @repo_key,
                issue_id: "issue-2401",
-               issue_identifier: "RSM-2401",
+               issue_identifier: "ACME-2401",
                pr_url: "https://github.com/example/repo/pull/2401",
-               workspace_path: "/tmp/workspaces/RSM-2401",
+               workspace_path: "/tmp/workspaces/ACME-2401",
                status: "watching",
                updated_at: now
              })
@@ -483,7 +483,7 @@ defmodule SymphonyElixir.CiPollerTest do
                issue_identifier: issue.identifier,
                issue_url: issue.url,
                pr_url: List.first(issue.pr_urls),
-               workspace_path: "/tmp/workspaces/RSM-2401",
+               workspace_path: "/tmp/workspaces/ACME-2401",
                status: "rerun_requested",
                ci_retry_count: 0,
                rerun_attempted_shas: ["abc123"],
@@ -545,10 +545,10 @@ defmodule SymphonyElixir.CiPollerTest do
   defp in_review_issue do
     %Issue{
       id: "issue-2401",
-      identifier: "RSM-2401",
+      identifier: "ACME-2401",
       title: "Handle CI",
       state: "In Review",
-      url: "https://linear.test/RSM-2401",
+      url: "https://linear.test/ACME-2401",
       pr_urls: ["https://github.com/example/repo/pull/2401"],
       labels: []
     }
@@ -561,7 +561,7 @@ defmodule SymphonyElixir.CiPollerTest do
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       status: "success",
-      workspace_path: "/tmp/workspaces/RSM-2401",
+      workspace_path: "/tmp/workspaces/ACME-2401",
       worker_host: nil,
       started_at: DateTime.add(now, -2, :minute),
       ended_at: DateTime.add(now, -1, :minute)

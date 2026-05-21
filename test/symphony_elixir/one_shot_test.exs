@@ -9,7 +9,7 @@ defmodule SymphonyElixir.OneShotTest do
   end
 
   test "successful one-shot run writes durable run-store record" do
-    issue = memory_issue("issue-success", "RSM-SUCCESS")
+    issue = memory_issue("issue-success", "ACME-SUCCESS")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
     workspace = Path.join(System.tmp_dir!(), "symphony-success-#{System.unique_integer([:positive])}")
 
@@ -23,14 +23,14 @@ defmodule SymphonyElixir.OneShotTest do
         end
       })
 
-    assert {:ok, %{status: "success"}} = OneShot.run("RSM-SUCCESS", deps: deps, no_retry: true)
+    assert {:ok, %{status: "success"}} = OneShot.run("ACME-SUCCESS", deps: deps, no_retry: true)
 
-    assert [%{status: "success", issue_id: "issue-success", issue_identifier: "RSM-SUCCESS", repo_key: "default"}] =
+    assert [%{status: "success", issue_id: "issue-success", issue_identifier: "ACME-SUCCESS", repo_key: "default"}] =
              RunStore.list_runs("default", :all)
   end
 
   test "agent failure exhausts bounded retry attempts" do
-    issue = memory_issue("issue-failure", "RSM-FAILURE")
+    issue = memory_issue("issue-failure", "ACME-FAILURE")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
     parent = self()
 
@@ -46,7 +46,7 @@ defmodule SymphonyElixir.OneShotTest do
       })
 
     assert {:error, :boom} =
-             OneShot.run("RSM-FAILURE",
+             OneShot.run("ACME-FAILURE",
                deps: deps,
                max_attempts: 2,
                retry_delay_ms: 0
@@ -62,9 +62,9 @@ defmodule SymphonyElixir.OneShotTest do
   end
 
   test "timeout kills the agent task, cleans up workspace, and records timeout" do
-    issue = memory_issue("issue-timeout", "RSM-TIMEOUT")
+    issue = memory_issue("issue-timeout", "ACME-TIMEOUT")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
-    workspace = Path.join([Config.settings!().workspace.root, "default", "RSM-TIMEOUT"])
+    workspace = Path.join([Config.settings!().workspace.root, "default", "ACME-TIMEOUT"])
     File.mkdir_p!(workspace)
 
     deps =
@@ -78,7 +78,7 @@ defmodule SymphonyElixir.OneShotTest do
       })
 
     assert {:timeout, :timeout_exceeded} =
-             OneShot.run("RSM-TIMEOUT",
+             OneShot.run("ACME-TIMEOUT",
                deps: deps,
                timeout_ms: 10,
                no_retry: true
@@ -89,11 +89,11 @@ defmodule SymphonyElixir.OneShotTest do
   end
 
   test "invalid timeout is a configuration error" do
-    issue = memory_issue("issue-timeout-config", "RSM-TIMEOUT-CONFIG")
+    issue = memory_issue("issue-timeout-config", "ACME-TIMEOUT-CONFIG")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
 
     assert {:config_error, :invalid_timeout} =
-             OneShot.run("RSM-TIMEOUT-CONFIG",
+             OneShot.run("ACME-TIMEOUT-CONFIG",
                deps: deps(),
                timeout_ms: :invalid
              )

@@ -364,7 +364,7 @@ defmodule SymphonyElixir.McpServerTest do
       response =
         request!(socket, 1, "tools/call", %{
           "name" => "github_create_pull_request",
-          "arguments" => %{"title" => "RSM-3052", "body" => "body"}
+          "arguments" => %{"title" => "ACME-3052", "body" => "body"}
         })
 
       refute response["result"]["isError"]
@@ -386,7 +386,7 @@ defmodule SymphonyElixir.McpServerTest do
                "--head",
                "feature/rsm-3052",
                "--title",
-               "RSM-3052",
+               "ACME-3052",
                "--body",
                "body"
              ]
@@ -430,7 +430,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     issue = %Issue{
       id: "issue-mcp-hold",
-      identifier: "RSM-MCP-HOLD",
+      identifier: "ACME-MCP-HOLD",
       title: "MCP hold",
       description: "Block risky dependency PR from MCP",
       state: "In Progress"
@@ -456,7 +456,7 @@ defmodule SymphonyElixir.McpServerTest do
       response =
         request!(socket, 1, "tools/call", %{
           "name" => "github_create_pull_request",
-          "arguments" => %{"title" => "RSM-3220", "body" => "body"}
+          "arguments" => %{"title" => "ACME-3220", "body" => "body"}
         })
 
       assert response["result"]["isError"]
@@ -519,7 +519,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     issue = %Issue{
       id: "issue-mcp-audit-error",
-      identifier: "RSM-MCP-AUDIT-ERROR",
+      identifier: "ACME-MCP-AUDIT-ERROR",
       title: "MCP audit error",
       description: "Block PR when MCP dependency audit fails",
       state: "In Progress"
@@ -545,7 +545,7 @@ defmodule SymphonyElixir.McpServerTest do
       response =
         request!(socket, 1, "tools/call", %{
           "name" => "github_create_pull_request",
-          "arguments" => %{"title" => "RSM-3220", "body" => "body"}
+          "arguments" => %{"title" => "ACME-3220", "body" => "body"}
         })
 
       assert response["result"]["isError"]

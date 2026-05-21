@@ -97,7 +97,7 @@ defmodule SymphonyElixir.RunStoreTest do
                repo_key: @repo_key,
                run_id: "run-1",
                issue_id: "issue-1",
-               issue_identifier: "RSM-1",
+               issue_identifier: "ACME-1",
                title: "Persist me",
                state: "In Progress",
                status: "running",
@@ -106,7 +106,7 @@ defmodule SymphonyElixir.RunStoreTest do
                ended_at: nil,
                error: nil,
                worker_host: "worker-a",
-               workspace_path: "/tmp/workspaces/RSM-1",
+               workspace_path: "/tmp/workspaces/ACME-1",
                session_id: "thread-1-turn-1",
                transcript_path: "/tmp/transcript.jsonl",
                tokens: %{input_tokens: 10, output_tokens: 4, total_tokens: 14},
@@ -137,20 +137,20 @@ defmodule SymphonyElixir.RunStoreTest do
              RunStore.put_retry(%{
                repo_key: @repo_key,
                issue_id: "issue-1",
-               issue_identifier: "RSM-1",
-               identifier: "RSM-1",
+               issue_identifier: "ACME-1",
+               identifier: "ACME-1",
                attempt: 3,
                due_at: due_at,
                error: "agent exited: :boom",
                worker_host: "worker-a",
-               workspace_path: "/tmp/workspaces/RSM-1"
+               workspace_path: "/tmp/workspaces/ACME-1"
              })
 
     assert [
              %{
                issue_id: "issue-1",
                repo_key: @repo_key,
-               identifier: "RSM-1",
+               identifier: "ACME-1",
                attempt: 3,
                due_at: ^due_at,
                error: "agent exited: :boom"
@@ -164,9 +164,9 @@ defmodule SymphonyElixir.RunStoreTest do
              RunStore.put_pr_review(%{
                repo_key: @repo_key,
                issue_id: "issue-1",
-               issue_identifier: "RSM-1",
+               issue_identifier: "ACME-1",
                pr_url: "https://github.com/example/repo/pull/1",
-               workspace_path: "/tmp/workspaces/RSM-1",
+               workspace_path: "/tmp/workspaces/ACME-1",
                status: "watching",
                updated_at: started_at
              })
@@ -183,7 +183,7 @@ defmodule SymphonyElixir.RunStoreTest do
                issue_id: "issue-1",
                repo_key: @repo_key,
                pr_url: "https://github.com/example/repo/pull/1",
-               workspace_path: "/tmp/workspaces/RSM-1",
+               workspace_path: "/tmp/workspaces/ACME-1",
                status: "cooling_down",
                last_activity_at: ^due_at,
                last_addressed_comment_id: "comment-1"
@@ -197,7 +197,7 @@ defmodule SymphonyElixir.RunStoreTest do
              RunStore.put_ci_check(%{
                repo_key: @repo_key,
                issue_id: "issue-1",
-               issue_identifier: "RSM-1",
+               issue_identifier: "ACME-1",
                pr_url: "https://github.com/example/repo/pull/1",
                commit_sha: "abc123",
                status: "dispatch_requested",
@@ -232,7 +232,7 @@ defmodule SymphonyElixir.RunStoreTest do
                repo_key: @repo_key,
                run_id: "run-1",
                issue_id: "issue-1",
-               issue_identifier: "RSM-1",
+               issue_identifier: "ACME-1",
                port: 4010,
                status: "allocated",
                allocated_at: started_at,
@@ -252,7 +252,7 @@ defmodule SymphonyElixir.RunStoreTest do
                run_id: "run-1",
                repo_key: @repo_key,
                issue_id: "issue-1",
-               issue_identifier: "RSM-1",
+               issue_identifier: "ACME-1",
                port: 4010,
                status: "dev_server_started",
                dev_server_os_pid: 12_345,
@@ -278,10 +278,10 @@ defmodule SymphonyElixir.RunStoreTest do
         questions: ["What should pass?", "Which module?", "What is out of scope?"],
         rounds_asked: 1,
         comment_posted?: true,
-        identifier: "RSM-1",
+        identifier: "ACME-1",
         title: "Persist me",
         state: "Todo",
-        url: "https://example.org/RSM-1",
+        url: "https://example.org/ACME-1",
         scored_at: started_at
       }
     }
@@ -323,7 +323,7 @@ defmodule SymphonyElixir.RunStoreTest do
                repo_key: @repo_key,
                run_id: "run-stale",
                issue_id: "issue-stale",
-               issue_identifier: "RSM-2",
+               issue_identifier: "ACME-2",
                status: "running",
                attempt: 1,
                started_at: now
@@ -350,7 +350,7 @@ defmodule SymphonyElixir.RunStoreTest do
                repo_key: @repo_key,
                run_id: "run-valid",
                issue_id: "issue-valid",
-               issue_identifier: "RSM-3",
+               issue_identifier: "ACME-3",
                status: "running",
                attempt: 1,
                started_at: now
@@ -384,14 +384,14 @@ defmodule SymphonyElixir.RunStoreTest do
                repo_key: @repo_key,
                eval_id: "eval-1",
                run_id: "run-1",
-               issue_identifier: "RSM-1",
+               issue_identifier: "ACME-1",
                issue_labels: ["bug", "backend"],
                outcome: "pr_opened",
                agent_kind: "codex",
                tokens: %{input_tokens: 10, output_tokens: 5, total_tokens: 15},
                tests_run: true,
                duration_seconds: 12,
-               workspace_path: "/tmp/workspaces/RSM-1",
+               workspace_path: "/tmp/workspaces/ACME-1",
                session_id: "session-1",
                logged_at: now,
                date: DateTime.to_date(now)
@@ -402,7 +402,7 @@ defmodule SymphonyElixir.RunStoreTest do
                repo_key: @repo_key,
                eval_id: "eval-2",
                run_id: "run-2",
-               issue_identifier: "RSM-2",
+               issue_identifier: "ACME-2",
                issue_labels: ["feature"],
                outcome: "error",
                agent_kind: "claude",
@@ -438,8 +438,8 @@ defmodule SymphonyElixir.RunStoreTest do
           rule: "Prefer the established helper #{index}.",
           tags: ["review-feedback", "repo-patterns"],
           evidence_quote: "Use the helper.",
-          evidence_issue_identifier: "RSM-#{index}",
-          evidence_issue_url: "https://linear.example.test/acme/RSM-#{index}",
+          evidence_issue_identifier: "ACME-#{index}",
+          evidence_issue_url: "https://linear.example.test/acme/ACME-#{index}",
           evidence_pr_number: index,
           evidence_run_id: "run-#{index}",
           created_at: DateTime.add(now, index, :second)
@@ -476,7 +476,7 @@ defmodule SymphonyElixir.RunStoreTest do
     assert [%{repo_key: @repo_key, status: "success"}] = RunStore.list_runs(@repo_key)
     assert [%{repo_key: @other_repo_key, status: "queued"}] = RunStore.list_runs(@other_repo_key)
 
-    retry = %{issue_id: "issue-shared", issue_identifier: "RSM-1", identifier: "RSM-1", attempt: 1, due_at: now}
+    retry = %{issue_id: "issue-shared", issue_identifier: "ACME-1", identifier: "ACME-1", attempt: 1, due_at: now}
     assert :ok = RunStore.put_retry(Map.put(retry, :repo_key, @repo_key))
     assert :ok = RunStore.put_retry(retry |> Map.put(:repo_key, @other_repo_key) |> Map.put(:attempt, 2))
 

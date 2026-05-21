@@ -18,7 +18,7 @@ defmodule SymphonyElixir.NotificationsTest do
     assert config.notifications.channels == []
     assert Enum.member?(SymphonyElixir.Application.child_specs_for_runtime(%{}), Notifier)
 
-    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-0"})
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "ACME-0"})
 
     opts = [
       task_starter: fn _fun -> flunk("disabled notifications should not start delivery tasks") end
@@ -30,9 +30,9 @@ defmodule SymphonyElixir.NotificationsTest do
 
   test "notification PubSub events carry repo_key" do
     assert :ok = SymphonyElixir.Notifications.subscribe()
-    assert :ok = SymphonyElixir.Notifications.emit_event(:run_failed, issue_identifier: "RSM-0")
+    assert :ok = SymphonyElixir.Notifications.emit_event(:run_failed, issue_identifier: "ACME-0")
 
-    assert_receive {:notification_event, %Event{repo_key: "default", issue_identifier: "RSM-0"}}
+    assert_receive {:notification_event, %Event{repo_key: "default", issue_identifier: "ACME-0"}}
   end
 
   test "notifier delivers non-primary repo PubSub events" do
@@ -73,12 +73,12 @@ defmodule SymphonyElixir.NotificationsTest do
     {:ok, event} =
       Event.new(:run_failed,
         repo_key: "github.com/acme/repo",
-        issue_identifier: "RSM-99"
+        issue_identifier: "ACME-99"
       )
 
     send(notifier_pid, {:notification_event, event})
 
-    assert_receive {:post, "https://webhook.test/events", %{"repo_key" => "github.com/acme/repo", "issue_identifier" => "RSM-99"}, []}
+    assert_receive {:post, "https://webhook.test/events", %{"repo_key" => "github.com/acme/repo", "issue_identifier" => "ACME-99"}, []}
   end
 
   test "notifications resolve channel env values and optional headers" do
@@ -318,7 +318,7 @@ defmodule SymphonyElixir.NotificationsTest do
     {:ok, event} =
       Event.new(:run_failed,
         issue_id: 123,
-        issue_identifier: "RSM-6",
+        issue_identifier: "ACME-6",
         issue_title: " ",
         pr_title: %{unexpected: true},
         reason: {:exit, :killed},
@@ -327,13 +327,13 @@ defmodule SymphonyElixir.NotificationsTest do
       )
 
     assert event.issue_id == "123"
-    assert event.issue_identifier == "RSM-6"
+    assert event.issue_identifier == "ACME-6"
     assert event.issue_title == nil
     assert event.pr_title == nil
     assert event.reason == "{:exit, :killed}"
     assert event.state == "done"
     assert event.repo_key == "default"
-    assert event.transcript_url == "http://127.0.0.1:4105/repos/default/issues/RSM-6/transcript"
+    assert event.transcript_url == "http://127.0.0.1:4105/repos/default/issues/ACME-6/transcript"
 
     assert {:error, {:unknown_notification_event, 123}} = Event.new(123, %{})
     assert {:ok, %Event{issue_identifier: nil}} = Event.new(:run_failed, :invalid_attrs)
@@ -341,10 +341,10 @@ defmodule SymphonyElixir.NotificationsTest do
 
     issue = %Issue{
       id: "issue-7",
-      identifier: "RSM-7",
+      identifier: "ACME-7",
       title: "Needs review",
       state: "In Review",
-      url: " https://linear.test/RSM-7 ",
+      url: " https://linear.test/ACME-7 ",
       pr_urls: ["", "https://github.test/org/repo/pull/7"]
     }
 
@@ -352,15 +352,15 @@ defmodule SymphonyElixir.NotificationsTest do
             %Event{
               repo_key: "default",
               issue_id: "issue-7",
-              issue_identifier: "RSM-7",
+              issue_identifier: "ACME-7",
               issue_title: "Needs review",
-              issue_url: "https://linear.test/RSM-7",
+              issue_url: "https://linear.test/ACME-7",
               pr_url: "https://github.test/org/repo/pull/7",
               state: "In Review"
             }} = Event.from_issue(:awaiting_review, issue)
 
-    assert {:ok, %Event{issue_identifier: "RSM-8"}} =
-             Event.from_issue(:budget_exceeded, :not_an_issue, issue_identifier: "RSM-8")
+    assert {:ok, %Event{issue_identifier: "ACME-8"}} =
+             Event.from_issue(:budget_exceeded, :not_an_issue, issue_identifier: "ACME-8")
   end
 
   test "event transcript link falls back cleanly when config cannot load" do
@@ -383,7 +383,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
     try do
       Workflow.set_workflow_file_path(missing_path)
-      assert {:ok, %Event{transcript_url: nil}} = Event.new(:run_failed, %{issue_identifier: "RSM-9"})
+      assert {:ok, %Event{transcript_url: nil}} = Event.new(:run_failed, %{issue_identifier: "ACME-9"})
     after
       Workflow.set_workflow_file_path(workflow_path)
 
@@ -405,11 +405,11 @@ defmodule SymphonyElixir.NotificationsTest do
     {:ok, event} =
       Event.new(:pr_opened, %{
         issue_id: "issue-1",
-        issue_identifier: "RSM-1",
+        issue_identifier: "ACME-1",
         issue_title: "Sensitive title",
-        issue_url: "https://linear.test/RSM-1",
+        issue_url: "https://linear.test/ACME-1",
         pr_url: "https://github.test/org/repo/pull/1",
-        transcript_url: "http://127.0.0.1:4000/issues/RSM-1/transcript",
+        transcript_url: "http://127.0.0.1:4000/issues/ACME-1/transcript",
         timestamp: ~U[2026-05-06 08:00:00Z]
       })
 
@@ -418,45 +418,45 @@ defmodule SymphonyElixir.NotificationsTest do
 
     assert payload["event"] == "pr_opened"
     assert payload["repo_key"] == "default"
-    assert payload["issue_identifier"] == "RSM-1"
+    assert payload["issue_identifier"] == "ACME-1"
     assert payload["issue_title"] == "Sensitive title"
     assert payload["state_url"] == "https://github.test/org/repo/pull/1"
-    assert payload["transcript_url"] == "http://127.0.0.1:4000/issues/RSM-1/transcript"
+    assert payload["transcript_url"] == "http://127.0.0.1:4000/issues/ACME-1/transcript"
     refute Map.has_key?(redacted, "issue_title")
-    assert redacted["issue_identifier"] == "RSM-1"
-    assert redacted["issue_url"] == "https://linear.test/RSM-1"
+    assert redacted["issue_identifier"] == "ACME-1"
+    assert redacted["issue_url"] == "https://linear.test/ACME-1"
   end
 
   test "formatter builds Slack block attachment payload with state URL and transcript link" do
     {:ok, event} =
       Event.new("run_failed", %{
-        issue_identifier: "RSM-2",
+        issue_identifier: "ACME-2",
         issue_title: "Broken run",
-        issue_url: "https://linear.test/RSM-2",
+        issue_url: "https://linear.test/ACME-2",
         pr_url: "https://github.test/org/repo/pull/2",
-        transcript_url: "http://127.0.0.1:4000/issues/RSM-2/transcript",
+        transcript_url: "http://127.0.0.1:4000/issues/ACME-2/transcript",
         reason: "agent exited"
       })
 
     payload = Formatter.slack_payload(event)
     encoded = Jason.encode!(payload)
 
-    assert payload["text"] == "Run failed: RSM-2"
+    assert payload["text"] == "Run failed: ACME-2"
     assert [%{"blocks" => blocks}] = payload["attachments"]
     assert is_list(blocks)
-    assert encoded =~ "RSM-2"
+    assert encoded =~ "ACME-2"
     assert encoded =~ "Broken run"
     assert encoded =~ "https://github.test/org/repo/pull/2"
-    assert encoded =~ "http://127.0.0.1:4000/issues/RSM-2/transcript"
+    assert encoded =~ "http://127.0.0.1:4000/issues/ACME-2/transcript"
 
     redacted = Formatter.slack_payload(event, redact_titles: true)
     refute Jason.encode!(redacted) =~ "Broken run"
   end
 
   test "formatter includes reviewer feedback context for webhook and Slack payloads" do
-    issue_url = "https://linear.test/RSM-2407"
+    issue_url = "https://linear.test/ACME-2407"
     pr_url = "https://github.test/org/repo/pull/2407"
-    transcript_url = "http://127.0.0.1:4000/issues/RSM-2407/transcript"
+    transcript_url = "http://127.0.0.1:4000/issues/ACME-2407/transcript"
 
     for {event_name, title} <- [
           {"reviewer_commented", "Reviewer commented"},
@@ -465,7 +465,7 @@ defmodule SymphonyElixir.NotificationsTest do
       {:ok, event} =
         Event.new(event_name, %{
           issue_id: "issue-2407",
-          issue_identifier: "RSM-2407",
+          issue_identifier: "ACME-2407",
           issue_title: "Reviewer feedback",
           issue_url: issue_url,
           pr_url: pr_url,
@@ -477,7 +477,7 @@ defmodule SymphonyElixir.NotificationsTest do
       redacted_payload = Formatter.webhook_payload(event, redact_titles: true)
 
       assert payload["event"] == event_name
-      assert payload["issue_identifier"] == "RSM-2407"
+      assert payload["issue_identifier"] == "ACME-2407"
       assert payload["issue_title"] == "Reviewer feedback"
       assert payload["issue_url"] == issue_url
       assert payload["pr_url"] == pr_url
@@ -489,9 +489,9 @@ defmodule SymphonyElixir.NotificationsTest do
       slack_payload = Formatter.slack_payload(event)
       encoded_slack = Jason.encode!(slack_payload)
 
-      assert slack_payload["text"] == "#{title}: RSM-2407"
+      assert slack_payload["text"] == "#{title}: ACME-2407"
 
-      for value <- [title, "RSM-2407", "Reviewer feedback", issue_url, pr_url, transcript_url, "2026-05-06T08:00:00Z"] do
+      for value <- [title, "ACME-2407", "Reviewer feedback", issue_url, pr_url, transcript_url, "2026-05-06T08:00:00Z"] do
         assert encoded_slack =~ value
       end
 
@@ -538,15 +538,15 @@ defmodule SymphonyElixir.NotificationsTest do
 
     issue_event = %Event{
       event: "issue_completed",
-      issue_identifier: "RSM-10",
-      issue_url: "https://linear.test/RSM-10",
+      issue_identifier: "ACME-10",
+      issue_url: "https://linear.test/ACME-10",
       timestamp: ~U[2026-05-06 10:00:00Z],
       tokens: %{},
       metadata: %{}
     }
 
-    assert Formatter.state_url(issue_event) == "https://linear.test/RSM-10"
-    assert Formatter.webhook_payload(issue_event)["state_url"] == "https://linear.test/RSM-10"
+    assert Formatter.state_url(issue_event) == "https://linear.test/ACME-10"
+    assert Formatter.webhook_payload(issue_event)["state_url"] == "https://linear.test/ACME-10"
 
     budget_payload = Formatter.slack_payload(%{issue_event | event: "budget_exceeded"})
     completed_payload = Formatter.slack_payload(issue_event)
@@ -557,7 +557,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
   test "notifier honors per-channel event filters" do
     test_pid = self()
-    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-3"})
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "ACME-3"})
 
     notifications = %{
       enabled: true,
@@ -588,8 +588,8 @@ defmodule SymphonyElixir.NotificationsTest do
 
   test "notifier honors reviewer feedback event filters" do
     test_pid = self()
-    {:ok, reviewer_event} = Event.new(:reviewer_commented, %{issue_identifier: "RSM-2407"})
-    {:ok, rework_event} = Event.new(:rework_pushed, %{issue_identifier: "RSM-2407"})
+    {:ok, reviewer_event} = Event.new(:reviewer_commented, %{issue_identifier: "ACME-2407"})
+    {:ok, rework_event} = Event.new(:rework_pushed, %{issue_identifier: "ACME-2407"})
 
     notifications = %{
       enabled: true,
@@ -625,7 +625,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
   test "notifier retries Slack 429 with retry-after before dropping" do
     test_pid = self()
-    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-4"})
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "ACME-4"})
     {:ok, counter} = Agent.start_link(fn -> 0 end)
 
     notifications = %{
@@ -660,7 +660,7 @@ defmodule SymphonyElixir.NotificationsTest do
   end
 
   test "Slack channel reports retry delay from 429 response" do
-    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-5"})
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "ACME-5"})
 
     request_fun = fn _url, _payload, _headers, _timeout_ms ->
       {:ok, %{status: 429, headers: [{"Retry-After", "3"}], body: "rate limited"}}
@@ -671,7 +671,7 @@ defmodule SymphonyElixir.NotificationsTest do
   end
 
   test "webhook channel disables redirects for outbound requests" do
-    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-3022"})
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "ACME-3022"})
 
     request_fun = fn url, payload, headers, timeout_ms, request_opts ->
       assert url == "https://webhook.test/events"
@@ -693,7 +693,7 @@ defmodule SymphonyElixir.NotificationsTest do
 
   test "notifier drops Slack delivery after max attempts" do
     test_pid = self()
-    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "RSM-6"})
+    {:ok, event} = Event.new(:run_failed, %{issue_identifier: "ACME-6"})
 
     notifications = %{
       enabled: true,

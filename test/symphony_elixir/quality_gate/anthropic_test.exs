@@ -23,7 +23,7 @@ defmodule SymphonyElixir.QualityGate.AnthropicTest do
       end
 
       assert {:ok, %{score: 8, reason: "clear"}} =
-               Anthropic.score(issue("RSM-1"), %{
+               Anthropic.score(issue("ACME-1"), %{
                  model: "claude-haiku-4-5-20251001",
                  api_key: "secret-key",
                  request_fun: request_fun
@@ -33,7 +33,7 @@ defmodule SymphonyElixir.QualityGate.AnthropicTest do
       assert payload["model"] == "claude-haiku-4-5-20251001"
       assert is_binary(payload["system"])
       assert [%{"role" => "user", "content" => user}] = payload["messages"]
-      assert user =~ "RSM-1"
+      assert user =~ "ACME-1"
       assert {"x-api-key", "secret-key"} in headers
       assert {"anthropic-version", "2023-06-01"} in headers
     end
@@ -44,7 +44,7 @@ defmodule SymphonyElixir.QualityGate.AnthropicTest do
       end
 
       assert {:error, {:provider_http_status, 401, _body}} =
-               Anthropic.score(issue("RSM-1"), %{
+               Anthropic.score(issue("ACME-1"), %{
                  model: "claude-haiku-4-5-20251001",
                  api_key: "key",
                  request_fun: request_fun
@@ -55,7 +55,7 @@ defmodule SymphonyElixir.QualityGate.AnthropicTest do
       request_fun = fn _payload, _headers, _timeout -> {:error, :timeout} end
 
       assert {:error, {:provider_request_failed, :timeout}} =
-               Anthropic.score(issue("RSM-1"), %{
+               Anthropic.score(issue("ACME-1"), %{
                  model: "claude-haiku-4-5-20251001",
                  api_key: "key",
                  request_fun: request_fun
@@ -64,7 +64,7 @@ defmodule SymphonyElixir.QualityGate.AnthropicTest do
 
     test "falls back to credentials error when api_key is missing" do
       assert {:error, :missing_provider_credentials} =
-               Anthropic.score(issue("RSM-1"), %{model: "claude-haiku", api_key: nil})
+               Anthropic.score(issue("ACME-1"), %{model: "claude-haiku", api_key: nil})
     end
 
     test "ignores non-text content blocks and surfaces empty text as a parse error" do
@@ -81,7 +81,7 @@ defmodule SymphonyElixir.QualityGate.AnthropicTest do
       end
 
       assert {:error, :empty_response} =
-               Anthropic.score(issue("RSM-1"), %{
+               Anthropic.score(issue("ACME-1"), %{
                  model: "claude-haiku-4-5-20251001",
                  api_key: "key",
                  request_fun: request_fun
@@ -94,7 +94,7 @@ defmodule SymphonyElixir.QualityGate.AnthropicTest do
       end
 
       assert {:error, :empty_response} =
-               Anthropic.score(issue("RSM-1"), %{
+               Anthropic.score(issue("ACME-1"), %{
                  model: "claude-haiku-4-5-20251001",
                  api_key: "key",
                  request_fun: request_fun

@@ -39,7 +39,7 @@ defmodule SymphonyElixir.AuditLogTest do
 
   test "writes append-only redacted NDJSON and lists by issue/date", %{audit_dir: audit_dir} do
     timestamp = ~U[2026-05-07 12:00:00Z]
-    issue = %Issue{id: "issue-1", identifier: "RSM-1"}
+    issue = %Issue{id: "issue-1", identifier: "ACME-1"}
     prompt = "Handle this issue with #{@linear_secret} but do not leak it."
 
     assert :ok =
@@ -165,7 +165,7 @@ defmodule SymphonyElixir.AuditLogTest do
                %{
                  repo_key: "default",
                  issue_id: "issue-1",
-                 issue_identifier: "RSM-1",
+                 issue_identifier: "ACME-1",
                  run_id: "run-1",
                  timestamp: ~U[2026-05-07 09:00:00Z],
                  event_type: "tool_call",
@@ -179,7 +179,7 @@ defmodule SymphonyElixir.AuditLogTest do
                %{
                  repo_key: "other",
                  issue_id: "issue-2",
-                 issue_identifier: "RSM-2",
+                 issue_identifier: "ACME-2",
                  run_id: "run-2",
                  timestamp: ~U[2026-05-07 10:00:00Z],
                  event_type: "file_change",
@@ -190,7 +190,7 @@ defmodule SymphonyElixir.AuditLogTest do
 
     assert {:ok, stream} =
              AuditLog.query(%{
-               "issue" => "RSM-1",
+               "issue" => "ACME-1",
                "repo" => "default",
                "type" => "tool_call",
                "from" => "2026-05-07",
@@ -229,7 +229,7 @@ defmodule SymphonyElixir.AuditLogTest do
   end
 
   test "records refused agent actions", %{audit_dir: audit_dir} do
-    issue = %Issue{id: "issue-refused", identifier: "RSM-3010"}
+    issue = %Issue{id: "issue-refused", identifier: "ACME-3010"}
 
     assert :ok =
              AuditLog.record_refused_agent_action(
@@ -248,7 +248,7 @@ defmodule SymphonyElixir.AuditLogTest do
     assert {:ok, [%{"event_type" => "refused_agent_action"} = event]} =
              AuditLog.list_events("issue-refused", ~D[2026-05-13], ~D[2026-05-13], dir: audit_dir)
 
-    assert event["issue_identifier"] == "RSM-3010"
+    assert event["issue_identifier"] == "ACME-3010"
     assert event["repo_key"] == "default"
     assert event["action"] == "git_push"
     assert event["reason"] == "git_remote_not_allowed"
@@ -377,7 +377,7 @@ defmodule SymphonyElixir.AuditLogTest do
 
   test "records tool, Linear, file-change, PR, and token side-effect events", %{audit_dir: audit_dir} do
     timestamp = ~U[2026-05-07 12:00:00Z]
-    issue = %Issue{id: "issue-1", identifier: "RSM-1"}
+    issue = %Issue{id: "issue-1", identifier: "ACME-1"}
     running_entry = %{issue: issue, run_id: "run-1", session_id: "thread-1-turn-1"}
 
     assert :ok =
@@ -473,8 +473,8 @@ defmodule SymphonyElixir.AuditLogTest do
   end
 
   test "records observed Linear state transitions", %{audit_dir: audit_dir} do
-    previous = %Issue{id: "issue-1", identifier: "RSM-1", state: "In Progress"}
-    refreshed = %Issue{id: "issue-1", identifier: "RSM-1", state: "In Review"}
+    previous = %Issue{id: "issue-1", identifier: "ACME-1", state: "In Progress"}
+    refreshed = %Issue{id: "issue-1", identifier: "ACME-1", state: "In Review"}
 
     assert :ok =
              AuditLog.record_linear_state_transition(previous, refreshed, "run-1",

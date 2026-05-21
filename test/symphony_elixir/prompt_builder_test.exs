@@ -87,6 +87,41 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert prompt =~ "body=<linear_issue_body>\nOption body"
   end
 
+  test "review-agent instructions override active retry guidance" do
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      prompt: """
+      {% if attempt %}
+      - Do not end the turn while the issue remains in an active state.
+      {% endif %}
+      Ticket {{ issue.identifier }}
+      """,
+      review_agent: %{
+        enabled: true,
+        kind: "codex",
+        command: "codex app-server",
+        max_iterations: 1
+      }
+    )
+
+    issue = %Issue{
+      identifier: "RSM-3709",
+      title: "Gate pre-push review",
+      description: "Retry prompt must not bypass the reviewer",
+      state: "In Progress",
+      url: "https://example.org/issues/RSM-3709",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue, attempt: 2, settings: Config.settings!())
+
+    assert prompt =~ "Do not end the turn while the issue remains in an active state."
+    assert prompt =~ "Review-agent gate:"
+    assert prompt =~ "This overrides retry or continuation guidance"
+    assert prompt =~ "Only continue to push/PR after an explicit reviewer-agent approval prompt"
+    assert prompt =~ "Do not treat missing reviewer comments as approval."
+  end
+
   test "prompt builder sanitizes linked issue title and state before rendering" do
     write_workflow_file!(
       Workflow.workflow_file_path(),

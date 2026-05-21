@@ -20,7 +20,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.McpServer
   alias SymphonyElixir.Notifications
   alias SymphonyElixir.PathSafety
-  alias SymphonyElixir.ProjectGuides
+  alias SymphonyElixir.ProjectGuidePrompt
   alias SymphonyElixir.SensitivePath
   alias SymphonyElixir.SSH
 
@@ -207,7 +207,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata: metadata
     }
 
-    case ProjectGuides.append_to_prompt(prompt, workspace, settings, :codex) do
+    case ProjectGuidePrompt.append_to_prompt(prompt, workspace, settings, :codex) do
       {:ok, prompt} ->
         run_turn_with_prompt(prompt, turn_context)
 

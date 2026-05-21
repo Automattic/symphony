@@ -3154,6 +3154,45 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner preserves the review-agent gate in later continuation prompts" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-continuation-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = review_agent_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_review_agent_fake_codex!(codex_binary, trace_file)
+      write_review_agent_workflow!(codex_binary, max_turns: 3)
+      put_review_agent_responses!([~s({"verdict":"approve","comments":[]})])
+
+      assert :ok =
+               AgentRunner.run(review_agent_issue(), self(),
+                 workspace_path: repo,
+                 issue_state_fetcher: review_agent_state_fetcher(self(), 4),
+                 issue_enricher: no_op_issue_enricher(),
+                 review_agent_module: ReviewAgentSequenceAppServer
+               )
+
+      assert_receive {:review_agent_call, 1, _session, _review_prompt, _issue, _opts}
+      refute_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}, 50
+
+      turn_texts = review_agent_turn_texts!(trace_file)
+      assert length(turn_texts) == 3
+      assert Enum.at(turn_texts, 1) =~ "Reviewer agent approved the committed diff"
+      assert Enum.at(turn_texts, 2) =~ "Review-agent gate reminder:"
+      assert Enum.at(turn_texts, 2) =~ "has not already received a reviewer-agent approval prompt"
+      assert Enum.at(turn_texts, 2) =~ "Ending the turn at that gate is expected"
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner review-agent request changes re-dispatches executor once before approval" do
     test_root =
       Path.join(

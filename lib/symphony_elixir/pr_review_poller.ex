@@ -591,11 +591,7 @@ defmodule SymphonyElixir.PrReviewPoller do
           complete_review_update(
             opts,
             record,
-            %{
-              status: "cleanup_error",
-              error: inspect({cleanup_reason, output}),
-              updated_at: now
-            },
+            cleanup_error_attrs(record, {cleanup_reason, output}, opts, now),
             {:cleanup_error, Map.get(record, :issue_id), cleanup_reason}
           )
 
@@ -603,11 +599,7 @@ defmodule SymphonyElixir.PrReviewPoller do
           complete_review_update(
             opts,
             record,
-            %{
-              status: "cleanup_error",
-              error: inspect(other),
-              updated_at: now
-            },
+            cleanup_error_attrs(record, other, opts, now),
             {:cleanup_error, Map.get(record, :issue_id), other}
           )
       end
@@ -773,6 +765,8 @@ defmodule SymphonyElixir.PrReviewPoller do
     attrs = %{
       status: "cleanup_pending",
       error: nil,
+      consecutive_errors: 0,
+      next_poll_at: nil,
       workspace_removed_at: now,
       updated_at: now
     }
@@ -1573,6 +1567,18 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  defp cleanup_error_attrs(record, reason, opts, now) do
+    consecutive_errors = consecutive_errors(record) + 1
+
+    %{
+      status: "cleanup_error",
+      error: inspect(reason),
+      consecutive_errors: consecutive_errors,
+      next_poll_at: DateTime.add(now, cleanup_error_backoff_ms(consecutive_errors, opts), :millisecond),
+      updated_at: now
+    }
+  end
+
   defp consecutive_errors(record) do
     case Map.get(record, :consecutive_errors) do
       value when is_integer(value) and value >= 0 -> value
@@ -1659,6 +1665,14 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp github_error_backoff_ms(consecutive_errors, opts) do
     exponent = max(consecutive_errors - @github_error_backoff_threshold, 0)
+
+    poll_interval_ms(opts)
+    |> Kernel.*(Integer.pow(2, exponent))
+    |> min(@max_github_error_backoff_ms)
+  end
+
+  defp cleanup_error_backoff_ms(consecutive_errors, opts) do
+    exponent = max(consecutive_errors - 1, 0)
 
     poll_interval_ms(opts)
     |> Kernel.*(Integer.pow(2, exponent))

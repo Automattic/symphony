@@ -163,6 +163,26 @@ defmodule SymphonyElixir.ConfigSplitTest do
     end
   end
 
+  test "application runtime validation reports missing modules and functions compactly" do
+    assert :ok =
+             SymphonyElixir.Application.validate_runtime_modules!([
+               {SymphonyElixir.ProjectGuidePrompt, :append_to_prompt, 4},
+               {SymphonyElixir.ProjectGuides, :append_to_prompt, 4}
+             ])
+
+    assert_raise ArgumentError, ~r/runtime module unavailable: SymphonyElixir.MissingRuntimeModule/, fn ->
+      SymphonyElixir.Application.validate_runtime_modules!([
+        {SymphonyElixir.MissingRuntimeModule, :run, 1}
+      ])
+    end
+
+    assert_raise ArgumentError, ~r/runtime function unavailable: SymphonyElixir.ProjectGuides.missing\/4/, fn ->
+      SymphonyElixir.Application.validate_runtime_modules!([
+        {SymphonyElixir.ProjectGuides, :missing, 4}
+      ])
+    end
+  end
+
   test "repo WORKFLOW.md rejects operator-level config and points at symphony.yml", %{root: root} do
     repo =
       write_repo!(root, "app", """

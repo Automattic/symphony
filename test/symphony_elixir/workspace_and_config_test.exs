@@ -98,6 +98,38 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "worktree removal skips branch deletion when another worktree has the branch checked out" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-worktree-checked-out-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      workspace_root = Path.join(test_root, "workspaces")
+      peer_worktree = Path.join(test_root, "peer-worktree")
+      stale_workspace = Path.join([workspace_root, "default", "MT-BLOCK"])
+
+      create_primary_repo!(primary_repo)
+      git!(primary_repo, ["branch", "auto/MT-BLOCK"])
+      git!(primary_repo, ["worktree", "add", peer_worktree, "auto/MT-BLOCK"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      assert {:ok, [^stale_workspace]} = Workspace.remove(stale_workspace)
+      assert File.exists?(peer_worktree)
+      assert git_branch_exists?(primary_repo, "auto/MT-BLOCK")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "worktree strategy can skip fetch before dispatch" do
     test_root =
       Path.join(
@@ -3741,6 +3773,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert trace =~ "workspace_worktree_list_failed"
       assert trace =~ "auto/MT-SSH-WT"
       assert trace =~ "git -C \"$repo\" worktree remove --force"
+      assert trace =~ "workspace_branch_delete_skipped"
       refute trace =~ "git clone"
     after
       File.rm_rf(test_root)

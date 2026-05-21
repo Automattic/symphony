@@ -201,8 +201,10 @@ defmodule SymphonyElixir.Workpad do
   end
 
   defp local_hostname do
-    {:ok, hostname} = :inet.gethostname()
-    List.to_string(hostname)
+    case :inet.gethostname() do
+      {:ok, hostname} -> List.to_string(hostname)
+      {:error, _reason} -> "unknown-host"
+    end
   end
 
   defp short_sha(_workspace, opts) do

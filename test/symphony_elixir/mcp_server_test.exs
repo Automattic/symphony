@@ -132,7 +132,10 @@ defmodule SymphonyElixir.McpServerTest do
       )
 
     try do
-      assert String.starts_with?(session.socket_dir, Path.join(managed_socket_base(), "symphony-mcp-"))
+      assert String.starts_with?(
+               session.socket_dir,
+               Path.join(managed_socket_base(), "symphony-mcp-")
+             )
       assert File.dir?(session.socket_dir)
       assert File.exists?(session.socket_path)
     after

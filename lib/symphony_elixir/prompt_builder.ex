@@ -559,16 +559,16 @@ defmodule SymphonyElixir.PromptBuilder do
       nil
     else
       %{
-        pr_url: string_field(conflict, :pr_url),
-        pr_title: string_field(conflict, :pr_title),
+        pr_url: pr_conflict_string_field(conflict, :pr_url),
+        pr_title: pr_conflict_string_field(conflict, :pr_title),
         pr_number: integer_field(conflict, :pr_number),
-        head_ref: head_ref,
-        head_sha: head_sha,
-        base_ref: base_ref,
-        base_sha: base_sha,
-        mergeable: string_field(conflict, :mergeable),
-        merge_state_status: string_field(conflict, :merge_state_status),
-        conflict_key: conflict_key,
+        head_ref: sanitize_pr_conflict_field(head_ref),
+        head_sha: sanitize_pr_conflict_field(head_sha),
+        base_ref: sanitize_pr_conflict_field(base_ref),
+        base_sha: sanitize_pr_conflict_field(base_sha),
+        mergeable: pr_conflict_string_field(conflict, :mergeable),
+        merge_state_status: pr_conflict_string_field(conflict, :merge_state_status),
+        conflict_key: sanitize_pr_conflict_field(conflict_key),
         observed_at: get_field(conflict, :observed_at),
         retry_count: positive_integer_field(conflict, :retry_count) || 1,
         max_retries: positive_integer_field(conflict, :max_retries) || 3
@@ -577,6 +577,15 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp normalize_pr_conflict(_conflict), do: nil
+
+  defp pr_conflict_string_field(map, key) when is_map(map) and is_atom(key) do
+    map
+    |> string_field(key)
+    |> sanitize_pr_conflict_field()
+  end
+
+  defp sanitize_pr_conflict_field(value) when is_binary(value), do: PromptSafety.pr_conflict_field(value)
+  defp sanitize_pr_conflict_field(_value), do: nil
 
   defp normalize_ci_failure(ci_failure) when is_map(ci_failure) do
     failed_checks =

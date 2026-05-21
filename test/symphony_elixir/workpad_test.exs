@@ -155,7 +155,8 @@ defmodule SymphonyElixir.WorkpadTest do
       id: "issue-existing-linear-workpad",
       identifier: "MT-LINEAR",
       title: "Linear workpad",
-      state: "In Progress"
+      state: "In Progress",
+      comments: [%{author: "Reporter", body: "Recent context", created_at: nil}]
     }
 
     linear_client = fn query, variables, _opts ->
@@ -171,7 +172,7 @@ defmodule SymphonyElixir.WorkpadTest do
                    "nodes" => [
                      %{
                        "id" => "comment-workpad",
-                       "body" => "## Codex Workpad\nExisting notes",
+                       "body" => "## Codex Workpad\nExisting notes with <pending> & follow-up",
                        "createdAt" => "2026-05-21T04:00:00Z",
                        "updatedAt" => "2026-05-21T04:00:00Z",
                        "user" => %{"id" => "user-1", "name" => "Codex"}
@@ -187,7 +188,7 @@ defmodule SymphonyElixir.WorkpadTest do
       end
     end
 
-    assert {:ok, ^issue} =
+    assert {:ok, updated_issue} =
              Workpad.bootstrap(issue, System.tmp_dir!(),
                settings: Config.settings!(),
                linear_client: linear_client
@@ -195,6 +196,11 @@ defmodule SymphonyElixir.WorkpadTest do
 
     assert_receive {:linear_query, query, %{id: "issue-existing-linear-workpad", limit: 100}}
     assert query =~ "SymphonyAgentIssueComments"
+
+    assert [
+             %{author: "Codex", body: "## Codex Workpad\nExisting notes with <pending> & follow-up", created_at: nil},
+             %{author: "Reporter", body: "Recent context", created_at: nil}
+           ] = updated_issue.comments
   end
 
   test "bootstrap returns Linear comment lookup failures" do
@@ -323,5 +329,11 @@ defmodule SymphonyElixir.WorkpadTest do
            ) =~ "worker-a:/remote/workspace@def5678"
 
     assert Workpad.bootstrap_body("## Codex Workpad", System.tmp_dir!()) =~ "## Codex Workpad"
+
+    assert Workpad.bootstrap_body("## Codex Workpad", "/local/workspace",
+             hostname_result: {:error, :nxdomain},
+             short_sha: "unknown-host-sha",
+             now: ~U[2026-05-21 04:30:00Z]
+           ) =~ "unknown-host:/local/workspace@unknown-host-sha"
   end
 end

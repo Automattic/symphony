@@ -106,11 +106,11 @@ defmodule SymphonyElixir.Workpad do
     context = %{issue: issue, workspace: workspace}
 
     with {:ok, comments} <- AgentTools.Linear.get_comments(context, @comment_limit, linear_opts(opts)),
-         false <- existing_workpad_comment?(comments),
+         nil <- find_workpad_comment(comments),
          {:ok, issue} <- create_linear_workpad(issue, workspace, heading, opts) do
       {:ok, issue}
     else
-      true -> {:ok, issue}
+      workpad_comment when is_map(workpad_comment) -> {:ok, put_existing_workpad_comment(issue, workpad_comment)}
       {:error, reason} -> {:error, {:workpad_bootstrap_comment_failed, reason}}
     end
   end
@@ -149,22 +149,44 @@ defmodule SymphonyElixir.Workpad do
     %{issue | comments: [comment | normalized_comments(issue.comments)]}
   end
 
+  defp put_existing_workpad_comment(%Issue{} = issue, comment) when is_map(comment) do
+    comment = %{
+      author: get_in(comment, ["user", "name"]) || Map.get(comment, :author) || Map.get(comment, "author") || "Linear",
+      body: comment |> comment_body() |> normalize_existing_comment_body(),
+      created_at: nil
+    }
+
+    %{issue | comments: [comment | normalized_comments(issue.comments)]}
+  end
+
   defp normalized_comments(comments) when is_list(comments), do: comments
   defp normalized_comments(_comments), do: []
 
-  defp existing_workpad_comment?(comments) when is_list(comments) do
-    Enum.any?(comments, fn comment ->
+  defp existing_workpad_comment?(comments), do: find_workpad_comment(comments) != nil
+
+  defp find_workpad_comment(comments) when is_list(comments) do
+    Enum.find(comments, fn comment ->
       comment
       |> comment_body()
       |> workpad_body?()
     end)
   end
 
-  defp existing_workpad_comment?(_comments), do: false
+  defp find_workpad_comment(_comments), do: nil
 
   defp comment_body(%{"body" => body}) when is_binary(body), do: body
   defp comment_body(%{body: body}) when is_binary(body), do: body
   defp comment_body(_comment), do: nil
+
+  defp normalize_existing_comment_body(body) when is_binary(body) do
+    body
+    |> String.trim()
+    |> String.replace_prefix("<linear_issue_comment_body>\n", "")
+    |> String.replace_suffix("\n</linear_issue_comment_body>", "")
+    |> String.replace("&lt;", "<")
+    |> String.replace("&gt;", ">")
+    |> String.replace("&amp;", "&")
+  end
 
   defp workpad_body?(body) when is_binary(body) do
     Enum.any?(AgentLabels.known_workpad_markers(), &String.contains?(body, &1))
@@ -196,12 +218,14 @@ defmodule SymphonyElixir.Workpad do
   defp worker_host(opts) do
     case Keyword.get(opts, :worker_host) do
       host when is_binary(host) and host != "" -> host
-      _ -> local_hostname()
+      _ -> opts |> hostname_result() |> local_hostname()
     end
   end
 
-  defp local_hostname do
-    case :inet.gethostname() do
+  defp hostname_result(opts), do: Keyword.get_lazy(opts, :hostname_result, &:inet.gethostname/0)
+
+  defp local_hostname(hostname_result) do
+    case hostname_result do
       {:ok, hostname} -> List.to_string(hostname)
       {:error, _reason} -> "unknown-host"
     end

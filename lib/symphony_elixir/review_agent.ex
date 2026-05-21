@@ -440,10 +440,6 @@ defmodule SymphonyElixir.ReviewAgent do
     |> parse_first_review_response(nil)
   end
 
-  defp pick_review_response(%{primary: primary, combined: combined}) do
-    pick_review_response(%{primary: primary, messages: "", combined: combined})
-  end
-
   defp parse_first_review_response([], nil), do: parse_response("")
   defp parse_first_review_response([], fallback), do: fallback
 

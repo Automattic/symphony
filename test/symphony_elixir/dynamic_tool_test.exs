@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert "linear_update_state" in tool_names
     assert "linear_attach_file" in tool_names
     assert "github_get_pull_request" in tool_names
+    assert "github_fetch_origin" in tool_names
     assert "github_create_pull_request" in tool_names
     assert "github_reply_to_review_comment" in tool_names
     assert "github_push_branch" in tool_names
@@ -652,6 +653,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     for {tool, args} <- [
           {"github_create_pull_request", %{"title" => "Add tools", "body" => "Body", "head" => "owned"}},
           {"github_get_pull_request", %{"branch" => "owned"}},
+          {"github_fetch_origin", %{"refspec" => "main:refs/heads/owned"}},
           {"github_add_pr_comment", %{"body" => "Looks good", "remote" => "evil"}},
           {"github_reply_to_review_comment", %{"comment_id" => 123, "body" => "Acked.", "repo" => "attacker/repo"}},
           {"github_get_pr_checks", %{"base" => "owned"}},
@@ -713,6 +715,34 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       assert response["success"] == true
       assert %{"remote" => "origin", "branch" => "auto/ACME-3051"} = Jason.decode!(response["output"])
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "github.fetch_origin fetches the scoped origin only" do
+    workspace = tmp_workspace!("github-fetch-origin")
+
+    try do
+      git_runner = fn
+        ["remote", "get-url", "origin"], opts ->
+          assert opts[:cd] == workspace
+          {"git@github.com:acme/symphony.git\n", 0}
+
+        ["fetch", "origin"], opts ->
+          assert opts[:cd] == workspace
+          {"fetched\n", 0}
+      end
+
+      response =
+        DynamicTool.execute(
+          "github_fetch_origin",
+          %{},
+          github_tool_opts(workspace, git_runner: git_runner)
+        )
+
+      assert response["success"] == true
+      assert %{"remote" => "origin", "output" => "fetched"} = Jason.decode!(response["output"])
     after
       File.rm_rf(workspace)
     end
@@ -863,6 +893,35 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            } = Jason.decode!(response["output"])
 
     assert message =~ "github_push_branch is not supported for SSH worker sessions"
+  end
+
+  test "github.fetch_origin returns a clear unsupported error for ssh workers" do
+    remote_workspace = "/remote/workspaces/MT-3187"
+
+    response =
+      DynamicTool.execute(
+        "github_fetch_origin",
+        %{},
+        workspace: remote_workspace,
+        command_security: %{
+          origin_repo: "acme/symphony",
+          origin_url: "git@github.com:acme/symphony.git",
+          current_branch: "auto/RSM-3187",
+          workspace: remote_workspace,
+          worker_host: "worker-01"
+        }
+      )
+
+    assert response["success"] == false
+
+    assert %{
+             "error" => %{
+               "code" => "unsupported_for_ssh_worker",
+               "message" => message
+             }
+           } = Jason.decode!(response["output"])
+
+    assert message =~ "github_fetch_origin is not supported for SSH worker sessions"
   end
 
   test "github.update_pull_request_body resolves the current branch PR server-side" do

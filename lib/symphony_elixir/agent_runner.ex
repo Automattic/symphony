@@ -485,7 +485,14 @@ defmodule SymphonyElixir.AgentRunner do
         max_iterations: max_iterations,
         reason: review_agent_verdict_reason(result),
         comments: Map.get(result, :comments, []),
-        tokens: %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
+        tokens: %{
+          input_tokens: 0,
+          uncached_input_tokens: 0,
+          cached_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0
+        }
       }
     }
 

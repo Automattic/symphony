@@ -179,7 +179,8 @@ defmodule SymphonyElixirWeb.QualityLive do
                     <div><%= format_int(get_in(entry, [:tokens, :total_tokens])) %></div>
                     <div class="muted token-breakdown">
                       uncached <%= format_int(get_in(entry, [:tokens, :uncached_input_tokens])) %> /
-                      cached <%= format_int(get_in(entry, [:tokens, :cached_input_tokens])) %>
+                      cached <%= format_int(get_in(entry, [:tokens, :cached_input_tokens])) %> /
+                      created <%= format_int(get_in(entry, [:tokens, :cache_creation_input_tokens])) %>
                     </div>
                   </td>
                   <td><%= tests_run_label(entry.tests_run) %></td>

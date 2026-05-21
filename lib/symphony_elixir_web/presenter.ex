@@ -19,8 +19,9 @@ defmodule SymphonyElixirWeb.Presenter do
 
   @empty_codex_totals %{
     input_tokens: 0,
-    cached_input_tokens: 0,
     uncached_input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
     seconds_running: 0
@@ -247,12 +248,17 @@ defmodule SymphonyElixirWeb.Presenter do
   defp normalize_token_map(tokens) when is_map(tokens) do
     input_tokens = integer_map_value(tokens, :input_tokens)
     cached_input_tokens = integer_map_value(tokens, :cached_input_tokens)
-    uncached_input_tokens = uncached_input_tokens(input_tokens, cached_input_tokens)
+
+    uncached_input_tokens =
+      integer_map_value(tokens, :uncached_input_tokens, uncached_input_tokens(input_tokens, cached_input_tokens))
+
+    cache_creation_input_tokens = integer_map_value(tokens, :cache_creation_input_tokens)
 
     %{
-      input_tokens: input_tokens,
+      input_tokens: uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens,
+      uncached_input_tokens: uncached_input_tokens,
       cached_input_tokens: cached_input_tokens,
-      uncached_input_tokens: integer_map_value(tokens, :uncached_input_tokens, uncached_input_tokens),
+      cache_creation_input_tokens: cache_creation_input_tokens,
       output_tokens: integer_map_value(tokens, :output_tokens),
       total_tokens: integer_map_value(tokens, :total_tokens)
     }
@@ -461,11 +467,12 @@ defmodule SymphonyElixirWeb.Presenter do
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(Map.get(entry, :last_event_at) || entry.last_codex_timestamp),
       tokens: %{
-        input_tokens: entry.codex_input_tokens,
-        cached_input_tokens: Map.get(entry, :codex_cached_input_tokens, 0),
-        uncached_input_tokens: uncached_input_tokens(entry.codex_input_tokens, Map.get(entry, :codex_cached_input_tokens, 0)),
-        output_tokens: entry.codex_output_tokens,
-        total_tokens: entry.codex_total_tokens
+        input_tokens: entry_input_tokens(entry),
+        uncached_input_tokens: entry_uncached_input_tokens(entry),
+        cached_input_tokens: entry_cached_input_tokens(entry),
+        cache_creation_input_tokens: entry_cache_creation_input_tokens(entry),
+        output_tokens: entry_output_tokens(entry),
+        total_tokens: entry_total_tokens(entry)
       }
     }
   end
@@ -553,11 +560,12 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(running.last_codex_message),
       last_event_at: iso8601(Map.get(running, :last_event_at) || running.last_codex_timestamp),
       tokens: %{
-        input_tokens: running.codex_input_tokens,
-        cached_input_tokens: Map.get(running, :codex_cached_input_tokens, 0),
-        uncached_input_tokens: uncached_input_tokens(running.codex_input_tokens, Map.get(running, :codex_cached_input_tokens, 0)),
-        output_tokens: running.codex_output_tokens,
-        total_tokens: running.codex_total_tokens
+        input_tokens: entry_input_tokens(running),
+        uncached_input_tokens: entry_uncached_input_tokens(running),
+        cached_input_tokens: entry_cached_input_tokens(running),
+        cache_creation_input_tokens: entry_cache_creation_input_tokens(running),
+        output_tokens: entry_output_tokens(running),
+        total_tokens: entry_total_tokens(running)
       }
     }
   end
@@ -609,12 +617,24 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp normalize_codex_totals(totals) when is_map(totals) do
     normalized = Map.merge(@empty_codex_totals, totals)
+    input_tokens = integer_map_value(totals, :input_tokens)
+    cached_input_tokens = integer_map_value(totals, :cached_input_tokens)
+    cache_creation_input_tokens = integer_map_value(totals, :cache_creation_input_tokens)
 
-    Map.put(
-      normalized,
-      :uncached_input_tokens,
-      uncached_input_tokens(Map.get(normalized, :input_tokens), Map.get(normalized, :cached_input_tokens))
-    )
+    uncached =
+      if Map.has_key?(totals, :uncached_input_tokens) or Map.has_key?(totals, "uncached_input_tokens") do
+        integer_map_value(totals, :uncached_input_tokens)
+      else
+        uncached_input_tokens(input_tokens, cached_input_tokens)
+      end
+
+    normalized
+    |> Map.put(:input_tokens, uncached + cached_input_tokens + cache_creation_input_tokens)
+    |> Map.put(:uncached_input_tokens, uncached)
+    |> Map.put(:cached_input_tokens, cached_input_tokens)
+    |> Map.put(:cache_creation_input_tokens, cache_creation_input_tokens)
+    |> Map.put(:output_tokens, integer_map_value(totals, :output_tokens))
+    |> Map.put(:total_tokens, integer_map_value(totals, :total_tokens))
   end
 
   defp normalize_codex_totals(_totals), do: @empty_codex_totals
@@ -846,39 +866,38 @@ defmodule SymphonyElixirWeb.Presenter do
   defp transcript_tokens(%{tokens: tokens}) when is_map(tokens) do
     input_tokens = Map.get(tokens, :input_tokens, 0)
     cached_input_tokens = Map.get(tokens, :cached_input_tokens, 0)
+    cache_creation_input_tokens = Map.get(tokens, :cache_creation_input_tokens, 0)
+    uncached_input_tokens = Map.get(tokens, :uncached_input_tokens, uncached_input_tokens(input_tokens, cached_input_tokens))
 
     %{
-      input_tokens: input_tokens,
+      input_tokens: uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens,
+      uncached_input_tokens: uncached_input_tokens,
       cached_input_tokens: cached_input_tokens,
-      uncached_input_tokens: Map.get(tokens, :uncached_input_tokens, uncached_input_tokens(input_tokens, cached_input_tokens)),
+      cache_creation_input_tokens: cache_creation_input_tokens,
       output_tokens: Map.get(tokens, :output_tokens, 0),
       total_tokens: Map.get(tokens, :total_tokens, 0)
     }
   end
 
   defp transcript_tokens(entry) when is_map(entry) do
-    input_tokens = Map.get(entry, :codex_input_tokens, 0)
-    cached_input_tokens = Map.get(entry, :codex_cached_input_tokens, 0)
-
     %{
-      input_tokens: input_tokens,
-      cached_input_tokens: cached_input_tokens,
-      uncached_input_tokens: uncached_input_tokens(input_tokens, cached_input_tokens),
-      output_tokens: Map.get(entry, :codex_output_tokens, 0),
-      total_tokens: Map.get(entry, :codex_total_tokens, 0)
+      input_tokens: entry_input_tokens(entry),
+      uncached_input_tokens: entry_uncached_input_tokens(entry),
+      cached_input_tokens: entry_cached_input_tokens(entry),
+      cache_creation_input_tokens: entry_cache_creation_input_tokens(entry),
+      output_tokens: entry_output_tokens(entry),
+      total_tokens: entry_total_tokens(entry)
     }
   end
 
   defp transcript_reviewer_tokens(%{reviewer_tokens: tokens}) when is_map(tokens), do: normalize_token_map(tokens)
 
   defp transcript_reviewer_tokens(entry) when is_map(entry) do
-    input_tokens = Map.get(entry, :reviewer_input_tokens, 0)
-    cached_input_tokens = Map.get(entry, :reviewer_cached_input_tokens, 0)
-
     %{
-      input_tokens: input_tokens,
-      cached_input_tokens: cached_input_tokens,
-      uncached_input_tokens: uncached_input_tokens(input_tokens, cached_input_tokens),
+      input_tokens: reviewer_input_tokens(entry),
+      uncached_input_tokens: reviewer_uncached_input_tokens(entry),
+      cached_input_tokens: Map.get(entry, :reviewer_cached_input_tokens, 0),
+      cache_creation_input_tokens: Map.get(entry, :reviewer_cache_creation_input_tokens, 0),
       output_tokens: Map.get(entry, :reviewer_output_tokens, 0),
       total_tokens: Map.get(entry, :reviewer_total_tokens, 0)
     }
@@ -887,8 +906,9 @@ defmodule SymphonyElixirWeb.Presenter do
   defp executor_tokens(tokens, reviewer_tokens) do
     %{
       input_tokens: subtract_token(tokens, reviewer_tokens, :input_tokens),
-      cached_input_tokens: subtract_token(tokens, reviewer_tokens, :cached_input_tokens),
       uncached_input_tokens: subtract_token(tokens, reviewer_tokens, :uncached_input_tokens),
+      cached_input_tokens: subtract_token(tokens, reviewer_tokens, :cached_input_tokens),
+      cache_creation_input_tokens: subtract_token(tokens, reviewer_tokens, :cache_creation_input_tokens),
       output_tokens: subtract_token(tokens, reviewer_tokens, :output_tokens),
       total_tokens: subtract_token(tokens, reviewer_tokens, :total_tokens)
     }
@@ -912,6 +932,49 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp entry_uncached_input_tokens(entry) when is_map(entry) do
+    case Map.get(entry, :uncached_input_tokens) do
+      value when is_integer(value) -> max(value, 0)
+      _ -> uncached_input_tokens(Map.get(entry, :codex_input_tokens, 0), Map.get(entry, :codex_cached_input_tokens, 0))
+    end
+  end
+
+  defp entry_input_tokens(entry) when is_map(entry) do
+    if Map.has_key?(entry, :uncached_input_tokens) do
+      entry_uncached_input_tokens(entry) + entry_cached_input_tokens(entry) + entry_cache_creation_input_tokens(entry)
+    else
+      max(Map.get(entry, :codex_input_tokens, 0), 0)
+    end
+  end
+
+  defp entry_cached_input_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :cached_input_tokens, Map.get(entry, :codex_cached_input_tokens, 0)), 0)
+
+  defp entry_cache_creation_input_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :cache_creation_input_tokens, Map.get(entry, :codex_cache_creation_input_tokens, 0)), 0)
+
+  defp entry_output_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :output_tokens, Map.get(entry, :codex_output_tokens, 0)), 0)
+
+  defp entry_total_tokens(entry) when is_map(entry),
+    do: max(Map.get(entry, :total_tokens, Map.get(entry, :codex_total_tokens, 0)), 0)
+
+  defp reviewer_uncached_input_tokens(entry) when is_map(entry) do
+    case Map.get(entry, :reviewer_uncached_input_tokens) do
+      value when is_integer(value) -> max(value, 0)
+      _ -> uncached_input_tokens(Map.get(entry, :reviewer_input_tokens, 0), Map.get(entry, :reviewer_cached_input_tokens, 0))
+    end
+  end
+
+  defp reviewer_input_tokens(entry) when is_map(entry) do
+    if Map.has_key?(entry, :reviewer_uncached_input_tokens) do
+      reviewer_uncached_input_tokens(entry) + Map.get(entry, :reviewer_cached_input_tokens, 0) +
+        Map.get(entry, :reviewer_cache_creation_input_tokens, 0)
+    else
+      max(Map.get(entry, :reviewer_input_tokens, 0), 0)
+    end
+  end
 
   defp uncached_input_tokens(input_tokens, cached_input_tokens) when is_integer(input_tokens) and is_integer(cached_input_tokens) do
     max(input_tokens - cached_input_tokens, 0)

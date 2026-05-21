@@ -1354,23 +1354,33 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp apply_event({:token_usage_delta, delta}, on_message, acc) do
-    input = Map.get(acc, :input_tokens, 0) + Map.get(delta, :input_tokens, 0)
+    uncached_input =
+      Map.get(acc, :uncached_input_tokens, Map.get(acc, :input_tokens, 0)) +
+        Map.get(delta, :uncached_input_tokens, Map.get(delta, :input_tokens, 0))
+
     output = Map.get(acc, :output_tokens, 0) + Map.get(delta, :output_tokens, 0)
     cached = Map.get(acc, :cached_input_tokens, 0) + Map.get(delta, :cached_input_tokens, 0)
 
+    cache_creation =
+      Map.get(acc, :cache_creation_input_tokens, 0) + Map.get(delta, :cache_creation_input_tokens, 0)
+
     cumulative = %{
-      input_tokens: input,
+      input_tokens: uncached_input + cached + cache_creation,
+      uncached_input_tokens: uncached_input,
       cached_input_tokens: cached,
+      cache_creation_input_tokens: cache_creation,
       output_tokens: output,
-      total_tokens: input + output
+      total_tokens: uncached_input + cached + cache_creation + output
     }
 
     on_message.({:token_usage, cumulative})
 
     acc
-    |> Map.put(:input_tokens, input)
+    |> Map.put(:input_tokens, uncached_input + cached + cache_creation)
+    |> Map.put(:uncached_input_tokens, uncached_input)
     |> Map.put(:output_tokens, output)
     |> Map.put(:cached_input_tokens, cached)
+    |> Map.put(:cache_creation_input_tokens, cache_creation)
   end
 
   defp apply_event({:turn_failed, reason}, on_message, acc) do
@@ -1494,13 +1504,21 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp extract_assistant_events(_), do: []
 
   defp extract_assistant_usage_events(%{"usage" => usage}) when is_map(usage) do
-    input = token_count(usage, "input_tokens", 0)
+    uncached_input = token_count(usage, "input_tokens", 0)
     output = token_count(usage, "output_tokens", 0)
     cached = token_count(usage, "cache_read_input_tokens", 0)
+    cache_creation = token_count(usage, "cache_creation_input_tokens", 0)
 
-    if input + output + cached > 0 do
+    if uncached_input + output + cached + cache_creation > 0 do
       [
-        {:token_usage_delta, %{input_tokens: input, output_tokens: output, cached_input_tokens: cached}}
+        {:token_usage_delta,
+         %{
+           input_tokens: uncached_input,
+           uncached_input_tokens: uncached_input,
+           cached_input_tokens: cached,
+           cache_creation_input_tokens: cache_creation,
+           output_tokens: output
+         }}
       ]
     else
       []
@@ -1578,15 +1596,20 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp extract_turn_result(event) do
     usage = Map.get(event, "usage", %{})
-    input_tokens = token_count(usage, "input_tokens", 0)
+    uncached_input_tokens = token_count(usage, "input_tokens", 0)
     output_tokens = token_count(usage, "output_tokens", 0)
     cached_input_tokens = token_count(usage, "cache_read_input_tokens", 0)
+    cache_creation_input_tokens = token_count(usage, "cache_creation_input_tokens", 0)
 
     %{
-      input_tokens: input_tokens,
+      input_tokens: uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens,
+      uncached_input_tokens: uncached_input_tokens,
       cached_input_tokens: cached_input_tokens,
+      cache_creation_input_tokens: cache_creation_input_tokens,
       output_tokens: output_tokens,
-      total_tokens: token_count(usage, "total_tokens", nil) || input_tokens + output_tokens
+      total_tokens:
+        token_count(usage, "total_tokens", nil) ||
+          uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens + output_tokens
     }
   end
 

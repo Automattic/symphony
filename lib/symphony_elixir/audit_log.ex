@@ -435,8 +435,24 @@ defmodule SymphonyElixir.AuditLog do
           running_entry
           |> base_event("token_usage_delta", timestamp)
           |> Map.merge(%{
-            token_usage_delta: Map.take(token_delta, [:input_tokens, :output_tokens, :total_tokens]),
-            token_usage_reported: Map.take(token_delta, [:input_reported, :output_reported, :total_reported])
+            token_usage_delta:
+              Map.take(token_delta, [
+                :input_tokens,
+                :uncached_input_tokens,
+                :cached_input_tokens,
+                :cache_creation_input_tokens,
+                :output_tokens,
+                :total_tokens
+              ]),
+            token_usage_reported:
+              Map.take(token_delta, [
+                :input_reported,
+                :uncached_input_reported,
+                :cached_input_reported,
+                :cache_creation_input_reported,
+                :output_reported,
+                :total_reported
+              ])
           })
         ]
     else
@@ -563,7 +579,7 @@ defmodule SymphonyElixir.AuditLog do
   end
 
   defp token_delta?(token_delta) when is_map(token_delta) do
-    Enum.any?([:input_tokens, :output_tokens, :total_tokens], fn key ->
+    Enum.any?([:input_tokens, :uncached_input_tokens, :cached_input_tokens, :cache_creation_input_tokens, :output_tokens, :total_tokens], fn key ->
       value = Map.get(token_delta, key, 0)
       is_integer(value) and value > 0
     end)

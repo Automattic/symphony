@@ -890,7 +890,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:budget_daily_used, 2)
     end)
 
-    usage = %{input_tokens: 12, cached_input_tokens: 4, output_tokens: 5, total_tokens: 17}
+    usage = %{
+      input_tokens: 18,
+      uncached_input_tokens: 12,
+      cached_input_tokens: 4,
+      cache_creation_input_tokens: 2,
+      output_tokens: 5,
+      total_tokens: 23
+    }
+
     update = AppServer.event_to_update({:turn_completed, usage})
 
     send(pid, {:codex_worker_update, issue_id, update})
@@ -898,23 +906,27 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = get_orchestrator_state(pid)
     running = Map.fetch!(state.running, issue_id)
 
-    assert running.codex_input_tokens == 12
+    assert running.codex_input_tokens == 18
+    assert running.uncached_input_tokens == 12
     assert running.codex_cached_input_tokens == 4
+    assert running.cache_creation_input_tokens == 2
     assert running.codex_output_tokens == 5
-    assert running.codex_total_tokens == 17
+    assert running.codex_total_tokens == 23
     assert running.last_codex_event == :turn_completed
     assert running.transcript_buffer_size == 1
 
-    assert state.codex_totals.input_tokens == 12
+    assert state.codex_totals.input_tokens == 18
+    assert state.codex_totals.uncached_input_tokens == 12
     assert state.codex_totals.cached_input_tokens == 4
+    assert state.codex_totals.cache_creation_input_tokens == 2
     assert state.codex_totals.output_tokens == 5
-    assert state.codex_totals.total_tokens == 17
-    assert state.budget_daily_used == 19
+    assert state.codex_totals.total_tokens == 23
+    assert state.budget_daily_used == 25
 
     send(pid, {:DOWN, process_ref, :process, self(), :normal})
     completed_state = get_orchestrator_state(pid)
 
-    assert completed_state.completed_run_metadata[issue_id].tokens.total_tokens == 17
+    assert completed_state.completed_run_metadata[issue_id].tokens.total_tokens == 23
   end
 
   test "orchestrator accounts reviewer token usage separately while preserving totals" do
@@ -1001,8 +1013,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert completed_state.completed_run_metadata[issue_id].reviewer_tokens == %{
              input_tokens: 8,
-             cached_input_tokens: 3,
              uncached_input_tokens: 5,
+             cached_input_tokens: 3,
+             cache_creation_input_tokens: 0,
              output_tokens: 5,
              total_tokens: 13
            }
@@ -1089,8 +1102,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                       payload: %{
                         tokens: %{
                           input_tokens: 5,
-                          cached_input_tokens: 2,
                           uncached_input_tokens: 3,
+                          cached_input_tokens: 2,
+                          cache_creation_input_tokens: 0,
                           output_tokens: 3,
                           total_tokens: 8
                         }
@@ -1382,7 +1396,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_input_tokens == 200
+    assert snapshot_entry.uncached_input_tokens == 50
     assert snapshot_entry.codex_cached_input_tokens == 150
+    assert snapshot_entry.cache_creation_input_tokens == 0
     assert snapshot_entry.codex_output_tokens == 100
     assert snapshot_entry.codex_total_tokens == 300
   end
@@ -1459,6 +1475,87 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.codex_input_tokens == 10
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 14
+  end
+
+  test "orchestrator converts legacy last-reported input counters before splitting cached input" do
+    issue_id = "issue-legacy-token-usage"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-223B",
+      title: "Legacy token usage",
+      description: "Convert legacy full-input counters into uncached counters",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-223B"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :LegacyTokenUsageOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    initial_state = get_orchestrator_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_input_tokens: 200,
+      codex_cached_input_tokens: 150,
+      codex_output_tokens: 100,
+      codex_total_tokens: 300,
+      codex_last_reported_input_tokens: 200,
+      codex_last_reported_cached_input_tokens: 150,
+      codex_last_reported_output_tokens: 100,
+      codex_last_reported_total_tokens: 300,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "thread/tokenUsage/updated",
+           "params" => %{
+             "tokenUsage" => %{
+               "total" => %{
+                 "input_tokens" => 260,
+                 "cached_input_tokens" => 190,
+                 "output_tokens" => 120,
+                 "total_tokens" => 380
+               }
+             }
+           }
+         },
+         timestamp: DateTime.utc_now()
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.uncached_input_tokens == 70
+    assert snapshot_entry.cached_input_tokens == 190
+    assert snapshot_entry.codex_input_tokens == 260
+    assert snapshot_entry.codex_output_tokens == 120
+    assert snapshot_entry.codex_total_tokens == 380
   end
 
   test "orchestrator token accounting ignores last_token_usage without cumulative totals" do
@@ -1673,8 +1770,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert run_record.tokens == %{
              input_tokens: 7,
-             cached_input_tokens: 0,
              uncached_input_tokens: 7,
+             cached_input_tokens: 0,
+             cache_creation_input_tokens: 0,
              output_tokens: 5,
              total_tokens: 12
            }
@@ -3749,7 +3847,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          retrying: [],
          awaiting_clarification: [],
          skipped: [],
-         codex_totals: %{input_tokens: 120, output_tokens: 30, total_tokens: 150, seconds_running: 9},
+         codex_totals: %{
+           input_tokens: 120,
+           cached_input_tokens: 100,
+           output_tokens: 30,
+           total_tokens: 150,
+           seconds_running: 9
+         },
          rate_limits: nil,
          polling: %{next_poll_in_ms: 5_000}
        }, System.monotonic_time(:millisecond) - 5_000, System.system_time(:millisecond) - 5_000}
@@ -3784,7 +3888,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
         assert plain =~ "Snapshot: stale 0m 5s (1 missed refresh, orchestrator mailbox "
         assert plain =~ "No active agents"
-        assert plain =~ "Tokens: in 120 | out 30 | total 150"
+        assert plain =~ "Tokens: new 20 | cached 100 | created 0 | out 30"
         refute plain =~ "Orchestrator snapshot unavailable"
 
         StatusDashboard.notify_update(dashboard_name)
@@ -4569,7 +4673,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     assert StatusDashboard.humanize_codex_message(wrapped) =~ "turn completed"
-    assert StatusDashboard.humanize_codex_message(wrapped) =~ "in 10"
+    assert StatusDashboard.humanize_codex_message(wrapped) =~ "new 10"
   end
 
   test "status dashboard uses shell command line as exec command status text" do

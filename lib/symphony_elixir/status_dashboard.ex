@@ -420,9 +420,11 @@ defmodule SymphonyElixir.StatusDashboard do
         scope_link_lines = format_scope_link_lines()
         refresh_line = format_refresh_line(Map.get(snapshot, :polling))
         workspace_lifecycle_lines = format_workspace_lifecycle_lines(workspace_lifecycle)
-        codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
-        codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
-        codex_total_tokens = Map.get(codex_totals, :total_tokens, 0)
+
+        codex_uncached_input_tokens = codex_totals_uncached_input_tokens(codex_totals)
+        codex_cached_input_tokens = codex_totals_token(codex_totals, :cached_input_tokens)
+        codex_cache_creation_input_tokens = codex_totals_token(codex_totals, :cache_creation_input_tokens)
+        codex_output_tokens = codex_totals_token(codex_totals, :output_tokens)
         codex_seconds_running = Map.get(codex_totals, :seconds_running, 0)
         agent_count = length(running)
         max_agents = Config.settings!().agent.max_concurrent_agents
@@ -462,11 +464,13 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize("│ Runtime: ", @ansi_bold) <>
                colorize(format_runtime_seconds(codex_seconds_running), @ansi_magenta),
              colorize("│ Tokens: ", @ansi_bold) <>
-               colorize("in #{format_count(codex_input_tokens)}", @ansi_yellow) <>
+               colorize("new #{format_count(codex_uncached_input_tokens)}", @ansi_yellow) <>
                colorize(" | ", @ansi_gray) <>
-               colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
+               colorize("cached #{format_count(codex_cached_input_tokens)}", @ansi_yellow) <>
                colorize(" | ", @ansi_gray) <>
-               colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
+               colorize("created #{format_count(codex_cache_creation_input_tokens)}", @ansi_yellow) <>
+               colorize(" | ", @ansi_gray) <>
+               colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow),
              colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
              workspace_lifecycle_lines,
              scope_link_lines,
@@ -1677,6 +1681,29 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp snapshot_total_tokens(_snapshot_data), do: 0
 
+  defp codex_totals_uncached_input_tokens(codex_totals) when is_map(codex_totals) do
+    case codex_totals_token(codex_totals, :uncached_input_tokens, nil) do
+      value when is_integer(value) ->
+        value
+
+      _ ->
+        input_tokens = codex_totals_token(codex_totals, :input_tokens)
+        cached_input_tokens = codex_totals_token(codex_totals, :cached_input_tokens)
+        max(input_tokens - cached_input_tokens, 0)
+    end
+  end
+
+  defp codex_totals_uncached_input_tokens(_codex_totals), do: 0
+
+  defp codex_totals_token(codex_totals, key, default \\ 0) when is_map(codex_totals) and is_atom(key) do
+    string_key = Atom.to_string(key)
+
+    case Map.get(codex_totals, key, Map.get(codex_totals, string_key, default)) do
+      value when is_integer(value) and value >= 0 -> value
+      _value -> default
+    end
+  end
+
   defp format_timestamp(datetime) do
     datetime
     |> DateTime.truncate(:second)
@@ -2220,7 +2247,7 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_usage_counts(usage) when is_map(usage) do
-    input =
+    legacy_input =
       parse_integer(
         map_value(usage, [
           "input_tokens",
@@ -2231,6 +2258,38 @@ defmodule SymphonyElixir.StatusDashboard do
           :inputTokens,
           "promptTokens",
           :promptTokens
+        ])
+      )
+
+    cached =
+      parse_integer(
+        map_value(usage, [
+          "cached_input_tokens",
+          :cached_input_tokens,
+          "cachedInputTokens",
+          :cachedInputTokens,
+          "cache_read_input_tokens",
+          :cache_read_input_tokens
+        ])
+      )
+
+    input =
+      parse_integer(
+        map_value(usage, [
+          "uncached_input_tokens",
+          :uncached_input_tokens,
+          "uncachedInputTokens",
+          :uncachedInputTokens
+        ])
+      ) || if(is_integer(legacy_input) and is_integer(cached), do: max(legacy_input - cached, 0), else: legacy_input)
+
+    cache_creation =
+      parse_integer(
+        map_value(usage, [
+          "cache_creation_input_tokens",
+          :cache_creation_input_tokens,
+          "cacheCreationInputTokens",
+          :cacheCreationInputTokens
         ])
       )
 
@@ -2262,7 +2321,9 @@ defmodule SymphonyElixir.StatusDashboard do
 
     parts =
       []
-      |> append_usage_part("in", input)
+      |> append_usage_part("new", input)
+      |> append_usage_part("cached", cached)
+      |> append_usage_part("created", cache_creation)
       |> append_usage_part("out", output)
       |> append_usage_part("total", total)
 

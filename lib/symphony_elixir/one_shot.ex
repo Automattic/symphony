@@ -437,8 +437,9 @@ defmodule SymphonyElixir.OneShot do
   defp empty_tokens do
     %{
       input_tokens: 0,
-      cached_input_tokens: 0,
       uncached_input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_creation_input_tokens: 0,
       output_tokens: 0,
       total_tokens: 0
     }

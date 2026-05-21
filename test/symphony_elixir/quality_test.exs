@@ -41,8 +41,9 @@ defmodule SymphonyElixir.QualityTest do
 
     assert eval.tokens == %{
              input_tokens: 10,
-             cached_input_tokens: 7,
              uncached_input_tokens: 3,
+             cached_input_tokens: 7,
+             cache_creation_input_tokens: 0,
              output_tokens: 4,
              total_tokens: 14
            }

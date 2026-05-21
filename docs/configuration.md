@@ -420,7 +420,9 @@ A set var substitutes the value; an empty var drops the entry; a missing var kee
   `linear_*` tools, preventing large echoed `userMessage` events from wedging the app-server
   stdout stream. Symphony also injects Codex-only guidance to run noisy validation commands
   through a log file and print only the exit status plus a short tail, reducing the chance that
-  large `aggregatedOutput` events hit Codex app-server stdio write limits.
+  large `aggregatedOutput` events hit Codex app-server stdio write limits. During initialize,
+  Symphony also opts out of Codex `turn/diff/updated` notifications, whose aggregated diffs can
+  become too large for the stdio stream on broad changes.
 - **Codex remote workers:** `inherit: allowlist` and `inherit: all` are rejected (Symphony only
   reads the orchestrator's host config). Declare servers explicitly under `servers`.
 - **Claude:** `inherit: allowlist` reads only the top-level `mcpServers` map in

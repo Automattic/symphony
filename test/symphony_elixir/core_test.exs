@@ -1396,6 +1396,49 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 39_000, 40_500)
   end
 
+  test "worker exception exits store concise retry errors" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    issue_id = "issue-exception-summary"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :ExceptionSummaryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      repo_key: "api",
+      identifier: "MT-EXCEPTION",
+      issue: %Issue{id: issue_id, identifier: "MT-EXCEPTION", state: "In Progress", repo_key: "api"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    message = "Agent run failed: {:codex_stdio_write_failed, \"\e[31mERROR\e[0m\"}"
+    reason = {%RuntimeError{message: message}, [{SymphonyElixir.AgentRunner, :run, 3, []}]}
+
+    send(pid, {:DOWN, ref, :process, self(), reason})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{error: error} = state.retry_attempts[issue_id]
+    assert error == "agent exited: Agent run failed: {:codex_stdio_write_failed, \"ERROR\"}"
+  end
+
   test "terminal agent setup errors comment and do not schedule retry" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])

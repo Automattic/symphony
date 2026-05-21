@@ -29,7 +29,8 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     assert config =~ "[mcp_servers.symphony]"
     assert config =~ ~s(command = "/tmp/symphony-mcp-shim")
     assert config =~ ~s(args = ["--socket", "/tmp/symphony-mcp.sock"])
-    assert config =~ ~s(env = { SYMPHONY_MCP_SESSION_TOKEN = "session-token" })
+    assert config =~ ~s(SYMPHONY_MCP_SESSION_TOKEN = "session-token")
+    assert config =~ "PATH = "
     refute config =~ "--session"
     refute config =~ "host-secret"
   end
@@ -46,7 +47,8 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
              McpConfig.build_config(settings!(%{inherit: "none"}), session, nil, session.shim_path, host_codex_home: nil)
 
     assert config =~ ~s(args = ["--tcp-host", "127.0.0.1", "--tcp-port", "58213"])
-    assert config =~ ~s(env = { SYMPHONY_MCP_SESSION_TOKEN = "session-token" })
+    assert config =~ ~s(SYMPHONY_MCP_SESSION_TOKEN = "session-token")
+    assert config =~ "PATH = "
     refute config =~ "--socket"
     refute config =~ "--session"
   end

@@ -124,6 +124,16 @@ defmodule SymphonyElixir.AgentMcp do
 
   defp symphony_shim_env(%{token: token}) when is_binary(token) do
     %{"SYMPHONY_MCP_SESSION_TOKEN" => token}
+    |> maybe_put_runtime_path()
+  end
+
+  defp maybe_put_runtime_path(env) do
+    # Claude may launch MCP servers with only the configured env. The shim uses
+    # `#!/usr/bin/env elixir`, so preserve PATH explicitly for that process.
+    case System.get_env("PATH") do
+      path when is_binary(path) and path != "" -> Map.put(env, "PATH", path)
+      _missing -> env
+    end
   end
 
   @spec toml_table([String.t()], [{String.t(), term()}]) :: String.t()

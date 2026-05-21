@@ -2199,7 +2199,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/repos/default/issues/MT-HTTP/transcript?filters=event,reviewer")
 
     assert html =~ "Reviewer verdict: request changes"
-    assert html =~ "round 2/1"
+    assert html =~ "review 2 of 2"
     assert html =~ "reason: Tighten the regression coverage."
     assert html =~ "comments: 2"
     assert html =~ "tokens in=8 out=4 total=12"

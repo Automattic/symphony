@@ -423,10 +423,12 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp handle_activity(record, activity, settings, current_gh_user, opts, now) do
-    {attrs, latest_activity_at, unaddressed_comments} =
-      review_activity_attrs(record, activity, settings, current_gh_user, now)
+    ignored_users = ignored_review_users(settings, activity, current_gh_user)
 
-    case review_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
+    {attrs, latest_activity_at, unaddressed_comments} =
+      review_activity_attrs(record, activity, ignored_users, now)
+
+    case review_action(activity, latest_activity_at, unaddressed_comments, ignored_users, settings, now) do
       :merged ->
         record
         |> maybe_capture_learnings(activity, settings, opts, now)
@@ -452,14 +454,13 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp review_activity_attrs(record, activity, settings, current_gh_user, now) do
+  defp review_activity_attrs(record, activity, ignored_users, now) do
     latest_activity_at =
       Map.get(activity, :latest_activity_at) ||
         Map.get(record, :last_activity_at) ||
         Map.get(record, :updated_at) ||
         now
 
-    ignored_users = ignored_review_users(settings, activity, current_gh_user)
     reviewer_comments = reviewer_comments(Map.get(activity, :comments, []), ignored_users)
     unaddressed_comments = unaddressed_reviewer_comments(record, reviewer_comments)
     latest_unaddressed_comment_at = latest_comment_activity_at(unaddressed_comments)
@@ -486,19 +487,40 @@ defmodule SymphonyElixir.PrReviewPoller do
     {attrs, latest_activity_at, unaddressed_comments}
   end
 
-  defp review_action(activity, latest_activity_at, unaddressed_comments, settings, now) do
+  defp review_action(activity, latest_activity_at, unaddressed_comments, ignored_users, settings, now) do
     review_decision = normalize_decision(Map.get(activity, :review_decision))
+    changes_requested? = changes_requested_decision?(review_decision, activity, ignored_users)
 
     cond do
       merged_pr_state?(Map.get(activity, :state)) -> :merged
       closed_pr_state?(Map.get(activity, :state)) -> :closed
-      review_decision == @changes_requested -> :changes_requested
+      changes_requested? -> :changes_requested
       review_decision == @approved -> :approved
       unaddressed_comments != [] -> :review_comments
       stale?(latest_activity_at, now, settings.pr_review.stale_days) -> :stale
       true -> :watching
     end
   end
+
+  defp changes_requested_decision?(@changes_requested, activity, ignored_users) do
+    unignored_changes_requested?(activity, ignored_users)
+  end
+
+  defp changes_requested_decision?(_review_decision, _activity, _ignored_users), do: false
+
+  defp unignored_changes_requested?(activity, ignored_users) do
+    activity
+    |> Map.get(:comments, [])
+    |> Enum.any?(&unignored_changes_requested_review?(&1, ignored_users))
+  end
+
+  defp unignored_changes_requested_review?(comment, ignored_users) when is_map(comment) do
+    Map.get(comment, :kind) == "review" and
+      normalize_decision(Map.get(comment, :state)) == @changes_requested and
+      not ignored_comment?(comment, ignored_users)
+  end
+
+  defp unignored_changes_requested_review?(_comment, _ignored_users), do: false
 
   defp maybe_transition_rework(record, attrs, settings, opts, now) do
     latest_activity_at = action_activity_at(attrs)

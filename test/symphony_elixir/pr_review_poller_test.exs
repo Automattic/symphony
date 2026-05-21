@@ -1564,6 +1564,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
           %{
             id: "reviewer-comment",
             kind: "review",
+            state: "CHANGES_REQUESTED",
             author: "human-reviewer",
             body: "Please address.",
             url: "https://github.com/example/repo/pull/1780#pullrequestreview-1",
@@ -1599,6 +1600,65 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                last_review_activity_at: ^reviewer_activity_at
              }
            ] = RunStore.list_pr_reviews()
+  end
+
+  test "CHANGES_REQUESTED reviews from ignored or current gh users do not redispatch rework after cooldown" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_review_at = DateTime.add(now, -31, :minute)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_ignored_users: ["symphony-bot"]
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_review_at,
+        pr_author: "pr-author",
+        review_decision: "CHANGES_REQUESTED",
+        latest_review_activity_at: latest_review_at,
+        comments: [
+          %{
+            id: "operator-review",
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "symphony-operator",
+            body: "Nudging this back to draft.",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-1",
+            created_at: latest_review_at,
+            updated_at: latest_review_at
+          },
+          %{
+            id: "bot-review",
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "symphony-bot",
+            body: "Automated nudge.",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-2",
+            created_at: latest_review_at,
+            updated_at: latest_review_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               current_gh_user: "symphony-operator",
+               now: now
+             )
+
+    refute_receive {:issue_state_update, _, _}
+    assert [%{status: "watching"}] = RunStore.list_pr_reviews()
   end
 
   test "records issue state transition errors without crashing the poll" do

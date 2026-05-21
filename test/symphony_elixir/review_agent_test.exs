@@ -153,8 +153,10 @@ defmodule SymphonyElixir.ReviewAgentTest do
         state: "In Progress"
       }
 
+      review_module = RuntimeTupleWithStreamingReviewer
+
       assert {:ok, %{verdict: :approve, comments: []}} =
-               ReviewAgent.evaluate(issue, repo, Config.settings!(), review_agent_module: RuntimeTupleWithStreamingReviewer)
+               ReviewAgent.evaluate(issue, repo, Config.settings!(), review_agent_module: review_module)
     after
       File.rm_rf(test_root)
     end

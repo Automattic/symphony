@@ -44,6 +44,7 @@ defmodule SymphonyElixir.PromptBuilder do
     reviewer_comments = sanitize_reviewer_comments(raw_reviewer_comments)
     raw_ci_failure = Keyword.get(opts, :ci_failure)
     ci_failure = normalize_ci_failure(raw_ci_failure)
+    pr_conflict = normalize_pr_conflict(Keyword.get(opts, :pr_conflict))
     linear_input_warnings = linear_input_warnings(issue, raw_reviewer_comments, raw_ci_failure)
     {repo_key, workflow_source} = repo_context_for_prompt(issue, opts)
     agent_context = agent_context_for_prompt(opts, workflow_source)
@@ -64,7 +65,8 @@ defmodule SymphonyElixir.PromptBuilder do
         "issue" => issue |> prompt_issue_map(repo_key) |> to_solid_map(),
         "pr" => issue |> prompt_pr_map(opts) |> to_solid_map(),
         "reviewer_comments" => to_solid_value(reviewer_comments),
-        "ci_failure" => to_solid_value(ci_failure)
+        "ci_failure" => to_solid_value(ci_failure),
+        "pr_conflict" => to_solid_value(pr_conflict)
       },
       @render_opts
     )
@@ -72,6 +74,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
     |> append_reviewer_comments(reviewer_comments)
     |> append_ci_failure(ci_failure)
+    |> append_pr_conflict(pr_conflict)
     |> append_review_agent_instructions(Keyword.get(opts, :settings))
     |> append_linear_input_warnings(linear_input_warnings)
     |> append_codex_transport_output_guard(agent_context, opts)
@@ -81,6 +84,7 @@ defmodule SymphonyElixir.PromptBuilder do
   def build_compact_prompt(issue, opts \\ []) do
     raw_reviewer_comments = normalize_reviewer_comments(Keyword.get(opts, :reviewer_comments, []))
     raw_ci_failure = Keyword.get(opts, :ci_failure)
+    pr_conflict = normalize_pr_conflict(Keyword.get(opts, :pr_conflict))
     linear_input_warnings = linear_input_warnings(issue, raw_reviewer_comments, raw_ci_failure)
     {repo_key, workflow_source} = repo_context_for_prompt(issue, opts)
     agent_context = agent_context_for_prompt(opts, workflow_source)
@@ -126,6 +130,7 @@ defmodule SymphonyElixir.PromptBuilder do
     ]
     |> Enum.join("\n")
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
+    |> append_pr_conflict(pr_conflict)
     |> append_review_agent_instructions(Keyword.get(opts, :settings))
     |> append_linear_input_warnings(linear_input_warnings)
     |> append_codex_transport_output_guard(agent_context, opts)
@@ -401,6 +406,12 @@ defmodule SymphonyElixir.PromptBuilder do
     prompt <> "\n\n" <> ci_failure_section(ci_failure)
   end
 
+  defp append_pr_conflict(prompt, nil), do: prompt
+
+  defp append_pr_conflict(prompt, pr_conflict) when is_map(pr_conflict) do
+    prompt <> "\n\n" <> pr_conflict_section(pr_conflict)
+  end
+
   defp append_review_agent_instructions(prompt, %{review_agent: %{enabled: true}}) do
     prompt <>
       """
@@ -440,6 +451,35 @@ defmodule SymphonyElixir.PromptBuilder do
       "BEGIN UNTRUSTED CI LOG",
       blank_fallback(Map.get(ci_failure, :log_excerpt), "No failed log output was available."),
       "END UNTRUSTED CI LOG"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp pr_conflict_section(pr_conflict) do
+    metadata =
+      [
+        "PR: #{blank_fallback(Map.get(pr_conflict, :pr_url), "unknown")}",
+        "Title: #{blank_fallback(Map.get(pr_conflict, :pr_title), "unknown")}",
+        "Head branch: #{blank_fallback(Map.get(pr_conflict, :head_ref), "unknown")}",
+        "Head SHA: #{blank_fallback(Map.get(pr_conflict, :head_sha), "unknown")}",
+        "Base branch: #{blank_fallback(Map.get(pr_conflict, :base_ref), "unknown")}",
+        "Base SHA: #{blank_fallback(Map.get(pr_conflict, :base_sha), "unknown")}",
+        "Mergeable: #{blank_fallback(Map.get(pr_conflict, :mergeable), "unknown")}",
+        "Merge state: #{blank_fallback(Map.get(pr_conflict, :merge_state_status), "unknown")}",
+        "Conflict key: #{blank_fallback(Map.get(pr_conflict, :conflict_key), "unknown")}",
+        "Observed at: #{blank_fallback(datetime_to_string(Map.get(pr_conflict, :observed_at)), "unknown")}",
+        "Attempt: #{Map.get(pr_conflict, :retry_count, 1)} of #{Map.get(pr_conflict, :max_retries, 3)}"
+      ]
+      |> Enum.join("\n")
+
+    [
+      "PR merge conflict:",
+      "",
+      "BEGIN UNTRUSTED PR CONFLICT",
+      metadata,
+      "END UNTRUSTED PR CONFLICT",
+      "",
+      "Fetch the PR base branch, merge it into the head branch in the current workspace, resolve conflicts semantically, run validation, commit the resolution, and push the PR head branch. Do not choose ours/theirs wholesale unless that is semantically correct."
     ]
     |> Enum.join("\n")
   end
@@ -507,6 +547,45 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp normalize_reviewer_comment(_comment), do: %{body: ""}
+
+  defp normalize_pr_conflict(conflict) when is_map(conflict) do
+    conflict_key = string_field(conflict, :conflict_key)
+    head_sha = string_field(conflict, :head_sha)
+    base_sha = string_field(conflict, :base_sha)
+    head_ref = string_field(conflict, :head_ref)
+    base_ref = string_field(conflict, :base_ref)
+
+    if Enum.all?([conflict_key, head_sha, base_sha, head_ref, base_ref], &is_nil/1) do
+      nil
+    else
+      %{
+        pr_url: pr_conflict_string_field(conflict, :pr_url),
+        pr_title: pr_conflict_string_field(conflict, :pr_title),
+        pr_number: integer_field(conflict, :pr_number),
+        head_ref: sanitize_pr_conflict_field(head_ref),
+        head_sha: sanitize_pr_conflict_field(head_sha),
+        base_ref: sanitize_pr_conflict_field(base_ref),
+        base_sha: sanitize_pr_conflict_field(base_sha),
+        mergeable: pr_conflict_string_field(conflict, :mergeable),
+        merge_state_status: pr_conflict_string_field(conflict, :merge_state_status),
+        conflict_key: sanitize_pr_conflict_field(conflict_key),
+        observed_at: get_field(conflict, :observed_at),
+        retry_count: positive_integer_field(conflict, :retry_count) || 1,
+        max_retries: positive_integer_field(conflict, :max_retries) || 3
+      }
+    end
+  end
+
+  defp normalize_pr_conflict(_conflict), do: nil
+
+  defp pr_conflict_string_field(map, key) when is_map(map) and is_atom(key) do
+    map
+    |> string_field(key)
+    |> sanitize_pr_conflict_field()
+  end
+
+  defp sanitize_pr_conflict_field(value) when is_binary(value), do: PromptSafety.pr_conflict_field(value)
+  defp sanitize_pr_conflict_field(_value), do: nil
 
   defp normalize_ci_failure(ci_failure) when is_map(ci_failure) do
     failed_checks =
@@ -592,6 +671,17 @@ defmodule SymphonyElixir.PromptBuilder do
       _value -> nil
     end
   end
+
+  defp positive_integer_field(map, key) when is_map(map) and is_atom(key) do
+    case integer_field(map, key) do
+      value when value > 0 -> value
+      _value -> nil
+    end
+  end
+
+  defp datetime_to_string(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp datetime_to_string(value) when is_binary(value), do: value
+  defp datetime_to_string(_value), do: nil
 
   defp present_string(value) when is_binary(value) do
     case String.trim(value) do

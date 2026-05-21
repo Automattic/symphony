@@ -1403,6 +1403,9 @@ The poller:
 - polls GitHub for review decisions and PR closure;
 - waits `pr_review.cooldown_minutes` after requested-change activity before moving the issue
   back to `In Progress` for orchestrator-owned rework handling;
+- detects GitHub merge conflict signals (`mergeable == "CONFLICTING"` or
+  `mergeStateStatus == "DIRTY"`), deduplicates by head/base identity, stores conflict context,
+  and moves the issue back to `In Progress` for agent-owned conflict resolution;
 - moves the issue back to `In Progress` when GitHub reports approval so the orchestrator starts
   the merge/landing workflow through the normal run path;
 - removes tracked workspaces and durable review records when PRs close or remain idle beyond

@@ -9,6 +9,7 @@ defmodule SymphonyElixir.PromptSafety do
   @state_limit 100
   @acceptance_criteria_limit 10_000
   @ci_log_excerpt_limit 20_000
+  @pr_conflict_field_limit 1_000
   @prompt_injection_warning_patterns [
     ~r/^\s*you are\b/i,
     ~r/\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?\b/i,
@@ -41,20 +42,17 @@ defmodule SymphonyElixir.PromptSafety do
   @spec ci_failure_log_excerpt(String.t()) :: String.t()
   def ci_failure_log_excerpt(value), do: linear_block(value, "ci_failure_log_excerpt", @ci_log_excerpt_limit)
 
+  @spec pr_conflict_field(String.t()) :: String.t()
+  def pr_conflict_field(value), do: sanitize_untrusted_text(value, @pr_conflict_field_limit, "pr_conflict")
+
   @spec linear_block(String.t(), String.t(), pos_integer()) :: String.t()
   def linear_block(value, tag, limit) when is_binary(value) and is_binary(tag) and is_integer(limit) and limit > 0 do
     if String.trim(value) == "" do
       value
     else
-      sanitized =
-        value
-        |> strip_instruction_markers()
-        |> escape_boundary_text()
-        |> truncate_linear_text(limit, tag)
-
       """
       <#{tag}>
-      #{sanitized}
+      #{sanitize_untrusted_text(value, limit, tag)}
       </#{tag}>\
       """
     end
@@ -81,6 +79,14 @@ defmodule SymphonyElixir.PromptSafety do
   end
 
   def warning_section(_warnings), do: ""
+
+  defp sanitize_untrusted_text(value, limit, tag)
+       when is_binary(value) and is_integer(limit) and limit > 0 and is_binary(tag) do
+    value
+    |> strip_instruction_markers()
+    |> escape_boundary_text()
+    |> truncate_linear_text(limit, tag)
+  end
 
   defp strip_instruction_markers(value) when is_binary(value) do
     value

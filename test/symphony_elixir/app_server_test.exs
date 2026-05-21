@@ -1976,8 +1976,13 @@ defmodule SymphonyElixir.AppServerTest do
       assert_received {:app_server_message, %{event: :malformed, payload: malformed_payload}}
       assert malformed_payload =~ ~s("method":"item/completed")
       assert malformed_payload =~ ~s("type":"commandExecution")
-      assert_received {:app_server_message, %{event: :command_completed_recovered} = recovered_payload}
-      assert recovered_payload.recovery == :malformed_command_completion
+
+      assert_received {:app_server_message,
+                       %{
+                         event: :command_completed_recovered,
+                         recovery: :malformed_command_completion
+                       }}
+
       assert_received {:app_server_message, %{event: :turn_completed}}
     after
       File.rm_rf(test_root)

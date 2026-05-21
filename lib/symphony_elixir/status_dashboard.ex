@@ -2273,6 +2273,16 @@ defmodule SymphonyElixir.StatusDashboard do
         ])
       )
 
+    codex_cached =
+      parse_integer(
+        map_value(usage, [
+          "cached_input_tokens",
+          :cached_input_tokens,
+          "cachedInputTokens",
+          :cachedInputTokens
+        ])
+      )
+
     input =
       parse_integer(
         map_value(usage, [
@@ -2284,7 +2294,7 @@ defmodule SymphonyElixir.StatusDashboard do
       ) ||
         cond do
           is_integer(legacy_input) and anthropic_cache_usage?(usage) -> legacy_input
-          is_integer(legacy_input) and is_integer(cached) -> max(legacy_input - cached, 0)
+          is_integer(legacy_input) and is_integer(codex_cached) -> max(legacy_input - codex_cached, 0)
           true -> legacy_input
         end
 

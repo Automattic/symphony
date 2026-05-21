@@ -5902,11 +5902,17 @@ defmodule SymphonyElixir.Orchestrator do
           :inputTokens
         ])
 
-      cached = get_token_usage(usage, :cached_input)
+      codex_cached =
+        payload_get(usage, [
+          "cached_input_tokens",
+          :cached_input_tokens,
+          "cachedInputTokens",
+          :cachedInputTokens
+        ])
 
       cond do
         is_integer(input) and anthropic_cache_usage?(usage) -> input
-        is_integer(input) and is_integer(cached) -> max(input - cached, 0)
+        is_integer(input) and is_integer(codex_cached) -> max(input - codex_cached, 0)
         is_integer(input) -> input
         true -> nil
       end

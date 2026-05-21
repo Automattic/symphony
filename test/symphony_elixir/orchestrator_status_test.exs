@@ -3462,7 +3462,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                     }},
                    500
 
-    run_record = wait_for_run_record(&(&1.run_id == run_id))
+    run_record =
+      wait_for_run_record(fn run ->
+        Map.get(run, :run_id) == run_id and
+          match?(%DateTime{}, Map.get(run, :issue_completed_notified_at)) and
+          match?(%DateTime{}, Map.get(run, :watch_closed_at))
+      end)
+
     assert %DateTime{} = run_record.issue_completed_notified_at
     assert %DateTime{} = run_record.watch_closed_at
 

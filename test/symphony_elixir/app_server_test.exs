@@ -17,6 +17,34 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server normalizes nested Codex total_token_usage metadata" do
+    payload = %{
+      "method" => "codex/event/token_count",
+      "params" => %{
+        "msg" => %{
+          "payload" => %{
+            "info" => %{
+              "total_token_usage" => %{
+                "input_tokens" => 12_000,
+                "cached_input_tokens" => 10_000,
+                "output_tokens" => 500,
+                "total_tokens" => 12_500
+              }
+            }
+          }
+        }
+      }
+    }
+
+    assert %{usage: usage} = AppServer.usage_metadata_for_test(payload)
+    assert usage.input_tokens == 12_000
+    assert usage.uncached_input_tokens == 2_000
+    assert usage.cached_input_tokens == 10_000
+    assert usage.cache_creation_input_tokens == 0
+    assert usage.output_tokens == 500
+    assert usage.total_tokens == 12_500
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(

@@ -3381,17 +3381,89 @@ defmodule SymphonyElixir.Codex.AppServer do
     port |> port_metadata(nil) |> maybe_set_usage(payload)
   end
 
+  @doc false
+  @spec usage_metadata_for_test(map()) :: map()
+  def usage_metadata_for_test(payload) when is_map(payload), do: maybe_set_usage(%{}, payload)
+
   defp maybe_set_usage(metadata, payload) when is_map(payload) do
-    usage = Map.get(payload, "usage") || Map.get(payload, :usage)
+    usage = usage_from_payload(payload)
 
     if is_map(usage) do
-      Map.put(metadata, :usage, usage)
+      Map.put(metadata, :usage, normalize_codex_usage(usage))
     else
       metadata
     end
   end
 
   defp maybe_set_usage(metadata, _payload), do: metadata
+
+  defp usage_from_payload(payload) when is_map(payload) do
+    map_value(payload, ["usage", :usage]) ||
+      map_at_path(payload, ["params", "msg", "payload", "info", "total_token_usage"]) ||
+      map_at_path(payload, [:params, :msg, :payload, :info, :total_token_usage]) ||
+      map_at_path(payload, ["params", "msg", "info", "total_token_usage"]) ||
+      map_at_path(payload, [:params, :msg, :info, :total_token_usage])
+  end
+
+  defp usage_from_payload(_payload), do: nil
+
+  defp normalize_codex_usage(usage) when is_map(usage) do
+    input_tokens = token_count(usage, ["input_tokens", :input_tokens, "inputTokens", :inputTokens], 0)
+    cached_input_tokens = token_count(usage, ["cached_input_tokens", :cached_input_tokens, "cachedInputTokens", :cachedInputTokens], 0)
+
+    uncached_input_tokens =
+      token_count(
+        usage,
+        ["uncached_input_tokens", :uncached_input_tokens, "uncachedInputTokens", :uncachedInputTokens],
+        max(input_tokens - cached_input_tokens, 0)
+      )
+
+    cache_creation_input_tokens =
+      token_count(
+        usage,
+        ["cache_creation_input_tokens", :cache_creation_input_tokens, "cacheCreationInputTokens", :cacheCreationInputTokens],
+        0
+      )
+
+    output_tokens = token_count(usage, ["output_tokens", :output_tokens, "outputTokens", :outputTokens], 0)
+
+    total_tokens =
+      token_count(usage, ["total_tokens", :total_tokens, "totalTokens", :totalTokens], nil) ||
+        uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens + output_tokens
+
+    usage
+    |> Map.put(:input_tokens, uncached_input_tokens + cached_input_tokens + cache_creation_input_tokens)
+    |> Map.put(:uncached_input_tokens, uncached_input_tokens)
+    |> Map.put(:cached_input_tokens, cached_input_tokens)
+    |> Map.put(:cache_creation_input_tokens, cache_creation_input_tokens)
+    |> Map.put(:output_tokens, output_tokens)
+    |> Map.put(:total_tokens, total_tokens)
+  end
+
+  defp map_value(map, keys) when is_map(map) and is_list(keys) do
+    Enum.find_value(keys, fn key -> Map.get(map, key) end)
+  end
+
+  defp map_at_path(payload, path) when is_map(payload) and is_list(path) do
+    Enum.reduce_while(path, payload, fn key, acc ->
+      if is_map(acc) and Map.has_key?(acc, key) do
+        {:cont, Map.get(acc, key)}
+      else
+        {:halt, nil}
+      end
+    end)
+  end
+
+  defp map_at_path(_payload, _path), do: nil
+
+  defp token_count(usage, keys, default) when is_map(usage) and is_list(keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(usage, key) do
+        value when is_integer(value) and value >= 0 -> value
+        _value -> nil
+      end
+    end) || default
+  end
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"

@@ -110,12 +110,6 @@ defmodule SymphonyElixir.AgentRunner do
           {:error, reason} ->
             Verification.release(verification, "workspace setup failed")
             {:error, reason}
-
-          other ->
-            Logger.error("workspace_for_issue returned unexpected shape #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)} result=#{inspect(other)}")
-
-            Verification.release(verification, "workspace setup failed")
-            {:error, {:invalid_workspace_result, other}}
         end
 
       {:error, reason} ->

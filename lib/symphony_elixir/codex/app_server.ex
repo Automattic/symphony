@@ -3306,10 +3306,11 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp codex_stdio_write_failed?(data) do
-    text = to_string(data)
-
-    String.contains?(text, "codex_app_server_transport::transport::stdio") and
-      String.contains?(text, "Failed to write to stdout")
+    data
+    |> to_string()
+    |> String.replace(~r/\x1b\[[0-9;]*m/, "")
+    |> String.trim_leading()
+    |> String.match?(~r/^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?(?:(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR)\s+)?codex_app_server_transport::transport::stdio:\s+Failed to write to stdout\b/)
   end
 
   defp issue_context(%{id: issue_id, identifier: identifier}) do

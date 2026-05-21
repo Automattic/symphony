@@ -259,7 +259,13 @@ defmodule SymphonyElixirWeb.TranscriptLive do
                     <%= String.replace(entry.verdict, "_", " ") %>
                   </span>
                   <span :if={entry.name not in ["notification", "unknown"]} class="transcript-event-name"><%= entry.name %></span>
-                  <span :if={entry.timestamp} class="muted mono numeric"><%= entry.timestamp %></span>
+                  <time
+                    :if={entry.timestamp}
+                    id={"event-time-#{entry.sequence}"}
+                    phx-hook="LocalTime"
+                    datetime={entry.timestamp.iso}
+                    class="muted mono numeric"
+                  ><%= entry.timestamp.display %></time>
                 </div>
 
                 <p class="transcript-event-summary"><%= entry.summary %></p>
@@ -482,9 +488,17 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   defp event_timestamp(event) do
     case map_value(event, ["timestamp", :timestamp]) do
-      %DateTime{} = datetime -> datetime |> DateTime.to_time() |> Time.to_string() |> String.slice(0, 8)
-      timestamp when is_binary(timestamp) -> String.slice(timestamp, 11, 8)
-      _ -> nil
+      %DateTime{} = datetime ->
+        %{
+          iso: DateTime.to_iso8601(datetime),
+          display: datetime |> DateTime.to_time() |> Time.to_string() |> String.slice(0, 8)
+        }
+
+      timestamp when is_binary(timestamp) ->
+        %{iso: timestamp, display: String.slice(timestamp, 11, 8)}
+
+      _ ->
+        nil
     end
   end
 

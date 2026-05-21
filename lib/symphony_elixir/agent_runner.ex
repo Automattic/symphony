@@ -21,6 +21,7 @@ defmodule SymphonyElixir.AgentRunner do
     Tracker,
     URLUtils,
     Verification,
+    Workpad,
     Workspace
   }
 
@@ -73,7 +74,11 @@ defmodule SymphonyElixir.AgentRunner do
                      Verification.start_dev_server(verification, workspace, settings: settings) do
                 remember_verification_dev_server(dev_server_pid)
                 enriched_issue = enrich_issue_for_dispatch(issue, opts)
-                run_codex_turns(workspace, enriched_issue, codex_update_recipient, opts, worker_host)
+
+                with {:ok, bootstrapped_issue} <-
+                       Workpad.bootstrap(enriched_issue, workspace, Keyword.put(opts, :worker_host, worker_host)) do
+                  run_codex_turns(workspace, bootstrapped_issue, codex_update_recipient, opts, worker_host)
+                end
               end
             after
               Workspace.run_after_run_hook(workspace, issue, worker_host,

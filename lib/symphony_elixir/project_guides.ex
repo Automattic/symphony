@@ -20,11 +20,11 @@ defmodule SymphonyElixir.ProjectGuides do
   def default_files(:codex), do: []
 
   @spec read(Path.t(), [String.t()] | nil, keyword()) :: {:ok, [guide()]} | {:error, term()}
-  def read(workspace, files, opts \\ []) when is_binary(workspace) do
+  def read(workspace, files, opts \\ [])
+      when is_binary(workspace) and (is_list(files) or is_nil(files)) do
     files = files || default_files(Keyword.get(opts, :runner, :codex))
 
-    with :ok <- validate_file_list(files),
-         {:ok, root} <- workspace_root(workspace) do
+    with {:ok, root} <- workspace_root(workspace) do
       state = %{
         root: root,
         workspace: root,
@@ -228,36 +228,20 @@ defmodule SymphonyElixir.ProjectGuides do
   defp resolve_path(path, base, root) do
     with :ok <- validate_relative_path(path),
          absolute <- Path.expand(path, base),
-         true <- String.starts_with?(absolute <> "/", root <> "/") || {:error, :path_escape},
+         :ok <- within_root(absolute, root),
          {:ok, canonical} <- PathSafety.canonicalize(absolute),
-         true <- String.starts_with?(canonical <> "/", root <> "/") || {:error, :path_escape} do
+         :ok <- within_root(canonical, root) do
       {:ok, %{path: absolute, canonical: canonical, relative: relative_to_root(canonical, root)}}
-    else
-      {:error, reason} -> {:error, reason}
-      false -> {:error, :path_escape}
     end
+  end
+
+  defp within_root(path, root) do
+    if String.starts_with?(path <> "/", root <> "/"), do: :ok, else: {:error, :path_escape}
   end
 
   defp workspace_root(workspace) do
-    expanded = Path.expand(workspace)
-
-    case PathSafety.canonicalize(expanded) do
-      {:ok, canonical} -> {:ok, canonical}
-      {:error, {:path_canonicalize_failed, _path, :enoent}} -> {:ok, expanded}
-      {:error, reason} -> {:error, reason}
-    end
+    PathSafety.canonicalize(Path.expand(workspace))
   end
-
-  defp validate_file_list(files) when is_list(files) do
-    Enum.reduce_while(files, :ok, fn file, :ok ->
-      case validate_relative_path(file) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp validate_file_list(_files), do: {:error, :invalid_project_guide_files}
 
   defp validate_relative_path(path) when is_binary(path) do
     trimmed = String.trim(path)
@@ -282,8 +266,6 @@ defmodule SymphonyElixir.ProjectGuides do
         :ok
     end
   end
-
-  defp validate_relative_path(_path), do: {:error, :path_escape}
 
   defp relative_to_root(path, root) do
     path

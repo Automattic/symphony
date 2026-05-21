@@ -2510,6 +2510,21 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), agent_project_guide_files: ["../AGENTS.md"])
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
     assert message =~ "project_guide_files"
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_project_guide_files: [""])
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "project_guide_files"
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_project_guide_files: ["~/CLAUDE.md"])
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "project_guide_files"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_project_guide_files: ["bad\nentry.md"]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "project_guide_files"
   end
 
   test "codex runtime delegates turn sandboxing to SRT when sandbox runtime is enabled" do

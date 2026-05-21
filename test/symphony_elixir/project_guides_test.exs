@@ -3,6 +3,8 @@ defmodule SymphonyElixir.ProjectGuidesTest do
 
   import ExUnit.CaptureLog
 
+  alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Config.Schema.Agent
   alias SymphonyElixir.ProjectGuides
 
   test "reads present guides and skips missing guides" do
@@ -28,9 +30,81 @@ defmodule SymphonyElixir.ProjectGuidesTest do
       assert {:error, :path_escape} = ProjectGuides.read(workspace, ["../outside.md"])
       assert {:error, :path_escape} = ProjectGuides.read(workspace, ["/tmp/outside.md"])
       assert {:error, :path_escape} = ProjectGuides.read(workspace, ["@bad\n.md"])
+      assert {:error, :path_escape} = ProjectGuides.read(workspace, [""])
+      assert {:error, :path_escape} = ProjectGuides.read(workspace, ["   "])
     after
       File.rm_rf(workspace)
     end
+  end
+
+  test "runner defaults pick CLAUDE.md for claude and empty for codex" do
+    workspace = tmp_workspace!("project-guides-defaults")
+
+    try do
+      assert ProjectGuides.default_files(:claude) == ["CLAUDE.md"]
+      assert ProjectGuides.default_files(:codex) == []
+
+      File.write!(Path.join(workspace, "CLAUDE.md"), "Hello\n")
+
+      assert {:ok, [%{path: "CLAUDE.md"}]} = ProjectGuides.read(workspace, nil, runner: :claude)
+      assert {:ok, []} = ProjectGuides.read(workspace, nil, runner: :codex)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "ignores import lines with empty targets" do
+    workspace = tmp_workspace!("project-guides-empty-import")
+
+    try do
+      File.write!(Path.join(workspace, "CLAUDE.md"), "Header\n@   \nFooter\n")
+
+      assert {:ok, [%{content: content}]} = ProjectGuides.read(workspace, ["CLAUDE.md"])
+      assert content =~ "Header"
+      assert content =~ "@   "
+      assert content =~ "Footer"
+      refute content =~ "### @"
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "append_to_prompt honors include flag and surfaces read errors" do
+    workspace = tmp_workspace!("project-guides-append")
+
+    try do
+      File.write!(Path.join(workspace, "CLAUDE.md"), "Body\n")
+
+      settings = settings_with_files(["CLAUDE.md"], true)
+
+      assert {:ok, prompt} = ProjectGuides.append_to_prompt("Prompt", workspace, settings, :claude)
+      assert prompt =~ "Prompt"
+      assert prompt =~ "## Project conventions"
+
+      disabled = settings_with_files(["CLAUDE.md"], false)
+      assert {:ok, "Prompt"} = ProjectGuides.append_to_prompt("Prompt", workspace, disabled, :claude)
+
+      escape = settings_with_files(["../escape.md"], true)
+
+      assert {:error, :path_escape} =
+               ProjectGuides.append_to_prompt("Prompt", workspace, escape, :claude)
+    after
+      File.rm_rf(workspace)
+    end
+  end
+
+  test "prompt_section renders ## Project conventions for non-empty guides" do
+    assert ProjectGuides.prompt_section([]) == nil
+
+    section =
+      ProjectGuides.prompt_section([
+        %{path: "CLAUDE.md", content: "Body\n"},
+        %{path: "AGENTS.md", content: "Agents body"}
+      ])
+
+    assert section =~ "## Project conventions"
+    assert section =~ "### CLAUDE.md\n\nBody"
+    assert section =~ "### AGENTS.md\n\nAgents body"
   end
 
   test "rejects size and utf8 violations" do
@@ -135,5 +209,9 @@ defmodule SymphonyElixir.ProjectGuidesTest do
     workspace = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
     File.mkdir_p!(workspace)
     workspace
+  end
+
+  defp settings_with_files(files, include?) do
+    %Schema{agent: %Agent{project_guide_files: files, include_project_guides: include?}}
   end
 end

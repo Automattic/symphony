@@ -817,8 +817,6 @@ defmodule SymphonyElixir.Config.Schema do
           []
       end
     end
-
-    defp project_guide_file_errors(_file), do: ["must contain strings"]
   end
 
   defmodule Hooks do

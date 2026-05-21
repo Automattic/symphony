@@ -1579,13 +1579,10 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
-    config =
-      config
-      |> normalize_keys()
-      |> drop_nil_values()
+    normalized = normalize_keys(config)
 
-    with :ok <- reject_removed_keys(config),
-         {:ok, settings} <- apply_schema_changes(config),
+    with :ok <- reject_removed_keys(normalized),
+         {:ok, settings} <- apply_schema_changes(drop_nil_values(normalized)),
          :ok <- validate_finalized_settings(settings) do
       {:ok, settings}
     else

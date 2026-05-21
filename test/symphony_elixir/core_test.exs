@@ -304,6 +304,16 @@ defmodule SymphonyElixir.CoreTest do
 
     assert message =~ "`pr_review.bot_users` has been removed"
     assert message =~ "ignored_users"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "github_user" => nil}})
+
+    assert message =~ "`pr_review.github_user` has been removed"
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"pr_review" => %{"mode" => "polling", "bot_users" => nil}})
+
+    assert message =~ "`pr_review.bot_users` has been removed"
   end
 
   test "current WORKFLOW.md file is valid and complete" do

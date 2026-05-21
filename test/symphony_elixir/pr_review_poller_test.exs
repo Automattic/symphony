@@ -1535,6 +1535,61 @@ defmodule SymphonyElixir.PrReviewPollerTest do
            ] = RunStore.list_pr_reviews()
   end
 
+  test "bodyless changes_requested review after a handled review bumps last_review_activity_at and redispatches rework" do
+    now = ~U[2026-05-01 09:00:00Z]
+    old_review_at = DateTime.add(now, -180, :minute)
+    last_action_at = DateTime.add(old_review_at, 30, :minute)
+    new_review_at = DateTime.add(now, -45, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        last_action: "rework",
+        last_action_at: last_action_at,
+        last_activity_at: old_review_at,
+        last_review_activity_at: old_review_at
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(new_review_at,
+        review_decision: "CHANGES_REQUESTED",
+        latest_review_activity_at: new_review_at,
+        comments: [
+          %{
+            id: "bodyless-review",
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "human-reviewer",
+            body: "",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-2",
+            created_at: new_review_at,
+            updated_at: new_review_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               now: now
+             )
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert [
+             %{
+               status: "rework_requested",
+               last_review_activity_at: ^new_review_at
+             }
+           ] = RunStore.list_pr_reviews()
+  end
+
   test "ignored author comments after a handled changes-requested review do not redispatch rework" do
     now = ~U[2026-05-01 09:00:00Z]
     reviewer_activity_at = DateTime.add(now, -120, :minute)

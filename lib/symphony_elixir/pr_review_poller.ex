@@ -461,12 +461,13 @@ defmodule SymphonyElixir.PrReviewPoller do
         Map.get(record, :updated_at) ||
         now
 
-    reviewer_comments = reviewer_comments(Map.get(activity, :comments, []), ignored_users)
+    raw_comments = Map.get(activity, :comments, [])
+    reviewer_comments = reviewer_comments(raw_comments, ignored_users)
     unaddressed_comments = unaddressed_reviewer_comments(record, reviewer_comments)
     latest_unaddressed_comment_at = latest_comment_activity_at(unaddressed_comments)
 
     latest_review_activity_at =
-      latest_comment_activity_at(reviewer_comments) ||
+      latest_comment_activity_at(review_activity_events(raw_comments, ignored_users)) ||
         Map.get(record, :last_review_activity_at) ||
         latest_activity_at
 
@@ -940,6 +941,19 @@ defmodule SymphonyElixir.PrReviewPoller do
     |> Enum.reject(&(ignored_comment?(&1, ignored_users) or String.trim(Map.get(&1, :body, "")) == ""))
     |> sort_comments()
   end
+
+  defp review_activity_events(comments, ignored_users) when is_list(ignored_users) do
+    comments
+    |> normalize_comments()
+    |> Enum.reject(&(ignored_comment?(&1, ignored_users) or review_activity_drop?(&1)))
+    |> sort_comments()
+  end
+
+  defp review_activity_drop?(comment) when is_map(comment) do
+    Map.get(comment, :kind) != "review" and String.trim(Map.get(comment, :body, "")) == ""
+  end
+
+  defp review_activity_drop?(_comment), do: true
 
   defp unaddressed_reviewer_comments(record, reviewer_comments) when is_list(reviewer_comments) do
     reviewer_comments

@@ -482,7 +482,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     git_runner = fn ["branch", "--show-current"], opts ->
       send(test_pid, {:git_called, opts})
-      {"feature/rsm-3052", 0}
+      {"feature/acme-3052", 0}
     end
 
     gh_runner = fn args, opts ->
@@ -513,7 +513,7 @@ defmodule SymphonyElixir.McpServerTest do
       response =
         request!(socket, 1, "tools/call", %{
           "name" => "github_create_pull_request",
-          "arguments" => %{"title" => "RSM-3052", "body" => "body"}
+          "arguments" => %{"title" => "ACME-3052", "body" => "body"}
         })
 
       refute response["result"]["isError"]
@@ -533,9 +533,9 @@ defmodule SymphonyElixir.McpServerTest do
                "--repo",
                "acme/symphony",
                "--head",
-               "feature/rsm-3052",
+               "feature/acme-3052",
                "--title",
-               "RSM-3052",
+               "ACME-3052",
                "--body",
                "body"
              ]
@@ -569,7 +569,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     git_runner = fn args, opts ->
       send(test_pid, {:git_called, args, opts})
-      {"feature/rsm-3220", 0}
+      {"feature/acme-3220", 0}
     end
 
     gh_runner = fn args, opts ->
@@ -579,7 +579,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     issue = %Issue{
       id: "issue-mcp-hold",
-      identifier: "RSM-MCP-HOLD",
+      identifier: "ACME-MCP-HOLD",
       title: "MCP hold",
       description: "Block risky dependency PR from MCP",
       state: "In Progress"
@@ -605,7 +605,7 @@ defmodule SymphonyElixir.McpServerTest do
       response =
         request!(socket, 1, "tools/call", %{
           "name" => "github_create_pull_request",
-          "arguments" => %{"title" => "RSM-3220", "body" => "body"}
+          "arguments" => %{"title" => "ACME-3220", "body" => "body"}
         })
 
       assert response["result"]["isError"]
@@ -658,7 +658,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     git_runner = fn args, opts ->
       send(test_pid, {:git_called, args, opts})
-      {"feature/rsm-3220", 0}
+      {"feature/acme-3220", 0}
     end
 
     gh_runner = fn args, opts ->
@@ -668,7 +668,7 @@ defmodule SymphonyElixir.McpServerTest do
 
     issue = %Issue{
       id: "issue-mcp-audit-error",
-      identifier: "RSM-MCP-AUDIT-ERROR",
+      identifier: "ACME-MCP-AUDIT-ERROR",
       title: "MCP audit error",
       description: "Block PR when MCP dependency audit fails",
       state: "In Progress"
@@ -694,7 +694,7 @@ defmodule SymphonyElixir.McpServerTest do
       response =
         request!(socket, 1, "tools/call", %{
           "name" => "github_create_pull_request",
-          "arguments" => %{"title" => "RSM-3220", "body" => "body"}
+          "arguments" => %{"title" => "ACME-3220", "body" => "body"}
         })
 
       assert response["result"]["isError"]

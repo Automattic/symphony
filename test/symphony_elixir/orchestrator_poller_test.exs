@@ -6,11 +6,11 @@ defmodule SymphonyElixir.OrchestratorPollerTest do
 
   test "staggered repo poll cache routes cross-repo duplicates to conflicts before dispatch" do
     repos = [
-      %{name: "web", team: "RSM", labels: ["web"]},
-      %{name: "api", team: "RSM", labels: ["api"]}
+      %{name: "web", team: "ACME", labels: ["web"]},
+      %{name: "api", team: "ACME", labels: ["api"]}
     ]
 
-    issue = %Issue{id: "issue-1", identifier: "RSM-1", title: "Shared", state: "Todo"}
+    issue = %Issue{id: "issue-1", identifier: "ACME-1", title: "Shared", state: "Todo"}
 
     fetcher = fn
       %{name: "web"} ->
@@ -45,12 +45,12 @@ defmodule SymphonyElixir.OrchestratorPollerTest do
 
   test "warmed stagger cache dispatches unique issues with repo metadata" do
     repos = [
-      %{name: "web", team: "RSM", labels: ["web"]},
-      %{name: "api", team: "RSM", labels: ["api"]}
+      %{name: "web", team: "ACME", labels: ["web"]},
+      %{name: "api", team: "ACME", labels: ["api"]}
     ]
 
-    web_issue = %Issue{id: "issue-web", identifier: "RSM-WEB", title: "Web", state: "Todo"}
-    api_issue = %Issue{id: "issue-api", identifier: "RSM-API", title: "API", state: "Todo"}
+    web_issue = %Issue{id: "issue-web", identifier: "ACME-WEB", title: "Web", state: "Todo"}
+    api_issue = %Issue{id: "issue-api", identifier: "ACME-API", title: "API", state: "Todo"}
 
     fetcher = fn
       %{name: "web"} -> {:ok, [web_issue]}
@@ -66,19 +66,19 @@ defmodule SymphonyElixir.OrchestratorPollerTest do
              Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, fetcher, 50)
 
     assert Enum.map(dispatchable, &{&1.identifier, &1.repo_key}) == [
-             {"RSM-API", "api"},
-             {"RSM-WEB", "web"}
+             {"ACME-API", "api"},
+             {"ACME-WEB", "web"}
            ]
   end
 
   test "poll failure for a warmed repo falls back to cached buckets" do
     repos = [
-      %{name: "web", team: "RSM", labels: ["web"]},
-      %{name: "api", team: "RSM", labels: ["api"]}
+      %{name: "web", team: "ACME", labels: ["web"]},
+      %{name: "api", team: "ACME", labels: ["api"]}
     ]
 
-    web_issue = %Issue{id: "issue-web", identifier: "RSM-WEB", title: "Web", state: "Todo"}
-    api_issue = %Issue{id: "issue-api", identifier: "RSM-API", title: "API", state: "Todo"}
+    web_issue = %Issue{id: "issue-web", identifier: "ACME-WEB", title: "Web", state: "Todo"}
+    api_issue = %Issue{id: "issue-api", identifier: "ACME-API", title: "API", state: "Todo"}
 
     fetcher = fn
       %{name: "api"} ->
@@ -101,8 +101,8 @@ defmodule SymphonyElixir.OrchestratorPollerTest do
     assert_receive {:polled, "api"}
 
     assert Enum.map(dispatchable, &{&1.identifier, &1.repo_key}) == [
-             {"RSM-API", "api"},
-             {"RSM-WEB", "web"}
+             {"ACME-API", "api"},
+             {"ACME-WEB", "web"}
            ]
 
     assert state.repo_poll_due_at_ms["api"] == 150
@@ -110,11 +110,11 @@ defmodule SymphonyElixir.OrchestratorPollerTest do
 
   test "cold poll failures eventually stop starving warmed repos" do
     repos = [
-      %{name: "web", team: "RSM", labels: ["web"]},
-      %{name: "api", team: "RSM", labels: ["api"]}
+      %{name: "web", team: "ACME", labels: ["web"]},
+      %{name: "api", team: "ACME", labels: ["api"]}
     ]
 
-    web_issue = %Issue{id: "issue-web", identifier: "RSM-WEB", title: "Web", state: "Todo"}
+    web_issue = %Issue{id: "issue-web", identifier: "ACME-WEB", title: "Web", state: "Todo"}
 
     fetcher = fn
       %{name: "web"} ->
@@ -144,19 +144,19 @@ defmodule SymphonyElixir.OrchestratorPollerTest do
     assert {:ok, %{dispatchable: dispatchable, conflicts: []}, state} =
              Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, fetcher, 250)
 
-    assert Enum.map(dispatchable, &{&1.identifier, &1.repo_key}) == [{"RSM-WEB", "web"}]
+    assert Enum.map(dispatchable, &{&1.identifier, &1.repo_key}) == [{"ACME-WEB", "web"}]
     assert state.repo_poll_cache["api"].issues == []
     assert state.repo_poll_due_at_ms["api"] == 350
   end
 
   test "poll cycle with no due repo rebuilds buckets from cache without fetching" do
     repos = [
-      %{name: "web", team: "RSM", labels: ["web"]},
-      %{name: "api", team: "RSM", labels: ["api"]}
+      %{name: "web", team: "ACME", labels: ["web"]},
+      %{name: "api", team: "ACME", labels: ["api"]}
     ]
 
-    web_issue = %Issue{id: "issue-web", identifier: "RSM-WEB", title: "Web", state: "Todo"}
-    api_issue = %Issue{id: "issue-api", identifier: "RSM-API", title: "API", state: "Todo"}
+    web_issue = %Issue{id: "issue-web", identifier: "ACME-WEB", title: "Web", state: "Todo"}
+    api_issue = %Issue{id: "issue-api", identifier: "ACME-API", title: "API", state: "Todo"}
 
     fetcher = fn repo ->
       send(self(), {:unexpected_poll, repo.name})
@@ -180,8 +180,8 @@ defmodule SymphonyElixir.OrchestratorPollerTest do
     assert returned_state.repo_poll_due_at_ms == state.repo_poll_due_at_ms
 
     assert Enum.map(dispatchable, &{&1.identifier, &1.repo_key}) == [
-             {"RSM-API", "api"},
-             {"RSM-WEB", "web"}
+             {"ACME-API", "api"},
+             {"ACME-WEB", "web"}
            ]
   end
 end

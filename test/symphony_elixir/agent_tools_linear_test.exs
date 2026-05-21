@@ -156,7 +156,7 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
                      "nodes" => [
                        %{
                          "type" => "blocks",
-                         "relatedIssue" => %{"id" => "related-1", "identifier" => "RSM-1", "title" => "Related <title>"}
+                         "relatedIssue" => %{"id" => "related-1", "identifier" => "ACME-1", "title" => "Related <title>"}
                        }
                      ]
                    },
@@ -164,7 +164,7 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
                      "nodes" => [
                        %{
                          "type" => "blocked_by",
-                         "issue" => %{"id" => "related-2", "identifier" => "RSM-2", "title" => "Inverse <title>"}
+                         "issue" => %{"id" => "related-2", "identifier" => "ACME-2", "title" => "Inverse <title>"}
                        }
                      ]
                    }
@@ -971,7 +971,7 @@ defmodule SymphonyElixir.AgentTools.LinearTest do
   end
 
   defp secret_context(workspace) do
-    %{issue: %Issue{id: "issue-secret", identifier: "RSM-3189"}, workspace: workspace}
+    %{issue: %Issue{id: "issue-secret", identifier: "ACME-3189"}, workspace: workspace}
   end
 
   defp attach_context, do: %{issue_id: "issue-secret"}

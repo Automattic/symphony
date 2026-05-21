@@ -10,10 +10,10 @@ defmodule SymphonyElixir.QualityTest do
 
     running_entry = %{
       run_id: "run-quality-1",
-      identifier: "RSM-1",
+      identifier: "ACME-1",
       issue: %Issue{
         id: "issue-1",
-        identifier: "RSM-1",
+        identifier: "ACME-1",
         labels: ["bug"],
         pull_request_url: "https://github.com/example/repo/pull/1"
       },
@@ -55,8 +55,8 @@ defmodule SymphonyElixir.QualityTest do
   test "tests_run is false when transcript exists but no test run command was issued" do
     running_entry = %{
       run_id: "run-quality-2",
-      identifier: "RSM-2",
-      issue: %Issue{id: "issue-2", identifier: "RSM-2", labels: []},
+      identifier: "ACME-2",
+      issue: %Issue{id: "issue-2", identifier: "ACME-2", labels: []},
       started_at: DateTime.utc_now()
     }
 
@@ -91,7 +91,7 @@ defmodule SymphonyElixir.QualityTest do
   test "error statuses produce error outcomes with error_kind" do
     timeout_eval =
       Quality.build_eval_log_for_test(
-        %{run_id: "run-quality-3", issue: %Issue{id: "i3", identifier: "RSM-3"}, started_at: DateTime.utc_now()},
+        %{run_id: "run-quality-3", issue: %Issue{id: "i3", identifier: "ACME-3"}, started_at: DateTime.utc_now()},
         "timeout",
         nil,
         agent_kind: "codex",
@@ -103,7 +103,7 @@ defmodule SymphonyElixir.QualityTest do
 
     budget_eval =
       Quality.build_eval_log_for_test(
-        %{run_id: "run-quality-4", issue: %Issue{id: "i4", identifier: "RSM-4"}, started_at: DateTime.utc_now()},
+        %{run_id: "run-quality-4", issue: %Issue{id: "i4", identifier: "ACME-4"}, started_at: DateTime.utc_now()},
         "budget_exhausted",
         nil,
         agent_kind: "codex",
@@ -115,7 +115,7 @@ defmodule SymphonyElixir.QualityTest do
 
     failure_eval =
       Quality.build_eval_log_for_test(
-        %{run_id: "run-quality-5", issue: %Issue{id: "i5", identifier: "RSM-5"}, started_at: DateTime.utc_now()},
+        %{run_id: "run-quality-5", issue: %Issue{id: "i5", identifier: "ACME-5"}, started_at: DateTime.utc_now()},
         "failure",
         "agent exited: :boom",
         agent_kind: "codex",
@@ -132,7 +132,7 @@ defmodule SymphonyElixir.QualityTest do
       Quality.build_eval_log_for_test(
         %{
           run_id: "run-quality-6",
-          issue: %Issue{id: "i6", identifier: "RSM-6", pull_request_url: "https://github.com/example/repo/pull/99"},
+          issue: %Issue{id: "i6", identifier: "ACME-6", pull_request_url: "https://github.com/example/repo/pull/99"},
           started_at: DateTime.utc_now()
         },
         "failure",
@@ -149,7 +149,7 @@ defmodule SymphonyElixir.QualityTest do
       Quality.build_eval_log_for_test(
         %{
           run_id: "run-quality-7",
-          issue: %Issue{id: "i7", identifier: "RSM-7", pull_request_url: "https://github.com/example/repo/pull/100"},
+          issue: %Issue{id: "i7", identifier: "ACME-7", pull_request_url: "https://github.com/example/repo/pull/100"},
           started_at: DateTime.utc_now()
         },
         "stopped",

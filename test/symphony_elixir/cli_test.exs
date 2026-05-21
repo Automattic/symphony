@@ -92,8 +92,8 @@ defmodule SymphonyElixir.CLITest do
         end
       })
 
-    assert {:halt, 0} = CLI.evaluate(["run", "RSM-3603", "--timeout", "30m", "--no-retry"], deps)
-    assert_received {:run_one_shot, "RSM-3603", opts}
+    assert {:halt, 0} = CLI.evaluate(["run", "ACME-3603", "--timeout", "30m", "--no-retry"], deps)
+    assert_received {:run_one_shot, "ACME-3603", opts}
     assert opts[:timeout_ms] == 1_800_000
     assert opts[:no_retry] == true
   end
@@ -101,25 +101,25 @@ defmodule SymphonyElixir.CLITest do
   test "one-shot mode maps failure, config, and timeout outcomes to documented exit codes" do
     assert {:error, _message, 1} =
              CLI.evaluate(
-               ["run", "RSM-3603"],
+               ["run", "ACME-3603"],
                base_deps(%{run_one_shot: fn _identifier, _opts -> {:error, :boom} end})
              )
 
     assert {:error, _message, 2} =
              CLI.evaluate(
-               ["run", "RSM-3603"],
+               ["run", "ACME-3603"],
                base_deps(%{run_one_shot: fn _identifier, _opts -> {:config_error, :bad_config} end})
              )
 
     assert {:halt, 124} =
              CLI.evaluate(
-               ["run", "RSM-3603"],
+               ["run", "ACME-3603"],
                base_deps(%{run_one_shot: fn _identifier, _opts -> {:timeout, :timeout_exceeded} end})
              )
   end
 
   test "one-shot mode returns config error code for bad timeout syntax" do
-    assert {:error, message, 2} = CLI.evaluate(["run", "RSM-3603", "--timeout", "later"], base_deps())
+    assert {:error, message, 2} = CLI.evaluate(["run", "ACME-3603", "--timeout", "later"], base_deps())
     assert message =~ "Invalid --timeout"
   end
 

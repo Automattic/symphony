@@ -285,18 +285,18 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "memory tracker repo fetch ignores unrouted issues" do
     routed_issue = %Issue{
       id: "issue-routed",
-      identifier: "RSM-ROUTED",
+      identifier: "ACME-ROUTED",
       state: "Todo",
-      team: %{key: "RSM"},
+      team: %{key: "ACME"},
       labels: ["web"]
     }
 
-    unrouted_issue = %Issue{id: "issue-unrouted", identifier: "RSM-UNROUTED", state: "Todo"}
+    unrouted_issue = %Issue{id: "issue-unrouted", identifier: "ACME-UNROUTED", state: "Todo"}
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [routed_issue, unrouted_issue])
 
     assert {:ok, [^routed_issue]} =
-             Memory.fetch_candidate_issues_for_repo(%{name: "web", team: "RSM", labels: ["web"]})
+             Memory.fetch_candidate_issues_for_repo(%{name: "web", team: "ACME", labels: ["web"]})
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -305,12 +305,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
 
-    repo = %{name: "web", team: "RSM"}
+    repo = %{name: "web", team: "ACME"}
     assert {:ok, [^repo]} = Adapter.fetch_candidate_issues_for_repo(repo)
     assert_receive {:fetch_candidate_issues_for_repo_called, ^repo}
 
-    assert {:ok, %Issue{identifier: "RSM-1"}} = Adapter.fetch_issue_by_identifier("RSM-1")
-    assert_receive {:fetch_issue_by_identifier_called, "RSM-1"}
+    assert {:ok, %Issue{identifier: "ACME-1"}} = Adapter.fetch_issue_by_identifier("ACME-1")
+    assert_receive {:fetch_issue_by_identifier_called, "ACME-1"}
 
     assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
     assert_receive {:fetch_issues_by_states_called, ["Todo"]}
@@ -735,7 +735,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                eval_id: "eval-api-1",
                run_id: "run-api-1",
                issue_id: "issue-api-1",
-               issue_identifier: "RSM-API-1",
+               issue_identifier: "ACME-API-1",
                issue_labels: ["bug"],
                outcome: "pr_opened",
                status: "success",
@@ -743,7 +743,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                tokens: %{input_tokens: 20, output_tokens: 10, total_tokens: 30},
                duration_seconds: 45,
                tests_run: true,
-               workspace_path: "/tmp/workspaces/RSM-API-1",
+               workspace_path: "/tmp/workspaces/ACME-API-1",
                session_id: "session-api-1",
                logged_at: now,
                date: DateTime.to_date(now)
@@ -755,7 +755,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                eval_id: "eval-api-2",
                run_id: "run-api-2",
                issue_id: "issue-api-2",
-               issue_identifier: "RSM-API-2",
+               issue_identifier: "ACME-API-2",
                issue_labels: ["feature"],
                outcome: "error",
                status: "failure",
@@ -777,7 +777,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> json_response(200)
 
     assert payload["count"] == 1
-    assert [%{"issue_identifier" => "RSM-API-1", "outcome" => "pr_opened", "agent_kind" => "codex"}] = payload["runs"]
+    assert [%{"issue_identifier" => "ACME-API-1", "outcome" => "pr_opened", "agent_kind" => "codex"}] = payload["runs"]
 
     export_conn = get(build_conn(), "/api/v1/runs?export=json")
 
@@ -806,7 +806,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  %{
                    repo_key: "default",
                    issue_id: "issue-audit",
-                   issue_identifier: "RSM-AUDIT",
+                   issue_identifier: "ACME-AUDIT",
                    run_id: "run-audit",
                    timestamp: ~U[2026-05-07 12:00:00Z],
                    event_type: "tool_call",
@@ -821,7 +821,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                %{
                  repo_key: "default",
                  issue_id: "issue-other",
-                 issue_identifier: "RSM-OTHER",
+                 issue_identifier: "ACME-OTHER",
                  timestamp: ~U[2026-05-07 12:00:00Z],
                  event_type: "file_change"
                },
@@ -830,26 +830,26 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditApiOrchestrator), snapshot_timeout_ms: 5)
 
-    conn = get(build_conn(), "/api/v1/audit?issue=RSM-AUDIT&type=tool_call&from=2026-05-07&to=2026-05-07&limit=25")
+    conn = get(build_conn(), "/api/v1/audit?issue=ACME-AUDIT&type=tool_call&from=2026-05-07&to=2026-05-07&limit=25")
     lines = conn.resp_body |> String.split("\n", trim: true)
 
     assert Plug.Conn.get_resp_header(conn, "content-type") == ["application/x-ndjson; charset=utf-8"]
     assert length(lines) == 25
-    assert [%{"issue_identifier" => "RSM-AUDIT", "sequence" => 1} | _] = Enum.map(lines, &Jason.decode!/1)
+    assert [%{"issue_identifier" => "ACME-AUDIT", "sequence" => 1} | _] = Enum.map(lines, &Jason.decode!/1)
     assert [cursor] = Plug.Conn.get_resp_header(conn, "x-next-cursor")
 
     next_conn =
       get(
         build_conn(),
-        "/api/v1/audit?issue=RSM-AUDIT&type=tool_call&from=2026-05-07&to=2026-05-07&cursor=#{URI.encode_www_form(cursor)}"
+        "/api/v1/audit?issue=ACME-AUDIT&type=tool_call&from=2026-05-07&to=2026-05-07&cursor=#{URI.encode_www_form(cursor)}"
       )
 
     assert next_conn.resp_body |> String.split("\n", trim: true) |> length() == 5
 
-    last_page_conn = get(build_conn(), "/api/v1/audit?issue=RSM-AUDIT&from=2026-05-07&to=2026-05-07&limit=40")
+    last_page_conn = get(build_conn(), "/api/v1/audit?issue=ACME-AUDIT&from=2026-05-07&to=2026-05-07&limit=40")
     assert Plug.Conn.get_resp_header(last_page_conn, "x-next-cursor") == []
 
-    invalid_limit_conn = get(build_conn(), "/api/v1/audit?issue=RSM-AUDIT&from=2026-05-07&to=2026-05-07&limit=bad")
+    invalid_limit_conn = get(build_conn(), "/api/v1/audit?issue=ACME-AUDIT&from=2026-05-07&to=2026-05-07&limit=bad")
     assert json_response(invalid_limit_conn, 400)["error"]["code"] == "invalid_audit_filter"
   end
 
@@ -865,7 +865,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                %{
                  repo_key: "default",
                  issue_id: "issue-cli",
-                 issue_identifier: "RSM-CLI",
+                 issue_identifier: "ACME-CLI",
                  run_id: "run-cli",
                  timestamp: ~U[2026-05-07 12:00:00Z],
                  event_type: "tool_call"
@@ -1526,7 +1526,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                eval_id: "eval-live-1",
                run_id: "run-live-1",
                issue_id: "issue-live-1",
-               issue_identifier: "RSM-LIVE-1",
+               issue_identifier: "ACME-LIVE-1",
                issue_labels: ["bug"],
                outcome: "pr_opened",
                status: "stopped",
@@ -1547,7 +1547,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                eval_id: "eval-live-2",
                run_id: "run-live-2",
                issue_id: "issue-live-2",
-               issue_identifier: "RSM-LIVE-2",
+               issue_identifier: "ACME-LIVE-2",
                issue_labels: ["feature"],
                outcome: "error",
                status: "failure",
@@ -1568,8 +1568,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Avg tokens"
     assert html =~ "Tests-run rate"
     assert html =~ "Error rate"
-    assert html =~ "RSM-LIVE-1"
-    refute html =~ "RSM-LIVE-2"
+    assert html =~ "ACME-LIVE-1"
+    refute html =~ "ACME-LIVE-2"
     assert html =~ "Status"
     assert html =~ "Stopped"
     assert html =~ "agent stopped by orchestrator"
@@ -1600,7 +1600,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                %{
                  repo_key: "default",
                  issue_id: "issue-live-audit",
-                 issue_identifier: "RSM-AUDIT-LIVE",
+                 issue_identifier: "ACME-AUDIT-LIVE",
                  run_id: "run-live-audit",
                  timestamp: ~U[2026-05-07 12:00:00Z],
                  event_type: "tool_call",
@@ -1614,7 +1614,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                %{
                  repo_key: "default",
                  issue_id: "issue-live-other",
-                 issue_identifier: "RSM-AUDIT-OTHER",
+                 issue_identifier: "ACME-AUDIT-OTHER",
                  timestamp: ~U[2026-05-07 12:00:00Z],
                  event_type: "file_change"
                },
@@ -1626,7 +1626,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                %{
                  repo_key: "default",
                  issue_id: "issue-live-short",
-                 issue_identifier: "RSM-AUDIT-SHORT",
+                 issue_identifier: "ACME-AUDIT-SHORT",
                  run_id: "short",
                  timestamp: ~U[2026-05-07 12:00:00Z],
                  event_type: "tool_call"
@@ -1637,14 +1637,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: Module.concat(__MODULE__, :AuditLiveOrchestrator), snapshot_timeout_ms: 5)
 
     {:ok, view, html} =
-      live(build_conn(), "/audit?issue=RSM-AUDIT-LIVE&type=tool_call&from=2026-05-07&to=2026-05-07")
+      live(build_conn(), "/audit?issue=ACME-AUDIT-LIVE&type=tool_call&from=2026-05-07&to=2026-05-07")
 
-    assert html =~ "RSM-AUDIT-LIVE"
+    assert html =~ "ACME-AUDIT-LIVE"
     assert html =~ "tool_call"
     assert html =~ "Full record"
     assert html =~ ~s(&quot;safe&quot;: &quot;visible&quot;)
     assert html =~ "/api/v1/audit?"
-    refute html =~ "RSM-AUDIT-OTHER"
+    refute html =~ "ACME-AUDIT-OTHER"
 
     assert render_click(view, "verify-chain") =~ "Chain verified for 2026-05-07."
 
@@ -1675,7 +1675,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                %{
                  repo_key: "default",
                  issue_id: "issue-verify-clear",
-                 issue_identifier: "RSM-VERIFY-CLEAR",
+                 issue_identifier: "ACME-VERIFY-CLEAR",
                  timestamp: ~U[2026-05-07 12:00:00Z],
                  event_type: "tool_call"
                },
@@ -1688,7 +1688,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert render_click(view, "verify-chain") =~ "Chain verified for 2026-05-07."
 
     {:ok, _next_view, next_html} =
-      live(build_conn(), "/audit?from=2026-05-07&to=2026-05-07&issue=RSM-VERIFY-CLEAR")
+      live(build_conn(), "/audit?from=2026-05-07&to=2026-05-07&issue=ACME-VERIFY-CLEAR")
 
     refute next_html =~ "Chain verified for"
   end
@@ -1708,8 +1708,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                    rule: "Prefer existing dashboard helpers.",
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Prefer the existing helper.",
-                   evidence_issue_identifier: "RSM-LIVE-1",
-                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-1",
+                   evidence_issue_identifier: "ACME-LIVE-1",
+                   evidence_issue_url: "https://linear.app/example/issue/ACME-LIVE-1",
                    evidence_pr_number: 12,
                    evidence_run_id: "run-live-1",
                    created_at: now
@@ -1721,7 +1721,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                    rule: "Do not reconstruct Linear links without canonical issue URLs.",
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Avoid workspace-specific Linear URL assumptions.",
-                   evidence_issue_identifier: "RSM-LIVE-3",
+                   evidence_issue_identifier: "ACME-LIVE-3",
                    evidence_issue_url: nil,
                    evidence_pr_number: 14,
                    evidence_run_id: "run-live-3",
@@ -1734,8 +1734,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                    rule: "Keep unrelated records filterable.",
                    tags: ["docs", "workflow-config"],
                    evidence_quote: "Update docs too.",
-                   evidence_issue_identifier: "RSM-LIVE-2",
-                   evidence_issue_url: "https://linear.example.test/acme/RSM-LIVE-2",
+                   evidence_issue_identifier: "ACME-LIVE-2",
+                   evidence_issue_url: "https://linear.example.test/acme/ACME-LIVE-2",
                    evidence_pr_number: 13,
                    evidence_run_id: "run-live-2",
                    created_at: DateTime.add(now, -60, :second)
@@ -1754,8 +1754,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Do not reconstruct Linear links without canonical issue URLs."
     assert html =~ "github.com/example/repo"
     assert html =~ ~s(href="https://github.com/example/repo/pull/12" target="_blank")
-    assert html =~ ~s(href="https://linear.app/example/issue/RSM-LIVE-1" target="_blank")
-    refute html =~ "https://linear.app/example/issue/RSM-LIVE-3"
+    assert html =~ ~s(href="https://linear.app/example/issue/ACME-LIVE-1" target="_blank")
+    refute html =~ "https://linear.app/example/issue/ACME-LIVE-3"
     assert html =~ ~s(name="repo")
     assert html =~ ~s(name="tag")
     assert html =~ ~s(href="/quality")
@@ -1779,8 +1779,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                    rule: "Keep trusted GitHub PRs linked.",
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Trusted PR.",
-                   evidence_issue_identifier: "RSM-LIVE-TRUSTED",
-                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-TRUSTED",
+                   evidence_issue_identifier: "ACME-LIVE-TRUSTED",
+                   evidence_issue_url: "https://linear.app/example/issue/ACME-LIVE-TRUSTED",
                    evidence_pr_number: 123,
                    evidence_run_id: "run-live-trusted",
                    created_at: now
@@ -1794,8 +1794,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                    rule: "Keep configured GitHub Enterprise PRs linked.",
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Trusted GHE PR.",
-                   evidence_issue_identifier: "RSM-LIVE-GHE",
-                   evidence_issue_url: "https://linear.app/example/issue/RSM-LIVE-GHE",
+                   evidence_issue_identifier: "ACME-LIVE-GHE",
+                   evidence_issue_url: "https://linear.app/example/issue/ACME-LIVE-GHE",
                    evidence_pr_number: 456,
                    evidence_run_id: "run-live-ghe",
                    created_at: DateTime.add(now, -15, :second)
@@ -1809,8 +1809,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                    rule: "Do not link attacker PR hosts.",
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Attacker PR.",
-                   evidence_issue_identifier: "RSM-LIVE-ATTACKER",
-                   evidence_issue_url: "https://linear.attacker.tld/example/issue/RSM-LIVE-ATTACKER",
+                   evidence_issue_identifier: "ACME-LIVE-ATTACKER",
+                   evidence_issue_url: "https://linear.attacker.tld/example/issue/ACME-LIVE-ATTACKER",
                    evidence_pr_number: 9,
                    evidence_run_id: "run-live-attacker",
                    created_at: DateTime.add(now, -30, :second)
@@ -1824,8 +1824,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                    rule: "Do not link non-HTTPS Linear URLs.",
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Unsafe Linear scheme.",
-                   evidence_issue_identifier: "RSM-LIVE-SCHEME",
-                   evidence_issue_url: "http://linear.app/example/issue/RSM-LIVE-SCHEME",
+                   evidence_issue_identifier: "ACME-LIVE-SCHEME",
+                   evidence_issue_url: "http://linear.app/example/issue/ACME-LIVE-SCHEME",
                    evidence_pr_number: 124,
                    evidence_run_id: "run-live-linear-scheme",
                    created_at: DateTime.add(now, -60, :second)
@@ -1839,8 +1839,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                    rule: "Do not link Linear URLs with userinfo.",
                    tags: ["dashboard", "repo-patterns"],
                    evidence_quote: "Userinfo Linear URL.",
-                   evidence_issue_identifier: "RSM-LIVE-USERINFO",
-                   evidence_issue_url: "https://attacker.tld@linear.app/example/issue/RSM-LIVE-USERINFO",
+                   evidence_issue_identifier: "ACME-LIVE-USERINFO",
+                   evidence_issue_url: "https://attacker.tld@linear.app/example/issue/ACME-LIVE-USERINFO",
                    evidence_pr_number: 125,
                    evidence_run_id: "run-live-linear-userinfo",
                    created_at: DateTime.add(now, -90, :second)
@@ -1855,7 +1855,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "Keep trusted GitHub PRs linked."
     assert html =~ ~s(href="https://github.com/example/repo/pull/123" target="_blank")
-    assert html =~ ~s(href="https://linear.app/example/issue/RSM-LIVE-TRUSTED" target="_blank")
+    assert html =~ ~s(href="https://linear.app/example/issue/ACME-LIVE-TRUSTED" target="_blank")
 
     assert html =~ "Keep configured GitHub Enterprise PRs linked."
     assert html =~ ~s(href="https://github.example.com/enterprise/service/pull/456" target="_blank")
@@ -1863,15 +1863,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Do not link attacker PR hosts."
     assert html =~ "login-github.attacker.tld/foo/bar"
     refute html =~ "https://login-github.attacker.tld/foo/bar/pull/9"
-    refute html =~ "https://linear.attacker.tld/example/issue/RSM-LIVE-ATTACKER"
+    refute html =~ "https://linear.attacker.tld/example/issue/ACME-LIVE-ATTACKER"
 
     assert html =~ "Do not link non-HTTPS Linear URLs."
     assert html =~ ~s(href="https://github.com/example/other/pull/124" target="_blank")
-    refute html =~ "http://linear.app/example/issue/RSM-LIVE-SCHEME"
+    refute html =~ "http://linear.app/example/issue/ACME-LIVE-SCHEME"
 
     assert html =~ "Do not link Linear URLs with userinfo."
     assert html =~ ~s(href="https://github.com/example/info/pull/125" target="_blank")
-    refute html =~ "attacker.tld@linear.app/example/issue/RSM-LIVE-USERINFO"
+    refute html =~ "attacker.tld@linear.app/example/issue/ACME-LIVE-USERINFO"
   end
 
   test "dashboard liveview omits watching PR link when pull request URL is unavailable" do

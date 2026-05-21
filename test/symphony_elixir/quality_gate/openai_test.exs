@@ -28,7 +28,7 @@ defmodule SymphonyElixir.QualityGate.OpenAITest do
       end
 
       assert {:ok, %{score: 5, reason: "borderline"}} =
-               OpenAI.score(issue("RSM-2"), %{
+               OpenAI.score(issue("ACME-2"), %{
                  model: "gpt-4o-mini",
                  api_key: "sk-test",
                  request_fun: request_fun
@@ -44,7 +44,7 @@ defmodule SymphonyElixir.QualityGate.OpenAITest do
              ] = payload["messages"]
 
       assert is_binary(system)
-      assert user =~ "RSM-2"
+      assert user =~ "ACME-2"
       assert {"authorization", "Bearer sk-test"} in headers
     end
 
@@ -54,7 +54,7 @@ defmodule SymphonyElixir.QualityGate.OpenAITest do
       end
 
       assert {:error, {:provider_http_status, 500, _body}} =
-               OpenAI.score(issue("RSM-2"), %{
+               OpenAI.score(issue("ACME-2"), %{
                  model: "gpt-4o-mini",
                  api_key: "sk-test",
                  request_fun: request_fun
@@ -75,7 +75,7 @@ defmodule SymphonyElixir.QualityGate.OpenAITest do
       end
 
       assert {:error, _reason} =
-               OpenAI.score(issue("RSM-2"), %{
+               OpenAI.score(issue("ACME-2"), %{
                  model: "gpt-4o-mini",
                  api_key: "sk-test",
                  request_fun: request_fun
@@ -86,7 +86,7 @@ defmodule SymphonyElixir.QualityGate.OpenAITest do
       request_fun = fn _payload, _headers, _timeout -> {:error, :nxdomain} end
 
       assert {:error, {:provider_request_failed, :nxdomain}} =
-               OpenAI.score(issue("RSM-2"), %{
+               OpenAI.score(issue("ACME-2"), %{
                  model: "gpt-4o-mini",
                  api_key: "sk-test",
                  request_fun: request_fun
@@ -99,7 +99,7 @@ defmodule SymphonyElixir.QualityGate.OpenAITest do
       end
 
       assert {:error, :empty_response} =
-               OpenAI.score(issue("RSM-2"), %{
+               OpenAI.score(issue("ACME-2"), %{
                  model: "gpt-4o-mini",
                  api_key: "sk-test",
                  request_fun: request_fun
@@ -108,7 +108,7 @@ defmodule SymphonyElixir.QualityGate.OpenAITest do
 
     test "falls back to credentials error when api_key is missing" do
       assert {:error, :missing_provider_credentials} =
-               OpenAI.score(issue("RSM-2"), %{model: "gpt-4o-mini", api_key: nil})
+               OpenAI.score(issue("ACME-2"), %{model: "gpt-4o-mini", api_key: nil})
     end
   end
 

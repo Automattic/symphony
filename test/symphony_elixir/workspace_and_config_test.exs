@@ -1193,7 +1193,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     raw_issue =
       raw_linear_issue("issue-1", "MT-1", "user-1")
       |> Map.merge(%{
-        "team" => %{"key" => "RSM", "name" => "Radical Speed Month"},
+        "team" => %{"key" => "ACME", "name" => "Acme Team"},
         "project" => %{"id" => "project-1", "name" => "Multi-repo support"}
       })
 
@@ -1205,7 +1205,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, [issue]} = Client.fetch_candidate_issues_for_test(graphql_fun)
 
-    assert issue.team == %{key: "RSM", name: "Radical Speed Month"}
+    assert issue.team == %{key: "ACME", name: "Acme Team"}
     assert issue.project == %{id: "project-1", name: "Multi-repo support"}
 
     assert_receive {:candidate_query, query, _variables}
@@ -1247,14 +1247,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear client sends team key in candidate filter" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
-      tracker_team: "RSM"
+      tracker_team: "ACME"
     )
 
     variables = capture_candidate_variables!()
 
     assert variables.filter == %{
              "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
-             "team" => %{"key" => %{"eq" => "RSM"}}
+             "team" => %{"key" => %{"eq" => "ACME"}}
            }
 
     refute Map.has_key?(variables.filter, "project")
@@ -1330,7 +1330,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear client omits empty labels from candidate filter" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
-      tracker_team: "RSM",
+      tracker_team: "ACME",
       tracker_labels: []
     )
 
@@ -1343,7 +1343,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear client normalizes blank candidate scope values before building filter" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: " ",
-      tracker_team: " RSM ",
+      tracker_team: " ACME ",
       tracker_labels: ["", " backend ", " "]
     )
 
@@ -1351,7 +1351,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert variables.filter == %{
              "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
-             "team" => %{"key" => %{"eq" => "RSM"}},
+             "team" => %{"key" => %{"eq" => "ACME"}},
              "labels" => %{"some" => %{"name" => %{"in" => ["backend"]}}}
            }
 
@@ -1360,7 +1360,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "linear client combines configured candidate filter dimensions" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_team: "RSM",
+      tracker_team: "ACME",
       tracker_labels: ["backend"],
       tracker_assignee: "user-1"
     )
@@ -1370,7 +1370,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert variables.filter == %{
              "state" => %{"name" => %{"in" => ["Todo", "In Progress"]}},
              "project" => %{"slugId" => %{"eq" => "project"}},
-             "team" => %{"key" => %{"eq" => "RSM"}},
+             "team" => %{"key" => %{"eq" => "ACME"}},
              "labels" => %{"some" => %{"name" => %{"in" => ["backend"]}}},
              "assignee" => %{"id" => %{"in" => ["user-1"]}}
            }
@@ -1389,7 +1389,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           "name" => "web",
           "path" => repo_root,
           "workflow" => "WORKFLOW.md",
-          "team" => "RSM",
+          "team" => "ACME",
           "projects" => ["Project Alpha"],
           "labels" => ["web"],
           "assignee" => "user-web"
@@ -1398,7 +1398,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           "name" => "api",
           "path" => repo_root,
           "workflow" => "WORKFLOW.md",
-          "team" => "RSM",
+          "team" => "ACME",
           "projects" => ["Project Beta"],
           "labels" => ["api"],
           "assignee" => "user-api"
@@ -1411,15 +1411,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       issue =
         case get_in(variables, [:filter, "assignee", "id", "in"]) do
-          ["user-web"] -> raw_linear_issue("issue-web", "RSM-WEB", "user-web")
-          ["user-api"] -> raw_linear_issue("issue-api", "RSM-API", "user-api")
+          ["user-web"] -> raw_linear_issue("issue-web", "ACME-WEB", "user-web")
+          ["user-api"] -> raw_linear_issue("issue-api", "ACME-API", "user-api")
         end
 
       {:ok, linear_page_response([issue])}
     end
 
     assert {:ok, issues} = Client.fetch_candidate_issues_for_test(graphql_fun)
-    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"RSM-API", "api"}, {"RSM-WEB", "web"}]
+    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"ACME-API", "api"}, {"ACME-WEB", "web"}]
 
     assert_receive {:candidate_query, query, web_variables}
     assert_receive {:candidate_query, ^query, api_variables}
@@ -1432,7 +1432,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                  %{"slugId" => %{"in" => ["Project Alpha"]}}
                ]
              },
-             "team" => %{"key" => %{"eq" => "RSM"}},
+             "team" => %{"key" => %{"eq" => "ACME"}},
              "labels" => %{"some" => %{"name" => %{"eqIgnoreCase" => "web"}}},
              "assignee" => %{"id" => %{"in" => ["user-web"]}}
            }
@@ -1445,7 +1445,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                  %{"slugId" => %{"in" => ["Project Beta"]}}
                ]
              },
-             "team" => %{"key" => %{"eq" => "RSM"}},
+             "team" => %{"key" => %{"eq" => "ACME"}},
              "labels" => %{"some" => %{"name" => %{"eqIgnoreCase" => "api"}}},
              "assignee" => %{"id" => %{"in" => ["user-api"]}}
            }
@@ -1462,14 +1462,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           "name" => "web",
           "path" => repo_root,
           "workflow" => "WORKFLOW.md",
-          "team" => "RSM",
+          "team" => "ACME",
           "labels" => ["web"]
         },
         %{
           "name" => "api",
           "path" => repo_root,
           "workflow" => "WORKFLOW.md",
-          "team" => "RSM",
+          "team" => "ACME",
           "labels" => ["api"]
         }
       ]
@@ -1481,7 +1481,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       case get_in(variables, [:filter, "labels", "some", "name", "eqIgnoreCase"]) do
         "web" ->
           issue =
-            raw_linear_issue("issue-web", "RSM-WEB")
+            raw_linear_issue("issue-web", "ACME-WEB")
             |> Map.put("state", %{"name" => "In Progress"})
 
           {:ok, linear_page_response([issue])}
@@ -1493,7 +1493,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, issues} = Client.fetch_issues_by_states_for_test(["In Progress"], graphql_fun)
 
-    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"RSM-WEB", "web"}]
+    assert Enum.map(issues, &{&1.identifier, &1.repo_key}) == [{"ACME-WEB", "web"}]
     assert_receive {:state_query, query, web_variables}
     assert_receive {:state_query, ^query, api_variables}
     assert get_in(web_variables, [:filter, "labels", "some", "name", "eqIgnoreCase"]) == "web"
@@ -1503,7 +1503,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "linear client repeats candidate filter while paginating" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
-      tracker_team: "RSM",
+      tracker_team: "ACME",
       tracker_labels: ["backend"]
     )
 

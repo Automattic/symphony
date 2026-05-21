@@ -123,7 +123,7 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       tracker_project_slug: nil,
-      tracker_team: "RSM"
+      tracker_team: "ACME"
     )
 
     assert {:error, :missing_linear_api_token} = Config.validate!()
@@ -153,7 +153,7 @@ defmodule SymphonyElixir.CoreTest do
     tracker =
       %TrackerConfig{
         project_slug: "project",
-        team: "RSM",
+        team: "ACME",
         labels: ["backend"]
       }
       |> TrackerConfig.changeset(%{
@@ -179,11 +179,11 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
-      tracker_team: "RSM"
+      tracker_team: "ACME"
     )
 
     assert :ok = Config.validate!()
-    assert Config.settings!().tracker.team == "RSM"
+    assert Config.settings!().tracker.team == "ACME"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: nil,
@@ -1662,15 +1662,15 @@ defmodule SymphonyElixir.CoreTest do
          "data" => %{
            "issue" => %{
              "id" => "issue-1",
-             "identifier" => "RSM-1",
+             "identifier" => "ACME-1",
              "title" => "Run one issue",
              "description" => "Run this directly",
              "priority" => 2,
              "state" => %{"name" => "Todo"},
-             "team" => %{"key" => "RSM", "name" => "Radical Speed Month"},
+             "team" => %{"key" => "ACME", "name" => "Acme Team"},
              "project" => %{"id" => "project-1", "name" => "Harness"},
-             "branchName" => "rsm-1-run-one-issue",
-             "url" => "https://linear.app/example/issue/RSM-1",
+             "branchName" => "acme-1-run-one-issue",
+             "url" => "https://linear.app/example/issue/ACME-1",
              "attachments" => %{"nodes" => []},
              "assignee" => %{"id" => "user-1"},
              "labels" => %{"nodes" => [%{"name" => "backend"}]},
@@ -1683,12 +1683,12 @@ defmodule SymphonyElixir.CoreTest do
        }}
     end
 
-    assert {:ok, issue} = Client.fetch_issue_by_identifier_for_test("RSM-1", graphql_fun)
+    assert {:ok, issue} = Client.fetch_issue_by_identifier_for_test("ACME-1", graphql_fun)
 
-    assert_receive {:issue_query, query, %{id: "RSM-1", relationFirst: 50, attachmentFirst: 20, commentLast: 20}}
+    assert_receive {:issue_query, query, %{id: "ACME-1", relationFirst: 50, attachmentFirst: 20, commentLast: 20}}
 
     assert query =~ "SymphonyLinearIssueByIdentifier"
-    assert %Issue{id: "issue-1", identifier: "RSM-1", state: "Todo", labels: ["backend"]} = issue
+    assert %Issue{id: "issue-1", identifier: "ACME-1", state: "Todo", labels: ["backend"]} = issue
   end
 
   test "linear client enriches issue comments and linked issues" do

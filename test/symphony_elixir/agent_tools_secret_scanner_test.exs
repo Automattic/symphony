@@ -132,13 +132,13 @@ defmodule SymphonyElixir.AgentTools.SecretScannerTest do
       assert {:error, :secret_pattern_detected} =
                SecretScanner.reject_if_secret_pattern(
                  "token=" <> openai_fixture(),
-                 %{"issue" => %{"id" => "issue-secret", "identifier" => "RSM-3189"}},
+                 %{"issue" => %{"id" => "issue-secret", "identifier" => "ACME-3189"}},
                  "tool_name",
                  "body",
                  dir: audit_dir
                )
 
-      assert [%{"issue_identifier" => "RSM-3189", "tool" => "tool_name"}] = audit_events(audit_dir)
+      assert [%{"issue_identifier" => "ACME-3189", "tool" => "tool_name"}] = audit_events(audit_dir)
     after
       File.rm_rf(workspace)
     end

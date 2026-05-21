@@ -34,6 +34,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
+  @type stderr_tail :: pid() | nil
+
   @type session :: %{
           port: port(),
           metadata: map(),
@@ -50,6 +52,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           mcp_session: McpServer.session() | nil,
           mcp_remote_shim_path: Path.t() | nil,
           mcp_remote_codex_home: Path.t() | nil,
+          stderr_tail: stderr_tail(),
           settings: Schema.t()
         }
 
@@ -87,13 +90,14 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path, tool_scope) do
     case start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
-      {:ok, port, codex_home, launch_cleanup_paths, remote_codex_home} ->
+      {:ok, port, codex_home, launch_cleanup_paths, remote_codex_home, stderr_tail} ->
         launch_context = %{
           codex_home: codex_home,
           cleanup_paths: launch_cleanup_paths,
           mcp_session: mcp_session,
           remote_shim_path: remote_shim_path,
           remote_codex_home: remote_codex_home,
+          stderr_tail: stderr_tail,
           tool_scope: tool_scope
         }
 
@@ -123,6 +127,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            mcp_session: mcp_session,
            remote_shim_path: remote_shim_path,
            remote_codex_home: remote_codex_home,
+           stderr_tail: stderr_tail,
            tool_scope: tool_scope
          }
        ) do
@@ -147,11 +152,13 @@ defmodule SymphonyElixir.Codex.AppServer do
          mcp_session: mcp_session,
          mcp_remote_shim_path: remote_shim_path,
          mcp_remote_codex_home: remote_codex_home,
+         stderr_tail: stderr_tail,
          settings: settings
        }}
     else
       {:error, reason} ->
         stop_port(port)
+        stop_stderr_tail(stderr_tail)
         McpConfig.sync_cloud_requirements_cache(codex_home)
         cleanup_launch_paths(launch_cleanup_paths)
         cleanup_remote_shim(worker_host, remote_shim_path)
@@ -307,6 +314,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port} = session) when is_port(port) do
     stop_port(port)
+    stop_stderr_tail(Map.get(session, :stderr_tail))
     McpConfig.sync_cloud_requirements_cache(Map.get(session, :codex_home))
     cleanup_launch_paths(Map.get(session, :launch_cleanup_paths, []))
     cleanup_remote_shim(Map.get(session, :worker_host), Map.get(session, :mcp_remote_shim_path))
@@ -417,21 +425,25 @@ defmodule SymphonyElixir.Codex.AppServer do
     with {:ok, executable} <- bash_executable(),
          {:ok, codex_home} <- McpConfig.write_home(settings, mcp_session),
          {:ok, command, launch_cleanup_paths} <- local_command_with_codex_home(settings, workspace, codex_home) do
+      stderr_log_path = Path.join(codex_home.home_path, "codex.stderr.log")
+      :ok = File.touch!(stderr_log_path)
+      wrapped_command = wrap_command_with_stderr_redirect(command, stderr_log_path)
+      stderr_tail = start_stderr_tail(stderr_log_path)
+
       port =
         Port.open(
           {:spawn_executable, String.to_charlist(executable)},
           [
             :binary,
             :exit_status,
-            :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(command)],
+            args: [~c"-lc", String.to_charlist(wrapped_command)],
             cd: String.to_charlist(workspace),
             env: AgentEnv.build_with(%{"CODEX_HOME" => codex_home.home_path}),
             line: @port_line_bytes
           ]
         )
 
-      {:ok, port, codex_home, codex_home.cleanup_paths ++ launch_cleanup_paths, nil}
+      {:ok, port, codex_home, codex_home.cleanup_paths ++ launch_cleanup_paths, nil, stderr_tail}
     else
       {:error, {:local_codex_home_command_failed, reason, cleanup_paths}} ->
         cleanup_launch_paths(cleanup_paths)
@@ -454,7 +466,7 @@ defmodule SymphonyElixir.Codex.AppServer do
              env: AgentEnv.build(),
              reverse_forwards: mcp_reverse_forwards(mcp_session, remote_socket_path)
            ) do
-      {:ok, port, nil, [], remote_codex_home}
+      {:ok, port, nil, [], remote_codex_home, nil}
     end
   end
 
@@ -3506,6 +3518,104 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp wrap_command_with_stderr_redirect(command, stderr_log_path)
+       when is_binary(command) and is_binary(stderr_log_path) do
+    "{ " <> command <> "; } 2>>" <> shell_escape(stderr_log_path)
+  end
+
+  @spec start_stderr_tail(Path.t() | nil) :: stderr_tail()
+  defp start_stderr_tail(nil), do: nil
+
+  defp start_stderr_tail(path) when is_binary(path) do
+    {:ok, pid} =
+      Task.start(fn ->
+        stderr_tail_loop(%{path: path, offset: 0, buffer: ""})
+      end)
+
+    pid
+  end
+
+  @spec stop_stderr_tail(stderr_tail()) :: :ok
+  defp stop_stderr_tail(nil), do: :ok
+
+  defp stop_stderr_tail(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      send(pid, {:stop, self()})
+
+      receive do
+        :stderr_tail_stopped -> :ok
+      after
+        1_000 ->
+          Process.exit(pid, :kill)
+          :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp stderr_tail_loop(state) do
+    state = drain_stderr_lines(state)
+
+    receive do
+      {:stop, caller} ->
+        state = drain_stderr_lines(state)
+        log_stderr_line(state.buffer)
+        send(caller, :stderr_tail_stopped)
+        :ok
+    after
+      100 ->
+        stderr_tail_loop(state)
+    end
+  end
+
+  defp drain_stderr_lines(%{path: path, offset: offset} = state) do
+    case File.stat(path) do
+      {:ok, %{size: size}} when size > offset -> drain_stderr_chunk(state, size)
+      _ -> state
+    end
+  end
+
+  defp drain_stderr_chunk(%{path: path, offset: offset, buffer: buffer} = state, size) do
+    case read_range(path, offset, size - offset) do
+      {:ok, chunk} ->
+        {lines, residual} = split_pending_lines(buffer <> chunk)
+        Enum.each(lines, &log_stderr_line/1)
+        %{state | offset: size, buffer: residual}
+
+      :error ->
+        state
+    end
+  end
+
+  defp log_stderr_line(""), do: :ok
+  defp log_stderr_line(line), do: log_non_json_stream_line(line, "turn stream")
+
+  defp read_range(path, offset, length) when is_integer(length) and length > 0 do
+    case File.open(path, [:read, :binary, :raw]) do
+      {:ok, io} ->
+        try do
+          with {:ok, _new_pos} <- :file.position(io, offset),
+               data when is_binary(data) <- IO.binread(io, length) do
+            {:ok, data}
+          else
+            _ -> :error
+          end
+        after
+          File.close(io)
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp split_pending_lines(data) do
+    parts = String.split(data, "\n")
+    {complete, [residual]} = Enum.split(parts, -1)
+    {complete, residual}
   end
 
   defp default_on_message(_message), do: :ok

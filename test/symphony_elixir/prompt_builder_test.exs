@@ -87,6 +87,32 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert prompt =~ "body=<linear_issue_body>\nOption body"
   end
 
+  test "prompt builder appends Codex transport output guard for Codex agents" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
+
+    prompt =
+      PromptBuilder.build_prompt(
+        %Issue{identifier: "MT-126", repo_key: "default"},
+        settings: %{agent: %{kind: "codex"}}
+      )
+
+    assert prompt =~ "Codex transport output guard:"
+    assert prompt =~ "redirect full stdout/stderr to a log file"
+    assert prompt =~ "tail -200"
+  end
+
+  test "prompt builder omits Codex transport output guard for non-Codex agents" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
+
+    prompt =
+      PromptBuilder.build_prompt(
+        %Issue{identifier: "MT-127", repo_key: "default"},
+        settings: %{agent: %{kind: "claude"}}
+      )
+
+    refute prompt =~ "Codex transport output guard:"
+  end
+
   test "review-agent instructions override active retry guidance" do
     write_workflow_file!(
       Workflow.workflow_file_path(),
@@ -292,5 +318,16 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert prompt =~ "- Title: unknown"
     assert prompt =~ "- Current status: unknown"
     assert prompt =~ "- URL: https://linear.example/RSM-3612, https://mirror.example/RSM-3612"
+  end
+
+  test "compact prompt appends Codex transport output guard for Codex agents" do
+    prompt =
+      PromptBuilder.build_compact_prompt(
+        %{identifier: "RSM-3715", title: "Compact", repo_key: "default"},
+        settings: %{agent: %{kind: "codex"}}
+      )
+
+    assert prompt =~ "Codex transport output guard:"
+    assert prompt =~ "make all"
   end
 end

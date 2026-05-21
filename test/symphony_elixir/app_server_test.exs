@@ -190,7 +190,7 @@ defmodule SymphonyElixir.AppServerTest do
       config = File.read!(config_copy)
       assert config =~ "[mcp_servers.symphony]"
       assert config =~ "symphony-mcp-shim"
-      refute config =~ "[mcp_servers.context-a8c]"
+      refute config =~ "[mcp_servers.example-server]"
 
       argv = File.read!(argv_trace)
       assert argv =~ "--config"

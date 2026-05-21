@@ -58,7 +58,7 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     File.mkdir_p!(host_codex_home)
 
     File.write!(Path.join(host_codex_home, "config.toml"), """
-    [mcp_servers.context-a8c]
+    [mcp_servers.example-server]
     command = "node"
     args = ["/srv/context.js"]
     env = { LOG_LEVEL = "info" }
@@ -67,11 +67,11 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     command = "slack-mcp"
     """)
 
-    settings = settings!(%{inherit: "allowlist", allowed_servers: ["context-a8c"]})
+    settings = settings!(%{inherit: "allowlist", allowed_servers: ["example-server"]})
 
     assert {:ok, config} = build_config(settings, host_codex_home)
 
-    assert config =~ "[mcp_servers.context-a8c]"
+    assert config =~ "[mcp_servers.example-server]"
     assert config =~ ~s(command = "node")
     refute config =~ "[mcp_servers.slack]"
     refute config =~ "slack-mcp"
@@ -84,7 +84,7 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     File.mkdir_p!(host_codex_home)
 
     File.write!(Path.join(host_codex_home, "config.toml"), """
-    [mcp_servers.context-a8c]
+    [mcp_servers.example-server]
     command = "context"
 
     [mcp_servers.browser]
@@ -98,7 +98,7 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
 
     assert {:ok, config} = build_config(settings, host_codex_home)
 
-    assert config =~ "[mcp_servers.context-a8c]"
+    assert config =~ "[mcp_servers.example-server]"
     assert config =~ "[mcp_servers.browser]"
     refute config =~ ~s(command = "shadow")
   end
@@ -110,7 +110,7 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     File.mkdir_p!(host_codex_home)
 
     File.write!(Path.join(host_codex_home, "config.toml"), """
-    [mcp_servers.context-a8c]
+    [mcp_servers.example-server]
     command = "host-node"
     args = ["/host/context.js"]
     """)
@@ -118,9 +118,9 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     settings =
       settings!(%{
         inherit: "allowlist",
-        allowed_servers: ["context-a8c"],
+        allowed_servers: ["example-server"],
         servers: %{
-          "context-a8c" => %{
+          "example-server" => %{
             transport: "stdio",
             command: "declared-node",
             args: ["/declared/context.js"],
@@ -131,7 +131,7 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
 
     assert {:ok, config} = build_config(settings, host_codex_home)
 
-    assert config =~ "[mcp_servers.context-a8c]"
+    assert config =~ "[mcp_servers.example-server]"
     assert config =~ ~s(command = "declared-node")
     assert config =~ ~s("/declared/context.js")
     refute config =~ "host-node"

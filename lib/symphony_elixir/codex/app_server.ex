@@ -267,6 +267,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          approval_context: approval_context,
          metadata: metadata
        }) do
+    flush_stderr_transport_messages(port)
+
     case start_turn(
            port,
            thread_id,
@@ -1098,7 +1100,6 @@ defmodule SymphonyElixir.Codex.AppServer do
          sandbox_startup
        ) do
     config = settings.agent
-    flush_stderr_transport_messages(port)
 
     receive_loop(
       port,

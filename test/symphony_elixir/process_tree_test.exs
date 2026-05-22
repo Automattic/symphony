@@ -3,6 +3,17 @@ defmodule SymphonyElixir.ProcessTreeTest do
 
   alias SymphonyElixir.ProcessTree
 
+  test "default dependencies are safe for no-op cleanup paths" do
+    port = Port.open({:spawn, "cat"}, [:binary])
+
+    try do
+      assert :ok = ProcessTree.terminate_descendants(0)
+      assert :ok = ProcessTree.terminate_port_descendants(port)
+    after
+      close_port(port)
+    end
+  end
+
   test "terminates all descendants without killing the root pid" do
     {:ok, calls} = Agent.start_link(fn -> [] end)
 

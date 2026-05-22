@@ -1754,8 +1754,9 @@ Notes:
 - The Elixir implementation requires explicit `agent.runtime` and `agent.command`.
 - Codex local launch invokes `bash -lc <agent.command>` in the workspace. When
   `agent.permissions.outer_sandbox.runtime: srt`, the local command is wrapped as
-  `<srt command> --settings <temporary-settings.json> <agent.command>`. Codex remote launch runs
-  the configured command after `cd <workspace>` over SSH stdio.
+  `<srt command> --settings <temporary-settings.json> <agent.command>` and launched with
+  `bash --noprofile --norc -c` so operator shell startup files are not read under SRT. Codex remote
+  launch runs the configured command after `cd <workspace>` over SSH stdio.
 - Codex local SRT launch prefers the managed Unix socket for Symphony's implicit MCP server and
   writes that per-session socket directory into SRT `network.allowUnixSockets`. The MCP server
   remains token-authenticated.
@@ -3230,8 +3231,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 ### 17.5 Coding-Agent Adapter Client
 
 - Launch command uses workspace cwd and follows the `agent.runtime` adapter launch semantics.
-- Codex launch invokes `bash -lc <agent.command>` locally, optionally wrapped by the configured
-  `agent.permissions.outer_sandbox`.
+- Codex launch invokes `bash -lc <agent.command>` locally. If wrapped by SRT through
+  `agent.permissions.outer_sandbox`, the local wrapper uses `bash --noprofile --norc -c`.
 - Codex launch preserves configured args while injecting the generated `workspace_write`
   permission profile
 - Claude launch parses `agent.command`, appends stream-json print arguments, feeds prompt input over

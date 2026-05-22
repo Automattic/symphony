@@ -4320,6 +4320,92 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "srt app server launch does not source operator shell startup files" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-shell-startup-#{System.unique_integer([:positive])}"
+      )
+
+    previous_home = System.get_env("HOME")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-SHELL")
+      fake_home = Path.join(test_root, "home")
+      marker_file = Path.join(test_root, "profile-sourced")
+      srt_binary = Path.join(test_root, "fake-srt")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+      File.mkdir_p!(fake_home)
+      System.put_env("HOME", fake_home)
+
+      File.write!(Path.join(fake_home, ".profile"), """
+      touch #{marker_file}
+      """)
+
+      File.write!(srt_binary, """
+      #!/bin/sh
+      if [ "${1-}" = "--settings" ]; then
+        shift 2
+      fi
+
+      exec "$@"
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-shell"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-shell","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(srt_binary, 0o755)
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_sandbox_runtime: %{
+          kind: "srt",
+          command: srt_binary
+        },
+        agent_turn_timeout_ms: 5_000
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace)
+      assert :ok = AppServer.stop_session(session)
+      refute File.exists?(marker_file)
+    after
+      if is_binary(previous_home) do
+        System.put_env("HOME", previous_home)
+      else
+        System.delete_env("HOME")
+      end
+
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server fails fast when Codex reports stdout transport failure" do
     test_root =
       Path.join(
@@ -4362,7 +4448,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        agent_command: "#{codex_binary} app-server"
+        agent_command: "#{codex_binary} app-server",
+        agent_turn_timeout_ms: 5_000
       )
 
       issue = %Issue{

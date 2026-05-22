@@ -7,7 +7,7 @@ defmodule SymphonyMcpShim do
     with {:ok, endpoint, token} <- parse_args(args),
          {:ok, socket} <- open_socket(endpoint),
          :ok <- connect_socket(socket, endpoint),
-         :ok <- :socket.send(socket, "symphony-session-token: #{token}\r\n\r\n") do
+         :ok <- send_auth(socket, token, endpoint) do
       pump(socket)
     else
       {:error, reason} ->
@@ -49,15 +49,48 @@ defmodule SymphonyMcpShim do
     end
   end
 
-  defp open_socket({:unix, _path}), do: :socket.open(:local, :stream)
-  defp open_socket({:tcp, _addr, _port}), do: :socket.open(:inet, :stream)
+  defp open_socket({:unix, _path} = endpoint), do: open_socket(endpoint, :local)
+  defp open_socket({:tcp, _addr, _port} = endpoint), do: open_socket(endpoint, :inet)
+
+  defp open_socket(endpoint, family) do
+    case :socket.open(family, :stream) do
+      {:ok, socket} ->
+        {:ok, socket}
+
+      {:error, reason} ->
+        log_transport("open_failed", endpoint, reason)
+        {:error, {:socket_open_failed, reason}}
+    end
+  end
 
   defp connect_socket(socket, {:unix, socket_path}) do
-    :socket.connect(socket, %{family: :local, path: socket_path})
+    connect_socket(socket, {:unix, socket_path}, %{family: :local, path: socket_path})
   end
 
   defp connect_socket(socket, {:tcp, addr, port}) do
-    :socket.connect(socket, %{family: :inet, addr: addr, port: port})
+    connect_socket(socket, {:tcp, addr, port}, %{family: :inet, addr: addr, port: port})
+  end
+
+  defp connect_socket(socket, endpoint, address) do
+    case :socket.connect(socket, address) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        log_transport("connect_failed", endpoint, reason)
+        {:error, {:socket_connect_failed, endpoint_label(endpoint), reason}}
+    end
+  end
+
+  defp send_auth(socket, token, endpoint) do
+    case :socket.send(socket, "symphony-session-token: #{token}\r\n\r\n") do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        log_transport("auth_send_failed", endpoint, reason)
+        {:error, {:socket_auth_send_failed, reason}}
+    end
   end
 
   defp pump(socket) do
@@ -72,7 +105,16 @@ defmodule SymphonyMcpShim do
   # rather than buffering until a fixed chunk size fills.
   defp stdin_to_socket(socket, parent) do
     IO.binstream(:stdio, :line)
-    |> Enum.each(fn line -> :ok = :socket.send(socket, line) end)
+    |> Enum.reduce_while(:ok, fn line, :ok ->
+      case :socket.send(socket, line) do
+        :ok ->
+          {:cont, :ok}
+
+        {:error, reason} ->
+          IO.puts(:stderr, "symphony-mcp-shim transport event=stdin_send_failed bytes=#{byte_size(line)} reason=#{inspect(reason)}")
+          {:halt, {:error, reason}}
+      end
+    end)
 
     shutdown_write(socket)
     send(parent, :stdin_done)
@@ -92,7 +134,9 @@ defmodule SymphonyMcpShim do
       fn socket ->
         case :socket.recv(socket) do
           {:ok, data} -> {[data], socket}
-          {:error, _reason} -> {:halt, socket}
+          {:error, reason} ->
+            IO.puts(:stderr, "symphony-mcp-shim transport event=socket_recv_stopped reason=#{inspect(reason)}")
+            {:halt, socket}
         end
       end,
       fn _socket -> :ok end
@@ -115,6 +159,16 @@ defmodule SymphonyMcpShim do
   catch
     :error, _reason -> :ok
   end
+
+  defp log_transport(event, endpoint, reason) do
+    IO.puts(
+      :stderr,
+      "symphony-mcp-shim transport event=#{event} endpoint=#{endpoint_label(endpoint)} reason=#{inspect(reason)}"
+    )
+  end
+
+  defp endpoint_label({:unix, _path}), do: "unix"
+  defp endpoint_label({:tcp, _addr, _port}), do: "tcp"
 end
 
 SymphonyMcpShim.main(System.argv())

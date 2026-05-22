@@ -603,6 +603,8 @@ defmodule SymphonyElixir.McpServerTest do
       send(test_pid, {:audit_called, audit_workspace, audit_opts})
     end
 
+    pr_body = String.duplicate("Implementation notes with unicode 🚀\n", 256)
+
     context = %{
       workspace: workspace,
       command_security: %{origin_repo: "acme/symphony", workspace: workspace},
@@ -622,7 +624,7 @@ defmodule SymphonyElixir.McpServerTest do
       response =
         request!(socket, 1, "tools/call", %{
           "name" => "github_create_pull_request",
-          "arguments" => %{"title" => "ACME-3052", "body" => "body"}
+          "arguments" => %{"title" => "ACME-3052", "body" => pr_body}
         })
 
       refute response["result"]["isError"]
@@ -646,8 +648,67 @@ defmodule SymphonyElixir.McpServerTest do
                "--title",
                "ACME-3052",
                "--body",
-               "body"
+               pr_body
              ]
+    after
+      close_socket(socket)
+      File.rm_rf(workspace)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "executes body-heavy github_reply_to_review_comment with unicode through MCP" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    workspace = Path.join(System.tmp_dir!(), "symphony-mcp-github-reply-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+
+    pr_url = "https://github.com/acme/symphony/pull/3051"
+    reply_body = String.duplicate("Addressed with context and unicode 🚀\n", 256)
+
+    git_runner = fn
+      ["branch", "--show-current"], opts ->
+        assert opts[:cd] == workspace
+        {"auto/ACME-3051\n", 0}
+    end
+
+    gh_runner = fn
+      ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], opts ->
+        assert opts[:cd] == workspace
+        {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
+
+      ["api", "repos/acme/symphony/pulls/3051/comments/123/replies", "-f", "body=" <> body], opts ->
+        assert opts[:cd] == workspace
+        assert body == reply_body
+        {Jason.encode!(%{"id" => 4242, "html_url" => "#{pr_url}#discussion_r4242"}), 0}
+    end
+
+    context = %{
+      workspace: workspace,
+      command_security: %{origin_repo: "acme/symphony", workspace: workspace},
+      tool_opts: [git_runner: git_runner, gh_runner: gh_runner]
+    }
+
+    session = start_transport_session!(context, server)
+    socket = connect_session!(session)
+
+    try do
+      response =
+        request!(socket, 1, "tools/call", %{
+          "name" => "github_reply_to_review_comment",
+          "arguments" => %{"comment_id" => 123, "body" => reply_body}
+        })
+
+      refute response["result"]["isError"]
+      [content] = response["result"]["content"]
+      reply_url = "#{pr_url}#discussion_r4242"
+
+      assert %{
+               "comment_id" => "123",
+               "reply_id" => 4242,
+               "url" => ^reply_url
+             } = Jason.decode!(content["text"])
     after
       close_socket(socket)
       File.rm_rf(workspace)
@@ -911,6 +972,200 @@ defmodule SymphonyElixir.McpServerTest do
       response = request!(socket, 99, "resources/list")
       assert response["error"]["code"] == -32_601
       assert response["error"]["message"] =~ "resources/list"
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "malformed newline-framed JSON returns parse error when request id is recoverable" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
+    socket = connect_session!(session)
+
+    try do
+      test_pid = self()
+
+      log =
+        capture_log([level: :error], fn ->
+          :ok =
+            :socket.send(
+              socket,
+              ~s({"jsonrpc":"2.0","id":42,"method":"tools/list","params":{}}{"jsonrpc":"2.0"}\n)
+            )
+
+          send(test_pid, {:parse_response, read_response(socket, "")})
+        end)
+
+      assert_receive {:parse_response, {:ok, response}}
+      assert response["id"] == 42
+      assert response["error"]["code"] == -32_700
+      assert response["error"]["message"] =~ "tool was not run"
+
+      assert log =~ "MCP JSON decode failed"
+      assert log =~ ~s(method="tools/list")
+      assert log =~ "request_id=42"
+      assert log =~ "payload_bytes="
+      assert log =~ "transport="
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "redacts full malformed payload before truncating raw preview" do
+    secret = "linear-secret-#{System.unique_integer([:positive])}-abcdefghijklmnopqrstuvwxyz"
+    previous_secret = System.get_env("LINEAR_API_KEY")
+
+    System.put_env("LINEAR_API_KEY", secret)
+    on_exit(fn -> restore_env("LINEAR_API_KEY", previous_secret) end)
+
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
+    socket = connect_session!(session)
+
+    try do
+      test_pid = self()
+      filler = String.duplicate("a", 155)
+      leaked_prefix = String.slice(secret, 0, 24)
+
+      log =
+        capture_log([level: :error], fn ->
+          :ok =
+            :socket.send(
+              socket,
+              ~s({"jsonrpc":"2.0","id":43,"method":"tools/list","params":{"body":"#{filler}#{secret}"}BROKEN\n)
+            )
+
+          send(test_pid, {:parse_response, read_response(socket, "")})
+        end)
+
+      assert_receive {:parse_response, {:ok, response}}
+      assert response["id"] == 43
+      assert response["error"]["code"] == -32_700
+
+      assert log =~ "raw_preview="
+      assert log =~ "[REDACTED]"
+      refute log =~ leaked_prefix
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "EOF with buffered malformed frame returns parse error when request id is recoverable" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        transport: :tcp,
+        shim_path: "/tmp/shim"
+      )
+
+    socket = connect_tcp!(session.tcp_port, session.token)
+
+    try do
+      test_pid = self()
+
+      log =
+        capture_log([level: :error], fn ->
+          :ok =
+            :socket.send(
+              socket,
+              ~s({"jsonrpc":"2.0","id":44,"method":"tools/list","params":{})
+            )
+
+          :ok = :socket.shutdown(socket, :write)
+          send(test_pid, {:parse_response, read_response(socket, "")})
+        end)
+
+      assert_receive {:parse_response, {:ok, response}}
+      assert response["id"] == 44
+      assert response["error"]["code"] == -32_700
+      assert response["error"]["message"] =~ "tool was not run"
+
+      assert log =~ "MCP JSON decode failed"
+      assert log =~ ~s(method="tools/list")
+      assert log =~ "request_id=44"
+      assert log =~ "payload_bytes="
+      assert log =~ "transport=:tcp"
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "handler crash returns internal error and logs request metadata" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
+    socket = connect_session!(session)
+
+    try do
+      test_pid = self()
+
+      log =
+        capture_log([level: :error], fn ->
+          payload = %{"jsonrpc" => "2.0", "id" => 77, "method" => "tools/call", "params" => []}
+          :ok = :socket.send(socket, Jason.encode!(payload) <> "\n")
+          send(test_pid, {:crash_response, read_response(socket, "")})
+        end)
+
+      assert_receive {:crash_response, {:ok, response}}
+      assert response["id"] == 77
+      assert response["error"]["code"] == -32_603
+      assert response["error"]["message"] =~ "Internal MCP handler error"
+
+      assert log =~ "MCP handler crashed"
+      assert log =~ ~s(method="tools/call")
+      assert log =~ "request_id=77"
+      assert log =~ "session_id="
+      assert log =~ "exception_kind=:error"
+      assert log =~ ~s(exception="BadMapError")
+      assert log =~ "exception_message="
+      assert log =~ "stacktrace_preview="
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "send failure is logged with request metadata" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    test_pid = self()
+
+    send_fun = fn _socket, data ->
+      send(test_pid, {:mcp_send_attempt, byte_size(data)})
+      {:error, :closed}
+    end
+
+    session = start_transport_session!(%{workspace: System.tmp_dir!(), mcp_send_fun: send_fun}, server)
+    socket = connect_session!(session)
+
+    try do
+      log =
+        capture_log([level: :error], fn ->
+          payload = %{"jsonrpc" => "2.0", "id" => 88, "method" => "tools/list", "params" => %{}}
+          :ok = :socket.send(socket, Jason.encode!(payload) <> "\n")
+          assert_receive {:mcp_send_attempt, response_bytes}, 500
+          assert response_bytes > 0
+          Process.sleep(25)
+        end)
+
+      assert log =~ "MCP response send failed"
+      assert log =~ ~s(method="tools/list")
+      assert log =~ "request_id=88"
+      assert log =~ "response_bytes="
+      assert log =~ "reason=:closed"
     after
       close_socket(socket)
       McpServer.stop_session(session, server: server)

@@ -1771,6 +1771,10 @@ Notes:
 - Codex local launch prefers a managed Unix socket for Symphony's implicit MCP server. If the OS
   denies managed Unix socket binding with `EPERM`, the implementation falls back to a random
   `127.0.0.1` TCP listener. Explicit Unix socket paths remain strict and surface the bind error.
+- The implicit MCP server logs transport/framing failures with method, tool, request ID, payload
+  byte size, MCP session ID, and transport when available. Malformed newline-delimited JSON returns
+  a structured JSON-RPC parse error when the request ID can be recovered, and response-send failures
+  are logged instead of silently closing the connection.
 - Codex launch preserves the configured command while injecting `--config` overrides for
   `default_permissions="workspace_write"` and the generated `permissions.workspace_write.*`
   profile. Runtime launch paths render workspace-local filesystem entries with the validated

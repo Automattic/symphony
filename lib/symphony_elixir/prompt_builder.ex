@@ -75,7 +75,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> append_reviewer_comments(reviewer_comments)
     |> append_ci_failure(ci_failure)
     |> append_pr_conflict(pr_conflict)
-    |> append_review_agent_instructions(Keyword.get(opts, :settings))
+    |> append_review_agent_instructions(Keyword.get(opts, :settings), opts)
     |> append_linear_input_warnings(linear_input_warnings)
     |> append_codex_transport_output_guard(agent_context, opts)
   end
@@ -131,7 +131,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Enum.join("\n")
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
     |> append_pr_conflict(pr_conflict)
-    |> append_review_agent_instructions(Keyword.get(opts, :settings))
+    |> append_review_agent_instructions(Keyword.get(opts, :settings), opts)
     |> append_linear_input_warnings(linear_input_warnings)
     |> append_codex_transport_output_guard(agent_context, opts)
   end
@@ -412,7 +412,20 @@ defmodule SymphonyElixir.PromptBuilder do
     prompt <> "\n\n" <> pr_conflict_section(pr_conflict)
   end
 
-  defp append_review_agent_instructions(prompt, %{review_agent: %{enabled: true}}) do
+  defp append_review_agent_instructions(prompt, %{review_agent: %{enabled: true, run_on: "first_push"}}, opts) do
+    case prompt_mode(opts) do
+      :pr -> prompt
+      :issue -> append_review_agent_instructions(prompt)
+    end
+  end
+
+  defp append_review_agent_instructions(prompt, %{review_agent: %{enabled: true}}, _opts) do
+    append_review_agent_instructions(prompt)
+  end
+
+  defp append_review_agent_instructions(prompt, _settings, _opts), do: prompt
+
+  defp append_review_agent_instructions(prompt) do
     prompt <>
       """
 
@@ -426,8 +439,6 @@ defmodule SymphonyElixir.PromptBuilder do
       - If the reviewer approves, follow the injected continuation prompt and complete the normal push/PR handoff.
       """
   end
-
-  defp append_review_agent_instructions(prompt, _settings), do: prompt
 
   defp append_linear_input_warnings(prompt, []), do: prompt
 

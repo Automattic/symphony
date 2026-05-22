@@ -445,9 +445,11 @@ pre_push_review:
   runtime: codex
   command: codex app-server
   max_iterations: 1
+  run_on: always
 ```
 
 When enabled, Symphony runs an executor/reviewer loop in the same workspace before push.
+`run_on` defaults to `always`; set it to `first_push` to skip the reviewer on PR follow-up runs while keeping it enabled for initial issue runs.
 
 ### `issue_gate`
 

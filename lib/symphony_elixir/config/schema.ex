@@ -1306,13 +1306,14 @@ defmodule SymphonyElixir.Config.Schema do
     @type t :: %__MODULE__{}
 
     @primary_key false
-    @fields [:enabled, :kind, :command, :max_iterations]
+    @fields [:enabled, :kind, :command, :max_iterations, :run_on]
 
     embedded_schema do
       field(:enabled, :boolean, default: false)
       field(:kind, :string)
       field(:command, :string)
       field(:max_iterations, :integer, default: 1)
+      field(:run_on, :string, default: "always")
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -1320,6 +1321,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(attrs, @fields, empty_values: [])
       |> validate_inclusion(:kind, ["codex", "claude"])
+      |> validate_inclusion(:run_on, ["always", "first_push"])
       |> validate_number(:max_iterations, greater_than: 0)
       |> validate_required_when_enabled()
     end

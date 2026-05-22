@@ -426,12 +426,23 @@ defmodule SymphonyElixir.AgentRunner do
   defp maybe_review_agent_next_turn(run_context, _turn_number, _max_turns) do
     config = run_context.opts |> Keyword.fetch!(:settings) |> Map.fetch!(:review_agent)
 
-    if ReviewAgent.enabled?(config) do
-      review_agent_next_turn(run_context, config)
-    else
-      :normal_continuation
+    cond do
+      not ReviewAgent.enabled?(config) ->
+        :normal_continuation
+
+      skip_review_agent_for_run?(config, run_context.opts) ->
+        :normal_continuation
+
+      true ->
+        review_agent_next_turn(run_context, config)
     end
   end
+
+  defp skip_review_agent_for_run?(%{run_on: "first_push"}, opts) do
+    Keyword.get(opts, :prompt_mode, :issue) == :pr
+  end
+
+  defp skip_review_agent_for_run?(_config, _opts), do: false
 
   defp review_agent_next_turn(%{review_agent: %{phase: :complete}}, _config), do: :normal_continuation
 
@@ -679,25 +690,31 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp review_agent_continuation_guard(opts, review_agent_state) do
-    case {Keyword.get(opts, :settings), review_agent_state} do
-      {%{review_agent: %{enabled: true}}, %{phase: :complete}} ->
-        """
+    case Keyword.get(opts, :settings) do
+      %{review_agent: %{enabled: true} = config} ->
+        cond do
+          skip_review_agent_for_run?(config, opts) ->
+            ""
 
-        Review-agent gate status:
+          review_agent_state.phase == :complete ->
+            """
 
-        - Reviewer-agent approval has already been injected for this run.
-        - Do not stop at the reviewer-agent gate again; complete the normal push/PR handoff unless code changes after approval or a true auth/permission blocker prevents handoff.
-        #{ReviewAgent.approval_handoff_tool_guidance(Keyword.get(opts, :settings))}
-        """
+            Review-agent gate status:
 
-      {%{review_agent: %{enabled: true}}, _review_agent_state} ->
-        """
+            - Reviewer-agent approval has already been injected for this run.
+            - Do not stop at the reviewer-agent gate again; complete the normal push/PR handoff unless code changes after approval or a true auth/permission blocker prevents handoff.
+            #{ReviewAgent.approval_handoff_tool_guidance(Keyword.get(opts, :settings))}
+            """
 
-        Review-agent gate reminder:
+          true ->
+            """
 
-        - If this thread has not already received a reviewer-agent approval prompt, stop before `git push`, PR creation, or moving the issue to review after validation and committed-diff review.
-        - Ending the turn at that gate is expected even if the issue remains active; Symphony will run the reviewer agent and inject the next prompt.
-        """
+            Review-agent gate reminder:
+
+            - If this thread has not already received a reviewer-agent approval prompt, stop before `git push`, PR creation, or moving the issue to review after validation and committed-diff review.
+            - Ending the turn at that gate is expected even if the issue remains active; Symphony will run the reviewer agent and inject the next prompt.
+            """
+        end
 
       _settings ->
         ""

@@ -44,6 +44,7 @@ defmodule SymphonyElixir.ReviewAgentConfigTest do
       assert settings.review_agent.kind == nil
       assert settings.review_agent.command == nil
       assert settings.review_agent.max_iterations == 1
+      assert settings.review_agent.run_on == "always"
     end
 
     test "accepts an enabled section" do
@@ -52,7 +53,8 @@ defmodule SymphonyElixir.ReviewAgentConfigTest do
           enabled: true,
           kind: "codex",
           command: "codex app-server",
-          max_iterations: 2
+          max_iterations: 2,
+          run_on: "first_push"
         }
       )
 
@@ -62,6 +64,7 @@ defmodule SymphonyElixir.ReviewAgentConfigTest do
       assert review_agent.kind == "codex"
       assert review_agent.command == "codex app-server"
       assert review_agent.max_iterations == 2
+      assert review_agent.run_on == "first_push"
     end
 
     test "rejects enabled config without kind and command" do
@@ -89,6 +92,38 @@ defmodule SymphonyElixir.ReviewAgentConfigTest do
       assert message =~ "pre_push_review"
       assert message =~ "runtime"
       assert message =~ "max_iterations"
+    end
+
+    test "rejects unsupported run_on" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        review_agent: %{
+          enabled: true,
+          kind: "codex",
+          command: "codex app-server",
+          run_on: "follow_ups"
+        }
+      )
+
+      assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+      assert message =~ "pre_push_review"
+      assert message =~ "run_on"
+    end
+
+    test "system config normalizes pre_push_review run_on" do
+      assert {:ok, %SystemSchema{review_agent: review_agent}} =
+               SystemSchema.parse(%{
+                 "pre_push_review" => %{
+                   "enabled" => true,
+                   "runtime" => "codex",
+                   "command" => "codex app-server",
+                   "run_on" => "first_push"
+                 },
+                 "repositories" => [
+                   %{"key" => "default", "workflow" => "WORKFLOW.md", "route" => %{"team" => "Test"}}
+                 ]
+               })
+
+      assert review_agent.run_on == "first_push"
     end
   end
 end

@@ -3401,6 +3401,93 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner review-agent first_push runs for issue mode" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-first-push-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = review_agent_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_review_agent_fake_codex!(codex_binary, trace_file)
+      write_review_agent_workflow!(codex_binary, max_turns: 2, run_on: "first_push")
+      put_review_agent_responses!([~s({"verdict":"approve","comments":[]})])
+
+      assert :ok =
+               AgentRunner.run(review_agent_issue(), self(),
+                 workspace_path: repo,
+                 issue_state_fetcher: review_agent_state_fetcher(self(), 2),
+                 issue_enricher: no_op_issue_enricher(),
+                 review_agent_module: ReviewAgentSequenceAppServer
+               )
+
+      assert_receive {:review_agent_call, 1, _session, _review_prompt, _issue, _opts}
+      refute_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}, 50
+
+      turn_texts = review_agent_turn_texts!(trace_file)
+      assert length(turn_texts) == 2
+      assert Enum.at(turn_texts, 1) =~ "Reviewer agent approved the committed diff"
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner skips review-agent first_push on PR follow-up mode" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-pr-skip-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = review_agent_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_review_agent_fake_codex!(codex_binary, trace_file)
+      write_review_agent_workflow!(codex_binary, max_turns: 2, run_on: "first_push")
+
+      issue = %{
+        review_agent_issue()
+        | run_kind: :pr,
+          pr_context: %{
+            number: 42,
+            title: "Review feedback",
+            intent: "address review comments",
+            url: "https://github.com/example/repo/pull/42",
+            head_ref: "auto/RSM-3799",
+            base_ref: "main",
+            body: "Follow-up fixes"
+          }
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 workspace_path: repo,
+                 issue_state_fetcher: review_agent_state_fetcher(self(), 2),
+                 issue_enricher: no_op_issue_enricher(),
+                 prompt_mode: :pr,
+                 review_agent_module: ReviewAgentSequenceAppServer
+               )
+
+      refute_receive {:review_agent_start_session, _workspace, _opts}, 50
+      refute_receive {:review_agent_call, _count, _session, _prompt, _issue, _opts}, 50
+
+      turn_texts = review_agent_turn_texts!(trace_file)
+      assert length(turn_texts) == 2
+      refute Enum.any?(turn_texts, &String.contains?(&1, "Review-agent gate"))
+      refute Enum.any?(turn_texts, &String.contains?(&1, "Reviewer agent approved"))
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner preserves approved review-agent handoff in later continuation prompts" do
     test_root =
       Path.join(
@@ -4178,7 +4265,8 @@ defmodule SymphonyElixir.CoreTest do
         enabled: true,
         kind: "codex",
         command: "reviewer app-server",
-        max_iterations: Keyword.get(opts, :max_iterations, 1)
+        max_iterations: Keyword.get(opts, :max_iterations, 1),
+        run_on: Keyword.get(opts, :run_on)
       },
       prompt: Keyword.get(opts, :prompt, "Initial prompt {{ issue.identifier }}")
     )

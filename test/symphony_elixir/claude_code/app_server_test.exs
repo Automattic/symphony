@@ -245,43 +245,57 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:agent_text, "Hi."} = AppServer.parse_event(line)
     end
 
-    test "parses tool_use event and returns tool_use with tool name" do
+    test "parses tool_use event and returns tool_use with tool name and tracking detail" do
       line = ~s({"type":"tool_use","name":"bash","id":"tool-1","input":{"command":"ls"}})
+
+      assert {:multi,
+              [
+                {:tool_use, "bash"},
+                {:tool_use_started, %{id: "tool-1", name: "bash", command: "ls"}}
+              ]} = AppServer.parse_event(line)
+    end
+
+    test "parses tool_use event without id returns plain tool_use without tracking detail" do
+      line = ~s({"type":"tool_use","name":"bash"})
 
       assert {:tool_use, "bash"} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event with only tool_use block returns tool_use with usage delta" do
+    test "parses assistant event with only tool_use block returns tool_use with tracking detail and usage delta" do
       line =
         ~s({"type":"assistant","message":{"id":"msg-2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2"})
 
       assert {:multi,
               [
                 {:tool_use, "bash"},
+                {:tool_use_started, %{id: "t-1", name: "bash", command: nil}},
                 {:token_usage_delta, %{input_tokens: 10, output_tokens: 5, cached_input_tokens: 0}}
               ]} = AppServer.parse_event(line)
     end
 
     test "parses assistant event with text and tool_use returns multi event preserving order" do
       line =
-        ~s({"type":"assistant","message":{"id":"msg-2a","type":"message","role":"assistant","content":[{"type":"text","text":"Running ls"},{"type":"tool_use","id":"t-1","name":"bash","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2a"})
+        ~s({"type":"assistant","message":{"id":"msg-2a","type":"message","role":"assistant","content":[{"type":"text","text":"Running ls"},{"type":"tool_use","id":"t-1","name":"bash","input":{"command":"ls -la"}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2a"})
 
       assert {:multi,
               [
                 {:agent_text, "Running ls"},
                 {:tool_use, "bash"},
+                {:tool_use_started, %{id: "t-1", name: "bash", command: "ls -la"}},
                 {:token_usage_delta, %{input_tokens: 10, output_tokens: 5, cached_input_tokens: 0}}
               ]} = AppServer.parse_event(line)
     end
 
-    test "parses assistant event with multiple tool_use blocks returns multi event" do
+    test "parses assistant event with multiple tool_use blocks returns multi event with tracking details" do
       line =
-        ~s({"type":"assistant","message":{"id":"msg-2b","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{}},{"type":"tool_use","id":"t-2","name":"read","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2b"})
+        ~s({"type":"assistant","message":{"id":"msg-2b","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{"command":"make all"}},{"type":"tool_use","id":"t-2","name":"read","input":{}}],"model":"claude-opus-4-5","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":5}},"session_id":"sess-2b"})
 
       assert {:multi,
               [
                 {:tool_use, "bash"},
+                {:tool_use_started, %{id: "t-1", name: "bash", command: "make all"}},
                 {:tool_use, "read"},
+                {:tool_use_started, %{id: "t-2", name: "read", command: nil}},
                 {:token_usage_delta, %{input_tokens: 10, output_tokens: 5, cached_input_tokens: 0}}
               ]} = AppServer.parse_event(line)
     end
@@ -328,11 +342,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:malformed, ^line} = AppServer.parse_event(line)
     end
 
-    test "parses user/tool_result event with string content and returns tool_result" do
+    test "parses user/tool_result event with string content and returns tool_result with completion event" do
       line =
         ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"Hello world"}]},"session_id":"sess-1"})
 
-      assert {:tool_result, "Hello world"} = AppServer.parse_event(line)
+      assert {:multi,
+              [
+                {:tool_result, "Hello world"},
+                {:tool_use_completed, %{tool_use_id: "toolu_abc"}}
+              ]} = AppServer.parse_event(line)
     end
 
     test "preserves full tool_result body without truncation" do
@@ -341,22 +359,35 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       line =
         ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":"#{long_text}"}]},"session_id":"sess-tr"})
 
-      assert {:tool_result, ^long_text} = AppServer.parse_event(line)
+      assert {:multi,
+              [
+                {:tool_result, ^long_text},
+                {:tool_use_completed, %{tool_use_id: "toolu_abc"}}
+              ]} = AppServer.parse_event(line)
     end
 
     test "parses user/tool_result event with nested tool_reference content" do
       line =
         ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_abc","content":[{"type":"tool_reference","tool_name":"Read"}]}]},"session_id":"sess-1"})
 
-      assert {:tool_result, "Read"} = AppServer.parse_event(line)
+      assert {:multi,
+              [
+                {:tool_result, "Read"},
+                {:tool_use_completed, %{tool_use_id: "toolu_abc"}}
+              ]} = AppServer.parse_event(line)
     end
 
-    test "parses user event with multiple tool_result blocks returns multi event" do
+    test "parses user event with multiple tool_result blocks returns multi event with per-result completion" do
       line =
         ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t-1","content":"first"},{"type":"tool_result","tool_use_id":"t-2","content":"second"}]},"session_id":"sess-multi"})
 
-      assert {:multi, [{:tool_result, "first"}, {:tool_result, "second"}]} =
-               AppServer.parse_event(line)
+      assert {:multi,
+              [
+                {:tool_result, "first"},
+                {:tool_use_completed, %{tool_use_id: "t-1"}},
+                {:tool_result, "second"},
+                {:tool_use_completed, %{tool_use_id: "t-2"}}
+              ]} = AppServer.parse_event(line)
     end
 
     test "parses user/tool_result event with no recognizable content and returns generic notification" do
@@ -364,6 +395,13 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         ~s({"type":"user","message":{"role":"user","content":[]},"session_id":"sess-1"})
 
       assert {:notification, "tool_result"} = AppServer.parse_event(line)
+    end
+
+    test "parses user/tool_result event without tool_use_id and returns tool_result without completion event" do
+      line =
+        ~s({"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"orphan"}]},"session_id":"sess-orphan"})
+
+      assert {:tool_result, "orphan"} = AppServer.parse_event(line)
     end
 
     test "parses rate_limit_event with allowed_warning status as notification" do
@@ -2338,7 +2376,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
-    test "returns command_timeout when a tool call runs too long" do
+    test "returns structured command_timeout details when a tool call runs too long" do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -2370,7 +2408,62 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         {:ok, session} = AppServer.start_session(workspace)
 
-        assert {:error, :command_timeout} = AppServer.run_turn(session, "do the thing", %{}, [])
+        log =
+          capture_log(fn ->
+            assert {:error, {:command_timeout, details}} =
+                     AppServer.run_turn(session, "do the thing", %{}, [])
+
+            assert details.tool == "bash"
+            assert details.command == "sleep 10"
+            assert details.elapsed_ms >= 30
+            assert details.timeout_ms == 30
+          end)
+
+        assert log =~ "Claude command_timeout"
+        assert log =~ ~s(tool="bash")
+        assert log =~ ~s(command="sleep 10")
+        assert log =~ "timeout_ms=30"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "clears active command tracking when a tool_result arrives before the timeout" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-command-cleared-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "ACME-CMDCLEAR")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{"command":"echo done"}}],"usage":{"input_tokens":1,"output_tokens":1}},"session_id":"sess-clear"}'
+        printf '%s\\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t-1","content":"done"}]},"session_id":"sess-clear"}'
+        sleep 0.2
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":120,"duration_api_ms":80,"is_error":false,"num_turns":1,"result":"ok","session_id":"sess-clear","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_turn_timeout_ms: 5_000,
+          agent_command_timeout_ms: 50
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:ok, %{input_tokens: 1, output_tokens: 1}} =
+                 AppServer.run_turn(session, "do the thing", %{}, [])
       after
         File.rm_rf(test_root)
       end
@@ -2451,7 +2544,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         {:ok, session} = AppServer.start_session(workspace)
 
-        assert {:error, :command_timeout} = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert {:error, {:command_timeout, details}} =
+                 AppServer.run_turn(session, "do the thing", %{}, [])
+
+        # t-1 completed via tool_result; the timeout fires for t-2 ("read"),
+        # which has no `input.command`, so only the tool name is captured.
+        assert details.tool == "read"
+        assert details.command == nil
+        assert details.timeout_ms == 30
       after
         File.rm_rf(test_root)
       end

@@ -47,6 +47,18 @@ make coverage-profile
 make dialyzer-profile
 ```
 
+Preserve full output for long-running gates so the failing phase can be
+identified after the fact. Avoid piping to `tail` (e.g. `make all 2>&1 | tail
+-80`) — if the command times out or is killed, only the last lines survive and
+the actual failing phase is lost. Prefer either splitting the gate into its
+phases (`make check`, `make coverage`, `make dialyzer`) so each command's log
+stands alone, or `tee` the full stream to a file:
+
+```bash
+HEX_HOME=/private/tmp/symphony-hex-home SYMPHONY_MCP_SOCKET_ROOT=/private/tmp/symphony-mcp \
+  make all 2>&1 | tee /tmp/symphony-make-all.log
+```
+
 ## Required Rules
 
 - Public functions (`def`) in `lib/` must have an adjacent `@spec`.

@@ -179,7 +179,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @typep parsed_event ::
            {:session_started, String.t()}
            | {:tool_use, String.t()}
+           | {:tool_use_started, %{id: String.t(), name: String.t(), command: String.t() | nil}}
            | {:tool_result, String.t()}
+           | {:tool_use_completed, %{tool_use_id: String.t()}}
            | {:agent_text, String.t()}
            | {:notification, String.t()}
            | {:turn_completed, map()}
@@ -218,7 +220,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp parse_decoded_event(%{"type" => "tool_use", "name" => name}, _line), do: {:tool_use, name}
+  defp parse_decoded_event(%{"type" => "tool_use", "name" => name} = block, _line) do
+    case extract_tool_use_details(block) do
+      nil -> {:tool_use, name}
+      detail -> {:multi, [{:tool_use, name}, {:tool_use_started, detail}]}
+    end
+  end
 
   defp parse_decoded_event(%{"type" => "rate_limit_event", "rate_limit_info" => info}, _line),
     do: classify_rate_limit_event(info)
@@ -1086,9 +1093,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
     loop_state = %{
       turn_deadline: now + turn_timeout_ms,
-      command_deadline: nil,
+      active_commands: %{},
       command_timeout_ms: command_timeout_ms,
-      active_tool_uses: 0,
       pending_line: "",
       post_completion_deadline: nil
     }
@@ -1117,8 +1123,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp compute_read_timeout(%{turn_deadline: turn_deadline, command_deadline: command_deadline, post_completion_deadline: post_completion_deadline}) do
+  defp compute_read_timeout(%{turn_deadline: turn_deadline, post_completion_deadline: post_completion_deadline} = loop_state) do
     now = System.monotonic_time(:millisecond)
+    command_deadline = active_command_deadline(loop_state)
 
     [
       max(1, turn_deadline - now),
@@ -1129,11 +1136,24 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Enum.min()
   end
 
+  defp active_command_deadline(%{active_commands: active, command_timeout_ms: timeout_ms})
+       when is_map(active) and map_size(active) > 0 and is_integer(timeout_ms) and timeout_ms > 0 do
+    earliest =
+      active
+      |> Map.values()
+      |> Enum.map(& &1.started_at_ms)
+      |> Enum.min()
+
+    earliest + timeout_ms
+  end
+
+  defp active_command_deadline(_loop_state), do: nil
+
   defp handle_eol_line(port, on_message, acc, loop_state, line) do
     full_line = loop_state.pending_line <> line
     event = parse_event(full_line)
 
-    tracked_loop_state = update_command_tracking(loop_state, event)
+    new_active_commands = update_active_commands(loop_state.active_commands, event)
 
     new_acc =
       event
@@ -1141,8 +1161,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       |> then(&maybe_fail_missing_required_mcp_server(full_line, on_message, &1))
 
     new_loop_state = %{
-      tracked_loop_state
-      | pending_line: "",
+      loop_state
+      | active_commands: new_active_commands,
+        pending_line: "",
         post_completion_deadline: maybe_start_post_completion_grace(new_acc, loop_state.post_completion_deadline)
     }
 
@@ -1159,8 +1180,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp handle_read_loop_timeout(acc, %{turn_deadline: turn_deadline, post_completion_deadline: post_completion_deadline}) do
+  defp handle_read_loop_timeout(acc, loop_state) do
     now = System.monotonic_time(:millisecond)
+    %{turn_deadline: turn_deadline, post_completion_deadline: post_completion_deadline} = loop_state
 
     cond do
       post_completion_deadline != nil and now >= post_completion_deadline ->
@@ -1172,8 +1194,32 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         {:error, :turn_timeout}
 
       true ->
-        {:error, :command_timeout}
+        command_timeout_result(acc, loop_state, now)
     end
+  end
+
+  # Only reachable when compute_read_timeout returned a positive
+  # active_command_deadline, which requires a non-empty active_commands map
+  # and a positive command_timeout_ms. The earliest tracked command therefore
+  # has elapsed >= command_timeout_ms by the time we land here.
+  defp command_timeout_result(acc, %{active_commands: active, command_timeout_ms: timeout_ms}, now) do
+    cmd =
+      active
+      |> Map.values()
+      |> Enum.min_by(& &1.started_at_ms)
+
+    details = %{
+      tool: cmd.name,
+      command: cmd.command,
+      elapsed_ms: max(0, now - cmd.started_at_ms),
+      timeout_ms: timeout_ms
+    }
+
+    Logger.warning(
+      "Claude command_timeout session_id=#{inspect(Map.get(acc, :session_id))} tool=#{inspect(details.tool)} command=#{inspect(details.command)} elapsed_ms=#{details.elapsed_ms} timeout_ms=#{details.timeout_ms}"
+    )
+
+    {:error, {:command_timeout, details}}
   end
 
   defp maybe_start_post_completion_grace(acc, nil) do
@@ -1333,61 +1379,34 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp format_mcp_server_entry(server), do: inspect(server)
 
-  defp update_command_tracking(%{command_timeout_ms: timeout_ms} = loop_state, _event)
-       when timeout_ms <= 0 do
-    %{loop_state | active_tool_uses: 0, command_deadline: nil}
+  # Tracking is unconditional; whether tracked commands actually arm a deadline
+  # is decided by active_command_deadline/1, which gates on a positive
+  # command_timeout_ms. Terminal events clear the map so a finished turn does
+  # not race the post-completion grace window and surface a spurious
+  # command_timeout.
+  defp update_active_commands(active_commands, {:multi, events}) when is_list(events) do
+    Enum.reduce(events, active_commands, fn child, acc -> update_active_commands(acc, child) end)
   end
 
-  defp update_command_tracking(loop_state, event) do
-    now = System.monotonic_time(:millisecond)
-
-    {active_tool_uses, command_deadline} =
-      apply_command_tracking_event(
-        event,
-        loop_state.active_tool_uses,
-        loop_state.command_deadline,
-        loop_state.command_timeout_ms,
-        now
-      )
-
-    %{loop_state | active_tool_uses: active_tool_uses, command_deadline: command_deadline}
+  defp update_active_commands(active_commands, {:tool_use_started, %{id: id} = info})
+       when is_binary(id) do
+    Map.put(active_commands, id, %{
+      name: Map.get(info, :name),
+      command: Map.get(info, :command),
+      started_at_ms: System.monotonic_time(:millisecond)
+    })
   end
 
-  defp apply_command_tracking_event({:multi, events}, active_tool_uses, command_deadline, timeout_ms, now)
-       when is_list(events) do
-    Enum.reduce(events, {active_tool_uses, command_deadline}, fn event, {active, deadline} ->
-      apply_command_tracking_event(event, active, deadline, timeout_ms, now)
-    end)
+  defp update_active_commands(active_commands, {:tool_use_completed, %{tool_use_id: id}})
+       when is_binary(id) do
+    Map.delete(active_commands, id)
   end
 
-  defp apply_command_tracking_event({:tool_use, _}, active_tool_uses, _command_deadline, timeout_ms, now) do
-    {active_tool_uses + 1, now + timeout_ms}
-  end
+  defp update_active_commands(_active_commands, {:turn_completed, _}), do: %{}
+  defp update_active_commands(_active_commands, {:turn_failed, _}), do: %{}
+  defp update_active_commands(_active_commands, {:rate_limited, _info, _reason}), do: %{}
 
-  defp apply_command_tracking_event({:tool_result, _}, active_tool_uses, command_deadline, _timeout_ms, _now) do
-    active_tool_uses = max(active_tool_uses - 1, 0)
-    command_deadline = if active_tool_uses == 0, do: nil, else: command_deadline
-
-    {active_tool_uses, command_deadline}
-  end
-
-  defp apply_command_tracking_event({:turn_completed, _}, _active_tool_uses, _command_deadline, _timeout_ms, _now),
-    do: {0, nil}
-
-  defp apply_command_tracking_event({:turn_failed, _}, _active_tool_uses, _command_deadline, _timeout_ms, _now),
-    do: {0, nil}
-
-  defp apply_command_tracking_event(
-         {:rate_limited, _info, _reason},
-         _active_tool_uses,
-         _command_deadline,
-         _timeout_ms,
-         _now
-       ),
-       do: {0, nil}
-
-  defp apply_command_tracking_event(_event, active_tool_uses, command_deadline, _timeout_ms, _now),
-    do: {active_tool_uses, command_deadline}
+  defp update_active_commands(active_commands, _event), do: active_commands
 
   defp apply_event({:multi, events}, on_message, acc) when is_list(events) do
     Enum.reduce(events, acc, fn child, acc -> apply_event(child, on_message, acc) end)
@@ -1448,6 +1467,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     Logger.debug("ClaudeCode unparseable line: #{inspect(raw)}")
     acc
   end
+
+  defp apply_event({:tool_use_started, _info}, _on_message, acc), do: acc
+  defp apply_event({:tool_use_completed, _info}, _on_message, acc), do: acc
 
   defp apply_event({kind, _payload} = event, on_message, acc)
        when kind in [:tool_use, :tool_result, :notification, :agent_text] do
@@ -1580,10 +1602,27 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp assistant_block_event(%{"type" => "text", "text" => text}) when is_binary(text),
     do: [{:agent_text, text}]
 
-  defp assistant_block_event(%{"type" => "tool_use", "name" => name}) when is_binary(name),
-    do: [{:tool_use, name}]
+  defp assistant_block_event(%{"type" => "tool_use", "name" => name} = block) when is_binary(name) do
+    case extract_tool_use_details(block) do
+      nil -> [{:tool_use, name}]
+      detail -> [{:tool_use, name}, {:tool_use_started, detail}]
+    end
+  end
 
   defp assistant_block_event(_), do: []
+
+  defp extract_tool_use_details(%{"name" => name} = block) do
+    case Map.get(block, "id") do
+      id when is_binary(id) and id != "" ->
+        %{id: id, name: name, command: tool_use_command(block)}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp tool_use_command(%{"input" => %{"command" => command}}) when is_binary(command), do: command
+  defp tool_use_command(_block), do: nil
 
   defp extract_tool_result_events(%{"content" => content}) when is_list(content) do
     Enum.flat_map(content, &tool_result_block_event/1)
@@ -1592,10 +1631,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp extract_tool_result_events(_), do: []
 
   defp tool_result_block_event(%{"type" => "tool_result"} = block) do
-    case tool_result_text(block) do
-      nil -> []
-      text -> [{:tool_result, text}]
-    end
+    text_events =
+      case tool_result_text(block) do
+        nil -> []
+        text -> [{:tool_result, text}]
+      end
+
+    completion_events =
+      case Map.get(block, "tool_use_id") do
+        id when is_binary(id) and id != "" -> [{:tool_use_completed, %{tool_use_id: id}}]
+        _ -> []
+      end
+
+    text_events ++ completion_events
   end
 
   defp tool_result_block_event(_), do: []

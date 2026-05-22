@@ -2279,6 +2279,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "review agent repo gate lets unexpected config exceptions bubble" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    previous_file_reader = Application.fetch_env(:symphony_elixir, :config_cache_file_reader)
+
+    on_exit(fn ->
+      case previous_file_reader do
+        {:ok, file_reader} -> Application.put_env(:symphony_elixir, :config_cache_file_reader, file_reader)
+        :error -> Application.delete_env(:symphony_elixir, :config_cache_file_reader)
+      end
+
+      Cache.clear()
+    end)
 
     Application.put_env(:symphony_elixir, :config_cache_file_reader, fn _path ->
       raise RuntimeError, "config cache exploded"

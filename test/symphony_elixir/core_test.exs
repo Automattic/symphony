@@ -608,7 +608,7 @@ defmodule SymphonyElixir.CoreTest do
             ref: nil,
             identifier: issue_identifier,
             issue: %Issue{id: issue_id, state: "Todo", identifier: issue_identifier},
-            started_at: DateTime.utc_now()
+            started_at: DateTime.add(DateTime.utc_now(), -300, :second)
           }
         },
         claimed: MapSet.new([issue_id]),
@@ -634,6 +634,60 @@ defmodule SymphonyElixir.CoreTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "freshly dispatched agent ignores stale non-active issue state" do
+    issue_id = "issue-fresh-stale-state"
+    issue_identifier = "MT-556"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
+    )
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(agent_pid) do
+        Process.exit(agent_pid, :kill)
+      end
+    end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: issue_identifier,
+          issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: issue_identifier,
+      state: "In Review",
+      title: "Awaiting review",
+      description: "Reviewer comments are being applied",
+      labels: []
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+    assert Map.has_key?(updated_state.running, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    refute Map.has_key?(updated_state.watching, issue_id)
+    assert Process.alive?(agent_pid)
   end
 
   test "non-active issue state immediately appears in watching map" do
@@ -662,7 +716,7 @@ defmodule SymphonyElixir.CoreTest do
           ref: nil,
           identifier: issue_identifier,
           issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
-          started_at: DateTime.utc_now()
+          started_at: DateTime.add(DateTime.utc_now(), -300, :second)
         }
       },
       claimed: MapSet.new([issue_id]),

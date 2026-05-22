@@ -38,6 +38,7 @@ defmodule SymphonyElixir.Orchestrator do
   @default_transcript_buffer_size 200
   @default_snapshot_publish_ms 500
   @stop_session_cleanup_timeout_ms 5_000
+  @fresh_dispatch_state_grace_ms 120_000
   @snapshot_table :symphony_orchestrator_snapshot
   @snapshot_key :current
   @repo_poll_cold_failure_warm_after 3
@@ -1322,6 +1323,11 @@ defmodule SymphonyElixir.Orchestrator do
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
 
+      fresh_dispatch_stale_state?(state, issue) ->
+        Logger.debug("Ignoring non-active issue state during fresh dispatch grace: #{issue_context(issue)} state=#{issue.state}")
+
+        state
+
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
@@ -1335,6 +1341,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp fresh_dispatch_stale_state?(%State{} = state, %Issue{id: issue_id}) when is_binary(issue_id) do
+    case Map.get(state.running, issue_id) do
+      %{started_at: %DateTime{} = started_at} ->
+        DateTime.diff(DateTime.utc_now(), started_at, :millisecond) <= @fresh_dispatch_state_grace_ms
+
+      _ ->
+        false
+    end
+  end
+
+  defp fresh_dispatch_stale_state?(_state, _issue), do: false
 
   defp watching_issue_ids(%State{} = state) do
     state.completed_run_metadata

@@ -153,6 +153,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     "workspace.root" => "workspaces.root",
     "workspace.sandbox" => "agent.permissions.filesystem",
     "workspace.sandbox.allow_read_paths" => "agent.permissions.filesystem.allow_read_paths",
+    "workspace.sandbox.allow_write_paths" => "agent.permissions.filesystem.allow_write_paths",
     "workspace.strategy" => "workspaces.strategy"
   }
 
@@ -571,7 +572,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
          {:ok, permissions} <- section_map(Map.get(config, "permissions", %{}), "agent.permissions"),
          :ok <- reject_unknown_section_keys(permissions, ~w(approval_policy filesystem network outer_sandbox), "agent.permissions"),
          {:ok, filesystem} <- section_map(Map.get(permissions, "filesystem", %{}), "agent.permissions.filesystem"),
-         :ok <- reject_unknown_section_keys(filesystem, ~w(sandbox turn_policy allow_read_paths), "agent.permissions.filesystem"),
+         :ok <- reject_unknown_section_keys(filesystem, ~w(sandbox turn_policy allow_read_paths allow_write_paths), "agent.permissions.filesystem"),
          {:ok, network} <- section_map(Map.get(permissions, "network", %{}), "agent.permissions.network"),
          :ok <- reject_unknown_section_keys(network, ~w(mode allowed_domains denied_domains), "agent.permissions.network"),
          {:ok, outer_sandbox} <- section_map(Map.get(permissions, "outer_sandbox", %{}), "agent.permissions.outer_sandbox"),
@@ -607,7 +608,10 @@ defmodule SymphonyElixir.Config.SystemSchema do
         |> maybe_put("sandbox_runtime", sandbox_runtime)
         |> maybe_put("mcp", mcp)
 
-      workspace_sandbox = %{} |> maybe_put("allow_read_paths", Map.get(filesystem, "allow_read_paths"))
+      workspace_sandbox =
+        %{}
+        |> maybe_put("allow_read_paths", Map.get(filesystem, "allow_read_paths"))
+        |> maybe_put("allow_write_paths", Map.get(filesystem, "allow_write_paths"))
 
       {:ok, %{"agent" => agent, "workspace_sandbox" => workspace_sandbox}}
     end

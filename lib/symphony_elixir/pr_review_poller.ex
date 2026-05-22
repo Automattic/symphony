@@ -2066,7 +2066,8 @@ defmodule SymphonyElixir.PrReviewPoller do
         interval
 
       _ ->
-        Config.settings!().polling.interval_ms
+        settings = Config.settings!()
+        settings.pr_review.poll_interval_ms || settings.polling.interval_ms
     end
   end
 end

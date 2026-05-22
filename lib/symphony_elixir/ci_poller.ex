@@ -1030,7 +1030,7 @@ defmodule SymphonyElixir.CiPoller do
 
       _ ->
         settings = Keyword.get(opts, :settings) || Config.settings!()
-        settings.ci.poll_interval_ms || settings.polling.interval_ms
+        settings.ci.poll_interval_ms || settings.pr_review.poll_interval_ms || settings.polling.interval_ms
     end
   end
 end

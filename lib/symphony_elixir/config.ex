@@ -339,9 +339,7 @@ defmodule SymphonyElixir.Config do
   defp validate_semantics(settings, system_config) do
     cond do
       is_nil(settings.agent.kind) ->
-        {:error,
-         {:invalid_workflow_config,
-          "agent.kind is required. Add `kind: codex` (or `kind: claude`) and `command: <your-command>` under your `agent:` key. The top-level `codex:` section has moved to `agent:`. Rename each field accordingly."}}
+        {:error, {:invalid_workflow_config, "agent.runtime is required. Add `runtime: codex` (or `runtime: claude`) and `command: <your-command>` under your `agent:` key."}}
 
       settings.agent.kind not in ["codex", "claude"] ->
         {:error, {:unsupported_agent_kind, settings.agent.kind}}
@@ -369,7 +367,7 @@ defmodule SymphonyElixir.Config do
   defp routing_repo_error_message(errors) do
     details = Enum.map_join(errors, ", ", &routing_repo_error_detail/1)
 
-    "repos routing rules are invalid: #{details}"
+    "repositories routing rules are invalid: #{details}"
   end
 
   defp routing_repo_error_detail({:unscoped_repo, repo}) do
@@ -483,7 +481,7 @@ defmodule SymphonyElixir.Config do
   defp validate_workspace_semantics(%Schema{workspace: %{strategy: "worktree"} = workspace, worker: worker}) do
     cond do
       not is_binary(workspace.repo) or String.trim(workspace.repo) == "" ->
-        {:error, {:invalid_workflow_config, "workspace.repo is required when workspace.strategy is worktree"}}
+        {:error, {:invalid_workflow_config, "workspaces.repo is required when workspaces.strategy is worktree"}}
 
       worker.ssh_hosts != [] ->
         :ok
@@ -509,7 +507,8 @@ defmodule SymphonyElixir.Config do
         :ok
 
       repo_names ->
-        {:error, {:invalid_workflow_config, "workspace.strategy is global but repos is multi-repo; move worktree configuration to repos[].workspace for: #{Enum.join(repo_names, ", ")}"}}
+        {:error,
+         {:invalid_workflow_config, "workspaces.strategy is global but repositories is multi-repo; move worktree configuration to repositories[].workspace for: #{Enum.join(repo_names, ", ")}"}}
     end
   end
 
@@ -573,7 +572,7 @@ defmodule SymphonyElixir.Config do
 
   defp find_repo(%SystemSchema{} = system_config, _repo_key) do
     case SystemSchema.primary_repo(system_config) do
-      nil -> {:error, {:invalid_symphony_config, "repos must include at least one repo"}}
+      nil -> {:error, {:invalid_symphony_config, "repositories must include at least one repo"}}
       repo -> {:ok, repo}
     end
   end
@@ -671,10 +670,10 @@ defmodule SymphonyElixir.Config do
   defp validate_local_worktree_repo_path(repo) do
     cond do
       not File.exists?(repo) ->
-        {:error, {:invalid_workflow_config, "workspace.repo does not exist: #{repo}"}}
+        {:error, {:invalid_workflow_config, "workspaces.repo does not exist: #{repo}"}}
 
       not File.dir?(repo) ->
-        {:error, {:invalid_workflow_config, "workspace.repo is not a directory: #{repo}"}}
+        {:error, {:invalid_workflow_config, "workspaces.repo is not a directory: #{repo}"}}
 
       true ->
         :ok
@@ -687,7 +686,7 @@ defmodule SymphonyElixir.Config do
         :ok
 
       {output, status} ->
-        {:error, {:invalid_workflow_config, "workspace.repo is not a valid git repository: #{repo} (git rev-parse exited #{status}: #{String.trim(output)})"}}
+        {:error, {:invalid_workflow_config, "workspaces.repo is not a valid git repository: #{repo} (git rev-parse exited #{status}: #{String.trim(output)})"}}
     end
   end
 

@@ -81,10 +81,10 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp configured_github_repos do
-    with {:ok, repos} <- Config.repos() do
+    with {:ok, system_config} <- Config.system() do
       repos =
-        repos
-        |> Enum.flat_map(&configured_repo_paths/1)
+        system_config.repos
+        |> Enum.flat_map(&configured_repo_paths(&1, system_config.workspace))
         |> Enum.map(&github_repo_from_git_origin/1)
         |> Enum.reject(&is_nil/1)
         |> Enum.uniq_by(&String.downcase/1)
@@ -93,17 +93,23 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
     end
   end
 
-  defp configured_repo_paths(repo) do
+  defp configured_repo_paths(repo, workspace) do
     [
       Map.get(repo, :path),
+      repo_workspace_path(repo),
+      workspace_repo_path(workspace),
       Config.settings_for_repo!(repo.name).workspace.repo
     ]
     |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
   rescue
     _error ->
-      [Map.get(repo, :path)]
+      [Map.get(repo, :path), repo_workspace_path(repo), workspace_repo_path(workspace)]
       |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
   end
+
+  defp repo_workspace_path(repo), do: repo |> Map.get(:workspace) |> workspace_repo_path()
+
+  defp workspace_repo_path(workspace), do: if(is_map(workspace), do: Map.get(workspace, :repo), else: nil)
 
   defp github_repo_from_git_origin(path) when is_binary(path) do
     GitHubRepo.from_url(path) || github_repo_from_git_dir(path)

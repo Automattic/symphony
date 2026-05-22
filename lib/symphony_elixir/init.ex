@@ -10,15 +10,15 @@ defmodule SymphonyElixir.Init do
   @aliases [f: :force]
   @usage "Usage: symphony init [--force]"
   @scaffold """
-  tracker:
-    kind: linear
-  workspace:
+  issues:
+    provider: linear
+  workspaces:
     root: .symphony/workspaces
   agent:
-    kind: codex
+    runtime: codex
     command: codex app-server
-  repos:
-    - name: default
+  repositories:
+    - key: default
       workflow: WORKFLOW.md
   """
 

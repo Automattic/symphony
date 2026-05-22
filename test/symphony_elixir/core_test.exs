@@ -67,12 +67,13 @@ defmodule SymphonyElixir.CoreTest do
     end
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "polling.interval_ms"
+    assert message =~ "issues.poll_interval_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
 
     write_workflow_file!(Workflow.workflow_file_path(),
+      pr_review_mode: "polling",
       ci: %{
         enabled: true,
         poll_interval_ms: 15_000,
@@ -85,12 +86,14 @@ defmodule SymphonyElixir.CoreTest do
 
     assert %{
              enabled: true,
-             poll_interval_ms: 15_000,
+             poll_interval_ms: nil,
              log_excerpt_lines: 50,
              flaky_retry: false,
              max_retries: 1,
              escalation_state: "Blocked"
            } = Config.settings!().ci
+
+    assert Config.settings!().pr_review.poll_interval_ms == 15_000
 
     write_workflow_file!(Workflow.workflow_file_path(), ci: %{escalation_state: ""})
     assert Config.settings!().ci.escalation_state == "In Review"
@@ -105,7 +108,7 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), ci: %{enabled: true, max_retries: 0})
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "ci.max_retries"
+    assert message =~ "pull_requests.checks.max_fix_attempts"
 
     review_agent_config =
       %ReviewAgentConfig{}
@@ -120,14 +123,14 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.max_turns"
+    assert message =~ "agent.limits.max_turns"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "tracker.active_states"
+    assert message =~ "issues.states.active"
 
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
     System.delete_env("LINEAR_API_KEY")
@@ -236,11 +239,11 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: 123)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.approval_policy"
+    assert message =~ "agent.permissions.approval_policy"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_thread_sandbox: 123)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.thread_sandbox"
+    assert message =~ "agent.permissions.filesystem.sandbox"
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
@@ -300,11 +303,11 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "pr_review.cooldown_minutes"
+    assert message =~ "pull_requests.review_comments.rework_delay_minutes"
 
     write_workflow_file!(Workflow.workflow_file_path(), pr_review_mode: "invalid")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "pr_review.mode"
+    assert message =~ "pull_requests.enabled"
 
     assert {:ok, config} =
              Schema.parse(%{
@@ -332,24 +335,24 @@ defmodule SymphonyElixir.CoreTest do
 
     assert {:ok, system_config} = Workflow.load_symphony()
 
-    tracker = Map.get(system_config, "tracker", %{})
-    assert is_map(tracker)
-    assert Map.get(tracker, "kind") == "linear"
-    assert is_list(Map.get(tracker, "active_states"))
-    assert is_list(Map.get(tracker, "terminal_states"))
+    issues = Map.get(system_config, "issues", %{})
+    assert is_map(issues)
+    assert Map.get(issues, "provider") == "linear"
+    assert is_list(get_in(issues, ["states", "active"]))
+    assert is_list(get_in(issues, ["states", "terminal"]))
 
-    repos = Map.get(system_config, "repos")
+    repositories = Map.get(system_config, "repositories")
+    repo_scopes = Enum.flat_map(repositories, &(get_in(&1, ["route", "projects"]) || []))
 
-    assert is_binary(Map.get(tracker, "project_slug")) or
-             Enum.any?(repos, &(Map.get(&1, "projects", []) != []))
+    assert is_binary(get_in(issues, ["linear", "scope", "project_slug"])) or repo_scopes != []
 
-    workspace = Map.get(system_config, "workspace", %{})
-    assert is_map(workspace)
-    refute Map.has_key?(workspace, "strategy")
-    refute Map.has_key?(workspace, "repo")
+    workspaces = Map.get(system_config, "workspaces", %{})
+    assert is_map(workspaces)
+    refute Map.has_key?(workspaces, "strategy")
+    refute Map.has_key?(workspaces, "repo")
 
     assert %{"workflow" => "WORKFLOW.md", "workspace" => repo_workspace} =
-             Enum.find(repos, &(Map.get(&1, "name") == "symphony"))
+             Enum.find(repositories, &(Map.get(&1, "key") == "symphony"))
 
     assert Map.get(repo_workspace, "strategy") == "worktree"
     assert Map.get(repo_workspace, "repo") == "~/Projects/symphony"
@@ -2004,7 +2007,7 @@ defmodule SymphonyElixir.CoreTest do
 
   test "prompt builder leaves repo_key absent when config cannot resolve a primary repo" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Repo {{ repo_key }}")
-    File.write!(Workflow.symphony_file_path(), "repos: []\n")
+    File.write!(Workflow.symphony_file_path(), "repositories: []\n")
     if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
 
     assert PromptBuilder.build_prompt(%{

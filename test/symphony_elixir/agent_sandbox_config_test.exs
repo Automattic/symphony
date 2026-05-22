@@ -602,9 +602,16 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
   test "operator workspace sandbox allow_read_paths flows into rendered Codex deny list" do
     assert {:ok, system_config} =
              SystemSchema.parse(%{
-               "repos" => [%{"name" => "default"}],
-               "workspace" => %{"sandbox" => %{"allow_read_paths" => ["~/.npmrc", "~/.claude/projects"]}},
-               "agent" => %{"kind" => "codex", "command" => "codex app-server"}
+               "repositories" => [%{"key" => "default"}],
+               "agent" => %{
+                 "runtime" => "codex",
+                 "command" => "codex app-server",
+                 "permissions" => %{
+                   "filesystem" => %{
+                     "allow_read_paths" => ["~/.npmrc", "~/.claude/projects"]
+                   }
+                 }
+               }
              })
 
     assert {:ok, settings} = system_config |> SystemSchema.to_config_map() |> Schema.parse()

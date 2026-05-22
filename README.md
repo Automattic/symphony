@@ -41,7 +41,7 @@ stops the active agent for that issue and cleans up matching workspaces.
 - **Run**: one attempt to make progress on a Linear issue.
 - **Workspace**: the isolated checkout or worktree for a run.
 - **Tracker**: the system Symphony polls for work, currently Linear.
-- **Repo route**: an entry under `repos:` in `symphony.yml` that pairs a local checkout with its
+- **Repo route**: an entry under `repositories:` in `symphony.yml` that pairs a local checkout with its
   `WORKFLOW.md` and optional Linear selectors. One Symphony process can supervise many repo routes.
 - **Quality gate**: the optional pre-dispatch check that decides whether an issue is clear enough
   for an agent.
@@ -99,8 +99,8 @@ workflow prompts that let coding agents work safely.
    ```
 
 3. Run `mise exec -- ./bin/symphony init` from the operator repo to scaffold `symphony.yml`, then
-   edit the deterministic operator fields such as tracker scope, agent command, workspace root, and
-   `repos:`.
+   edit the deterministic operator fields such as issue scope, agent command, workspace root, and
+   `repositories:`.
 4. Invoke the `symphony-init-workflow` skill from Codex or Claude in each target repo so the agent
    inspects the repo and writes a tailored `WORKFLOW.md`.
 5. Start Symphony from this repository root:
@@ -109,9 +109,9 @@ workflow prompts that let coding agents work safely.
    mise exec -- ./bin/symphony
    ```
 
-The LiveView dashboard is available at `http://127.0.0.1:4000` by default when observability is
+The LiveView dashboard is available at `http://127.0.0.1:4000` by default when the dashboard is
 enabled. Orchestrator snapshots are published to an ETS cache on a configurable
-`observability.snapshot_publish_ms` cadence so dashboard reads do not block the orchestration loop.
+`dashboard.snapshot_publish_ms` cadence so dashboard reads do not block the orchestration loop.
 
 The dashboard also exposes an Audit tab at `/audit`, with filters, per-record expansion, daily
 hash-chain verification, and NDJSON export. The same filtered audit stream is available from
@@ -127,10 +127,11 @@ to bind directly, set `SYMPHONY_ALLOW_REMOTE_BIND=1`.
 
 Symphony reads two files:
 
-- **`symphony.yml`**: operator config for tracker settings, workspaces, agents, pollers, gates,
-  notifications, and the `repos:` list. Plain YAML, no front-matter fences.
+- **`symphony.yml`**: operator config for issue-source settings, workspaces, agents, pollers,
+  gates, notifications, and the `repositories:` list. Plain YAML, no front-matter fences.
 - **`WORKFLOW.md`**: repo-local prompt body and per-repo hooks. YAML front matter between two
-  `---` lines, then the prompt template. Each repo listed under `repos:` has its own `WORKFLOW.md`.
+  `---` lines, then the prompt template. Each repo listed under `repositories:` has its own
+  `WORKFLOW.md`.
 
 Start Symphony from a directory containing `symphony.yml`:
 
@@ -170,25 +171,25 @@ Pass `--config` to point at a different operator config:
 
 If `--config` is omitted, Symphony reads `./symphony.yml` from the current working directory and
 exits with an error if it is missing. Per-repo `WORKFLOW.md` files are resolved from each entry
-under `repos:` and never need to be passed on the command line.
+under `repositories:` and never need to be passed on the command line.
 
 Minimal `symphony.yml`:
 
 ```yaml
-tracker:
-  kind: linear
-  project_slug: "..."
-workspace:
+issues:
+  provider: linear
+  linear:
+    scope:
+      project_slug: "..."
+workspaces:
   root: ~/code/workspaces
 agent:
-  kind: codex
+  runtime: codex
   command: codex app-server
-pr_review:
-  mode: tracker
-repos:
-  - name: my-repo
+repositories:
+  - key: my-repo
     workflow: ./WORKFLOW.md
-# quality_gate is omitted here, so issues are dispatched without LLM scoring.
+# issue_gate is omitted here, so issues are dispatched without LLM scoring.
 ```
 
 Minimal `WORKFLOW.md`:
@@ -222,13 +223,13 @@ For issue-mode runs, Symphony bootstraps the configured tracker before the first
 moving `Todo` issues to `In Progress` and creating the configured workpad comment if one is not
 already present. Agents still own reconciling and updating that workpad during execution.
 
-When `agent.include_project_guides` is enabled, Symphony can append repo prose guides to the
+When `agent.prompts.include_project_guides` is enabled, Symphony can append repo prose guides to the
 rendered prompt without enabling agent runtime settings discovery. The default is `CLAUDE.md` for
 Claude and no extra files for Codex, since Codex already discovers workspace `AGENTS.md`; set
-`agent.project_guide_files` to an explicit relative-path list to override either default.
+`agent.prompts.project_guide_files` to an explicit relative-path list to override either default.
 
-The quality gate is disabled by default. To opt in, set `quality_gate.enabled: true` and provide
-`ANTHROPIC_API_KEY` or configure another provider/model under `quality_gate`.
+The issue gate is disabled by default. To opt in, set `issue_gate.enabled: true` and provide
+`ANTHROPIC_API_KEY` or configure another provider/model under `issue_gate`.
 
 For the full reference of supported keys, defaults, and CLI flags, see
 [docs/configuration.md](docs/configuration.md).

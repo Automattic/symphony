@@ -32,7 +32,7 @@ defmodule SymphonyElixir.InitTest do
     assert message =~ "--- symphony.yml"
     assert message =~ "+++ symphony.yml (generated)"
     assert message =~ "-repos: []"
-    assert message =~ "+tracker:"
+    assert message =~ "+issues:"
   end
 
   test "force overwrites an existing symphony.yml" do

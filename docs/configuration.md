@@ -324,6 +324,16 @@ An optional outer-sandbox wrapper using `@anthropic-ai/sandbox-runtime`.
   from commands launched beneath Codex. Treat this as an additional OS guardrail, not a complete
   credential isolation boundary.
 
+Known issue: Codex app-server stdio can fail under SRT with
+`codex_app_server_transport::transport::stdio: Failed to write to stdout: Resource temporarily unavailable (os error 35)`.
+This has been observed around bursty/larger app-server protocol frames, often while SRT-wrapped
+Codex is also logging network-side failures. Symphony drains stdout in a dedicated process and
+compacts noisy notification fields after decoding, but it cannot compact or retry a frame that
+Codex fails to write before Symphony receives it. For stability-sensitive runs, prefer disabling
+SRT for Codex until Codex/SRT stdio behavior is hardened. Debug logs include `Codex stdout frame`
+entries with raw byte counts, method, item type/status, and noisy-field byte counts to correlate
+the last successfully received frames before a stdio write failure.
+
 #### `agent.mcp`
 
 Controls which MCP servers the agent can reach. Symphony always exposes its built-in `symphony`

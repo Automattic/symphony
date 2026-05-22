@@ -61,6 +61,12 @@ shared `<source>/.git/objects` database; this is an intentional cleanup/blast-ra
 SRT-wrapped Codex can commit normally while config, hooks, packed refs, and other high-risk Git
 metadata stay write-protected.
 
+**Known issue.** Codex app-server sessions wrapped by SRT can fail while writing stdout with
+`Resource temporarily unavailable (os error 35)`, surfaced by Symphony as
+`:codex_stdio_write_failed`. Symphony drains and compacts app-server output after receipt, but this
+failure occurs before the frame reaches Symphony. Disable SRT for Codex on stability-sensitive runs
+until the Codex/SRT stdio behavior is hardened.
+
 ### Network access controls
 
 `agent.network_access` supports `allowlist`, `block`, and `open`. `denied_domains` always

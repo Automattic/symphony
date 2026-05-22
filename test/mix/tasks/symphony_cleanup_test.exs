@@ -2,6 +2,7 @@ defmodule Mix.Tasks.Symphony.CleanupTest do
   use ExUnit.Case, async: false
 
   alias Mix.Tasks.Symphony.Cleanup
+  alias SymphonyElixir.Config.Cache
 
   setup do
     previous_shell = Mix.shell()
@@ -9,6 +10,7 @@ defmodule Mix.Tasks.Symphony.CleanupTest do
     previous_logs_root = Application.get_env(:symphony_elixir, :logs_root_override)
     previous_log_file = Application.get_env(:symphony_elixir, :log_file)
     previous_temp_roots = Application.get_env(:symphony_elixir, :storage_inventory_temp_roots_override)
+    previous_symphony_file = Application.get_env(:symphony_elixir, :symphony_file_path)
     Mix.shell(Mix.Shell.Process)
 
     test_root =
@@ -23,6 +25,8 @@ defmodule Mix.Tasks.Symphony.CleanupTest do
       restore_app_env(:logs_root_override, previous_logs_root)
       restore_app_env(:log_file, previous_log_file)
       restore_app_env(:storage_inventory_temp_roots_override, previous_temp_roots)
+      restore_app_env(:symphony_file_path, previous_symphony_file)
+      Cache.clear()
       File.rm_rf(test_root)
     end)
 
@@ -104,6 +108,88 @@ defmodule Mix.Tasks.Symphony.CleanupTest do
 
     assert_receive {:mix_shell, :info, [output]}
     assert output =~ "symphony-mcp-default"
+  end
+
+  test "uses the last repeated root flag", %{
+    test_root: test_root
+  } do
+    first_state_root = Path.join(test_root, "first-state")
+    last_state_root = Path.join(test_root, "last-state")
+    first_logs_root = Path.join(test_root, "first-logs")
+    last_logs_root = Path.join(test_root, "last-logs")
+    first_workspace_root = Path.join(test_root, "first-workspaces")
+    last_workspace_root = Path.join(test_root, "last-workspaces")
+
+    File.mkdir_p!(Path.join(last_state_root, "audit"))
+    File.write!(Path.join([last_state_root, "audit", "2026-05-22.ndjson"]), "{}\n")
+    File.mkdir_p!(last_logs_root)
+    File.write!(Path.join(last_logs_root, "symphony.log"), "log\n")
+    File.mkdir_p!(last_workspace_root)
+    File.write!(Path.join(last_workspace_root, "workspace.txt"), "workspace\n")
+
+    Cleanup.run([
+      "--dry-run",
+      "--state-root",
+      first_state_root,
+      "--state-root",
+      last_state_root,
+      "--logs-root",
+      first_logs_root,
+      "--logs-root",
+      last_logs_root,
+      "--workspace-root",
+      first_workspace_root,
+      "--workspace-root",
+      last_workspace_root
+    ])
+
+    assert_receive {:mix_shell, :info, [output]}
+    assert output =~ "state_root: #{last_state_root}"
+    assert output =~ "logs_root: #{last_logs_root}"
+    assert output =~ "workspace_root: #{last_workspace_root}"
+    assert output =~ "2026-05-22"
+  end
+
+  test "uses configured roots when root flags are omitted", %{
+    test_root: test_root
+  } do
+    workspace_root = Path.join(test_root, "configured-workspaces")
+    config_path = write_symphony_config!(test_root, workspace_root)
+
+    Cleanup.run([
+      "--dry-run",
+      "--config",
+      config_path,
+      "--temp-root",
+      Path.join(test_root, "tmp")
+    ])
+
+    assert_receive {:mix_shell, :info, [output]}
+    assert output =~ "workspace_root: #{workspace_root}"
+  end
+
+  defp write_symphony_config!(root, workspace_root) do
+    workflow_path = Path.join(root, "WORKFLOW.md")
+    symphony_path = Path.join(root, "symphony.yml")
+
+    File.mkdir_p!(root)
+    File.write!(workflow_path, "---\n{}\n---\nTest workflow.\n")
+
+    File.write!(symphony_path, """
+    issues:
+      provider: memory
+    repositories:
+      - key: cleanup-task-test
+        default: true
+        workflow: WORKFLOW.md
+    workspaces:
+      root: #{workspace_root}
+    agent:
+      runtime: codex
+      command: codex app-server
+    """)
+
+    symphony_path
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)

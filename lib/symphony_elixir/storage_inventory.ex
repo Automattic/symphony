@@ -45,6 +45,7 @@ defmodule SymphonyElixir.StorageInventory do
     workspace_root = workspace_root(opts)
     run_store = Path.join(state_root, "run_store")
     audit_root = Path.join(state_root, "audit")
+    audit_usage = path_usage(audit_root)
 
     %{
       roots: %{
@@ -54,11 +55,11 @@ defmodule SymphonyElixir.StorageInventory do
       },
       usage: %{
         app_logs: path_usage(logs_root),
-        audit: path_usage(audit_root),
+        audit: audit_usage,
         run_store: path_usage(run_store),
         workspace_root: path_usage(workspace_root)
       },
-      audit_root: path_usage(audit_root),
+      audit_root: audit_usage,
       audit_days: audit_days(audit_root),
       core_dirs: [
         %{

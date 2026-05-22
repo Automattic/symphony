@@ -65,9 +65,13 @@ defmodule Mix.Tasks.Symphony.Cleanup do
 
   defp inventory_opts(opts) do
     root_opts =
-      opts
-      |> Keyword.take([:state_root, :logs_root, :workspace_root])
-      |> Enum.map(fn {key, path} -> {key, Path.expand(path)} end)
+      [:state_root, :logs_root, :workspace_root]
+      |> Enum.flat_map(fn key ->
+        case Keyword.get_values(opts, key) do
+          [] -> []
+          values -> [{key, values |> List.last() |> Path.expand()}]
+        end
+      end)
 
     case Keyword.get_values(opts, :temp_root) do
       [] -> root_opts

@@ -1,10 +1,13 @@
 defmodule SymphonyElixir.StorageInventoryTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.Config.Cache
   alias SymphonyElixir.StorageInventory
+  alias SymphonyElixir.Workflow
 
   setup do
     previous_temp_roots = Application.get_env(:symphony_elixir, :storage_inventory_temp_roots_override)
+    previous_symphony_file = Application.get_env(:symphony_elixir, :symphony_file_path)
 
     test_root =
       Path.join(
@@ -14,6 +17,8 @@ defmodule SymphonyElixir.StorageInventoryTest do
 
     on_exit(fn ->
       restore_app_env(:storage_inventory_temp_roots_override, previous_temp_roots)
+      restore_app_env(:symphony_file_path, previous_symphony_file)
+      Cache.clear()
       File.rm_rf(test_root)
     end)
 
@@ -112,12 +117,14 @@ defmodule SymphonyElixir.StorageInventoryTest do
 
   test "uses configured defaults when explicit roots are omitted", %{temp_root: temp_root} do
     Application.put_env(:symphony_elixir, :storage_inventory_temp_roots_override, [temp_root])
+    workspace_root = Path.join(temp_root, "configured-workspaces")
+    write_symphony_config!(temp_root, workspace_root)
 
     report = StorageInventory.inventory()
 
     assert is_binary(report.roots.state_root)
     assert is_binary(report.roots.logs_root)
-    assert is_binary(report.roots.workspace_root)
+    assert report.roots.workspace_root == workspace_root
   end
 
   test "formats human byte units" do
@@ -143,6 +150,31 @@ defmodule SymphonyElixir.StorageInventoryTest do
 
   defp usage(path, bytes) do
     %{path: path, status: :ok, bytes: bytes, files: 1, dirs: 0, errors: []}
+  end
+
+  defp write_symphony_config!(root, workspace_root) do
+    workflow_path = Path.join(root, "WORKFLOW.md")
+    symphony_path = Path.join(root, "symphony.yml")
+
+    File.mkdir_p!(root)
+    File.write!(workflow_path, "---\n{}\n---\nTest workflow.\n")
+
+    File.write!(symphony_path, """
+    issues:
+      provider: memory
+    repositories:
+      - key: storage-inventory-test
+        default: true
+        workflow: WORKFLOW.md
+    workspaces:
+      root: #{workspace_root}
+    agent:
+      runtime: codex
+      command: codex app-server
+    """)
+
+    Workflow.set_symphony_file_path(symphony_path)
+    Cache.clear()
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)

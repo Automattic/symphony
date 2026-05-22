@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.StatusDashboardSnapshotTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.StatusDashboard.Renderer
   alias SymphonyElixir.TestSupport.Snapshot
 
   @terminal_columns 115
@@ -334,6 +335,31 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     refute backoff_line =~ "\\n"
   end
 
+  test "backoff queue row preserves comma-space sequences in retry errors" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [
+           retry_entry(%{
+             identifier: "MT-981",
+             attempt: 1,
+             due_in_ms: 1_500,
+             error: "rate limit, quota, retry after delay"
+           })
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+    [backoff_line] = plain |> String.split("\n") |> Enum.filter(&String.contains?(&1, "MT-981"))
+
+    assert backoff_line =~ "error=rate limit, quota, retry after delay"
+    refute plain =~ ~r/error=rate limit\r?\nquota/
+  end
+
   test "snapshot fixture: unlimited credits variant" do
     snapshot_data =
       {:ok,
@@ -498,7 +524,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
   end
 
   defp render_snapshot(snapshot_data, tps) do
-    StatusDashboard.format_snapshot_content_for_test(snapshot_data, tps, @terminal_columns)
+    Renderer.format_snapshot_content(snapshot_data, tps, @terminal_columns)
   end
 
   defp running_entry(overrides) do

@@ -3659,27 +3659,15 @@ defmodule SymphonyElixir.Codex.AppServer do
       after
         1_000 ->
           Process.exit(pid, :kill)
-          :ok
+          close_owned_port(port)
       end
     else
-      :ok
+      close_owned_port(port)
     end
   end
 
   defp stop_port(port, _stdout_pump) when is_port(port) do
-    case :erlang.port_info(port) do
-      :undefined ->
-        :ok
-
-      _ ->
-        try do
-          Port.close(port)
-          :ok
-        rescue
-          ArgumentError ->
-            :ok
-        end
-    end
+    close_owned_port(port)
   end
 
   @spec start_stdout_pump(port()) :: {:ok, stdout_pump()} | {:error, term()}
@@ -3719,7 +3707,6 @@ defmodule SymphonyElixir.Codex.AppServer do
         stdout_pump_loop(%{state | pending_line: state.pending_line <> to_string(chunk)})
 
       {^port, {:exit_status, status}} ->
-        maybe_send_stdout_pending_line(state)
         send(owner, {:codex_stdout_exit, port, ref, status})
         :ok
 
@@ -3736,12 +3723,6 @@ defmodule SymphonyElixir.Codex.AppServer do
         Logger.debug("Codex stdout pump received unexpected message: #{inspect(message)}")
         stdout_pump_loop(state)
     end
-  end
-
-  defp maybe_send_stdout_pending_line(%{pending_line: ""}), do: :ok
-
-  defp maybe_send_stdout_pending_line(%{owner: owner, port: port, ref: ref, pending_line: pending_line}) do
-    send(owner, {:codex_stdout_line, port, ref, pending_line})
   end
 
   defp close_owned_port(port) do

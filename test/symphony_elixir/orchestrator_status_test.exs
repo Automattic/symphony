@@ -2230,8 +2230,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert %{since: ^since, consecutive_failures: 3} = state.tracker_health
 
+    config_failure_fetcher = fn _repo ->
+      {:error, {:invalid_workflow_config, "notifications.channels entries with kind: slack require webhook_url"}}
+    end
+
     assert {:ok, %{dispatchable: []}, state} =
-             Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, success_fetcher, 15_000)
+             Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, config_failure_fetcher, 15_000)
+
+    assert %{
+             reason: {:invalid_workflow_config, "notifications.channels entries with kind: slack require webhook_url"},
+             consecutive_failures: 4
+           } = state.tracker_health
+
+    assert {:ok, %{dispatchable: []}, state} =
+             Orchestrator.poll_candidate_issue_buckets_for_test(state, repos, success_fetcher, 20_000)
 
     assert %{tracker: :linear, reason: nil, since: nil, consecutive_failures: 0} = state.tracker_health
   end

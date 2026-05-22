@@ -218,10 +218,48 @@ defmodule SymphonyElixir.DispatchStateTest do
       assert [%{reason: :linear_api_request}] =
                DispatchState.compute(state, base_config(), full_env()).blockers
 
+      message = "notifications.channels entries with kind: slack require webhook_url"
+      invalid_message = "Invalid WORKFLOW.md config: #{message}"
+      state = put_in(state, [:tracker_health, :reason], {:invalid_workflow_config, message})
+
+      assert [%{kind: :config_invalid, message: ^invalid_message}] =
+               DispatchState.compute(state, base_config(), full_env()).blockers
+
+      state = put_in(state, [:tracker_health, :reason], :missing_linear_scoping_filter)
+
+      assert [%{kind: :config_invalid, message: "Linear scoping filter missing in WORKFLOW.md"}] =
+               DispatchState.compute(state, base_config(), full_env()).blockers
+
       state = put_in(state, [:tracker_health, :reason], :rate_limited)
 
       assert [%{reason: :unknown}] =
                DispatchState.compute(state, base_config(), full_env()).blockers
+    end
+
+    test "tracker health config failures become config invalid blockers" do
+      for {reason, expected_message} <- [
+            {{:invalid_workflow_config, "WORKFLOW.md: agent.runtime is required"}, "Invalid WORKFLOW.md config: agent.runtime is required"},
+            {{:invalid_workflow_config, "symphony.yml: repositories is invalid"}, "Invalid symphony.yml config: repositories is invalid"},
+            {:missing_tracker_kind, "Tracker kind missing in WORKFLOW.md"},
+            {{:unsupported_tracker_kind, "jira"}, ~s(Unsupported tracker kind in WORKFLOW.md: "jira")},
+            {{:unsupported_agent_kind, "shell"}, ~s(Unsupported agent runtime in WORKFLOW.md: "shell")},
+            {{:missing_workflow_file, "/tmp/missing/WORKFLOW.md", :enoent}, "Missing WORKFLOW.md at /tmp/missing/WORKFLOW.md: :enoent"},
+            {:workflow_front_matter_not_a_map, "Failed to parse WORKFLOW.md: workflow front matter must decode to a map"},
+            {{:workflow_parse_error, {:unexpected_token, "["}}, ~s(Failed to parse WORKFLOW.md: {:unexpected_token, "["})},
+            {{:config_invalid, "Existing normalized message"}, "Existing normalized message"}
+          ] do
+        state =
+          base_state()
+          |> Map.put(:tracker_health, %{
+            tracker: "linear",
+            reason: reason,
+            since: ~U[2026-05-08 10:00:00Z],
+            consecutive_failures: 3
+          })
+
+        assert [%{kind: :config_invalid, message: ^expected_message}] =
+                 DispatchState.compute(state, base_config(), full_env()).blockers
+      end
     end
 
     test "tracker unavailable supports custom thresholds and tracker normalization" do

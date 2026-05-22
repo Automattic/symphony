@@ -18,6 +18,12 @@ defmodule SymphonyElixir.DispatchState do
             }
           | %{kind: :missing_api_key, provider: atom()}
           | %{
+              kind: :config_invalid,
+              message: String.t(),
+              since: DateTime.t(),
+              consecutive_failures: non_neg_integer()
+            }
+          | %{
               kind: :tracker_unavailable,
               tracker: atom(),
               reason: atom(),
@@ -130,22 +136,35 @@ defmodule SymphonyElixir.DispatchState do
     threshold = tracker_unavailable_threshold(config)
 
     if is_integer(consecutive_failures) and consecutive_failures >= threshold and match?(%DateTime{}, since) do
-      [
-        %{
-          kind: :tracker_unavailable,
-          tracker: normalize_tracker(Map.get(tracker_health, :tracker)),
-          reason: normalize_tracker_unavailable_reason(Map.get(tracker_health, :reason)),
-          since: since,
-          consecutive_failures: consecutive_failures
-        }
-        | blockers
-      ]
+      reason = normalize_tracker_unavailable_reason(Map.get(tracker_health, :reason))
+      tracker = normalize_tracker(Map.get(tracker_health, :tracker))
+
+      [tracker_blocker(tracker, reason, since, consecutive_failures) | blockers]
     else
       blockers
     end
   end
 
   defp maybe_tracker_unavailable(blockers, _state, _config), do: blockers
+
+  defp tracker_blocker(_tracker, {:config_invalid, message}, since, consecutive_failures) do
+    %{
+      kind: :config_invalid,
+      message: message,
+      since: since,
+      consecutive_failures: consecutive_failures
+    }
+  end
+
+  defp tracker_blocker(tracker, reason, since, consecutive_failures) do
+    %{
+      kind: :tracker_unavailable,
+      tracker: tracker,
+      reason: reason,
+      since: since,
+      consecutive_failures: consecutive_failures
+    }
+  end
 
   defp tracker_unavailable_threshold(%{tracker_unavailable_threshold: threshold})
        when is_integer(threshold) and threshold > 0 do
@@ -164,5 +183,46 @@ defmodule SymphonyElixir.DispatchState do
   defp normalize_tracker_unavailable_reason(:missing_linear_api_token), do: :missing_linear_api_token
   defp normalize_tracker_unavailable_reason(:linear_api_request), do: :linear_api_request
   defp normalize_tracker_unavailable_reason({:linear_api_request, _reason}), do: :linear_api_request
-  defp normalize_tracker_unavailable_reason(_reason), do: :unknown
+
+  defp normalize_tracker_unavailable_reason(reason) do
+    case config_invalid_message(reason) do
+      message when is_binary(message) -> {:config_invalid, message}
+      nil -> :unknown
+    end
+  end
+
+  defp config_invalid_message({:invalid_workflow_config, message}) when is_binary(message) do
+    invalid_workflow_config_message(message)
+  end
+
+  defp config_invalid_message(:missing_linear_scoping_filter),
+    do: "Linear scoping filter missing in WORKFLOW.md"
+
+  defp config_invalid_message(:missing_tracker_kind), do: "Tracker kind missing in WORKFLOW.md"
+
+  defp config_invalid_message({:unsupported_tracker_kind, kind}),
+    do: "Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}"
+
+  defp config_invalid_message({:unsupported_agent_kind, kind}),
+    do: "Unsupported agent runtime in WORKFLOW.md: #{inspect(kind)}"
+
+  defp config_invalid_message({:missing_workflow_file, path, reason}),
+    do: "Missing WORKFLOW.md at #{path}: #{inspect(reason)}"
+
+  defp config_invalid_message(:workflow_front_matter_not_a_map),
+    do: "Failed to parse WORKFLOW.md: workflow front matter must decode to a map"
+
+  defp config_invalid_message({:workflow_parse_error, reason}),
+    do: "Failed to parse WORKFLOW.md: #{inspect(reason)}"
+
+  defp config_invalid_message({:config_invalid, message}) when is_binary(message), do: message
+  defp config_invalid_message(_reason), do: nil
+
+  defp invalid_workflow_config_message("WORKFLOW.md: " <> message),
+    do: "Invalid WORKFLOW.md config: #{message}"
+
+  defp invalid_workflow_config_message("symphony.yml: " <> message),
+    do: "Invalid symphony.yml config: #{message}"
+
+  defp invalid_workflow_config_message(message), do: "Invalid WORKFLOW.md config: #{message}"
 end

@@ -952,6 +952,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp tracker_failure_reason(:missing_linear_api_token), do: :missing_linear_api_token
   defp tracker_failure_reason(:linear_api_request), do: :linear_api_request
   defp tracker_failure_reason({:linear_api_request, _reason}), do: :linear_api_request
+  defp tracker_failure_reason(:missing_linear_scoping_filter), do: :missing_linear_scoping_filter
+  defp tracker_failure_reason(:missing_tracker_kind), do: :missing_tracker_kind
+  defp tracker_failure_reason(:workflow_front_matter_not_a_map), do: :workflow_front_matter_not_a_map
+  defp tracker_failure_reason({:unsupported_tracker_kind, _kind} = reason), do: reason
+  defp tracker_failure_reason({:unsupported_agent_kind, _kind} = reason), do: reason
+  defp tracker_failure_reason({:missing_workflow_file, _path, _reason} = reason), do: reason
+  defp tracker_failure_reason({:workflow_parse_error, _reason} = reason), do: reason
+
+  defp tracker_failure_reason({:invalid_workflow_config, message}) when is_binary(message),
+    do: {:invalid_workflow_config, message}
+
   defp tracker_failure_reason(_reason), do: :unknown
 
   @doc false

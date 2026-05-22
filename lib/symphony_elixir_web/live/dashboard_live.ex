@@ -938,6 +938,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp blocker_label(%{kind: :missing_api_key, provider: provider}),
     do: "Missing #{provider |> to_string() |> String.upcase()} API key"
 
+  defp blocker_label(%{kind: :config_invalid}), do: "Config invalid"
+
   defp blocker_label(%{kind: :tracker_unavailable, tracker: tracker}),
     do: "#{tracker |> tracker_name() |> String.capitalize()} tracker unavailable"
 
@@ -953,6 +955,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp blocker_detail(%{kind: :missing_api_key}),
     do: "set the env var and restart symphony"
+
+  defp blocker_detail(%{
+         kind: :config_invalid,
+         message: message,
+         since: since,
+         consecutive_failures: consecutive_failures
+       }) do
+    [
+      message,
+      "#{format_compact_int(consecutive_failures)} consecutive failures",
+      since && "since #{since}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" — ")
+  end
 
   defp blocker_detail(%{
          kind: :tracker_unavailable,

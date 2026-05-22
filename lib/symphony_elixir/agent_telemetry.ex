@@ -201,29 +201,21 @@ defmodule SymphonyElixir.AgentTelemetry do
   defp rate_limit_payloads(payload) when is_map(payload) do
     payload
     |> Map.values()
-    |> Enum.reduce_while(nil, fn
-      value, nil ->
-        case rate_limits_from_payload(value) do
-          nil -> {:cont, nil}
-          rate_limits -> {:halt, rate_limits}
-        end
-
-      _value, result ->
-        {:halt, result}
+    |> Enum.reduce_while(nil, fn value, nil ->
+      case rate_limits_from_payload(value) do
+        nil -> {:cont, nil}
+        rate_limits -> {:halt, rate_limits}
+      end
     end)
   end
 
   defp rate_limit_payloads(payload) when is_list(payload) do
     payload
-    |> Enum.reduce_while(nil, fn
-      value, nil ->
-        case rate_limits_from_payload(value) do
-          nil -> {:cont, nil}
-          rate_limits -> {:halt, rate_limits}
-        end
-
-      _value, result ->
-        {:halt, result}
+    |> Enum.reduce_while(nil, fn value, nil ->
+      case rate_limits_from_payload(value) do
+        nil -> {:cont, nil}
+        rate_limits -> {:halt, rate_limits}
+      end
     end)
   end
 
@@ -253,8 +245,6 @@ defmodule SymphonyElixir.AgentTelemetry do
     end)
   end
 
-  defp explicit_map_at_paths(_payload, _paths), do: nil
-
   defp map_at_path(payload, path) when is_map(payload) and is_list(path) do
     Enum.reduce_while(path, payload, fn key, acc ->
       if is_map(acc) and Map.has_key?(acc, key) do
@@ -264,8 +254,6 @@ defmodule SymphonyElixir.AgentTelemetry do
       end
     end)
   end
-
-  defp map_at_path(_payload, _path), do: nil
 
   defp integer_token_map?(payload) do
     token_fields = [

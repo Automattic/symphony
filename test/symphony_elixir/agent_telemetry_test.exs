@@ -66,6 +66,40 @@ defmodule SymphonyElixir.AgentTelemetryTest do
     assert AgentTelemetry.get_token_usage(usage, :total) == 12_500
   end
 
+  test "extracts alternate token usage payload shapes" do
+    usage = %{"input_tokens" => 10, "output_tokens" => 5}
+
+    assert AgentTelemetry.turn_completed_usage_from_payload(%{
+             "method" => "turn/completed",
+             "usage" => usage
+           }) == usage
+
+    assert AgentTelemetry.turn_completed_usage_from_payload(%{
+             "method" => "turn/completed",
+             "params" => %{"usage" => usage}
+           }) == usage
+
+    assert AgentTelemetry.turn_completed_usage_from_payload(%{
+             method: :turn_completed,
+             params: %{usage: usage}
+           }) == usage
+  end
+
+  test "extracts alternate rate-limit payload shapes" do
+    rate_limits = %{
+      limit_id: "codex",
+      primary: %{remaining: 1, limit: 2}
+    }
+
+    assert AgentTelemetry.extract_rate_limits(%{rate_limits: rate_limits}) == rate_limits
+
+    assert AgentTelemetry.extract_rate_limits(%{limit_id: "codex", primary: %{remaining: 1}}) ==
+             %{limit_id: "codex", primary: %{remaining: 1}}
+
+    assert AgentTelemetry.rate_limits_from_payload(rate_limits) == rate_limits
+    assert AgentTelemetry.rate_limits_from_payload([%{}, %{rate_limits: rate_limits}]) == rate_limits
+  end
+
   test "rejects malformed payloads without token or rate-limit maps" do
     invalid_usage_payload = %{method: "token_count", usage: %{"output_tokens" => "nope"}}
 
@@ -79,6 +113,7 @@ defmodule SymphonyElixir.AgentTelemetryTest do
 
   test "coerces integer-like token values using existing edge behavior" do
     assert AgentTelemetry.get_token_usage(%{"total_tokens" => " 42left "}, :total) == 42
+    assert AgentTelemetry.get_token_usage(%{"uncached_input_tokens" => "7"}, :uncached_input) == 7
     assert AgentTelemetry.get_token_usage(%{"output_tokens" => "0"}, :output) == 0
     assert AgentTelemetry.get_token_usage(%{"total_tokens" => "-1"}, :total) == nil
     assert AgentTelemetry.get_token_usage(%{"total_tokens" => 3.14}, :total) == nil

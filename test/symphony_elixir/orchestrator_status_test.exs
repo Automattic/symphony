@@ -440,7 +440,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     issue_id = "issue-watch-transcript"
     repo_key = "api"
-    started_at = DateTime.utc_now()
+    started_at = DateTime.add(DateTime.utc_now(), -180, :second)
     event_at = DateTime.add(started_at, 30, :second)
 
     running_issue = %Issue{
@@ -457,6 +457,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     orchestrator_name = Module.concat(__MODULE__, :WatchingTranscriptOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    wait_for_orchestrator_state(pid, &is_nil(&1.repo_poll_task_ref), 1_000)
 
     worker_pid =
       spawn(fn ->
@@ -516,10 +517,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(pid, :run_poll_cycle)
 
     snapshot =
-      wait_for_snapshot(pid, fn
-        %{watching: [%{identifier: "MT-WATCH-TX", transcript_buffer: [^transcript_event]}]} -> true
-        _ -> false
-      end)
+      wait_for_snapshot(
+        pid,
+        fn
+          %{watching: [%{identifier: "MT-WATCH-TX", transcript_buffer: [^transcript_event]}]} -> true
+          _ -> false
+        end,
+        1_000
+      )
 
     assert snapshot.running == []
 
@@ -2442,9 +2447,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(pid, {:retry_issue, issue.id, retry_token})
 
     assert %{running: [], retrying: [%{issue_id: "issue-operator-pause", error: "dispatch paused by operator"}]} =
-             wait_for_snapshot(pid, fn snapshot ->
-               snapshot.running == [] and length(snapshot.retrying) == 1
-             end)
+             wait_for_snapshot(
+               pid,
+               fn
+                 %{
+                   running: [],
+                   retrying: [%{issue_id: "issue-operator-pause", error: "dispatch paused by operator"}]
+                 } ->
+                   true
+
+                 _snapshot ->
+                   false
+               end,
+               1_000
+             )
 
     assert {:ok, %{paused: false, reason: nil, paused_at: nil}} =
              Orchestrator.resume_dispatch(orchestrator_name)
@@ -4416,16 +4432,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     previous_state = :sys.get_state(orchestrator_pid)
 
     on_exit(fn ->
-      if pid = Process.whereis(Orchestrator) do
-        :sys.replace_state(pid, fn state ->
-          %{
-            state
-            | running: previous_state.running,
-              quality_gate_cache: previous_state.quality_gate_cache,
-              quality_gate_comment_keys: previous_state.quality_gate_comment_keys,
-              quality_gate_skipped_errors: previous_state.quality_gate_skipped_errors
-          }
-        end)
+      case Process.whereis(Orchestrator) do
+        pid when is_pid(pid) ->
+          restore_quality_gate_test_state(pid, previous_state)
+
+        nil ->
+          :ok
       end
     end)
 
@@ -5435,6 +5447,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   defp wait_for_orchestrator_state(pid, predicate, timeout_ms) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_orchestrator_state(pid, predicate, deadline_ms)
+  end
+
+  defp restore_quality_gate_test_state(pid, previous_state) do
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | running: previous_state.running,
+          quality_gate_cache: previous_state.quality_gate_cache,
+          quality_gate_comment_keys: previous_state.quality_gate_comment_keys,
+          quality_gate_skipped_errors: previous_state.quality_gate_skipped_errors
+      }
+    end)
+  catch
+    :exit, {:noproc, _reason} -> :ok
   end
 
   defp do_wait_for_orchestrator_state(pid, predicate, deadline_ms) do

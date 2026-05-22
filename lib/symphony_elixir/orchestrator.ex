@@ -486,7 +486,7 @@ defmodule SymphonyElixir.Orchestrator do
         remember_completed_run(state, issue_id, running_entry)
 
       false ->
-        complete_pr_review_comment_cursor(issue_id)
+        complete_pr_review_comment_cursor(issue_id, running_entry_repo_key(running_entry))
         Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
         state
@@ -4182,8 +4182,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp persist_run_completion(_running_entry, _status, _error), do: :ok
 
-  defp complete_pr_review_comment_cursor(issue_id) when is_binary(issue_id) do
-    case PrReviewPoller.complete_pending_reviewer_comments(issue_id) do
+  defp complete_pr_review_comment_cursor(issue_id, repo_key) when is_binary(issue_id) do
+    case PrReviewPoller.complete_pending_reviewer_comments(issue_id, repo_key_opt(repo_key)) do
       :ok ->
         :ok
 
@@ -4193,7 +4193,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp complete_pr_review_comment_cursor(_issue_id), do: :ok
+  defp complete_pr_review_comment_cursor(_issue_id, _repo_key), do: :ok
 
   defp persist_quality_eval_async(%{run_id: run_id} = running_entry, status, error)
        when is_binary(run_id) and is_binary(status) do
@@ -5706,8 +5706,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pending_rework_signal?(%Issue{} = issue, completed_metadata) do
     issue_updated_after_last_run?(issue, completed_metadata) or
-      pending_reviewer_comments?(issue.id) or
-      pending_ci_failure?(issue.id)
+      pending_reviewer_comments?(issue.id, repo_key_from(completed_metadata)) or
+      pending_ci_failure?(issue.id, repo_key_from(completed_metadata))
   end
 
   defp issue_updated_after_last_run?(%Issue{updated_at: %DateTime{} = updated_at}, %{last_ran_at: %DateTime{} = last_ran_at}) do
@@ -5716,17 +5716,20 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp issue_updated_after_last_run?(_issue, _completed_metadata), do: false
 
-  defp pending_reviewer_comments?(issue_id) when is_binary(issue_id) do
-    PrReviewPoller.pending_reviewer_comments(issue_id) != []
+  defp pending_reviewer_comments?(issue_id, repo_key) when is_binary(issue_id) do
+    PrReviewPoller.pending_reviewer_comments(issue_id, repo_key_opt(repo_key)) != []
   end
 
-  defp pending_reviewer_comments?(_issue_id), do: false
+  defp pending_reviewer_comments?(_issue_id, _repo_key), do: false
 
-  defp pending_ci_failure?(issue_id) when is_binary(issue_id) do
-    not is_nil(CiPoller.pending_ci_failure(issue_id))
+  defp pending_ci_failure?(issue_id, repo_key) when is_binary(issue_id) do
+    not is_nil(CiPoller.pending_ci_failure(issue_id, repo_key_opt(repo_key)))
   end
 
-  defp pending_ci_failure?(_issue_id), do: false
+  defp pending_ci_failure?(_issue_id, _repo_key), do: false
+
+  defp repo_key_opt(repo_key) when is_binary(repo_key) and repo_key != "", do: [repo_key: repo_key]
+  defp repo_key_opt(_repo_key), do: []
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     MapSet.member?(active_state_set(), normalize_issue_state(state_name))

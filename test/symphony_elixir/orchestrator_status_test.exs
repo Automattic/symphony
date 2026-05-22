@@ -438,7 +438,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     issue_id = "issue-watch-transcript"
     repo_key = "api"
-    started_at = DateTime.utc_now()
+    started_at = DateTime.utc_now() |> DateTime.add(-180, :second)
     event_at = DateTime.add(started_at, 30, :second)
 
     running_issue = %Issue{

@@ -1411,7 +1411,9 @@ Distinct terminal reasons are important because retry logic and logs differ.
 
 When `pull_requests.enabled` is `false`, Symphony uses only the tracker-state review loop. When
 `pull_requests.enabled` is `true`, the application additionally starts a `PrReviewPoller`
-GenServer.
+GenServer. In multi-repository configurations, one poller process may serve all repositories, but
+each poll cycle MUST process every configured repository route with repo-scoped run-store reads and
+writes.
 
 The poller:
 
@@ -1427,10 +1429,15 @@ The poller:
   the merge/landing workflow through the normal run path;
 - removes tracked workspaces and durable review records when PRs close or remain idle beyond
   `pull_requests.review_comments.stale_after_days`.
+- when `pull_requests.checks.enabled` is true, polls CI status for tracked PRs in every configured
+  repository route, preserving the same retry, dispatch, and escalation behavior used for the
+  primary repository.
 
 The orchestrator continues to own active-state dispatch, retry, run-store run records, and
 dashboard-visible agent execution. The PR review poller owns only polling-mode GitHub polling,
-state transitions, and tracked PR cleanup.
+state transitions, and tracked PR cleanup. Pending review-comment, merge-conflict, and CI-failure
+prompt context lookups use the issue's repository scope when one is known, and otherwise search the
+configured repositories.
 
 ## 8. Polling, Scheduling, and Reconciliation
 

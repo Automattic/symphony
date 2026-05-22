@@ -93,14 +93,10 @@ defmodule SymphonyElixir.PrReviewPoller do
   @doc false
   @spec poll_once(keyword()) :: {:ok, poll_summary()} | {:error, term()}
   def poll_once(opts \\ []) when is_list(opts) do
-    with {:ok, settings} <- poll_settings(opts) do
-      case settings.pr_review.mode do
-        "polling" ->
-          do_poll_once(settings, opts)
-
-        _mode ->
-          {:ok, %{mode: :tracker, discovered: 0, processed: 0, actions: []}}
-      end
+    if scoped_poll_opts?(opts) do
+      poll_once_for_repo(opts)
+    else
+      poll_once_for_repos(opts)
     end
   end
 
@@ -108,33 +104,44 @@ defmodule SymphonyElixir.PrReviewPoller do
   @spec pending_reviewer_comments(String.t(), keyword()) :: [map()]
   def pending_reviewer_comments(issue_id, opts \\ []) do
     run_store = Keyword.get(opts, :run_store, RunStore)
-    repo_key = repo_key_from_opts(opts)
+    repo_keys = repo_keys_from_opts(opts)
     now = Keyword.get(opts, :now, DateTime.utc_now())
 
-    pending_reviewer_comments(issue_id, run_store, repo_key, now)
+    pending_reviewer_comments(issue_id, run_store, repo_keys, now)
   end
 
-  defp pending_reviewer_comments(issue_id, run_store, repo_key, now) when is_binary(issue_id) do
+  defp pending_reviewer_comments(issue_id, run_store, repo_keys, now) when is_binary(issue_id) do
+    Enum.find_value(repo_keys, [], &pending_reviewer_comments_for_repo(&1, issue_id, run_store, now))
+  end
+
+  defp pending_reviewer_comments(_issue_id, _run_store, _repo_keys, _now), do: []
+
+  defp pending_reviewer_comments_for_repo(repo_key, issue_id, run_store, now) do
     case list_pr_reviews(run_store, repo_key) do
       {:ok, reviews} ->
-        comments_from_review_record(reviews, issue_id, run_store, now)
+        reviews
+        |> comments_from_review_record(issue_id, run_store, now)
+        |> empty_to_nil()
 
       {:error, reason} ->
         record_pending_comment_lookup_error(run_store, repo_key, issue_id, reason, now)
-        []
+        nil
     end
   end
-
-  defp pending_reviewer_comments(_issue_id, _run_store, _repo_key, _now), do: []
 
   @doc false
   @spec pending_pr_conflict(String.t(), keyword()) :: map() | nil
   def pending_pr_conflict(issue_id, opts \\ []) do
     run_store = Keyword.get(opts, :run_store, RunStore)
-    repo_key = repo_key_from_opts(opts)
+    repo_keys = repo_keys_from_opts(opts)
 
-    with true <- is_binary(issue_id),
-         {:ok, reviews} <- list_pr_reviews(run_store, repo_key),
+    if is_binary(issue_id) do
+      Enum.find_value(repo_keys, &pending_pr_conflict_for_repo(&1, issue_id, run_store))
+    end
+  end
+
+  defp pending_pr_conflict_for_repo(repo_key, issue_id, run_store) do
+    with {:ok, reviews} <- list_pr_reviews(run_store, repo_key),
          %{} = record <- Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)),
          true <- conflict_prompt_pending?(record) do
       normalize_conflict_context(Map.get(record, :conflict_context))
@@ -157,6 +164,9 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  defp empty_to_nil([]), do: nil
+  defp empty_to_nil(value), do: value
+
   @doc false
   @spec complete_pending_reviewer_comments(String.t(), keyword()) :: :ok | {:error, term()}
   def complete_pending_reviewer_comments(issue_id, opts \\ []) do
@@ -169,25 +179,30 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp do_complete_pending_reviewer_comments(issue_id, opts) do
     run_store = Keyword.get(opts, :run_store, RunStore)
-    repo_key = repo_key_from_opts(opts)
+    repo_keys = repo_keys_from_opts(opts)
 
-    case fetch_pr_review_record(run_store, repo_key, issue_id) do
-      {:ok, record} -> complete_reviewer_comment_record(record, opts)
+    case fetch_pr_review_record(run_store, repo_keys, issue_id) do
+      {:ok, record} -> complete_reviewer_comment_record(record, put_record_repo_key(opts, record))
       :missing -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp fetch_pr_review_record(run_store, repo_key, issue_id) do
-    case list_pr_reviews(run_store, repo_key) do
-      {:ok, reviews} ->
-        case Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
-          %{} = record -> {:ok, record}
-          nil -> :missing
-        end
+  defp fetch_pr_review_record(run_store, repo_keys, issue_id) do
+    Enum.reduce_while(repo_keys, :missing, &fetch_pr_review_record_from_repo(&1, &2, run_store, issue_id))
+  end
 
-      {:error, reason} ->
-        {:error, reason}
+  defp fetch_pr_review_record_from_repo(repo_key, acc, run_store, issue_id) do
+    case list_pr_reviews(run_store, repo_key) do
+      {:ok, reviews} -> halt_on_review_record(reviews, issue_id, acc)
+      {:error, reason} -> {:cont, error_acc(acc, reason)}
+    end
+  end
+
+  defp halt_on_review_record(reviews, issue_id, acc) do
+    case Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
+      %{} = record -> {:halt, {:ok, record}}
+      nil -> {:cont, acc}
     end
   end
 
@@ -266,10 +281,63 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp poll_settings(opts) do
     case Keyword.fetch(opts, :settings) do
-      {:ok, settings} -> {:ok, settings}
-      :error -> Config.settings()
+      {:ok, settings} ->
+        {:ok, settings}
+
+      :error ->
+        case Keyword.fetch(opts, :repo_key) do
+          {:ok, repo_key} -> Config.settings_for_repo(repo_key)
+          :error -> Config.settings()
+        end
     end
   end
+
+  defp scoped_poll_opts?(opts), do: Keyword.has_key?(opts, :repo_key) or Keyword.has_key?(opts, :settings)
+
+  defp poll_once_for_repo(opts) do
+    with {:ok, settings} <- poll_settings(opts) do
+      case settings.pr_review.mode do
+        "polling" ->
+          do_poll_once(settings, opts)
+
+        _mode ->
+          {:ok, %{mode: :tracker, discovered: 0, processed: 0, actions: []}}
+      end
+    end
+  end
+
+  defp poll_once_for_repos(opts) do
+    with {:ok, repos} <- Config.repos() do
+      repos
+      |> Enum.map(&Map.get(&1, :name))
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.reduce_while({:ok, empty_poll_summary(:tracker)}, &poll_repo_and_merge(&1, &2, opts))
+    end
+  end
+
+  defp poll_repo_and_merge(repo_key, {:ok, acc}, opts) do
+    repo_opts = opts |> Keyword.put(:repo_key, repo_key) |> Keyword.delete(:settings)
+
+    case poll_once_for_repo(repo_opts) do
+      {:ok, summary} -> {:cont, {:ok, merge_poll_summary(acc, summary)}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp empty_poll_summary(mode), do: %{mode: mode, discovered: 0, processed: 0, actions: []}
+
+  defp merge_poll_summary(acc, summary) do
+    %{
+      mode: merged_mode(acc.mode, summary.mode),
+      discovered: acc.discovered + summary.discovered,
+      processed: acc.processed + summary.processed,
+      actions: acc.actions ++ summary.actions
+    }
+  end
+
+  defp merged_mode(:polling, _mode), do: :polling
+  defp merged_mode(_mode, :polling), do: :polling
+  defp merged_mode(_left, right), do: right
 
   defp do_poll_once(settings, opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
@@ -801,7 +869,7 @@ defmodule SymphonyElixir.PrReviewPoller do
     issue_id = Map.get(record, :issue_id)
 
     cond do
-      CiPoller.ci_owned_issue?(issue_id, Keyword.take(opts, [:run_store])) ->
+      CiPoller.ci_owned_issue?(issue_id, Keyword.take(opts, [:run_store, :repo_key])) ->
         complete_review_update(opts, record, Map.merge(attrs, %{status: "ci_owned"}), {:ci_owned, issue_id, :rework})
 
       handled_activity?(record, latest_activity_at) ->
@@ -1491,6 +1559,38 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp repo_key_from_opts(opts), do: Keyword.get_lazy(opts, :repo_key, &Config.repo_key!/0)
+
+  defp repo_keys_from_opts(opts) do
+    case Keyword.fetch(opts, :repo_key) do
+      {:ok, repo_key} when is_binary(repo_key) and repo_key != "" ->
+        [repo_key]
+
+      _ ->
+        configured_repo_keys()
+    end
+  end
+
+  defp configured_repo_keys do
+    case Config.repos() do
+      {:ok, repos} ->
+        repos
+        |> Enum.map(&Map.get(&1, :name))
+        |> Enum.reject(&(&1 in [nil, ""]))
+
+      {:error, _reason} ->
+        [Config.repo_key!()]
+    end
+  end
+
+  defp put_record_repo_key(opts, record) do
+    case Map.get(record, :repo_key) do
+      repo_key when is_binary(repo_key) and repo_key != "" -> Keyword.put(opts, :repo_key, repo_key)
+      _repo_key -> opts
+    end
+  end
+
+  defp error_acc(:missing, reason), do: {:error, reason}
+  defp error_acc({:error, _reason} = acc, _new_reason), do: acc
 
   defp delete_pr_review_record(run_store, repo_key, issue_id) do
     cond do

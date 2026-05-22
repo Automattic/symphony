@@ -110,7 +110,13 @@ defmodule SymphonyElixir.ReviewAgent.Context do
 
   @doc false
   @spec lookup_evidence(map(), String.t(), line_range()) ::
-          {:ok, %{path: String.t(), line_range: line_range(), text: String.t(), source: :diff | :file | :adjacent_context}}
+          {:ok,
+           %{
+             path: String.t(),
+             line_range: line_range(),
+             text: String.t(),
+             source: :diff | :file | :adjacent_context
+           }}
           | {:error, term()}
   def lookup_evidence(source, path, {start_line, end_line})
       when is_map(source) and is_binary(path) and is_integer(start_line) and is_integer(end_line) and start_line > 0 and

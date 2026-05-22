@@ -252,6 +252,68 @@ defmodule SymphonyElixir.CiPollerTest do
     refute_receive {:issue_state_update, _, _}
   end
 
+  test "polls ci lifecycle records for non-default repos" do
+    now = ~U[2026-05-06 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      ci: %{enabled: true, log_excerpt_lines: 3, max_retries: 3},
+      repos: multi_repo_config()
+    )
+
+    issue = %{
+      in_review_issue()
+      | id: "issue-pin-84",
+        identifier: "PIN4WOO-84",
+        url: "https://linear.test/PIN4WOO-84",
+        pr_urls: ["https://github.com/woocommerce/pinterest-for-woocommerce/pull/1185"]
+    }
+
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :ci_test_statuses, [failed_status("abc123"), failed_status("abc123")])
+    Application.put_env(:symphony_elixir, :ci_test_failed_log, "line 1\nERROR: non-default repo failed\nstack")
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: "secondary",
+               run_id: "run-pin-84",
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               status: "success",
+               workspace_path: "/tmp/workspaces/PIN4WOO-84",
+               worker_host: nil,
+               started_at: DateTime.add(now, -2, :minute),
+               ended_at: DateTime.add(now, -1, :minute)
+             })
+
+    assert {:ok, %{discovered: 1, processed: 1, actions: [{:rerun_requested, "issue-pin-84", "987"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:rerun_failed, "987"}
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-pin-84", :ci_failure, "In Progress"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    assert_receive {:ci_failure_at_transition, "issue-pin-84", %{commit_sha: "abc123", log_excerpt: transition_log_excerpt}}
+    assert_receive {:issue_state_update, "issue-pin-84", "In Progress"}
+    assert transition_log_excerpt =~ "ERROR: non-default repo failed"
+    assert [] = RunStore.list_ci_checks(@repo_key)
+
+    assert [
+             %{
+               repo_key: "secondary",
+               issue_id: "issue-pin-84",
+               status: "dispatch_requested",
+               ci_retry_count: 1,
+               ci_failure: %{commit_sha: "abc123"}
+             }
+           ] = RunStore.list_ci_checks("secondary")
+
+    assert %{log_excerpt: log_excerpt} = CiPoller.pending_ci_failure("issue-pin-84")
+    assert log_excerpt =~ "ERROR: non-default repo failed"
+  end
+
   test "failed log fetch errors back off without dispatching or consuming retries" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()
@@ -758,6 +820,13 @@ defmodule SymphonyElixir.CiPollerTest do
       started_at: DateTime.add(now, -2, :minute),
       ended_at: DateTime.add(now, -1, :minute)
     })
+  end
+
+  defp multi_repo_config do
+    [
+      %{key: @repo_key, workflow: Workflow.workflow_file_path(), default: true, team: "Test"},
+      %{key: "secondary", workflow: Workflow.workflow_file_path(), team: "PIN4WOO", labels: ["Bug"]}
+    ]
   end
 
   defp green_status(sha \\ "abc123") do

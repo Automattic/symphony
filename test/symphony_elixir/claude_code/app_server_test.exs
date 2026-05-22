@@ -109,6 +109,30 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       refute "~/.npmrc" in deny_read
       assert "~/.ssh" in deny_read
     end
+
+    test "operator allow_write_paths flow into sandbox allowWrite" do
+      network_access = %Agent.NetworkAccess{
+        mode: "allowlist",
+        allowed_domains: [],
+        denied_domains: []
+      }
+
+      result = AppServer.build_sandbox_settings(network_access, [], ["/private/tmp/symphony-mcp"])
+
+      assert get_in(result, ["sandbox", "filesystem", "allowWrite"]) == ["/private/tmp/symphony-mcp"]
+    end
+
+    test "omits allowWrite when no allow_write_paths supplied" do
+      network_access = %Agent.NetworkAccess{
+        mode: "allowlist",
+        allowed_domains: [],
+        denied_domains: []
+      }
+
+      result = AppServer.build_sandbox_settings(network_access)
+
+      refute Map.has_key?(result["sandbox"]["filesystem"], "allowWrite")
+    end
   end
 
   describe "parse_event/1" do
@@ -528,6 +552,36 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         if session.mcp_session.transport == :unix do
           refute File.exists?(session.mcp_session.socket_path)
         end
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "emits workspace.sandbox.allow_write_paths into sandbox.filesystem.allowWrite" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-allow-write-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "TEST-ALLOW-WRITE")
+        File.mkdir_p!(workspace)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          workspace_sandbox: %{allow_write_paths: ["/private/tmp/symphony-mcp", "/opt/cache"]}
+        )
+
+        assert {:ok, session} = AppServer.start_session(workspace)
+        {:ok, contents} = Jason.decode(File.read!(session.settings_path))
+
+        assert get_in(contents, ["sandbox", "filesystem", "allowWrite"]) ==
+                 ["/private/tmp/symphony-mcp", "/opt/cache"]
+
+        assert :ok = AppServer.stop_session(session)
       after
         File.rm_rf(test_root)
       end

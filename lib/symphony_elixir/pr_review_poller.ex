@@ -1710,6 +1710,8 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp reply_to_comments(record, comments, github, opts, now) do
+    record = put_addressed_commit_sha(record)
+
     {inline_comments, pr_level_comments} =
       comments
       |> reject_replied_comments(record)
@@ -1739,7 +1741,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp reply_to_inline_comment(record, comment, github, opts, now) do
-    case github.reply_to_comment(Map.get(record, :pr_url), comment, addressed_comment_reply(), cwd: Map.get(record, :workspace_path)) do
+    case github.reply_to_comment(Map.get(record, :pr_url), comment, addressed_comment_reply(record), cwd: Map.get(record, :workspace_path)) do
       :ok -> mark_inline_comment_replied(record, comment, opts, now)
       {:error, reason} -> {:error, {:auto_reply_failed, Map.get(comment, :id), reason}}
     end
@@ -1757,7 +1759,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp reply_to_pr_level_comments(record, comments, github, opts, now) do
     summary_comment = %{id: "pr-review-summary", kind: "comment"}
 
-    case github.reply_to_comment(Map.get(record, :pr_url), summary_comment, addressed_comment_summary_reply(comments), cwd: Map.get(record, :workspace_path)) do
+    case github.reply_to_comment(Map.get(record, :pr_url), summary_comment, addressed_comment_summary_reply(record, comments), cwd: Map.get(record, :workspace_path)) do
       :ok ->
         case mark_comments_replied(record, Enum.map(comments, &Map.get(&1, :id)), opts, now) do
           {:ok, updated_record} -> {:ok, updated_record}
@@ -1768,6 +1770,58 @@ defmodule SymphonyElixir.PrReviewPoller do
         {:error, {:auto_reply_failed, "pr-review-summary", reason}}
     end
   end
+
+  defp put_addressed_commit_sha(record) do
+    case addressed_commit_sha(record) do
+      nil -> record
+      sha -> Map.put(record, :addressed_commit_sha, sha)
+    end
+  end
+
+  defp addressed_commit_sha(record) do
+    normalize_commit_sha(string_field(record, :addressed_commit_sha)) ||
+      current_workspace_commit_sha(record)
+  end
+
+  defp current_workspace_commit_sha(record) when is_map(record) do
+    workspace = string_field(record, :workspace_path)
+
+    cond do
+      remote_worker?(record) ->
+        nil
+
+      is_nil(workspace) or String.trim(workspace) == "" ->
+        nil
+
+      true ->
+        read_workspace_head_sha(workspace)
+    end
+  end
+
+  defp remote_worker?(record) do
+    case string_field(record, :worker_host) do
+      nil -> false
+      "" -> false
+      _worker_host -> true
+    end
+  end
+
+  defp read_workspace_head_sha(workspace) do
+    case Workspace.safe_git(["-C", workspace, "rev-parse", "--short=12", "HEAD"]) do
+      {output, 0} -> normalize_commit_sha(output)
+      _other -> nil
+    end
+  end
+
+  defp normalize_commit_sha(output) when is_binary(output) do
+    sha = String.trim(output)
+
+    if sha =~ ~r/\A[0-9a-f]{7,40}\z/i do
+      sha
+    end
+  end
+
+  defp normalize_commit_sha(_output), do: nil
 
   defp mark_comments_replied(record, comment_ids, opts, now) do
     ids =
@@ -1873,25 +1927,113 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp addressed_comment_reply do
-    "Thanks for the review. I addressed this in the latest rework run."
+  defp addressed_comment_reply(record) do
+    [
+      "Automated note from Symphony AI: this review comment was marked complete after the latest follow-up update.",
+      addressed_commit_sentence(record),
+      "Please check the current diff; reply here if it still needs work."
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
   end
 
-  defp addressed_comment_summary_reply(comments) do
+  defp addressed_comment_summary_reply(record, comments) do
     references =
       Enum.map_join(comments, "\n", &summary_comment_reference/1)
 
-    "Thanks for the review. I addressed these PR-level comments in the latest rework run:\n#{references}"
+    [
+      "Automated note from Symphony AI: these PR-level review comments were marked complete after the latest follow-up update.",
+      addressed_commit_sentence(record),
+      "Please check the current diff; reply if anything still needs work.\n\nComments:\n#{references}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+  end
+
+  defp addressed_commit_sentence(record) do
+    case string_field(record, :addressed_commit_sha) do
+      nil -> nil
+      sha -> "Follow-up commit: `#{sha}`."
+    end
   end
 
   defp summary_comment_reference(comment) do
+    label =
+      comment
+      |> summary_comment_label()
+      |> maybe_link_comment_reference(Map.get(comment, :url))
+
+    case comment_body_excerpt(comment) do
+      nil -> "- #{label}"
+      excerpt -> "- #{label}: #{excerpt}"
+    end
+  end
+
+  defp summary_comment_label(comment) do
     id = Map.get(comment, :id) || "unknown-comment"
     author = Map.get(comment, :author)
+    type = summary_comment_type(comment)
 
     if is_binary(author) and String.trim(author) != "" do
-      "- #{id} from #{String.trim(author)}"
+      "#{String.trim(author)} #{type} (`#{id}`)"
     else
-      "- #{id}"
+      "#{type} (`#{id}`)"
+    end
+  end
+
+  defp summary_comment_type(%{kind: "review"}), do: "review summary"
+  defp summary_comment_type(%{kind: "comment"}), do: "PR comment"
+  defp summary_comment_type(_comment), do: "review comment"
+
+  defp maybe_link_comment_reference(label, url) when is_binary(url) do
+    case String.trim(url) do
+      "" -> label
+      trimmed -> "[#{markdown_link_label(label)}](#{trimmed})"
+    end
+  end
+
+  defp maybe_link_comment_reference(label, _url), do: label
+
+  defp markdown_link_label(label) do
+    label
+    |> String.replace("\\", "\\\\")
+    |> String.replace("[", "\\[")
+    |> String.replace("]", "\\]")
+  end
+
+  defp comment_body_excerpt(comment) do
+    comment
+    |> Map.get(:body)
+    |> first_body_line()
+  end
+
+  defp first_body_line(body) when is_binary(body) do
+    body
+    |> String.split("\n")
+    |> Enum.map(&String.trim/1)
+    |> Enum.find(&(&1 != ""))
+    |> normalize_body_excerpt()
+  end
+
+  defp first_body_line(_body), do: nil
+
+  defp normalize_body_excerpt(nil), do: nil
+
+  defp normalize_body_excerpt(line) do
+    line
+    |> String.trim_leading("#")
+    |> String.trim()
+    |> truncate_body_excerpt()
+  end
+
+  defp truncate_body_excerpt(line) do
+    if String.length(line) <= 120 do
+      line
+    else
+      line
+      |> String.slice(0, 117)
+      |> String.trim()
+      |> Kernel.<>("...")
     end
   end
 

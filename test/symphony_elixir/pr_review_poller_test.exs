@@ -1410,6 +1410,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
   test "auto reply and auto request review run only when explicitly enabled" do
     now = ~U[2026-05-01 09:00:00Z]
+    {workspace_path, commit_sha} = git_workspace_with_commit!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -1424,6 +1425,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     :ok =
       put_review(now, %{
         status: "rework_requested",
+        workspace_path: workspace_path,
         pending_last_addressed_comment_id: "comment-2",
         pending_reviewer_comments: [
           %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42},
@@ -1434,12 +1436,60 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
 
     assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
-    assert reply_body =~ "addressed"
+
+    assert reply_body ==
+             "Automated note from Symphony AI: this review comment was marked complete after the latest follow-up update. " <>
+               "Follow-up commit: `#{commit_sha}`. " <>
+               "Please check the current diff; reply here if it still needs work."
+
     assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "pr-review-summary"}, summary_body}
-    assert summary_body =~ "comment-2"
+
+    assert summary_body ==
+             "Automated note from Symphony AI: these PR-level review comments were marked complete after the latest follow-up update. " <>
+               "Follow-up commit: `#{commit_sha}`. " <>
+               "Please check the current diff; reply if anything still needs work.\n\nComments:\n- maintainer PR comment (`comment-2`): Also update docs."
+
     assert_receive {:github_request_review, "https://github.com/example/repo/pull/1780", ["human-reviewer", "maintainer"]}
 
     assert [%{last_addressed_comment_id: "comment-2", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+  end
+
+  test "PR-level auto reply summary includes readable references and body excerpts" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_ignored_users: ["agent-user"],
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        pending_last_addressed_comment_id: "PRR_kw1",
+        pending_reviewer_comments: [
+          %{
+            id: "PRR_kw1",
+            kind: "review",
+            author: "copilot-pull-request-reviewer[bot]",
+            body: "## Pull request overview\n\nGenerated summary.",
+            url: "https://github.com/example/repo/pull/1780#pullrequestreview-1"
+          }
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "pr-review-summary"}, summary_body}
+
+    assert summary_body ==
+             "Automated note from Symphony AI: these PR-level review comments were marked complete after the latest follow-up update. " <>
+               "Please check the current diff; reply if anything still needs work.\n\nComments:\n- [copilot-pull-request-reviewer\\[bot\\] review summary (`PRR_kw1`)](https://github.com/example/repo/pull/1780#pullrequestreview-1): Pull request overview"
+
+    assert [%{last_addressed_comment_id: "PRR_kw1", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
   end
 
   test "auto reply fires for non-rework statuses when pending comments are present" do
@@ -1466,7 +1516,10 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
 
     assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
-    assert reply_body =~ "addressed"
+
+    assert reply_body ==
+             "Automated note from Symphony AI: this review comment was marked complete after the latest follow-up update. " <>
+               "Please check the current diff; reply here if it still needs work."
 
     assert [%{last_addressed_comment_id: "comment-1", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
   end
@@ -2610,6 +2663,33 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     now
     |> review_record(attrs)
     |> RunStore.put_pr_review()
+  end
+
+  defp git_workspace_with_commit! do
+    workspace_path =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-pr-review-workspace-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace_path)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(workspace_path) end)
+
+    git!(workspace_path, ["init", "-b", "main"])
+    git!(workspace_path, ["config", "user.name", "Test User"])
+    git!(workspace_path, ["config", "user.email", "test@example.com"])
+    File.write!(Path.join(workspace_path, "README.md"), "# Review test\n")
+    git!(workspace_path, ["add", "README.md"])
+    git!(workspace_path, ["commit", "-m", "fix: address review comment"])
+
+    {workspace_path, git!(workspace_path, ["rev-parse", "--short=12", "HEAD"]) |> String.trim()}
+  end
+
+  defp git!(workspace_path, args) do
+    case System.cmd("git", args, cd: workspace_path, stderr_to_stdout: true) do
+      {output, 0} -> output
+      {output, status} -> flunk("git #{Enum.join(args, " ")} failed with #{status}: #{output}")
+    end
   end
 
   defp review_record(now, attrs \\ %{}) do

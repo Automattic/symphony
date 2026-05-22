@@ -43,6 +43,10 @@ A managed permission profile carries a built-in **credential/config read-deny li
 such as `~/.ssh`, `~/.aws`, `~/.config/gh`, `*.pem`, `*.key`, and the agent runtime credential
 stores under `~/.codex` and `~/.claude`. `workspace.sandbox.allow_read_paths` lets you carve narrow
 exceptions when a repo legitimately needs something like `~/.npmrc`.
+`workspace.sandbox.allow_write_paths` is the write-side counterpart: it adds entries to the Claude
+runtime's `sandbox.filesystem.allowWrite` so the agent can write under specific host paths beyond
+the Claude Code default (workspace + `/tmp`). Codex/SRT already authors a broader writable set
+under `/tmp` and the workspace, so this knob only affects the Claude runtime today.
 
 ### Optional outer sandbox (Codex + SRT)
 
@@ -154,6 +158,9 @@ read from environment variables. The quality gate explicitly ignores credentials
   danger-full-access`.
 - Treat `workspace.sandbox.allow_read_paths` as an escape hatch. Add only the narrowest path you
   need (e.g. `~/.npmrc`), never a directory containing other credentials.
+- Treat `workspace.sandbox.allow_write_paths` the same way for the Claude runtime. Grant only
+  paths the agent legitimately needs to write — e.g. a known MCP socket root — not broad parents
+  like `/private/tmp`.
 - Keep `agent.network_access.mode: allowlist`. Use `denied_domains` to override anything in the
   built-in dev allow list you do not want the agent to reach.
 

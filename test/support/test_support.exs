@@ -895,6 +895,7 @@ defmodule SymphonyElixir.TestSupport do
     |> maybe_put(:sandbox, thread_sandbox)
     |> maybe_put(:turn_policy, turn_sandbox_policy)
     |> maybe_put(:allow_read_paths, Map.get(workspace_sandbox, :allow_read_paths))
+    |> maybe_put(:allow_write_paths, Map.get(workspace_sandbox, :allow_write_paths))
   end
 
   defp normalize_outer_sandbox(nil), do: nil

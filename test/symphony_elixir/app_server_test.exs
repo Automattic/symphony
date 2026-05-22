@@ -265,7 +265,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-notify"}}}'
             ;;
           *)
-            sleep 1
+            :
             ;;
         esac
       done
@@ -334,7 +334,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-review-notify"}}}'
             ;;
           *)
-            sleep 1
+            :
             ;;
         esac
       done

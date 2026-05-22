@@ -6,6 +6,7 @@ This repository contains the Elixir agent orchestration service that polls Linea
 
 - Elixir: `1.19.x` (OTP 28) via `mise`.
 - Install deps: `mix setup`.
+- Fast local gate: `make check` (format check, lint, build, plain tests).
 - Main quality gate: `make all` (format check, lint, coverage, dialyzer).
 
 
@@ -26,10 +27,24 @@ This repository contains the Elixir agent orchestration service that polls Linea
 
 ## Tests and Validation
 
-Run targeted tests while iterating, then run full gates before handoff.
+Run targeted tests while iterating, then use the fast local gate before the full pre-push gate.
+
+```bash
+make check
+```
+
+Before push/handoff, run the full gate or at least the required coverage and Dialyzer gates.
 
 ```bash
 make all
+```
+
+To profile slow validation work before optimizing tests, use:
+
+```bash
+make test-profile
+make coverage-profile
+make dialyzer-profile
 ```
 
 ## Required Rules

@@ -18,8 +18,33 @@ mise exec -- mix setup
 
 ## Testing
 
+Use the fast local gate while iterating:
+
+```bash
+make check
+```
+
+`make check` runs the format check, lint, escript build, and plain `mix test`. It does not run
+coverage or Dialyzer, so treat it as a confidence check rather than a replacement for CI.
+
+When CPU pressure matters, lower local test concurrency and BEAM scheduler usage:
+
+```bash
+make check TEST_MAX_CASES=2 BEAM_SCHEDULERS=2
+```
+
+Before pushing, run the full gate:
+
 ```bash
 make all
+```
+
+To find slow validation work before optimizing tests, use the profiling targets:
+
+```bash
+make test-profile
+make coverage-profile
+make dialyzer-profile
 ```
 
 In sandboxed Codex workspaces, prefer a writable Hex cache location for the full gate:

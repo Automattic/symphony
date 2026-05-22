@@ -26,8 +26,9 @@ description:
 ## Steps
 
 1. Identify current branch and confirm remote state.
-2. Run local validation before pushing. The gate must include the coverage
-   check (`make coverage` or `make all`) and finish with `Coverage: 100.00%`
+2. Run local validation before pushing. `make check` is useful for the inner
+   loop, but it is not enough for push readiness. The push gate must include
+   the coverage check (`make coverage` or `make all`) and finish with `Coverage: 100.00%`
    against `Threshold: 100.00%`. The repo enforces 100% coverage in the CI
    `coverage report` job; pushing with anything lower (e.g. `99.89%`) is the
    most common cause of failed auto-PRs. If coverage is short, add tests that
@@ -70,7 +71,10 @@ description:
 # Identify branch
 branch=$(git branch --show-current)
 
-# Minimal validation gate
+# Fast local confidence gate while iterating
+HEX_HOME=/private/tmp/symphony-hex-home make check
+
+# Required push-readiness gate
 HEX_HOME=/private/tmp/symphony-hex-home make all
 
 # Initial push: respect the current origin remote.

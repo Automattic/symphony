@@ -629,9 +629,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp srt_mcp_unix_socket_paths(%{transport: :unix, socket_dir: socket_dir}) when is_binary(socket_dir),
     do: [socket_dir]
 
-  defp srt_mcp_unix_socket_paths(%{transport: :unix, socket_path: socket_path}) when is_binary(socket_path),
-    do: [Path.dirname(socket_path)]
-
   defp srt_mcp_unix_socket_paths(_mcp_session), do: []
 
   defp tool_opts(opts) do
@@ -3689,6 +3686,8 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     pid =
       spawn(fn ->
+        # stdout backpressure stalls the Codex turn; drain at high priority so
+        # the pump preempts other work and stderr tailing on busy nodes.
         Process.flag(:priority, :high)
 
         stdout_pump_loop(%{
@@ -3880,6 +3879,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     {:ok, pid} =
       Task.start(fn ->
+        # stderr is best-effort logging; yield to the stdout pump under load.
         Process.flag(:priority, :low)
 
         stderr_tail_loop(%{

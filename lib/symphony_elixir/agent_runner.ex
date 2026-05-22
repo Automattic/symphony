@@ -156,8 +156,13 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp workspace_for_issue(issue, opts, worker_host) do
     case Keyword.get(opts, :workspace_path) do
-      workspace when is_binary(workspace) and workspace != "" -> {:ok, workspace}
-      _ -> Workspace.create_for_issue(issue, worker_host, Keyword.get(opts, :repo_key))
+      workspace when is_binary(workspace) and workspace != "" ->
+        with :ok <- Workspace.validate(workspace, worker_host) do
+          {:ok, workspace}
+        end
+
+      _ ->
+        Workspace.create_for_issue(issue, worker_host, Keyword.get(opts, :repo_key))
     end
   end
 

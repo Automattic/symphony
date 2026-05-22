@@ -3791,7 +3791,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       trace_file = Path.join(test_root, "ssh.trace")
       fake_ssh = Path.join(test_root, "ssh")
-      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_root = "/remote/home/.symphony-remote-workspaces"
       workspace_path = "/remote/home/.symphony-remote-workspaces/default/MT-SSH-WS"
 
       File.mkdir_p!(test_root)
@@ -3833,8 +3833,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       trace = File.read!(trace_file)
       assert trace =~ "-p 2200 worker-01 bash -lc"
       assert trace =~ "__SYMPHONY_WORKSPACE__"
-      assert trace =~ "~/.symphony-remote-workspaces/default/MT-SSH-WS"
-      assert trace =~ "${workspace#~/}"
+      assert trace =~ "/remote/home/.symphony-remote-workspaces/default/MT-SSH-WS"
       assert trace =~ "echo before-run"
       assert trace =~ "echo after-run"
       assert trace =~ "echo before-remove"
@@ -3867,7 +3866,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       trace_file = Path.join(test_root, "ssh.trace")
       fake_ssh = Path.join(test_root, "ssh")
-      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_root = "/remote/home/.symphony-remote-workspaces"
       workspace_repo = "~/primary-clone"
       workspace_path = "/remote/home/.symphony-remote-workspaces/MT-SSH-WT"
 

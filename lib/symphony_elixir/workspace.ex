@@ -88,6 +88,18 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec validate(Path.t()) :: :ok | {:error, term()}
+  def validate(workspace), do: validate(workspace, nil)
+
+  @spec validate(Path.t(), worker_host()) :: :ok | {:error, term()}
+  def validate(workspace, worker_host) when is_binary(workspace) do
+    validate_workspace_path(workspace, worker_host)
+  end
+
+  def validate(workspace, _worker_host) do
+    {:error, {:workspace_path_unreadable, workspace, :invalid}}
+  end
+
   defp ensure_workspace(workspace, issue_context, worker_host) do
     settings = settings_for_issue_context(issue_context)
 
@@ -294,11 +306,40 @@ defmodule SymphonyElixir.Workspace do
   defp add_local_worktree(repo, workspace, branch, base_ref) do
     File.mkdir_p!(Path.dirname(workspace))
 
-    with :ok <- check_branch_not_checked_out_elsewhere(repo, workspace, branch),
-         :ok <- run_git(repo, worktree_add_args(repo, workspace, branch, base_ref)) do
-      {:ok, true}
+    case check_branch_not_checked_out_elsewhere(repo, workspace, branch) do
+      :ok ->
+        repo
+        |> run_git(worktree_add_args(repo, workspace, branch, base_ref))
+        |> handle_local_worktree_add_result(repo, workspace)
+
+      error ->
+        error
     end
   end
+
+  defp handle_local_worktree_add_result(:ok, _repo, _workspace), do: {:ok, true}
+
+  defp handle_local_worktree_add_result({:error, reason, output}, repo, workspace) do
+    case reuse_local_worktree_after_add_failure(repo, workspace) do
+      {:ok, false} -> {:ok, false}
+      :error -> {:error, reason, output}
+    end
+  end
+
+  defp reuse_local_worktree_after_add_failure(repo, workspace), do: reuse_local_worktree_after_add_failure(repo, workspace, 10)
+
+  defp reuse_local_worktree_after_add_failure(repo, workspace, attempts) when attempts > 0 do
+    case registered_worktree?(repo, workspace) do
+      true ->
+        {:ok, false}
+
+      false ->
+        Process.sleep(20)
+        reuse_local_worktree_after_add_failure(repo, workspace, attempts - 1)
+    end
+  end
+
+  defp reuse_local_worktree_after_add_failure(_repo, _workspace, _attempts), do: :error
 
   defp check_branch_not_checked_out_elsewhere(repo, workspace, branch) do
     # On `git worktree list --porcelain` failure, fall through to the actual
@@ -441,21 +482,27 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp remove_directory_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
-    maybe_run_before_remove_hook(workspace, issue_context, worker_host)
+    case validate_workspace_path(workspace, worker_host) do
+      :ok ->
+        maybe_run_before_remove_hook(workspace, issue_context, worker_host)
 
-    script =
-      [
-        remote_shell_assign("workspace", workspace),
-        "rm -rf \"$workspace\""
-      ]
-      |> Enum.join("\n")
+        script =
+          [
+            remote_shell_assign("workspace", workspace),
+            "rm -rf \"$workspace\""
+          ]
+          |> Enum.join("\n")
 
-    case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
-      {:ok, {_output, 0}} ->
-        {:ok, []}
+        case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
+          {:ok, {_output, 0}} ->
+            {:ok, []}
 
-      {:ok, {output, status}} ->
-        {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
+          {:ok, {output, status}} ->
+            {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
+
+          {:error, reason} ->
+            {:error, reason, ""}
+        end
 
       {:error, reason} ->
         {:error, reason, ""}
@@ -476,56 +523,62 @@ defmodule SymphonyElixir.Workspace do
   defp remove_worktree_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
     branch = worktree_branch(issue_context)
 
-    maybe_run_before_remove_hook(workspace, issue_context, worker_host)
+    case validate_workspace_path(workspace, worker_host) do
+      :ok ->
+        maybe_run_before_remove_hook(workspace, issue_context, worker_host)
 
-    script =
-      [
-        "set -eu",
-        remote_shell_assign("repo", settings.workspace.repo || ""),
-        remote_shell_assign("workspace", workspace),
-        "branch=#{shell_escape(branch)}",
-        "if [ -z \"$repo\" ]; then",
-        "  echo \"workspace_repo_missing: workspace.repo is required for worktree strategy\"",
-        "  exit 41",
-        "fi",
-        "if [ ! -d \"$repo\" ]; then",
-        "  echo \"workspace_repo_missing: $repo\"",
-        "  exit 41",
-        "fi",
-        "git -C \"$repo\" rev-parse --git-dir >/dev/null",
-        "if ! worktrees=$(git -C \"$repo\" worktree list --porcelain); then",
-        "  echo \"workspace_worktree_list_failed: $repo\"",
-        "  exit 43",
-        "fi",
-        "registered=$(printf '%s\\n' \"$worktrees\" | awk '/^worktree / {print substr($0, 10)}' | grep -Fx \"$workspace\" || true)",
-        "if [ -n \"$registered\" ]; then",
-        "  git -C \"$repo\" worktree remove --force \"$workspace\"",
-        "elif [ -e \"$workspace\" ]; then",
-        "  echo \"workspace_not_registered_worktree: $workspace\"",
-        "  exit 42",
-        "fi",
-        "if git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then",
-        "  if ! branch_delete_output=$(git -C \"$repo\" branch -D \"$branch\" 2>&1); then",
-        "    case \"$branch_delete_output\" in",
-        "      *\"checked out at\"*|*\"is checked out\"*)",
-        "        printf '%s\\n' \"workspace_branch_delete_skipped: $branch checked out elsewhere\"",
-        "        ;;",
-        "      *)",
-        "        printf '%s\\n' \"$branch_delete_output\"",
-        "        exit 44",
-        "        ;;",
-        "    esac",
-        "  fi",
-        "fi"
-      ]
-      |> Enum.join("\n")
+        script =
+          [
+            "set -eu",
+            remote_shell_assign("repo", settings.workspace.repo || ""),
+            remote_shell_assign("workspace", workspace),
+            "branch=#{shell_escape(branch)}",
+            "if [ -z \"$repo\" ]; then",
+            "  echo \"workspace_repo_missing: workspace.repo is required for worktree strategy\"",
+            "  exit 41",
+            "fi",
+            "if [ ! -d \"$repo\" ]; then",
+            "  echo \"workspace_repo_missing: $repo\"",
+            "  exit 41",
+            "fi",
+            "git -C \"$repo\" rev-parse --git-dir >/dev/null",
+            "if ! worktrees=$(git -C \"$repo\" worktree list --porcelain); then",
+            "  echo \"workspace_worktree_list_failed: $repo\"",
+            "  exit 43",
+            "fi",
+            "registered=$(printf '%s\\n' \"$worktrees\" | awk '/^worktree / {print substr($0, 10)}' | grep -Fx \"$workspace\" || true)",
+            "if [ -n \"$registered\" ]; then",
+            "  git -C \"$repo\" worktree remove --force \"$workspace\"",
+            "elif [ -e \"$workspace\" ]; then",
+            "  echo \"workspace_not_registered_worktree: $workspace\"",
+            "  exit 42",
+            "fi",
+            "if git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then",
+            "  if ! branch_delete_output=$(git -C \"$repo\" branch -D \"$branch\" 2>&1); then",
+            "    case \"$branch_delete_output\" in",
+            "      *\"checked out at\"*|*\"is checked out\"*)",
+            "        printf '%s\\n' \"workspace_branch_delete_skipped: $branch checked out elsewhere\"",
+            "        ;;",
+            "      *)",
+            "        printf '%s\\n' \"$branch_delete_output\"",
+            "        exit 44",
+            "        ;;",
+            "    esac",
+            "  fi",
+            "fi"
+          ]
+          |> Enum.join("\n")
 
-    case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
-      {:ok, {_output, 0}} ->
-        {:ok, []}
+        case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
+          {:ok, {_output, 0}} ->
+            {:ok, []}
 
-      {:ok, {output, status}} ->
-        {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
+          {:ok, {output, status}} ->
+            {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
+
+          {:error, reason} ->
+            {:error, reason, ""}
+        end
 
       {:error, reason} ->
         {:error, reason, ""}
@@ -1302,13 +1355,22 @@ defmodule SymphonyElixir.Workspace do
           {:error, {:workspace_outside_root, canonical_workspace, canonical_root}}
       end
     else
-      {:error, {:path_canonicalize_failed, path, reason}} ->
-        {:error, {:workspace_path_unreadable, path, reason}}
+      {:error, reason} ->
+        workspace_canonicalize_error(reason, expanded_workspace)
     end
   end
 
   defp validate_workspace_path(workspace, worker_host)
        when is_binary(workspace) and is_binary(worker_host) do
+    root = Config.settings!().workspace.root
+
+    with :ok <- validate_remote_workspace_candidate(workspace),
+         :ok <- validate_remote_workspace_root(root) do
+      validate_remote_workspace_containment(workspace, root)
+    end
+  end
+
+  defp validate_remote_workspace_candidate(workspace) do
     cond do
       String.trim(workspace) == "" ->
         {:error, {:workspace_path_unreadable, workspace, :empty}}
@@ -1316,9 +1378,45 @@ defmodule SymphonyElixir.Workspace do
       String.contains?(workspace, ["\n", "\r", <<0>>]) ->
         {:error, {:workspace_path_unreadable, workspace, :invalid_characters}}
 
+      not String.starts_with?(workspace, "/") ->
+        {:error, {:workspace_path_unreadable, workspace, :relative}}
+
+      ".." in Path.split(workspace) ->
+        {:error, {:workspace_path_unreadable, workspace, :parent_directory_segment}}
+
       true ->
         :ok
     end
+  end
+
+  defp validate_remote_workspace_root(root) do
+    if String.starts_with?(root, "/") do
+      :ok
+    else
+      {:error, {:workspace_root_unreadable, root, :relative}}
+    end
+  end
+
+  defp validate_remote_workspace_containment(workspace, root) do
+    cond do
+      workspace == root ->
+        {:error, {:workspace_equals_root, workspace, root}}
+
+      not String.starts_with?(workspace <> "/", root <> "/") ->
+        {:error, {:workspace_outside_root, workspace, root}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp workspace_canonicalize_error(reason, _fallback_path)
+       when is_tuple(reason) and tuple_size(reason) == 3 and elem(reason, 0) == :path_canonicalize_failed do
+    {:error, {:workspace_path_unreadable, elem(reason, 1), elem(reason, 2)}}
+  end
+
+  defp workspace_canonicalize_error(reason, fallback_path) do
+    {:error, {:workspace_path_unreadable, fallback_path, reason}}
   end
 
   defp remote_shell_assign(variable_name, raw_path)

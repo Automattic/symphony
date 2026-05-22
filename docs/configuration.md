@@ -144,7 +144,9 @@ workspaces:
 ```
 
 Issue workspaces are created under `workspaces.root/<repo_key>/<issue_key>`. The agent cwd is always
-the issue workspace, never the source repository.
+the issue workspace, never the source repository. For SSH workers, configure `workspaces.root` as an
+absolute path on the remote host; remote workspace validation rejects relative and `~` roots because
+they cannot be expanded safely on the orchestrator host.
 
 **Storage inventory and cleanup planning** are read-only today. Use the dry-run task to inspect
 estimated storage use before deciding whether to archive or remove anything manually:

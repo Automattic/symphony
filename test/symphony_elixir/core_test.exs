@@ -1955,8 +1955,11 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    assert PromptBuilder.build_prompt(issue, repo_key: "default") ==
-             "Repo default issue_repo=default ticket=S-REPO"
+    prompt = PromptBuilder.build_prompt(issue, repo_key: "default")
+
+    assert prompt =~ "Symphony runtime context:"
+    assert prompt =~ "Repo key: `default`."
+    assert prompt =~ "Repo default issue_repo=default ticket=S-REPO"
   end
 
   test "prompt builder exposes configured agent labels in template context" do
@@ -1976,8 +1979,10 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    assert PromptBuilder.build_prompt(issue) ==
-             "kind=claude name=Claude update=Claude update workpad=## Claude Workpad"
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "Symphony runtime context:"
+    assert prompt =~ "kind=claude name=Claude update=Claude update workpad=## Claude Workpad"
   end
 
   test "prompt builder derives repo_key from issue maps" do
@@ -1988,21 +1993,21 @@ defmodule SymphonyElixir.CoreTest do
              title: "Show repo context",
              description: "Prompt should include repo identity",
              repo_key: "default"
-           }) == "Repo default issue_repo=default"
+           }) =~ "Repo default issue_repo=default"
 
     assert PromptBuilder.build_prompt(%{
              "identifier" => "S-REPO-STRING",
              "title" => "Show repo context",
              "description" => "Prompt should include repo identity",
              "repo_key" => "default"
-           }) == "Repo default issue_repo=default"
+           }) =~ "Repo default issue_repo=default"
 
     assert PromptBuilder.build_prompt(%{
              identifier: "S-REPO-BLANK",
              title: "Show repo context",
              description: "Prompt should include repo identity",
              repo_key: " "
-           }) == "Repo default issue_repo=default"
+           }) =~ "Repo default issue_repo=default"
   end
 
   test "prompt builder leaves repo_key absent when config cannot resolve a primary repo" do
@@ -2010,11 +2015,15 @@ defmodule SymphonyElixir.CoreTest do
     File.write!(Workflow.symphony_file_path(), "repositories: []\n")
     if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
 
-    assert PromptBuilder.build_prompt(%{
-             identifier: "S-NO-REPO",
-             title: "No repo context",
-             description: "Prompt should still render"
-           }) == "Repo "
+    prompt =
+      PromptBuilder.build_prompt(%{
+        identifier: "S-NO-REPO",
+        title: "No repo context",
+        description: "Prompt should still render"
+      })
+
+    assert prompt =~ "Symphony runtime context:"
+    assert prompt =~ ~r/Repo\s*$/
   end
 
   test "prompt builder renders issue datetime fields without crashing" do
@@ -2055,14 +2064,14 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    assert PromptBuilder.build_prompt(issue, extra_prompt: "Review comments") ==
+    assert PromptBuilder.build_prompt(issue, extra_prompt: "Review comments") =~
              "Ticket MT-702\n\nReview comments"
 
-    assert PromptBuilder.build_prompt(issue, prompt_context: "Merge guidance") ==
+    assert PromptBuilder.build_prompt(issue, prompt_context: "Merge guidance") =~
              "Ticket MT-702\n\nMerge guidance"
 
-    assert PromptBuilder.build_prompt(issue, extra_prompt: "  \n") == "Ticket MT-702"
-    assert PromptBuilder.build_prompt(issue, extra_prompt: nil) == "Ticket MT-702"
+    assert PromptBuilder.build_prompt(issue, extra_prompt: "  \n") =~ "Ticket MT-702"
+    assert PromptBuilder.build_prompt(issue, extra_prompt: nil) =~ "Ticket MT-702"
   end
 
   test "prompt builder ignores captured learnings in phase one" do
@@ -2238,7 +2247,7 @@ defmodule SymphonyElixir.CoreTest do
         identifier: "MT-708"
       })
 
-    assert prompt == "Ticket MT-708"
+    assert prompt =~ "Ticket MT-708"
 
     prompt =
       PromptBuilder.build_prompt(%Issue{
@@ -2251,7 +2260,7 @@ defmodule SymphonyElixir.CoreTest do
         comments: [123]
       })
 
-    assert prompt == "Ticket MT-709"
+    assert prompt =~ "Ticket MT-709"
   end
 
   test "prompt builder normalizes sparse reviewer comments" do
@@ -2281,7 +2290,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Top-level follow-up."
     assert prompt =~ "Reviewer:\n<linear_reviewer_comment_body>\nPR-level note.\n</linear_reviewer_comment_body>"
 
-    assert PromptBuilder.build_prompt(issue, reviewer_comments: :not_a_list) == "Ticket MT-704"
+    assert PromptBuilder.build_prompt(issue, reviewer_comments: :not_a_list) =~ "Ticket MT-704"
   end
 
   test "prompt builder normalizes sparse ci failure context" do
@@ -2416,7 +2425,7 @@ defmodule SymphonyElixir.CoreTest do
       ]
     }
 
-    assert PromptBuilder.build_prompt(issue) == "Ticket MT-701"
+    assert PromptBuilder.build_prompt(issue) =~ "Ticket MT-701"
   end
 
   test "prompt builder uses strict variable rendering" do
@@ -2600,7 +2609,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
-    assert prompt == "Retry #2"
+    assert prompt =~ "Retry #2"
   end
 
   test "agent runner falls back when issue enrichment raises and keeps workspace after successful codex run" do

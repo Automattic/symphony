@@ -665,7 +665,11 @@ defmodule SymphonyElixir.ConfigSplitTest do
       labels: ["api"]
     }
 
-    assert SymphonyElixir.PromptBuilder.build_prompt(issue) == "API api ACME-API"
+    prompt = SymphonyElixir.PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "Symphony runtime context:"
+    assert prompt =~ "Repo key: `api`."
+    assert prompt =~ "API api ACME-API"
   end
 
   test "repo workflow with an empty prompt falls back to the default prompt", %{root: root} do

@@ -205,6 +205,9 @@ Exit codes:
 
 - The PR title and description should reflect the full scope of the change, not
   just the most recent fix.
+- If the PR description references a Linear issue, include only the
+  human-readable Linear identifier (for example, `WOOA7S-929`), not the full
+  Linear URL.
 - If review feedback expands scope, decide whether to include it now or defer
   it. You can accept, defer, or decline feedback. If deferring or declining,
   call it out in the root-level `[codex]` update with a brief reason (e.g.,

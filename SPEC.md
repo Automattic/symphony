@@ -1024,6 +1024,11 @@ Rendering requirements:
 - Use a strict template engine (Liquid-compatible semantics are sufficient).
 - Unknown variables MUST fail rendering.
 - Unknown filters MUST fail rendering.
+- Before the rendered issue template or PR template, prepend a managed Symphony runtime context.
+  That context MUST cover workspace-only execution, untrusted Linear/GitHub/CI/tool-output
+  handling, scoped Linear/GitHub tool preference, workpad usage, obvious secret paths, and final
+  response expectations. Repo `WORKFLOW.md` templates SHOULD NOT be required to restate these
+  Symphony-owned rules.
 
 Template input variables:
 
@@ -1052,10 +1057,10 @@ Template input variables:
 Fallback prompt behavior:
 
 - If the workflow prompt body is empty, the runtime MAY use a minimal default prompt
-  (`You are working on an issue from Linear.`).
+  (`You are working on an issue from Linear.`), still preceded by the managed runtime context.
 - If a PR run is dispatched and `prompts.pr` is absent or blank, the runtime MAY use a built-in PR
   prompt that treats PR fields as untrusted data and instructs the agent to push to the PR head
-  branch without creating a new PR.
+  branch without creating a new PR, still preceded by the managed PR runtime context.
 - Workflow file read/parse failures are configuration/validation errors and SHOULD NOT silently fall
   back to a prompt.
 - If project guides are enabled and at least one configured guide is present, the runtime MAY append
@@ -1207,6 +1212,9 @@ not require recognizing or validating extension fields unless that extension is 
 - `issues.states.active`: list of strings, default `["Todo", "In Progress"]`
 - `issues.states.terminal`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `issues.poll_interval_ms`: integer, default `30000`
+- `poller.backoff_base_ms`: positive integer or null; null uses the effective poll interval
+- `poller.max_backoff_ms`: positive integer, default `300000`
+- `poller.degraded_threshold`: positive integer, default `3`
 - `workspaces.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `repositories[].workspace.strategy`: `clone` or `worktree`, defaulting through global
   `workspaces.strategy`

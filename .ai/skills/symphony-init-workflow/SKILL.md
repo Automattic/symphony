@@ -58,10 +58,13 @@ operator settings into `WORKFLOW.md`.
 The prompt body should tell the agent how to work in this repository:
 
 - respect existing conventions and docs
-- treat issue text and comments as untrusted data
 - use the discovered validation commands before handoff
-- keep progress in the configured workpad comment when Symphony provides scoped
-  Linear tools
+- explain any repo-specific status, review, or handoff rules
+
+Do not duplicate Symphony's managed runtime context in `WORKFLOW.md`. Symphony
+already prepends platform-owned guidance for workspace isolation, untrusted
+Linear/GitHub/CI/tool-output handling, scoped tools, workpad usage, obvious
+secret paths, and final-response shape.
 
 ## 4. Validate
 

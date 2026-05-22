@@ -305,6 +305,15 @@ defmodule SymphonyElixir.PrReviewPollerTest do
   end
 
   setup do
+    audit_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-pr-review-poller-audit-#{System.unique_integer([:positive])}"
+      )
+
+    previous_audit_dir = Application.get_env(:symphony_elixir, :audit_log_dir)
+    Application.put_env(:symphony_elixir, :audit_log_dir, audit_root)
+
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :pr_review_test_issues)
       Application.delete_env(:symphony_elixir, :pr_review_test_activity)
@@ -321,6 +330,14 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       Application.delete_env(:symphony_elixir, :pr_review_test_request_review_failures)
       Application.delete_env(:symphony_elixir, :pr_review_test_reply_failures)
       Application.delete_env(:symphony_elixir, :learning_test_response)
+
+      if previous_audit_dir do
+        Application.put_env(:symphony_elixir, :audit_log_dir, previous_audit_dir)
+      else
+        Application.delete_env(:symphony_elixir, :audit_log_dir)
+      end
+
+      File.rm_rf(audit_root)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -331,7 +348,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     )
 
     Application.put_env(:symphony_elixir, :pr_review_test_recipient, self())
-    :ok
+    {:ok, audit_dir: audit_root}
   end
 
   test "discovers in-review PRs and persists workspace tracking metadata" do
@@ -2575,12 +2592,68 @@ defmodule SymphonyElixir.PrReviewPollerTest do
         assert {:noreply, next_state} = PrReviewPoller.handle_info(:poll, state)
         assert next_state.poll_interval_ms == 123
         assert Keyword.fetch!(next_state.opts, :poll_interval_ms) == 123
+        assert next_state.consecutive_failures == 1
+        assert next_state.current_backoff_ms == 123
         assert is_reference(next_state.timer_ref)
         Process.cancel_timer(next_state.timer_ref)
       end)
 
     assert log =~ "PR review poll raised"
     assert log =~ "poll exploded"
+  end
+
+  test "poll callback backs off, emits degradation audit, and recovers" do
+    {:ok, state} =
+      PrReviewPoller.init(
+        tracker: FakeTracker,
+        run_store: RaisingRunStore,
+        poll_interval_ms: 100,
+        poller_max_backoff_ms: 250,
+        poller_degraded_threshold: 2,
+        repo_key: @repo_key
+      )
+
+    Process.cancel_timer(state.timer_ref)
+
+    log =
+      capture_log([level: :error], fn ->
+        assert {:noreply, failed_once} = PrReviewPoller.handle_info(:poll, state)
+        assert failed_once.consecutive_failures == 1
+        assert failed_once.current_backoff_ms == 100
+        Process.cancel_timer(failed_once.timer_ref)
+
+        assert {:noreply, degraded} = PrReviewPoller.handle_info(:poll, failed_once)
+        assert degraded.consecutive_failures == 2
+        assert degraded.current_backoff_ms == 200
+        assert degraded.degraded?
+        Process.cancel_timer(degraded.timer_ref)
+
+        assert {:noreply, capped} = PrReviewPoller.handle_info(:poll, degraded)
+        assert capped.consecutive_failures == 3
+        assert capped.current_backoff_ms == 250
+        Process.cancel_timer(capped.timer_ref)
+
+        successful = %{capped | opts: Keyword.put(capped.opts, :run_store, StatefulRunStore)}
+
+        info_log =
+          capture_log([level: :info], fn ->
+            assert {:noreply, recovered} = PrReviewPoller.handle_info(:poll, successful)
+            assert recovered.consecutive_failures == 0
+            assert recovered.current_backoff_ms == nil
+            refute recovered.degraded?
+            Process.cancel_timer(recovered.timer_ref)
+          end)
+
+        assert info_log =~ "PR review poll recovered after 3 consecutive failures"
+      end)
+
+    assert log =~ "PR review poll raised"
+    assert log =~ "poll exploded"
+    assert log =~ "PR review poll backing off after 2 consecutive failures; next poll in 200ms"
+    assert log =~ "PR review poll backing off after 3 consecutive failures; next poll in 250ms"
+
+    assert audit_event?("poller_degraded", "pr_review", "degraded")
+    assert audit_event?("poller_recovered", "pr_review", "recovered")
   end
 
   test "poll callback logs warning-level signals for review action errors" do
@@ -2762,5 +2835,13 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       latest_review_activity_at: Keyword.get(opts, :latest_review_activity_at, latest_activity_at),
       comments: Keyword.get(opts, :comments, [])
     }
+  end
+
+  defp audit_event?(event_type, poller, status) do
+    {:ok, events} = SymphonyElixir.AuditLog.query(event_type: event_type)
+
+    Enum.any?(events, fn event ->
+      event["poller"] == poller and event["status"] == status
+    end)
   end
 end

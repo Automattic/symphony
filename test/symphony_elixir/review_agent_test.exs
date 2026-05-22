@@ -263,6 +263,11 @@ defmodule SymphonyElixir.ReviewAgentTest do
       assert prompt =~ "`github_get_pull_request`"
       assert prompt =~ "`github_push_branch`"
       assert prompt =~ "`github_create_pull_request`"
+      assert prompt =~ "`linear_attach_url`"
+      assert prompt =~ "`linear_update_comment`"
+      assert prompt =~ "do not use `linear_add_comment`"
+      assert prompt =~ "record the gap"
+      assert prompt =~ "posting a summary comment"
       assert prompt =~ "If these scoped tools are not visible"
       assert prompt =~ "Avoid raw `gh` or `git push`"
     end
@@ -281,8 +286,14 @@ defmodule SymphonyElixir.ReviewAgentTest do
       assert prompt =~ "`mcp__symphony__github_get_pull_request`"
       assert prompt =~ "`mcp__symphony__github_push_branch`"
       assert prompt =~ "`mcp__symphony__github_create_pull_request`"
+      assert prompt =~ "`mcp__symphony__linear_attach_url`"
+      assert prompt =~ "`mcp__symphony__linear_update_comment`"
+      assert prompt =~ "do not use `mcp__symphony__linear_add_comment`"
+      assert prompt =~ "record the gap"
+      assert prompt =~ "posting a summary comment"
       assert prompt =~ "Do not search for these with ToolSearch"
-      assert prompt =~ "Avoid raw `gh` or `git push`"
+      assert prompt =~ "Avoid raw"
+      assert prompt =~ "`gh` or `git push`"
     end
   end
 

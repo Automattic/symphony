@@ -175,10 +175,16 @@ defmodule SymphonyElixir.ReviewAgent do
         - `mcp__symphony__github_push_branch`
         - `mcp__symphony__github_create_pull_request`
 
+        Use Claude's Symphony MCP Linear tools for tracker handoff:
+        - attach the PR URL with `mcp__symphony__linear_attach_url` before moving the issue to review
+        - update the existing workpad with `mcp__symphony__linear_update_comment`
+        - do not use `mcp__symphony__linear_add_comment` for PR, CI, or completion summaries
+
         Do not search for these with ToolSearch or deferred-tool discovery. If the
         `mcp__symphony__github_*` tools are not visible in this session, stop and report that
-        the Symphony MCP GitHub tools are unavailable. Avoid raw `gh` or `git push`; do not use
-        SSH as a fallback.
+        the Symphony MCP GitHub tools are unavailable. If the Linear attachment tool is not
+        visible, record the gap in the workpad instead of posting a summary comment. Avoid raw
+        `gh` or `git push`; do not use SSH as a fallback.
         """
 
       _kind ->
@@ -188,8 +194,15 @@ defmodule SymphonyElixir.ReviewAgent do
         - `github_push_branch`
         - `github_create_pull_request`
 
+        Use Codex's scoped Symphony Linear tools for tracker handoff:
+        - attach the PR URL with `linear_attach_url` before moving the issue to review
+        - update the existing workpad with `linear_update_comment`
+        - do not use `linear_add_comment` for PR, CI, or completion summaries
+
         If these scoped tools are not visible in this session, stop and report that the Symphony
-        GitHub tools are unavailable. Avoid raw `gh` or `git push`; do not use SSH as a fallback.
+        GitHub tools are unavailable. If the Linear attachment tool is not visible, record the gap
+        in the workpad instead of posting a summary comment. Avoid raw `gh` or `git push`; do not
+        use SSH as a fallback.
         """
     end
   end

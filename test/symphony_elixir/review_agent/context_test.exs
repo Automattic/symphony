@@ -79,6 +79,22 @@ defmodule SymphonyElixir.ReviewAgent.ContextTest do
       assert {:error, {:file_not_in_review_context, "missing.txt"}} =
                Context.lookup_evidence(source, "missing.txt", {1, 1})
     end
+
+    test "looks up full changed file evidence when a line range extends beyond the diff hunk" do
+      original = numbered_lines(1..100)
+      modified = numbered_lines(1..49) <> "changed line 50\n" <> numbered_lines(51..100)
+      repo = changed_existing_repo!("feature.txt", original, modified)
+
+      assert {:ok, source} =
+               Context.build(issue(), repo, "origin/main..HEAD", [], git_fun(repo))
+
+      assert {:ok, %{path: "feature.txt", line_range: {10, 90}, source: :file, text: text}} =
+               Context.lookup_evidence(source, "feature.txt", {10, 90})
+
+      assert text =~ "line 10"
+      assert text =~ "changed line 50"
+      assert text =~ "line 90"
+    end
   end
 
   defp issue do
@@ -127,6 +143,34 @@ defmodule SymphonyElixir.ReviewAgent.ContextTest do
 
     repo
   end
+
+  defp changed_existing_repo!(path, original, modified) do
+    repo =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-review-agent-context-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(repo)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(repo) end)
+
+    init_repo!(repo)
+
+    full_path = Path.join(repo, path)
+    File.mkdir_p!(Path.dirname(full_path))
+    File.write!(full_path, original)
+    git!(repo, ["add", path])
+    git!(repo, ["commit", "-m", "feat: add #{path}"])
+    git!(repo, ["update-ref", "refs/remotes/origin/main", "HEAD"])
+
+    File.write!(full_path, modified)
+    git!(repo, ["add", path])
+    git!(repo, ["commit", "-m", "fix: update #{path}"])
+
+    repo
+  end
+
+  defp numbered_lines(range), do: Enum.map_join(range, "", &"line #{&1}\n")
 
   defp init_repo!(repo) do
     git!(repo, ["init", "-b", "main"])

@@ -2376,6 +2376,87 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "clears command timeout after a tool result arrives" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-command-timeout-cleared-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "ACME-CMDDONE")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"tool_use","name":"bash","id":"t-1","input":{"command":"make all"}}'
+        printf '%s\\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t-1","content":"make all passed"}]},"session_id":"sess-cmd-done"}'
+        sleep 0.08
+        printf '%s\\n' '{"type":"result","subtype":"success","duration_ms":100,"duration_api_ms":80,"is_error":false,"num_turns":1,"result":"done","session_id":"sess-cmd-done","total_cost_usd":0.0,"usage":{"input_tokens":7,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}}'
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_turn_timeout_ms: 5_000,
+          agent_command_timeout_ms: 30
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:ok, result} = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert result.input_tokens == 7
+        assert result.output_tokens == 3
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "keeps command timeout active until all tool results arrive" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-command-timeout-pending-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "ACME-CMDPENDING")
+        fake_claude = Path.join(test_root, "fake-claude")
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"bash","input":{"command":"make all"}},{"type":"tool_use","id":"t-2","name":"read","input":{"file_path":"README.md"}}]}}'
+        printf '%s\\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t-1","content":"make all passed"}]},"session_id":"sess-cmd-pending"}'
+        sleep 1
+        exit 0
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude,
+          agent_turn_timeout_ms: 5_000,
+          agent_command_timeout_ms: 30
+        )
+
+        {:ok, session} = AppServer.start_session(workspace)
+
+        assert {:error, :command_timeout} = AppServer.run_turn(session, "do the thing", %{}, [])
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "correctly reassembles lines split by port line limit into parseable events" do
       test_root =
         Path.join(

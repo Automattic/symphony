@@ -520,16 +520,80 @@ defmodule SymphonyElixir.AgentRunner do
     else
       Logger.warning("Reviewer agent remained inconclusive for #{issue_context(run_context.issue)} reason=#{inspect(reason)}; downgrading to request_changes")
 
+      reason_text = review_agent_non_convergence_reason(reason)
+
       result = %{
         verdict: :request_changes,
-        comments: ["reviewer did not converge"],
-        reason: "reviewer did not converge"
+        comments: [reason_text],
+        reason: reason_text
       }
 
       emit_review_agent_verdict(run_context, result, round, config.max_iterations)
       handle_review_agent_result(result, run_context, config, force_request_changes: true)
     end
   end
+
+  defp review_agent_non_convergence_reason(reason) do
+    case review_agent_inconclusive_summary(reason) do
+      nil -> "reviewer did not converge"
+      summary -> "reviewer did not converge: #{summary}"
+    end
+  end
+
+  defp review_agent_inconclusive_summary(:review_agent_max_iterations_reached), do: "request-change limit reached"
+  defp review_agent_inconclusive_summary({:max_iterations, _reason}), do: "review turn reached max iterations"
+  defp review_agent_inconclusive_summary({:self_check_max_iterations, _reason}), do: "self-check reached max iterations"
+
+  defp review_agent_inconclusive_summary({:review_agent_unverifiable, %{failures: [failure | _]}}) do
+    location = review_agent_finding_location(Map.get(failure, :finding))
+    reason = review_agent_verification_reason(Map.get(failure, :reason))
+
+    "unverifiable finding#{location}: #{reason}"
+  end
+
+  defp review_agent_inconclusive_summary({:malformed_review_agent_response, reason}) do
+    "malformed response #{limited_inspect(reason)}"
+  end
+
+  defp review_agent_inconclusive_summary(reason) when is_atom(reason) do
+    reason |> Atom.to_string() |> String.replace("_", " ")
+  end
+
+  defp review_agent_inconclusive_summary(_reason), do: nil
+
+  defp review_agent_finding_location(%{file: file, line_range: {start_line, end_line}})
+       when is_binary(file) and is_integer(start_line) and is_integer(end_line) do
+    " at #{file}:#{start_line}-#{end_line}"
+  end
+
+  defp review_agent_finding_location(%{file: file}) when is_binary(file), do: " at #{file}"
+  defp review_agent_finding_location(_finding), do: ""
+
+  defp review_agent_verification_reason(:quoted_snippet_not_found), do: "quoted snippet not found"
+  defp review_agent_verification_reason({:file_not_in_review_context, path}) when is_binary(path), do: "file not in review context"
+
+  defp review_agent_verification_reason({:line_range_not_found, path, {start_line, end_line}})
+       when is_binary(path) and is_integer(start_line) and is_integer(end_line) do
+    "line range not found at #{path}:#{start_line}-#{end_line}"
+  end
+
+  defp review_agent_verification_reason(reason) when is_atom(reason) do
+    reason |> Atom.to_string() |> String.replace("_", " ")
+  end
+
+  defp review_agent_verification_reason(reason), do: limited_inspect(reason)
+
+  defp limited_inspect(term) do
+    term
+    |> inspect(limit: 3, printable_limit: 160)
+    |> truncate_text(220)
+  end
+
+  defp truncate_text(text, max_length) when byte_size(text) > max_length do
+    String.slice(text, 0, max_length) <> "..."
+  end
+
+  defp truncate_text(text, _max_length), do: text
 
   defp emit_review_agent_verdict(
          %{

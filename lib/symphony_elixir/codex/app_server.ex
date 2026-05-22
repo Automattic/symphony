@@ -20,6 +20,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.McpServer
   alias SymphonyElixir.Notifications
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.ProcessTree
   alias SymphonyElixir.ProjectGuidePrompt
   alias SymphonyElixir.SensitivePath
   alias SymphonyElixir.SSH
@@ -74,6 +75,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           mcp_remote_shim_path: Path.t() | nil,
           mcp_remote_codex_home: Path.t() | nil,
           stderr_tail: stderr_tail(),
+          process_tree_module: module(),
           settings: Schema.t()
         }
 
@@ -104,12 +106,22 @@ defmodule SymphonyElixir.Codex.AppServer do
         mcp_session,
         remote_socket_path,
         remote_shim_path,
-        Keyword.get(opts, :tool_scope)
+        Keyword.get(opts, :tool_scope),
+        Keyword.get(opts, :process_tree_module, ProcessTree)
       )
     end
   end
 
-  defp start_session_with_mcp(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path, tool_scope) do
+  defp start_session_with_mcp(
+         workspace,
+         worker_host,
+         settings,
+         mcp_session,
+         remote_socket_path,
+         remote_shim_path,
+         tool_scope,
+         process_tree_module
+       ) do
     case start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path) do
       {:ok, port, stdout_pump, codex_home, launch_cleanup_paths, remote_codex_home, stderr_tail} ->
         launch_context = %{
@@ -128,7 +140,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           workspace,
           worker_host,
           settings,
-          launch_context
+          launch_context,
+          process_tree_module
         )
 
       {:error, reason} ->
@@ -152,7 +165,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            stdout_pump: stdout_pump,
            stderr_tail: stderr_tail,
            tool_scope: tool_scope
-         }
+         },
+         process_tree_module
        ) do
     metadata = port_metadata(port, worker_host)
 
@@ -177,11 +191,12 @@ defmodule SymphonyElixir.Codex.AppServer do
          mcp_remote_shim_path: remote_shim_path,
          mcp_remote_codex_home: remote_codex_home,
          stderr_tail: stderr_tail,
+         process_tree_module: process_tree_module,
          settings: settings
        }}
     else
       {:error, reason} ->
-        stop_port(port, stdout_pump)
+        stop_port(port, stdout_pump, process_tree_module)
         stop_stderr_tail(stderr_tail)
         McpConfig.sync_cloud_requirements_cache(codex_home)
         cleanup_launch_paths(launch_cleanup_paths)
@@ -339,7 +354,12 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port} = session) when is_port(port) do
-    stop_port(port, Map.get(session, :stdout_pump))
+    stop_port(
+      port,
+      Map.get(session, :stdout_pump),
+      Map.get(session, :process_tree_module, ProcessTree)
+    )
+
     stop_stderr_tail(Map.get(session, :stderr_tail))
     McpConfig.sync_cloud_requirements_cache(Map.get(session, :codex_home))
     cleanup_launch_paths(Map.get(session, :launch_cleanup_paths, []))
@@ -3739,10 +3759,11 @@ defmodule SymphonyElixir.Codex.AppServer do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
 
-  defp stop_port(port, stdout_pump \\ nil)
+  defp stop_port(port, stdout_pump \\ nil, process_tree_module \\ ProcessTree)
 
-  defp stop_port(port, %{pid: pid, ref: ref}) when is_port(port) and is_pid(pid) and is_reference(ref) do
-    terminate_port_descendants(port)
+  defp stop_port(port, %{pid: pid, ref: ref}, process_tree_module)
+       when is_port(port) and is_pid(pid) and is_reference(ref) do
+    process_tree_module.terminate_port_descendants(port)
 
     if Process.alive?(pid) do
       send(pid, {:close_stdout_port, self(), ref})
@@ -3759,84 +3780,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp stop_port(port, _stdout_pump) when is_port(port) do
-    terminate_port_descendants(port)
+  defp stop_port(port, _stdout_pump, process_tree_module) when is_port(port) do
+    process_tree_module.terminate_port_descendants(port)
     close_owned_port(port)
-  end
-
-  # The local Codex port launches through bash so stderr can be redirected.
-  # Closing the port only terminates that immediate shell; kill descendants
-  # first so long-running app-server/tool children cannot be reparented.
-  defp terminate_port_descendants(port) do
-    with {:os_pid, os_pid} when is_integer(os_pid) and os_pid > 0 <-
-           safe_port_info(port, :os_pid) do
-      os_pid
-      |> collect_descendant_pids([])
-      |> Enum.uniq()
-      |> Enum.each(&kill_pid/1)
-    end
-
-    :ok
-  rescue
-    exception ->
-      Logger.debug("Codex port descendant cleanup raised: #{Exception.message(exception)}")
-      :ok
-  end
-
-  defp safe_port_info(port, key) do
-    Port.info(port, key)
-  rescue
-    _exception -> nil
-  end
-
-  defp collect_descendant_pids(pid, acc) when is_integer(pid) and pid > 0 do
-    case pgrep_children(pid) do
-      [] ->
-        acc
-
-      children ->
-        Enum.reduce(children, acc, fn child_pid, acc ->
-          collect_descendant_pids(child_pid, [child_pid | acc])
-        end)
-    end
-  end
-
-  defp collect_descendant_pids(_pid, acc), do: acc
-
-  defp pgrep_children(pid) when is_integer(pid) do
-    case System.find_executable("pgrep") do
-      nil -> []
-      pgrep -> run_pgrep_children(pgrep, pid)
-    end
-  rescue
-    _exception -> []
-  end
-
-  defp run_pgrep_children(pgrep, pid) do
-    case System.cmd(pgrep, ["-P", to_string(pid)], stderr_to_stdout: true) do
-      {output, status} when status in [0, 1] -> parse_pgrep_output(output)
-      _ -> []
-    end
-  end
-
-  defp parse_pgrep_output(output) do
-    output
-    |> String.split(["\n", " ", "\t"], trim: true)
-    |> Enum.flat_map(&parse_pgrep_pid_token/1)
-  end
-
-  defp parse_pgrep_pid_token(token) do
-    case Integer.parse(token) do
-      {child_pid, ""} when child_pid > 0 -> [child_pid]
-      _ -> []
-    end
-  end
-
-  defp kill_pid(pid) when is_integer(pid) and pid > 0 do
-    _ = System.cmd("kill", ["-KILL", to_string(pid)], stderr_to_stdout: true)
-    :ok
-  rescue
-    _exception -> :ok
   end
 
   @spec start_stdout_pump(port()) :: {:ok, stdout_pump()} | {:error, term()}

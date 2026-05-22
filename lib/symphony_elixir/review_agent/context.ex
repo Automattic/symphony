@@ -14,6 +14,7 @@ defmodule SymphonyElixir.ReviewAgent.Context do
   @max_symbols 12
   @per_file_min 12
   @per_file_max 160
+  @max_evidence_file_bytes 200_000
   @lock_files ~w[
     Cargo.lock
     Gemfile.lock
@@ -27,6 +28,13 @@ defmodule SymphonyElixir.ReviewAgent.Context do
 
   @type git_fun :: (list(String.t()) -> {:ok, String.t()} | {:error, term()})
   @type line_range :: {pos_integer(), pos_integer()}
+  @typep evidence_source :: :diff | :file | :adjacent_context
+  @typep evidence_lookup :: %{
+           path: String.t(),
+           line_range: line_range(),
+           text: String.t(),
+           source: evidence_source()
+         }
 
   @spec build(Issue.t(), Path.t(), String.t(), keyword(), git_fun()) ::
           {:ok, map()} | {:error, term()}
@@ -101,6 +109,7 @@ defmodule SymphonyElixir.ReviewAgent.Context do
          diff_line_count: count_lines(diff),
          diff_truncated?: summarized?(coverage),
          review_coverage: coverage,
+         file_contents: evidence_file_contents(inventory, git_fun),
          context_pack: context_pack
        }}
     end
@@ -108,14 +117,14 @@ defmodule SymphonyElixir.ReviewAgent.Context do
 
   @doc false
   @spec lookup_evidence(map(), String.t(), line_range()) ::
-          {:ok, %{path: String.t(), line_range: line_range(), text: String.t(), source: :diff | :adjacent_context}}
-          | {:error, term()}
+          {:ok, evidence_lookup()} | {:error, term()}
   def lookup_evidence(source, path, {start_line, end_line})
       when is_map(source) and is_binary(path) and is_integer(start_line) and is_integer(end_line) and start_line > 0 and
              end_line >= start_line do
     with {:ok, normalized_path} <- normalize_lookup_path(path),
          :ok <- path_known_to_context?(source, normalized_path) do
       diff_evidence(source, normalized_path, start_line, end_line) ||
+        file_evidence(source, normalized_path, start_line, end_line) ||
         adjacent_evidence(source, normalized_path, start_line, end_line) ||
         {:error, {:line_range_not_found, normalized_path, {start_line, end_line}}}
     end
@@ -163,12 +172,28 @@ defmodule SymphonyElixir.ReviewAgent.Context do
         nil
 
       %{patch: patch} when is_binary(patch) ->
-        case patch_lines_in_range(patch, start_line, end_line) do
+        case complete_patch_lines_in_range(patch, start_line, end_line) do
           [] -> nil
           lines -> {:ok, %{path: path, line_range: {start_line, end_line}, text: Enum.join(lines, "\n"), source: :diff}}
         end
 
       _file ->
+        nil
+    end
+  end
+
+  defp file_evidence(source, path, start_line, end_line) do
+    source
+    |> Map.get(:file_contents, %{})
+    |> Map.get(path)
+    |> case do
+      contents when is_binary(contents) ->
+        case file_lines_in_range(contents, start_line, end_line) do
+          [] -> nil
+          lines -> {:ok, %{path: path, line_range: {start_line, end_line}, text: Enum.join(lines, "\n"), source: :file}}
+        end
+
+      _contents ->
         nil
     end
   end
@@ -206,6 +231,17 @@ defmodule SymphonyElixir.ReviewAgent.Context do
 
       lines ->
         {:ok, %{path: path, line_range: {start_line, end_line}, text: Enum.join(lines, "\n"), source: :adjacent_context}}
+    end
+  end
+
+  defp complete_patch_lines_in_range(patch, start_line, end_line) do
+    lines = patch_lines_in_range(patch, start_line, end_line)
+    expected_count = end_line - start_line + 1
+
+    if length(lines) == expected_count do
+      lines
+    else
+      []
     end
   end
 
@@ -257,6 +293,16 @@ defmodule SymphonyElixir.ReviewAgent.Context do
     |> Enum.flat_map(&adjacent_line_in_range(&1, start_line, end_line))
   end
 
+  defp file_lines_in_range(contents, start_line, end_line) do
+    contents
+    |> String.split("\n", trim: false)
+    |> Enum.slice((start_line - 1)..(end_line - 1))
+    |> case do
+      lines when length(lines) == end_line - start_line + 1 -> lines
+      _lines -> []
+    end
+  end
+
   defp adjacent_line_in_range(line, start_line, end_line) do
     case Regex.run(~r/^(\d+): ?(.*)$/, line, capture: :all_but_first) do
       [number, text] -> adjacent_line_text(parse_int(number), text, start_line, end_line)
@@ -300,6 +346,26 @@ defmodule SymphonyElixir.ReviewAgent.Context do
       }
     end)
   end
+
+  defp evidence_file_contents(inventory, git_fun) do
+    inventory
+    |> Enum.reject(&skip_evidence_file?/1)
+    |> Enum.flat_map(fn %{path: path} ->
+      case git_fun.(["show", "HEAD:#{path}"]) do
+        {:ok, contents} when byte_size(contents) <= @max_evidence_file_bytes -> [{path, contents}]
+        {:ok, _contents} -> []
+        {:error, _reason} -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp skip_evidence_file?(%{status: status, classification: classification}) when is_binary(status) do
+    String.starts_with?(status, "D") or classification in [:binary, :generated, :lock]
+  end
+
+  defp skip_evidence_file?(%{classification: classification}) when classification in [:binary, :generated, :lock], do: true
+  defp skip_evidence_file?(_file), do: false
 
   defp parse_numstat(numstat) do
     numstat

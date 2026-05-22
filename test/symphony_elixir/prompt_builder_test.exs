@@ -24,8 +24,17 @@ defmodule SymphonyElixir.PromptBuilderTest do
       }
     }
 
-    assert PromptBuilder.build_prompt(issue, prompt_mode: :pr) =~ "PR 123 <linear_issue_title>\nFix failing tests"
-    assert PromptBuilder.build_prompt(issue) == "Issue PR-123"
+    pr_prompt = PromptBuilder.build_prompt(issue, prompt_mode: :pr)
+    issue_prompt = PromptBuilder.build_prompt(issue)
+
+    assert pr_prompt =~ "Symphony PR runtime context:"
+    assert pr_prompt =~ "Push updates to the current PR head branch."
+    assert pr_prompt =~ "Use scoped `github_*` tools"
+    assert pr_prompt =~ "PR 123 <linear_issue_title>\nFix failing tests"
+    assert issue_prompt =~ "Symphony runtime context:"
+    assert issue_prompt =~ "Work only in the prepared repository workspace"
+    assert issue_prompt =~ "Use the single `## Codex Workpad` Linear workpad comment"
+    assert issue_prompt =~ "Issue PR-123"
   end
 
   test "prompt builder falls back to default PR prompt when PR branch is absent" do
@@ -227,7 +236,7 @@ defmodule SymphonyElixir.PromptBuilderTest do
       linked_issues: [123]
     }
 
-    assert PromptBuilder.build_prompt(issue) == "link=123"
+    assert PromptBuilder.build_prompt(issue) =~ "link=123"
   end
 
   test "prompt builder sanitizes ci failure log excerpts before rendering" do

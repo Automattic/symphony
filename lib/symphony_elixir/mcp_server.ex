@@ -685,8 +685,15 @@ defmodule SymphonyElixir.McpServer do
       :more ->
         case :socket.recv(socket) do
           {:ok, data} -> read_message(socket, buffer <> data)
-          {:error, reason} -> {:error, reason}
+          {:error, reason} -> parse_trailing_message(buffer, reason)
         end
+    end
+  end
+
+  defp parse_trailing_message(buffer, reason) do
+    case String.trim(buffer) do
+      "" -> {:error, reason}
+      json -> parse_line(json, "")
     end
   end
 
@@ -908,9 +915,7 @@ defmodule SymphonyElixir.McpServer do
   end
 
   defp redacted_preview(line) do
-    line
-    |> String.slice(0, 240)
-    |> AuditLog.redact_for_log(printable_limit: 240)
+    AuditLog.redact_for_log(line, printable_limit: 240)
   end
 
   defp send_fun(context) do

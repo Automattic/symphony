@@ -1015,6 +1015,92 @@ defmodule SymphonyElixir.McpServerTest do
     end
   end
 
+  test "redacts full malformed payload before truncating raw preview" do
+    secret = "linear-secret-#{System.unique_integer([:positive])}-abcdefghijklmnopqrstuvwxyz"
+    previous_secret = System.get_env("LINEAR_API_KEY")
+
+    System.put_env("LINEAR_API_KEY", secret)
+    on_exit(fn -> restore_env("LINEAR_API_KEY", previous_secret) end)
+
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
+    socket = connect_session!(session)
+
+    try do
+      test_pid = self()
+      filler = String.duplicate("a", 155)
+      leaked_prefix = String.slice(secret, 0, 24)
+
+      log =
+        capture_log([level: :error], fn ->
+          :ok =
+            :socket.send(
+              socket,
+              ~s({"jsonrpc":"2.0","id":43,"method":"tools/list","params":{"body":"#{filler}#{secret}"}BROKEN\n)
+            )
+
+          send(test_pid, {:parse_response, read_response(socket, "")})
+        end)
+
+      assert_receive {:parse_response, {:ok, response}}
+      assert response["id"] == 43
+      assert response["error"]["code"] == -32_700
+
+      assert log =~ "raw_preview="
+      assert log =~ "[REDACTED]"
+      refute log =~ leaked_prefix
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
+  test "EOF with buffered malformed frame returns parse error when request id is recoverable" do
+    server = unique_server()
+    start_supervised!({McpServer, name: server})
+
+    {:ok, session} =
+      McpServer.start_session(%{workspace: System.tmp_dir!()},
+        server: server,
+        transport: :tcp,
+        shim_path: "/tmp/shim"
+      )
+
+    socket = connect_tcp!(session.tcp_port, session.token)
+
+    try do
+      test_pid = self()
+
+      log =
+        capture_log([level: :error], fn ->
+          :ok =
+            :socket.send(
+              socket,
+              ~s({"jsonrpc":"2.0","id":44,"method":"tools/list","params":{})
+            )
+
+          :ok = :socket.shutdown(socket, :write)
+          send(test_pid, {:parse_response, read_response(socket, "")})
+        end)
+
+      assert_receive {:parse_response, {:ok, response}}
+      assert response["id"] == 44
+      assert response["error"]["code"] == -32_700
+      assert response["error"]["message"] =~ "tool was not run"
+
+      assert log =~ "MCP JSON decode failed"
+      assert log =~ ~s(method="tools/list")
+      assert log =~ "request_id=44"
+      assert log =~ "payload_bytes="
+      assert log =~ "transport=:tcp"
+    after
+      close_socket(socket)
+      McpServer.stop_session(session, server: server)
+    end
+  end
+
   test "handler crash returns internal error and logs request metadata" do
     server = unique_server()
     start_supervised!({McpServer, name: server})

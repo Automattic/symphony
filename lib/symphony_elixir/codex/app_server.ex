@@ -448,7 +448,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_port(workspace, nil, settings, mcp_session, _remote_socket_path, _remote_shim_path) do
     with {:ok, executable} <- bash_executable(),
          {:ok, codex_home} <- McpConfig.write_home(settings, mcp_session),
-         {:ok, command, launch_cleanup_paths} <- local_command_with_codex_home(settings, workspace, codex_home) do
+         {:ok, command, launch_cleanup_paths} <-
+           local_command_with_codex_home(settings, workspace, codex_home, mcp_session) do
       stderr_log_path = Path.join(codex_home.home_path, "codex.stderr.log")
       :ok = File.touch!(stderr_log_path)
       wrapped_command = wrap_command_with_stderr_redirect(command, stderr_log_path)
@@ -516,8 +517,11 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp local_command_with_codex_home(settings, workspace, codex_home) do
-    opts = [extra_deny_read_paths: codex_home_deny_read_paths(codex_home.home_path)]
+  defp local_command_with_codex_home(settings, workspace, codex_home, mcp_session) do
+    opts = [
+      extra_deny_read_paths: codex_home_deny_read_paths(codex_home.home_path),
+      srt_allow_unix_socket_paths: srt_mcp_unix_socket_paths(mcp_session)
+    ]
 
     case command_with_sandbox_config(settings.agent.command, settings, workspace, opts) do
       {:ok, command, launch_cleanup_paths} ->
@@ -620,8 +624,12 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp mcp_transport(%Schema{agent: %{sandbox_runtime: %Schema.Agent.SandboxRuntime{kind: "srt"}}}, nil), do: :tcp
   defp mcp_transport(_settings, _worker_host), do: :unix
+
+  defp srt_mcp_unix_socket_paths(%{transport: :unix, socket_dir: socket_dir}) when is_binary(socket_dir),
+    do: [socket_dir]
+
+  defp srt_mcp_unix_socket_paths(_mcp_session), do: []
 
   defp tool_opts(opts) do
     opts
@@ -743,7 +751,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         if Keyword.get(opts, :remote, false) do
           {:error, {:unsupported_agent_sandbox_runtime, "srt", :remote_worker}}
         else
-          wrap_srt_command(command, settings, workspace, runtime)
+          wrap_srt_command(command, settings, workspace, runtime, opts)
         end
     end
   end
@@ -752,9 +760,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp sandbox_runtime(_settings), do: %Schema.Agent.SandboxRuntime{}
 
-  defp wrap_srt_command(command, settings, workspace, runtime) do
+  defp wrap_srt_command(command, settings, workspace, runtime, opts) do
     with {:ok, srt_words} <- srt_command_words(runtime.command),
-         {:ok, settings_dir, settings_path} <- write_srt_settings(settings, workspace, runtime) do
+         {:ok, settings_dir, settings_path} <- write_srt_settings(settings, workspace, runtime, opts) do
       wrapped_command =
         (srt_words ++ ["--settings", settings_path])
         |> Enum.map_join(" ", &shell_escape/1)
@@ -774,7 +782,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp srt_command_words(_command), do: {:error, {:invalid_srt_command, :not_a_string}}
 
-  defp write_srt_settings(settings, workspace, runtime) do
+  defp write_srt_settings(settings, workspace, runtime, opts) do
     settings_dir = Path.join(System.tmp_dir!(), "symphony-srt-#{System.unique_integer([:positive])}")
     settings_path = Path.join(settings_dir, "settings.json")
     network_access = settings.agent.network_access || %Schema.Agent.NetworkAccess{}
@@ -787,6 +795,7 @@ defmodule SymphonyElixir.Codex.AppServer do
              workspace_sandbox_allow_read_paths(settings),
              allow_write_paths: srt_workspace_write_paths(settings, workspace),
              deny_write_paths: srt_workspace_deny_write_paths(settings, workspace),
+             allow_unix_socket_paths: Keyword.get(opts, :srt_allow_unix_socket_paths, []),
              enable_weaker_network_isolation: runtime.enable_weaker_network_isolation
            ),
          {:ok, json} <- Jason.encode(srt_settings),
@@ -3677,6 +3686,10 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     pid =
       spawn(fn ->
+        # stdout backpressure stalls the Codex turn; drain at high priority so
+        # the pump preempts other work and stderr tailing on busy nodes.
+        Process.flag(:priority, :high)
+
         stdout_pump_loop(%{
           owner: owner,
           owner_monitor_ref: Process.monitor(owner),
@@ -3866,6 +3879,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     {:ok, pid} =
       Task.start(fn ->
+        # stderr is best-effort logging; yield to the stdout pump under load.
+        Process.flag(:priority, :low)
+
         stderr_tail_loop(%{
           path: path,
           offset: 0,

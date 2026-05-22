@@ -496,9 +496,11 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
                [],
                ["~/.ssh/known_hosts"],
                allow_write_paths: ["/repo/.git/worktrees/MT-1", "relative/git"],
-               deny_write_paths: ["/repo/.git/hooks"]
+               deny_write_paths: ["/repo/.git/hooks"],
+               allow_unix_socket_paths: ["/tmp/symphony-mcp-session", " /tmp/symphony-mcp-session ", ""]
              )
 
+    assert settings["network"]["allowUnixSockets"] == ["/tmp/symphony-mcp-session"]
     assert "~/.ssh" in settings["filesystem"]["denyRead"]
     assert "~/.ssh/known_hosts" in settings["filesystem"]["allowRead"]
     assert "/repo/.git/worktrees/MT-1" in settings["filesystem"]["allowWrite"]

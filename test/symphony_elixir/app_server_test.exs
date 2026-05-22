@@ -1246,8 +1246,7 @@ defmodule SymphonyElixir.AppServerTest do
       assert trace =~ "\"api.openai.com\"=\"allow\""
       refute trace =~ "evil.example.com"
 
-      # Non-SRT local Codex must keep the implicit symphony MCP server on a Unix socket;
-      # only SRT-local launches switch to loopback TCP. Regression guard for mcp_transport/2.
+      # Local Codex keeps the implicit symphony MCP server on a Unix socket.
       codex_config = File.read!(codex_config_copy)
       assert codex_config =~ ~s(args = ["--socket", )
       refute codex_config =~ "--tcp-host"
@@ -1429,6 +1428,12 @@ defmodule SymphonyElixir.AppServerTest do
       assert "api.openai.com" in settings["network"]["allowedDomains"]
       refute "github.com" in settings["network"]["allowedDomains"]
       assert settings["network"]["deniedDomains"] == ["github.com"]
+
+      allow_unix_sockets = settings["network"]["allowUnixSockets"]
+      assert is_list(allow_unix_sockets)
+      assert Enum.any?(allow_unix_sockets, &String.contains?(&1, "symphony-mcp-"))
+      refute Enum.member?(allow_unix_sockets, System.tmp_dir!())
+
       refute "~/.npmrc" in settings["filesystem"]["denyRead"]
       assert "~/.ssh" in settings["filesystem"]["denyRead"]
       assert "." in settings["filesystem"]["allowWrite"]
@@ -1455,10 +1460,11 @@ defmodule SymphonyElixir.AppServerTest do
       assert settings["enableWeakerNetworkIsolation"] == false
 
       codex_config = File.read!(codex_config_copy)
-      assert codex_config =~ ~s(args = ["--tcp-host", "127.0.0.1", "--tcp-port", )
+      assert codex_config =~ ~s(args = ["--socket", )
       assert codex_config =~ ~s(SYMPHONY_MCP_SESSION_TOKEN = )
       assert codex_config =~ "PATH = "
-      refute codex_config =~ "--socket"
+      refute codex_config =~ "--tcp-host"
+      refute codex_config =~ "--tcp-port"
       refute codex_config =~ "--session"
     after
       File.rm_rf(test_root)

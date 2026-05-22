@@ -1753,11 +1753,11 @@ Notes:
   `agent.permissions.outer_sandbox.runtime: srt`, the local command is wrapped as
   `<srt command> --settings <temporary-settings.json> <agent.command>`. Codex remote launch runs
   the configured command after `cd <workspace>` over SSH stdio.
-- Codex local SRT launch uses a random `127.0.0.1` TCP listener for Symphony's implicit MCP server
-  instead of a Unix socket, because the SRT macOS profile denies sandboxed Unix socket connects.
-  The listener remains token-authenticated and bound to loopback only.
-- Codex local non-SRT launch prefers a managed Unix socket for Symphony's implicit MCP server. If
-  the OS denies managed Unix socket binding with `EPERM`, the implementation falls back to a random
+- Codex local SRT launch prefers the managed Unix socket for Symphony's implicit MCP server and
+  writes that per-session socket directory into SRT `network.allowUnixSockets`. The MCP server
+  remains token-authenticated.
+- Codex local launch prefers a managed Unix socket for Symphony's implicit MCP server. If the OS
+  denies managed Unix socket binding with `EPERM`, the implementation falls back to a random
   `127.0.0.1` TCP listener. Explicit Unix socket paths remain strict and surface the bind error.
 - Codex launch preserves the configured command while injecting `--config` overrides for
   `default_permissions="workspace_write"` and the generated `permissions.workspace_write.*`

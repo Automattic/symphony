@@ -28,6 +28,13 @@ defmodule SymphonyElixir.ReviewAgent.Context do
 
   @type git_fun :: (list(String.t()) -> {:ok, String.t()} | {:error, term()})
   @type line_range :: {pos_integer(), pos_integer()}
+  @typep evidence_source :: :diff | :file | :adjacent_context
+  @typep evidence_lookup :: %{
+           path: String.t(),
+           line_range: line_range(),
+           text: String.t(),
+           source: evidence_source()
+         }
 
   @spec build(Issue.t(), Path.t(), String.t(), keyword(), git_fun()) ::
           {:ok, map()} | {:error, term()}
@@ -110,8 +117,7 @@ defmodule SymphonyElixir.ReviewAgent.Context do
 
   @doc false
   @spec lookup_evidence(map(), String.t(), line_range()) ::
-          {:ok, %{path: String.t(), line_range: line_range(), text: String.t(), source: :diff | :file | :adjacent_context}}
-          | {:error, term()}
+          {:ok, evidence_lookup()} | {:error, term()}
   def lookup_evidence(source, path, {start_line, end_line})
       when is_map(source) and is_binary(path) and is_integer(start_line) and is_integer(end_line) and start_line > 0 and
              end_line >= start_line do

@@ -1355,11 +1355,8 @@ defmodule SymphonyElixir.Workspace do
           {:error, {:workspace_outside_root, canonical_workspace, canonical_root}}
       end
     else
-      {:error, {:path_canonicalize_failed, path, reason}} ->
-        {:error, {:workspace_path_unreadable, path, reason}}
-
       {:error, reason} ->
-        {:error, {:workspace_path_unreadable, expanded_workspace, reason}}
+        workspace_canonicalize_error(reason, expanded_workspace)
     end
   end
 
@@ -1385,6 +1382,15 @@ defmodule SymphonyElixir.Workspace do
       true ->
         :ok
     end
+  end
+
+  defp workspace_canonicalize_error(reason, _fallback_path)
+       when is_tuple(reason) and tuple_size(reason) == 3 and elem(reason, 0) == :path_canonicalize_failed do
+    {:error, {:workspace_path_unreadable, elem(reason, 1), elem(reason, 2)}}
+  end
+
+  defp workspace_canonicalize_error(reason, fallback_path) do
+    {:error, {:workspace_path_unreadable, fallback_path, reason}}
   end
 
   defp remote_shell_assign(variable_name, raw_path)

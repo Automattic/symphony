@@ -497,11 +497,23 @@ defmodule SymphonyElixir.PromptBuilder do
         |> Enum.join("\n")
       end)
 
-    "Unaddressed reviewer comments:\n\n" <> entries
+    "Unaddressed reviewer comments:\n\n" <> reviewer_comments_ledger_instructions() <> entries
+  end
+
+  defp reviewer_comments_ledger_instructions do
+    """
+    For each comment below, do EXACTLY ONE of the following before you stop:
+      a) Commit a fix that resolves the comment, and reference the comment id in the commit message body.
+      b) Reply to the comment thread explaining why no code change is being made (pushback).
+      c) Reply deferring the change with concrete reasoning (e.g., out of scope for this PR plus a follow-up reference).
+    Do not silently skip a comment. The review agent verifies each comment id has either an associated commit or an outbound reply.
+
+    """
   end
 
   defp comment_header(comment) when is_map(comment) do
     [
+      comment_id(comment),
       comment_author(comment),
       comment_kind(comment),
       comment_location(comment),
@@ -510,6 +522,9 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join(" ")
   end
+
+  defp comment_id(%{id: id}) when is_binary(id) and id != "", do: "[id=#{id}]"
+  defp comment_id(_comment), do: nil
 
   defp comment_author(%{author: author}) when is_binary(author) and author != "", do: "#{author}:"
   defp comment_author(_comment), do: "Reviewer:"

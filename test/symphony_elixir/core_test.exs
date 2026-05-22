@@ -2135,7 +2135,8 @@ defmodule SymphonyElixir.CoreTest do
 
     assert prompt =~ "review=lib/example.ex:42 <linear_reviewer_comment_body>"
     assert prompt =~ "Unaddressed reviewer comments:"
-    assert prompt =~ "Reviewer: [inline_comment] lib/example.ex:42"
+    assert prompt =~ "For each comment below, do EXACTLY ONE of the following"
+    assert prompt =~ "[id=comment-1] Reviewer: [inline_comment] lib/example.ex:42"
     assert prompt =~ "<linear_reviewer_comment_body>\nPlease split this function.\n</linear_reviewer_comment_body>"
     assert prompt =~ "Please split this function."
   end

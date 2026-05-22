@@ -21,9 +21,11 @@ Read only files in the target repository. Prefer these signals:
 Identify the real commands for:
 
 - dependency setup or bootstrap
+- targeted or fast local validation for iteration
 - tests
 - lint/format checks
 - the full pre-handoff validation gate
+- any profiling command that exposes slow tests or checks
 - any hook that should run after Symphony creates a fresh workspace
 
 Prefer repository-owned aggregate commands over language defaults. For example,
@@ -69,11 +71,14 @@ Before declaring done, validate with the same parser the runtime uses:
 mix run -e 'case SymphonyElixir.Workflow.load("WORKFLOW.md") do {:ok, _} -> :ok; {:error, reason} -> raise inspect(reason) end'
 ```
 
-Also run the discovered targeted validation or full gate when it is practical
-for the current change.
+Also run the discovered targeted or fast local validation when it is practical
+for the current change. Reserve full gates for handoff or push-readiness when
+the repo documents them as expensive.
 
 ## Manual Check For This Repo
 
-In the Symphony repository, the aggregate gate is declared in `Makefile` as
-`make all`. A correct `WORKFLOW.md` for this repo should use `make all` or an
-explicit equivalent sequence, not a generic `mix test` guess.
+In the Symphony repository, `Makefile` declares `make check` as the fast local
+validation gate and `make all` as the full pre-push gate. A correct
+`WORKFLOW.md` for this repo should teach both commands, plus the profiling
+targets (`make test-profile`, `make coverage-profile`, `make dialyzer-profile`),
+instead of guessing a generic `mix test` command.

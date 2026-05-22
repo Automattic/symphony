@@ -265,7 +265,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-notify"}}}'
             ;;
           *)
-            sleep 1
+            :
             ;;
         esac
       done
@@ -334,7 +334,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-review-notify"}}}'
             ;;
           *)
-            sleep 1
+            :
             ;;
         esac
       done
@@ -5164,7 +5164,7 @@ defmodule SymphonyElixir.AppServerTest do
 
   describe "flush_stderr_transport_messages/1" do
     test "drains stale codex_stderr_transport_failed messages so the next turn is not poisoned" do
-      port = Port.open({:spawn, "true"}, [:binary, :exit_status])
+      port = open_flush_test_port()
 
       try do
         send(self(), {:codex_stderr_transport_failed, port, make_ref(), {:codex_stdio_write_failed, "stale 1"}})
@@ -5174,13 +5174,13 @@ defmodule SymphonyElixir.AppServerTest do
 
         refute_received {:codex_stderr_transport_failed, ^port, _ref, _reason}
       after
-        if Port.info(port), do: Port.close(port)
+        close_flush_test_port(port)
       end
     end
 
     test "leaves unrelated messages and messages for other ports in the mailbox" do
-      port = Port.open({:spawn, "true"}, [:binary, :exit_status])
-      other_port = Port.open({:spawn, "true"}, [:binary, :exit_status])
+      port = open_flush_test_port()
+      other_port = open_flush_test_port()
 
       try do
         send(self(), {:other_message, :keep_me})
@@ -5193,10 +5193,20 @@ defmodule SymphonyElixir.AppServerTest do
         assert_received {:codex_stderr_transport_failed, ^other_port, _ref, _reason}
         refute_received {:codex_stderr_transport_failed, ^port, _ref, _reason}
       after
-        if Port.info(port), do: Port.close(port)
-        if Port.info(other_port), do: Port.close(other_port)
+        close_flush_test_port(port)
+        close_flush_test_port(other_port)
       end
     end
+  end
+
+  defp open_flush_test_port do
+    Port.open({:spawn, "cat"}, [:binary, :exit_status])
+  end
+
+  defp close_flush_test_port(port) do
+    if Port.info(port), do: Port.close(port)
+  rescue
+    ArgumentError -> :ok
   end
 
   defp eventually(fun, attempts)

@@ -155,9 +155,16 @@ workpad instead of synthesising a `gh` call.
   reason to expect immediate failure output.
 - Match the test command to the loop:
   - During iteration, prefer `mix test` (or `mix test --stale`, or a targeted
-    file/line) without `--cover`. Coverage instrumentation recompiles every
-    module with tracing and roughly doubles CPU and wall time, which is wasted
-    when re-running a focused subset.
+    file/line) without `--cover`. Use `make check` when you want the fast local
+    gate: format check, lint, escript build, and plain tests. It is not a CI
+    replacement because it skips coverage and Dialyzer.
+  - Coverage instrumentation recompiles every module with tracing and roughly
+    doubles CPU and wall time, which is wasted when re-running a focused subset.
+  - When CPU pressure matters, pass lower values such as
+    `TEST_MAX_CASES=2 BEAM_SCHEDULERS=2` to `make test`, `make coverage`, or
+    `make check`.
+  - Use `make test-profile`, `make coverage-profile`, or `make dialyzer-profile`
+    to collect slow-command data before optimizing tests or gate behavior.
   - Reserve `make all` and `make coverage` for the pre-push gate, not the inner
     edit/test loop.
 - In sandboxed Elixir runs, prefer

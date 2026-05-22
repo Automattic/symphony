@@ -3,6 +3,17 @@ defmodule SymphonyElixir.ProcessTreeTest do
 
   alias SymphonyElixir.ProcessTree
 
+  test "default dependencies are safe for no-op cleanup paths" do
+    port = Port.open({:spawn, "cat"}, [:binary])
+
+    try do
+      assert :ok = ProcessTree.terminate_descendants(0)
+      assert :ok = ProcessTree.terminate_port_descendants(port)
+    after
+      close_port(port)
+    end
+  end
+
   test "terminates all descendants without killing the root pid" do
     {:ok, calls} = Agent.start_link(fn -> [] end)
 
@@ -62,6 +73,47 @@ defmodule SymphonyElixir.ProcessTreeTest do
     assert Agent.get(calls, & &1) == []
   end
 
+  test "does nothing for invalid root pids" do
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    assert :ok = ProcessTree.terminate_descendants(0, fake_deps(%{0 => [101]}, calls))
+    assert Agent.get(calls, & &1) == []
+  end
+
+  test "ignores unexpected pgrep statuses" do
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    deps =
+      fake_deps(%{}, calls)
+      |> Map.put(:cmd, fn
+        "/usr/bin/pgrep", ["-P", "100"], _opts -> {"101\n", 2}
+        "kill", ["-KILL", pid], _opts -> record_kill(calls, pid)
+      end)
+
+    assert :ok = ProcessTree.terminate_descendants(100, deps)
+    assert Agent.get(calls, & &1) == []
+  end
+
+  test "ignores malformed pgrep output tokens" do
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    deps =
+      fake_deps(%{}, calls)
+      |> Map.put(:cmd, fn
+        "/usr/bin/pgrep", ["-P", "100"], _opts -> {"101 nope -2 102abc 102\n", 0}
+        "/usr/bin/pgrep", ["-P", "101"], _opts -> {"", 1}
+        "/usr/bin/pgrep", ["-P", "102"], _opts -> {"", 1}
+        "kill", ["-KILL", pid], _opts -> record_kill(calls, pid)
+      end)
+
+    assert :ok = ProcessTree.terminate_descendants(100, deps)
+
+    assert calls |> Agent.get(& &1) |> Enum.sort() == [
+             {:kill, 101},
+             {:kill, 102}
+           ]
+  end
+
   test "swallows pgrep and kill failures" do
     {:ok, calls} = Agent.start_link(fn -> [] end)
 
@@ -98,6 +150,22 @@ defmodule SymphonyElixir.ProcessTreeTest do
     try do
       assert :ok = ProcessTree.terminate_port_descendants(port, deps)
       assert Agent.get(calls, & &1) == [{:kill, 101}]
+    after
+      close_port(port)
+    end
+  end
+
+  test "ignores ports whose os pid cannot be read" do
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+    port = Port.open({:spawn, "cat"}, [:binary])
+
+    deps =
+      fake_deps(%{100 => [101]}, calls)
+      |> Map.put(:port_info, fn ^port, :os_pid -> raise "port info unavailable" end)
+
+    try do
+      assert :ok = ProcessTree.terminate_port_descendants(port, deps)
+      assert Agent.get(calls, & &1) == []
     after
       close_port(port)
     end

@@ -3,8 +3,6 @@ defmodule SymphonyElixir.ProcessTree do
   Best-effort helpers for cleaning up OS process trees started through Erlang ports.
   """
 
-  require Logger
-
   @type os_pid :: pos_integer()
   @type command_result :: {String.t(), non_neg_integer()}
   @type deps :: %{
@@ -21,10 +19,6 @@ defmodule SymphonyElixir.ProcessTree do
     end
 
     :ok
-  rescue
-    exception ->
-      Logger.debug("Codex port descendant cleanup raised: #{Exception.message(exception)}")
-      :ok
   end
 
   @spec terminate_descendants(integer(), deps()) :: :ok
@@ -35,10 +29,6 @@ defmodule SymphonyElixir.ProcessTree do
     |> Enum.each(&kill_pid(&1, deps))
 
     :ok
-  rescue
-    exception ->
-      Logger.debug("Codex port descendant cleanup raised: #{Exception.message(exception)}")
-      :ok
   end
 
   defp runtime_deps do

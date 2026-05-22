@@ -1344,8 +1344,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp fresh_dispatch_stale_state?(%State{} = state, %Issue{id: issue_id}) when is_binary(issue_id) do
     case Map.get(state.running, issue_id) do
-      %{started_at: %DateTime{} = started_at} ->
-        DateTime.diff(DateTime.utc_now(), started_at, :millisecond) <= @fresh_dispatch_state_grace_ms
+      %{state_reconcile_grace_until_ms: grace_until_ms} when is_integer(grace_until_ms) ->
+        System.monotonic_time(:millisecond) <= grace_until_ms
 
       _ ->
         false
@@ -2651,6 +2651,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_total_tokens: 0,
             reviewer_input_tokens: 0,
             review_agent_enabled: review_agent_enabled_for_repo(repo_key, issue),
+            state_reconcile_grace_until_ms: state_reconcile_grace_until_ms(),
             last_reported_uncached_input_tokens: 0,
             last_reported_cached_input_tokens: 0,
             last_reported_cache_creation_input_tokens: 0,
@@ -2694,6 +2695,10 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: worker_host
         })
     end
+  end
+
+  defp state_reconcile_grace_until_ms do
+    System.monotonic_time(:millisecond) + @fresh_dispatch_state_grace_ms
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id} = issue, issue_fetcher, terminal_states)

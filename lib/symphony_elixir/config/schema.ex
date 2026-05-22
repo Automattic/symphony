@@ -199,13 +199,15 @@ defmodule SymphonyElixir.Config.Schema do
 
       embedded_schema do
         field(:allow_read_paths, {:array, :string}, default: [])
+        field(:allow_write_paths, {:array, :string}, default: [])
       end
 
       @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
       def changeset(schema, attrs) do
         schema
-        |> cast(attrs, [:allow_read_paths], empty_values: [])
+        |> cast(attrs, [:allow_read_paths, :allow_write_paths], empty_values: [])
         |> normalize_string_list(:allow_read_paths)
+        |> normalize_string_list(:allow_write_paths)
       end
 
       defp normalize_string_list(changeset, field) do

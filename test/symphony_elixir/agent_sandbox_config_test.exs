@@ -214,6 +214,28 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert "~/.npmrc" in defaults["denyRead"]
   end
 
+  test "Claude filesystem settings emit allowWrite when operator allow_write_paths supplied" do
+    settings = AgentSandboxConfig.claude_filesystem_settings([], ["/private/tmp/symphony-mcp", "/opt/cache"])
+
+    assert settings["allowWrite"] == ["/private/tmp/symphony-mcp", "/opt/cache"]
+    assert settings["denyWrite"] == expand_home_paths(AgentSandboxConfig.deny_write_paths())
+  end
+
+  test "Claude filesystem settings omit allowWrite when allow_write_paths empty" do
+    settings = AgentSandboxConfig.claude_filesystem_settings()
+
+    refute Map.has_key?(settings, "allowWrite")
+  end
+
+  test "Claude filesystem settings normalize malformed operator allow_write_paths" do
+    settings = AgentSandboxConfig.claude_filesystem_settings([], ["", " /tmp/x ", "/tmp/x", :bad])
+
+    assert settings["allowWrite"] == ["/tmp/x"]
+
+    defaults = AgentSandboxConfig.claude_filesystem_settings([], :bad)
+    refute Map.has_key?(defaults, "allowWrite")
+  end
+
   test "Codex allowlist config denies sensitive reads and protects workflow files from writes" do
     workspace = "/repo/workspace"
     overrides = AgentSandboxConfig.codex_config_overrides("allowlist", ["github.com", "api.openai.com"], [], [], workspace: workspace)
@@ -648,6 +670,42 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
       |> Ecto.Changeset.apply_changes()
 
     assert sandbox.allow_read_paths == []
+  end
+
+  test "operator workspace sandbox allow_write_paths flows into rendered Claude allowWrite" do
+    assert {:ok, system_config} =
+             SystemSchema.parse(%{
+               "repositories" => [%{"key" => "default"}],
+               "agent" => %{
+                 "runtime" => "claude",
+                 "command" => "claude --dangerously-skip-permissions",
+                 "permissions" => %{
+                   "filesystem" => %{
+                     "allow_write_paths" => ["/private/tmp/symphony-mcp", " /opt/cache "]
+                   }
+                 }
+               }
+             })
+
+    assert {:ok, settings} = system_config |> SystemSchema.to_config_map() |> Schema.parse()
+    assert settings.workspace.sandbox.allow_write_paths == ["/private/tmp/symphony-mcp", "/opt/cache"]
+
+    claude_settings =
+      AgentSandboxConfig.claude_filesystem_settings(
+        settings.workspace.sandbox.allow_read_paths,
+        settings.workspace.sandbox.allow_write_paths
+      )
+
+    assert claude_settings["allowWrite"] == ["/private/tmp/symphony-mcp", "/opt/cache"]
+  end
+
+  test "workspace sandbox allow_write_paths defaults to an empty list" do
+    sandbox =
+      %Sandbox{}
+      |> Sandbox.changeset(%{allow_write_paths: nil})
+      |> Ecto.Changeset.apply_changes()
+
+    assert sandbox.allow_write_paths == []
   end
 
   defp restore_env(name, nil), do: System.delete_env(name)

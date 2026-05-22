@@ -51,6 +51,15 @@ agent:
     tokens_per_issue: 100000000
     tokens_per_day: 1000000000
   permissions:
+    filesystem:
+      # Claude Code's default writable set is workspace + /tmp only. Symphony's
+      # own `make all` uses SYMPHONY_MCP_SOCKET_ROOT=/private/tmp/symphony-mcp
+      # (see WORKFLOW.md) which falls outside that default — agent test runs
+      # would fail with :eperm on mkdir of per-session socket dirs. Allow
+      # the socket root explicitly so the test suite can create sibling
+      # directories there.
+      allow_write_paths:
+        - /private/tmp/symphony-mcp
     network:
       mode: allowlist
   mcp:

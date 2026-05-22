@@ -8,7 +8,10 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   `permissions.workspace_write.*` `--config` overrides from a single deny
   list so both adapters stay in sync. Operator-supplied
   `workspace.sandbox.allow_read_paths` entries are subtracted from the
-  shared `denyRead` set for both runtimes.
+  shared `denyRead` set for both runtimes. Operator-supplied
+  `workspace.sandbox.allow_write_paths` entries are emitted as
+  `sandbox.filesystem.allowWrite` for the Claude runtime to broaden the
+  default writable set (workspace + `/tmp`).
 
   Currently covered credential / config stores (read-deny):
 
@@ -145,14 +148,20 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   def deny_write_paths, do: @deny_write_paths
 
   @doc false
-  @spec claude_filesystem_settings([String.t()]) :: map()
-  def claude_filesystem_settings(allow_read_paths \\ []) do
+  @spec claude_filesystem_settings([String.t()], [String.t()]) :: map()
+  def claude_filesystem_settings(allow_read_paths \\ [], allow_write_paths \\ []) do
     allow_read_paths = normalize_allow_read_paths(allow_read_paths)
+    allow_write_paths = normalize_allow_read_paths(allow_write_paths)
 
-    %{
+    base = %{
       "denyRead" => @deny_read_paths |> Enum.reject(&(&1 in allow_read_paths)) |> expand_home_paths(),
       "denyWrite" => expand_home_paths(@deny_write_paths)
     }
+
+    case allow_write_paths do
+      [] -> base
+      paths -> Map.put(base, "allowWrite", paths)
+    end
   end
 
   @doc false

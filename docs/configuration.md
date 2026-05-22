@@ -202,6 +202,7 @@ agent:
       turn_policy:
         type: workspaceWrite
       allow_read_paths: []
+      allow_write_paths: []
     network:
       mode: allowlist
       allowed_domains: []
@@ -227,6 +228,9 @@ agent:
 - `limits.tokens_per_issue` and `limits.tokens_per_day`: explicit `null` disables that cap.
 - `permissions.filesystem.allow_read_paths`: extra read-only host paths rendered into Codex
   filesystem permissions.
+- `permissions.filesystem.allow_write_paths`: extra writable host paths emitted to the Claude
+  runtime as `sandbox.filesystem.allowWrite`. Use it to broaden Claude Code's default writable
+  set (workspace + `/tmp`) — e.g. to grant test runs access to a configured MCP socket root.
 - `permissions.outer_sandbox`: optional outer sandbox wrapper, currently used for Codex SRT.
 
 **Concurrency and turns:**

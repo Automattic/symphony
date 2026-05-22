@@ -1798,8 +1798,6 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp current_workspace_commit_sha(_record), do: nil
-
   defp remote_worker?(record) do
     case string_field(record, :worker_host) do
       nil -> false

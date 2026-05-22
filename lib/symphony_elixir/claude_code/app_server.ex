@@ -1088,6 +1088,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       turn_deadline: now + turn_timeout_ms,
       command_deadline: nil,
       command_timeout_ms: command_timeout_ms,
+      active_tool_uses: 0,
       pending_line: "",
       post_completion_deadline: nil
     }
@@ -1132,12 +1133,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     full_line = loop_state.pending_line <> line
     event = parse_event(full_line)
 
-    new_command_deadline =
-      if loop_state.command_timeout_ms > 0 and event_contains_tool_use?(event) do
-        System.monotonic_time(:millisecond) + loop_state.command_timeout_ms
-      else
-        loop_state.command_deadline
-      end
+    tracked_loop_state = update_command_tracking(loop_state, event)
 
     new_acc =
       event
@@ -1145,9 +1141,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       |> then(&maybe_fail_missing_required_mcp_server(full_line, on_message, &1))
 
     new_loop_state = %{
-      loop_state
-      | command_deadline: new_command_deadline,
-        pending_line: "",
+      tracked_loop_state
+      | pending_line: "",
         post_completion_deadline: maybe_start_post_completion_grace(new_acc, loop_state.post_completion_deadline)
     }
 
@@ -1338,12 +1333,61 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp format_mcp_server_entry(server), do: inspect(server)
 
-  defp event_contains_tool_use?({:tool_use, _}), do: true
+  defp update_command_tracking(%{command_timeout_ms: timeout_ms} = loop_state, _event)
+       when timeout_ms <= 0 do
+    %{loop_state | active_tool_uses: 0, command_deadline: nil}
+  end
 
-  defp event_contains_tool_use?({:multi, events}) when is_list(events),
-    do: Enum.any?(events, &event_contains_tool_use?/1)
+  defp update_command_tracking(loop_state, event) do
+    now = System.monotonic_time(:millisecond)
 
-  defp event_contains_tool_use?(_), do: false
+    {active_tool_uses, command_deadline} =
+      apply_command_tracking_event(
+        event,
+        loop_state.active_tool_uses,
+        loop_state.command_deadline,
+        loop_state.command_timeout_ms,
+        now
+      )
+
+    %{loop_state | active_tool_uses: active_tool_uses, command_deadline: command_deadline}
+  end
+
+  defp apply_command_tracking_event({:multi, events}, active_tool_uses, command_deadline, timeout_ms, now)
+       when is_list(events) do
+    Enum.reduce(events, {active_tool_uses, command_deadline}, fn event, {active, deadline} ->
+      apply_command_tracking_event(event, active, deadline, timeout_ms, now)
+    end)
+  end
+
+  defp apply_command_tracking_event({:tool_use, _}, active_tool_uses, _command_deadline, timeout_ms, now) do
+    {active_tool_uses + 1, now + timeout_ms}
+  end
+
+  defp apply_command_tracking_event({:tool_result, _}, active_tool_uses, command_deadline, _timeout_ms, _now) do
+    active_tool_uses = max(active_tool_uses - 1, 0)
+    command_deadline = if active_tool_uses == 0, do: nil, else: command_deadline
+
+    {active_tool_uses, command_deadline}
+  end
+
+  defp apply_command_tracking_event({:turn_completed, _}, _active_tool_uses, _command_deadline, _timeout_ms, _now),
+    do: {0, nil}
+
+  defp apply_command_tracking_event({:turn_failed, _}, _active_tool_uses, _command_deadline, _timeout_ms, _now),
+    do: {0, nil}
+
+  defp apply_command_tracking_event(
+         {:rate_limited, _info, _reason},
+         _active_tool_uses,
+         _command_deadline,
+         _timeout_ms,
+         _now
+       ),
+       do: {0, nil}
+
+  defp apply_command_tracking_event(_event, active_tool_uses, command_deadline, _timeout_ms, _now),
+    do: {active_tool_uses, command_deadline}
 
   defp apply_event({:multi, events}, on_message, acc) when is_list(events) do
     Enum.reduce(events, acc, fn child, acc -> apply_event(child, on_message, acc) end)

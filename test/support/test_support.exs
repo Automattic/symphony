@@ -37,7 +37,11 @@ defmodule SymphonyElixir.TestSupport do
           stop_default_http_server: 0,
           stop_process: 1,
           stop_verification_port_pool: 0,
-          clear_run_store!: 0
+          clear_run_store!: 0,
+          unix_socket_bind_probe: 0,
+          unix_socket_bind_probe: 1,
+          unix_socket_bind_supported?: 0,
+          unix_socket_bind_supported?: 1
         ]
 
       setup do
@@ -157,6 +161,35 @@ defmodule SymphonyElixir.TestSupport do
 
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
+
+  def unix_socket_bind_supported?(root \\ System.tmp_dir!()) do
+    unix_socket_bind_probe(root) == :ok
+  end
+
+  def unix_socket_bind_probe(root \\ System.tmp_dir!()) when is_binary(root) do
+    dir = Path.join(root, "symphony-unix-socket-probe-#{System.unique_integer([:positive])}")
+    path = Path.join(dir, "sock")
+
+    with :ok <- File.mkdir_p(dir),
+         {:ok, socket} <- :socket.open(:local, :stream) do
+      try do
+        with :ok <- :socket.bind(socket, %{family: :local, path: path}),
+             :ok <- :socket.listen(socket) do
+          :ok
+        else
+          {:error, reason} -> {:error, reason}
+          other -> {:error, other}
+        end
+      after
+        :socket.close(socket)
+        File.rm_rf(dir)
+      end
+    else
+      {:error, reason} ->
+        File.rm_rf(dir)
+        {:error, reason}
+    end
+  end
 
   def ensure_symphony_started! do
     ensure_application_started()

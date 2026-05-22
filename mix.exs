@@ -52,6 +52,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.ClaudeCode.AppServer,
           SymphonyElixir.Codex.AppServer,
           SymphonyElixir.Codex.DynamicTool,
+          SymphonyElixir.Codex.MessageHumanizer,
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.StatusDashboard.Renderer,

@@ -5,6 +5,7 @@ defmodule SymphonyElixir.McpServer do
 
   require Logger
 
+  alias SymphonyElixir.AuditLog
   alias SymphonyElixir.Codex.DynamicTool
   alias SymphonyElixir.DependencyGate
 
@@ -85,6 +86,7 @@ defmodule SymphonyElixir.McpServer do
 
         session = %{
           context: context,
+          transport: endpoint.transport,
           socket_dir: socket_dir,
           socket_path: socket_path,
           listen_socket: listen_socket,
@@ -130,7 +132,7 @@ defmodule SymphonyElixir.McpServer do
     case Map.fetch(state.tokens, token) do
       {:ok, id} ->
         session = Map.fetch!(state.sessions, id)
-        {:reply, {:ok, id, session.context}, state}
+        {:reply, {:ok, id, session.context, session.transport}, state}
 
       :error ->
         {:reply, {:error, :invalid_session_token}, state}
@@ -555,15 +557,27 @@ defmodule SymphonyElixir.McpServer do
 
   defp authenticate_and_serve(server, socket) do
     authenticate_connection(server, socket)
+  rescue
+    error ->
+      Logger.error("MCP connection crashed error=#{Exception.format(:error, error, __STACKTRACE__)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.error(
+        "MCP connection exited kind=#{inspect(kind)} reason=#{inspect(reason)} " <>
+          "stack=#{Exception.format_stacktrace(__STACKTRACE__)}"
+      )
+
+      :ok
   after
     close_socket(socket)
   end
 
   defp authenticate_connection(server, socket) do
     with {:ok, token, buffer} <- read_auth(socket, ""),
-         {:ok, id, context} <- GenServer.call(server, {:claim, token}) do
+         {:ok, id, context, transport} <- GenServer.call(server, {:claim, token}) do
       GenServer.cast(server, {:connection_started, id, self()})
-      serve(socket, context, buffer)
+      serve(socket, context, buffer, %{session_id: id, transport: transport})
     else
       {:error, reason} ->
         Logger.debug("MCP connection rejected: #{inspect(reason)}")
@@ -591,17 +605,36 @@ defmodule SymphonyElixir.McpServer do
     end
   end
 
-  defp serve(socket, context, buffer) do
+  defp serve(socket, context, buffer, connection_meta) do
     case read_message(socket, buffer) do
-      {:ok, payload, rest} ->
-        maybe_send_response(socket, safe_handle_payload(payload, context))
-        serve(socket, context, rest)
+      {:ok, payload, rest, message_meta} ->
+        request_meta = request_meta(payload, Map.merge(connection_meta, message_meta))
+
+        payload
+        |> safe_handle_payload(context, request_meta)
+        |> maybe_send_response(socket, request_meta, send_fun(context))
+
+        serve(socket, context, rest, connection_meta)
+
+      {:error, {:json_decode_failed, line, rest, reason}} ->
+        request_meta = parse_error_meta(line, connection_meta)
+
+        Logger.error(
+          "MCP JSON decode failed #{format_request_meta(request_meta)} " <>
+            "reason=#{Exception.message(reason)} raw_preview=#{redacted_preview(line)}"
+        )
+
+        line
+        |> parse_error_response()
+        |> maybe_send_response(socket, request_meta, send_fun(context))
+
+        serve(socket, context, rest, connection_meta)
 
       {:error, :closed} ->
         :ok
 
       {:error, reason} ->
-        Logger.debug("MCP connection closed: #{inspect(reason)}")
+        Logger.debug("MCP connection recv stopped #{format_request_meta(connection_meta)} reason=#{inspect(reason)}")
         :ok
     end
   end
@@ -611,16 +644,14 @@ defmodule SymphonyElixir.McpServer do
   # connection — the client sees "MCP error -32000: Connection closed" with no
   # trace in the symphony log. Catch and log so the real cause is recoverable
   # and the connection survives.
-  defp safe_handle_payload(payload, context) do
+  defp safe_handle_payload(payload, context, request_meta) do
     handle_payload(payload, context)
   rescue
     error ->
       stacktrace = __STACKTRACE__
-      method = (is_map(payload) && Map.get(payload, "method")) || "unknown"
-      tool = mcp_tool_name(payload)
 
       Logger.error(
-        "MCP handler crashed method=#{inspect(method)} tool=#{inspect(tool)} " <>
+        "MCP handler crashed #{format_request_meta(request_meta)} " <>
           "error=#{Exception.format(:error, error, stacktrace)}"
       )
 
@@ -628,11 +659,9 @@ defmodule SymphonyElixir.McpServer do
   catch
     kind, reason ->
       stacktrace = __STACKTRACE__
-      method = (is_map(payload) && Map.get(payload, "method")) || "unknown"
-      tool = mcp_tool_name(payload)
 
       Logger.error(
-        "MCP handler exited method=#{inspect(method)} tool=#{inspect(tool)} " <>
+        "MCP handler exited #{format_request_meta(request_meta)} " <>
           "kind=#{inspect(kind)} reason=#{inspect(reason)} stack=#{Exception.format_stacktrace(stacktrace)}"
       )
 
@@ -650,8 +679,11 @@ defmodule SymphonyElixir.McpServer do
 
   defp read_message(socket, buffer) do
     case parse_message(buffer) do
-      {:ok, payload, rest} ->
-        {:ok, payload, rest}
+      {:ok, payload, rest, message_meta} ->
+        {:ok, payload, rest, message_meta}
+
+      {:error, _reason} = error ->
+        error
 
       :more ->
         case :socket.recv(socket) do
@@ -668,13 +700,19 @@ defmodule SymphonyElixir.McpServer do
   defp parse_message(buffer) do
     case String.split(buffer, "\n", parts: 2) do
       [line, rest] ->
-        case String.trim(line) do
-          "" -> parse_message(rest)
-          json -> {:ok, Jason.decode!(json), rest}
-        end
+        parse_line(String.trim(line), rest)
 
       [_incomplete] ->
         :more
+    end
+  end
+
+  defp parse_line("", rest), do: parse_message(rest)
+
+  defp parse_line(json, rest) do
+    case Jason.decode(json) do
+      {:ok, payload} -> {:ok, payload, rest, %{payload_bytes: byte_size(json)}}
+      {:error, %Jason.DecodeError{} = reason} -> {:error, {:json_decode_failed, json, rest, reason}}
     end
   end
 
@@ -735,11 +773,118 @@ defmodule SymphonyElixir.McpServer do
     %{"jsonrpc" => "2.0", "id" => id, "error" => %{"code" => code, "message" => message}}
   end
 
-  defp maybe_send_response(_socket, nil), do: :ok
+  defp maybe_send_response(nil, _socket, _request_meta, _send_fun), do: :ok
 
-  defp maybe_send_response(socket, payload) do
+  defp maybe_send_response(payload, socket, request_meta, send_fun) do
     body = Jason.encode!(payload)
-    :ok = :socket.send(socket, body <> "\n")
+    data = body <> "\n"
+
+    case send_fun.(socket, data) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        log_send_failure(request_meta, byte_size(data), reason)
+        {:error, reason}
+
+      other ->
+        log_send_failure(request_meta, byte_size(data), {:unexpected_send_result, other})
+        {:error, other}
+    end
+  rescue
+    error ->
+      log_send_failure(request_meta, 0, error)
+      {:error, error}
+  catch
+    kind, reason ->
+      log_send_failure(request_meta, 0, {kind, reason})
+      {:error, reason}
+  end
+
+  defp request_meta(payload, base_meta) do
+    base_meta
+    |> Map.put(:method, payload_field(payload, "method"))
+    |> Map.put(:tool, mcp_tool_name(payload))
+    |> Map.put(:request_id, payload_field(payload, "id"))
+  end
+
+  defp parse_error_meta(line, base_meta) do
+    base_meta
+    |> Map.put(:method, raw_string_field(line, "method"))
+    |> Map.put(:tool, raw_string_field(line, "name"))
+    |> Map.put(:request_id, raw_id_field(line))
+    |> Map.put(:payload_bytes, byte_size(line))
+  end
+
+  defp payload_field(payload, field) when is_map(payload), do: Map.get(payload, field)
+  defp payload_field(_payload, _field), do: nil
+
+  defp parse_error_response(line) do
+    case raw_id_field(line) do
+      nil ->
+        nil
+
+      id ->
+        error_response(
+          id,
+          -32_700,
+          "MCP JSON parse error; the tool was not run. Check request framing/body and retry with valid newline-delimited JSON."
+        )
+    end
+  end
+
+  defp raw_id_field(line) do
+    with [_, raw_value] <- Regex.run(~r/"id"\s*:\s*("(?:\\.|[^"])*"|-?\d+|null)/, line),
+         {:ok, id} <- Jason.decode(raw_value),
+         false <- is_nil(id) do
+      id
+    else
+      _ -> nil
+    end
+  end
+
+  defp raw_string_field(line, field) do
+    pattern = Regex.compile!(~s/"#{Regex.escape(field)}"\\s*:\\s*("(?:\\\\.|[^"])*")/)
+
+    with [_, raw_value] <- Regex.run(pattern, line),
+         {:ok, value} when is_binary(value) <- Jason.decode(raw_value) do
+      value
+    else
+      _ -> nil
+    end
+  end
+
+  defp format_request_meta(meta) do
+    [
+      method: Map.get(meta, :method),
+      tool: Map.get(meta, :tool),
+      request_id: Map.get(meta, :request_id),
+      session_id: Map.get(meta, :session_id),
+      payload_bytes: Map.get(meta, :payload_bytes),
+      transport: Map.get(meta, :transport)
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{inspect(value)}" end)
+  end
+
+  defp redacted_preview(line) do
+    line
+    |> String.slice(0, 240)
+    |> AuditLog.redact_for_log(printable_limit: 240)
+  end
+
+  defp send_fun(context) do
+    case Map.get(context, :mcp_send_fun) do
+      fun when is_function(fun, 2) -> fun
+      _other -> &:socket.send/2
+    end
+  end
+
+  defp log_send_failure(request_meta, response_bytes, reason) do
+    Logger.error(
+      "MCP response send failed #{format_request_meta(request_meta)} " <>
+        "response_bytes=#{response_bytes} reason=#{inspect(reason)}"
+    )
   end
 
   defp tool_opts(context) do

@@ -3421,6 +3421,8 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 0) =~ "Review-agent gate:"
       assert Enum.at(turn_texts, 1) =~ "Reviewer agent approved the committed diff"
       assert Enum.at(turn_texts, 1) =~ "github_push_branch"
+      assert Enum.at(turn_texts, 1) =~ "linear_attach_url"
+      assert Enum.at(turn_texts, 1) =~ "do not use `linear_add_comment`"
       assert Enum.at(turn_texts, 1) =~ "Avoid raw `gh` or `git push`"
     after
       clear_review_agent_env!()
@@ -3549,6 +3551,8 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 2) =~ "Reviewer-agent approval has already been injected"
       assert Enum.at(turn_texts, 2) =~ "Do not stop at the reviewer-agent gate again"
       assert Enum.at(turn_texts, 2) =~ "github_create_pull_request"
+      assert Enum.at(turn_texts, 2) =~ "linear_attach_url"
+      assert Enum.at(turn_texts, 2) =~ "do not use `linear_add_comment`"
       refute Enum.at(turn_texts, 2) =~ "has not already received a reviewer-agent approval prompt"
       refute Enum.at(turn_texts, 2) =~ "Ending the turn at that gate is expected"
     after

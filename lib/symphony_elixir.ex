@@ -88,8 +88,8 @@ defmodule SymphonyElixir.Application do
            verification_child_specs(system_config) ++
            [
              SymphonyElixir.Orchestrator,
-             pr_review_child_spec(),
-             ci_child_spec(),
+             pr_review_child_spec(system_config),
+             ci_child_spec(system_config),
              SymphonyElixir.HttpServer,
              SymphonyElixir.StatusDashboard
            ])
@@ -148,19 +148,25 @@ defmodule SymphonyElixir.Application do
     end)
   end
 
-  defp pr_review_child_spec do
-    case SymphonyElixir.Config.settings!().pr_review.mode do
-      "polling" -> SymphonyElixir.PrReviewPoller
-      _mode -> nil
+  defp pr_review_child_spec(%SystemSchema{repos: repos}) do
+    if Enum.any?(repos, &pr_review_enabled_for_repo?/1) do
+      SymphonyElixir.PrReviewPoller
     end
   end
 
-  defp ci_child_spec do
-    settings = SymphonyElixir.Config.settings!()
+  defp pr_review_enabled_for_repo?(repo) do
+    Config.settings_for_repo!(repo.name).pr_review.mode == "polling"
+  end
 
-    if settings.pr_review.mode == "polling" and settings.ci.enabled do
+  defp ci_child_spec(%SystemSchema{repos: repos}) do
+    if Enum.any?(repos, &ci_enabled_for_repo?/1) do
       SymphonyElixir.CiPoller
     end
+  end
+
+  defp ci_enabled_for_repo?(repo) do
+    settings = Config.settings_for_repo!(repo.name)
+    settings.pr_review.mode == "polling" and settings.ci.enabled
   end
 
   defp clear_runtime_bootstrap_env do

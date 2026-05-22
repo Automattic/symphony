@@ -384,6 +384,74 @@ defmodule SymphonyElixir.PrReviewPollerTest do
            ] = RunStore.list_pr_reviews()
   end
 
+  test "polls review lifecycle records for non-default repos" do
+    now = ~U[2026-05-01 09:00:00Z]
+    comment_at = DateTime.add(now, -45, :minute)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      repos: multi_repo_config()
+    )
+
+    issue =
+      in_review_issue(
+        id: "issue-pin-84",
+        identifier: "PIN4WOO-84",
+        pr_url: "https://github.com/woocommerce/pinterest-for-woocommerce/pull/1185",
+        updated_at: now
+      )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(comment_at,
+        pr_number: 1185,
+        pr_title: "Fix catalog sync",
+        comments: [
+          %{
+            id: "comment-pin-1",
+            kind: "inline_comment",
+            author: "reviewer",
+            body: "Please handle this edge case.",
+            path: "lib/sync.ex",
+            line: 42,
+            created_at: comment_at,
+            updated_at: comment_at
+          }
+        ]
+      )
+    )
+
+    assert :ok =
+             RunStore.put_run(
+               Map.merge(review_run(issue, "/tmp/workspaces/PIN4WOO-84", now), %{
+                 repo_key: "secondary"
+               })
+             )
+
+    assert {:ok, %{discovered: 1, processed: 1, actions: [{:state_transitioned, "issue-pin-84", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:issue_state_update, "issue-pin-84", "In Progress"}
+    assert [] = RunStore.list_pr_reviews(@repo_key)
+
+    assert [
+             %{
+               repo_key: "secondary",
+               issue_id: "issue-pin-84",
+               status: "rework_requested",
+               pending_reviewer_comments: [%{id: "comment-pin-1"}]
+             }
+           ] = RunStore.list_pr_reviews("secondary")
+
+    assert [%{id: "comment-pin-1"}] = PrReviewPoller.pending_reviewer_comments("issue-pin-84")
+  end
+
   test "polling ignores malicious Linear GitHub attachments before GitHub fetch" do
     now = ~U[2026-05-01 09:00:00Z]
 
@@ -2763,6 +2831,13 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       {output, 0} -> output
       {output, status} -> flunk("git #{Enum.join(args, " ")} failed with #{status}: #{output}")
     end
+  end
+
+  defp multi_repo_config do
+    [
+      %{key: @repo_key, workflow: Workflow.workflow_file_path(), default: true, team: "Test"},
+      %{key: "secondary", workflow: Workflow.workflow_file_path(), team: "PIN4WOO", labels: ["Bug"]}
+    ]
   end
 
   defp review_record(now, attrs \\ %{}) do

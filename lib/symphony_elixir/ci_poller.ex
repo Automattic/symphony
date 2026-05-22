@@ -86,17 +86,10 @@ defmodule SymphonyElixir.CiPoller do
   @doc false
   @spec poll_once(keyword()) :: {:ok, poll_summary()} | {:error, term()}
   def poll_once(opts \\ []) when is_list(opts) do
-    with {:ok, settings} <- poll_settings(opts) do
-      cond do
-        not settings.ci.enabled ->
-          {:ok, %{mode: :disabled, discovered: 0, processed: 0, actions: []}}
-
-        settings.pr_review.mode != "polling" ->
-          {:ok, %{mode: :tracker, discovered: 0, processed: 0, actions: []}}
-
-        true ->
-          do_poll_once(settings, opts)
-      end
+    if scoped_poll_opts?(opts) do
+      poll_once_for_repo(opts)
+    else
+      poll_once_for_repos(opts)
     end
   end
 
@@ -104,8 +97,14 @@ defmodule SymphonyElixir.CiPoller do
   @spec pending_ci_failure(String.t(), keyword()) :: map() | nil
   def pending_ci_failure(issue_id, opts \\ []) do
     run_store = Keyword.get(opts, :run_store, RunStore)
-    repo_key = repo_key_from_opts(opts)
+    repo_keys = repo_keys_from_opts(opts)
 
+    if is_binary(issue_id) do
+      Enum.find_value(repo_keys, &pending_ci_failure_for_repo(&1, issue_id, run_store))
+    end
+  end
+
+  defp pending_ci_failure_for_repo(repo_key, issue_id, run_store) do
     with {:ok, checks} <- list_ci_checks(run_store, repo_key),
          %{} = record <- Enum.find(checks, &(Map.get(&1, :issue_id) == issue_id)) do
       normalize_ci_failure(Map.get(record, :ci_failure))
@@ -118,8 +117,12 @@ defmodule SymphonyElixir.CiPoller do
   @spec ci_owned_issue?(String.t(), keyword()) :: boolean()
   def ci_owned_issue?(issue_id, opts \\ []) do
     run_store = Keyword.get(opts, :run_store, RunStore)
-    repo_key = repo_key_from_opts(opts)
+    repo_keys = repo_keys_from_opts(opts)
 
+    if is_binary(issue_id), do: Enum.any?(repo_keys, &ci_owned_issue_for_repo?(&1, issue_id, run_store)), else: false
+  end
+
+  defp ci_owned_issue_for_repo?(repo_key, issue_id, run_store) do
     with {:ok, checks} <- list_ci_checks(run_store, repo_key),
          %{} = record <- Enum.find(checks, &(Map.get(&1, :issue_id) == issue_id)) do
       ci_owned_record?(record)
@@ -134,10 +137,68 @@ defmodule SymphonyElixir.CiPoller do
 
   defp poll_settings(opts) do
     case Keyword.fetch(opts, :settings) do
-      {:ok, settings} -> {:ok, settings}
-      :error -> Config.settings()
+      {:ok, settings} ->
+        {:ok, settings}
+
+      :error ->
+        case Keyword.fetch(opts, :repo_key) do
+          {:ok, repo_key} -> Config.settings_for_repo(repo_key)
+          :error -> Config.settings()
+        end
     end
   end
+
+  defp scoped_poll_opts?(opts), do: Keyword.has_key?(opts, :repo_key) or Keyword.has_key?(opts, :settings)
+
+  defp poll_once_for_repo(opts) do
+    with {:ok, settings} <- poll_settings(opts) do
+      cond do
+        not settings.ci.enabled ->
+          {:ok, %{mode: :disabled, discovered: 0, processed: 0, actions: []}}
+
+        settings.pr_review.mode != "polling" ->
+          {:ok, %{mode: :tracker, discovered: 0, processed: 0, actions: []}}
+
+        true ->
+          do_poll_once(settings, opts)
+      end
+    end
+  end
+
+  defp poll_once_for_repos(opts) do
+    with {:ok, repos} <- Config.repos() do
+      repos
+      |> Enum.map(&Map.get(&1, :name))
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.reduce_while({:ok, empty_poll_summary(:disabled)}, &poll_repo_and_merge(&1, &2, opts))
+    end
+  end
+
+  defp poll_repo_and_merge(repo_key, {:ok, acc}, opts) do
+    repo_opts = opts |> Keyword.put(:repo_key, repo_key) |> Keyword.delete(:settings)
+
+    case poll_once_for_repo(repo_opts) do
+      {:ok, summary} -> {:cont, {:ok, merge_poll_summary(acc, summary)}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp empty_poll_summary(mode), do: %{mode: mode, discovered: 0, processed: 0, actions: []}
+
+  defp merge_poll_summary(acc, summary) do
+    %{
+      mode: merged_mode(acc.mode, summary.mode),
+      discovered: acc.discovered + summary.discovered,
+      processed: acc.processed + summary.processed,
+      actions: acc.actions ++ summary.actions
+    }
+  end
+
+  defp merged_mode(:polling, _mode), do: :polling
+  defp merged_mode(_mode, :polling), do: :polling
+  defp merged_mode(:tracker, _mode), do: :tracker
+  defp merged_mode(_mode, :tracker), do: :tracker
+  defp merged_mode(_left, right), do: right
 
   defp do_poll_once(settings, opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
@@ -666,6 +727,28 @@ defmodule SymphonyElixir.CiPoller do
   end
 
   defp repo_key_from_opts(opts), do: Keyword.get_lazy(opts, :repo_key, &Config.repo_key!/0)
+
+  defp repo_keys_from_opts(opts) do
+    case Keyword.fetch(opts, :repo_key) do
+      {:ok, repo_key} when is_binary(repo_key) and repo_key != "" ->
+        [repo_key]
+
+      _ ->
+        configured_repo_keys()
+    end
+  end
+
+  defp configured_repo_keys do
+    case Config.repos() do
+      {:ok, repos} ->
+        repos
+        |> Enum.map(&Map.get(&1, :name))
+        |> Enum.reject(&(&1 in [nil, ""]))
+
+      {:error, _reason} ->
+        [Config.repo_key!()]
+    end
+  end
 
   defp update_ci_check_record(run_store, repo_key, issue_id, attrs) do
     cond do

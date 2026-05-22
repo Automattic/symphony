@@ -837,43 +837,50 @@ defmodule SymphonyElixir.AgentRunner do
     if Keyword.has_key?(opts, :reviewer_comments) do
       opts
     else
-      Keyword.put(opts, :reviewer_comments, pending_reviewer_comments(issue))
+      Keyword.put(opts, :reviewer_comments, pending_reviewer_comments(issue, opts))
     end
   end
 
-  defp pending_reviewer_comments(%Issue{id: issue_id}) when is_binary(issue_id) do
-    PrReviewPoller.pending_reviewer_comments(issue_id)
+  defp pending_reviewer_comments(%Issue{id: issue_id} = issue, opts) when is_binary(issue_id) do
+    PrReviewPoller.pending_reviewer_comments(issue_id, pending_lookup_opts(issue, opts))
   end
 
-  defp pending_reviewer_comments(_issue), do: []
+  defp pending_reviewer_comments(_issue, _opts), do: []
 
   defp put_ci_failure(opts, issue) when is_list(opts) do
     if Keyword.has_key?(opts, :ci_failure) do
       opts
     else
-      Keyword.put(opts, :ci_failure, pending_ci_failure(issue))
+      Keyword.put(opts, :ci_failure, pending_ci_failure(issue, opts))
     end
   end
 
-  defp pending_ci_failure(%Issue{id: issue_id}) when is_binary(issue_id) do
-    CiPoller.pending_ci_failure(issue_id)
+  defp pending_ci_failure(%Issue{id: issue_id} = issue, opts) when is_binary(issue_id) do
+    CiPoller.pending_ci_failure(issue_id, pending_lookup_opts(issue, opts))
   end
 
-  defp pending_ci_failure(_issue), do: nil
+  defp pending_ci_failure(_issue, _opts), do: nil
 
   defp put_pr_conflict(opts, issue) when is_list(opts) do
     if Keyword.has_key?(opts, :pr_conflict) do
       opts
     else
-      Keyword.put(opts, :pr_conflict, pending_pr_conflict(issue))
+      Keyword.put(opts, :pr_conflict, pending_pr_conflict(issue, opts))
     end
   end
 
-  defp pending_pr_conflict(%Issue{id: issue_id}) when is_binary(issue_id) do
-    PrReviewPoller.pending_pr_conflict(issue_id)
+  defp pending_pr_conflict(%Issue{id: issue_id} = issue, opts) when is_binary(issue_id) do
+    PrReviewPoller.pending_pr_conflict(issue_id, pending_lookup_opts(issue, opts))
   end
 
-  defp pending_pr_conflict(_issue), do: nil
+  defp pending_pr_conflict(_issue, _opts), do: nil
+
+  defp pending_lookup_opts(%Issue{} = issue, opts) do
+    case Keyword.get(opts, :repo_key) || issue_repo_key(issue) do
+      repo_key when is_binary(repo_key) and repo_key != "" -> [repo_key: repo_key]
+      _repo_key -> []
+    end
+  end
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher, opts) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
@@ -881,7 +888,7 @@ defmodule SymphonyElixir.AgentRunner do
         audit_linear_state_transition(issue, refreshed_issue, Keyword.get(opts, :run_id), opts)
 
         cond do
-          post_pr_quiet_continuation?(issue, refreshed_issue) ->
+          post_pr_quiet_continuation?(issue, refreshed_issue, opts) ->
             Logger.info("Stopping agent run for #{issue_context(refreshed_issue)} after PR opened; waiting for review, CI, or manual rework signal")
             {:done, refreshed_issue}
 
@@ -902,13 +909,13 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp continue_with_issue?(issue, _issue_state_fetcher, _opts), do: {:done, issue}
 
-  defp post_pr_quiet_continuation?(%Issue{} = previous_issue, %Issue{} = refreshed_issue) do
+  defp post_pr_quiet_continuation?(%Issue{} = previous_issue, %Issue{} = refreshed_issue, opts) do
     if attached_pr?(previous_issue) or attached_pr?(refreshed_issue) do
       active_issue_state?(refreshed_issue.state) and
         !rework_state?(refreshed_issue.state) and
-        pending_reviewer_comments(refreshed_issue) == [] and
-        is_nil(pending_ci_failure(refreshed_issue)) and
-        is_nil(pending_pr_conflict(refreshed_issue))
+        pending_reviewer_comments(refreshed_issue, opts) == [] and
+        is_nil(pending_ci_failure(refreshed_issue, opts)) and
+        is_nil(pending_pr_conflict(refreshed_issue, opts))
     else
       false
     end

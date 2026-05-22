@@ -665,6 +665,7 @@ defmodule SymphonyElixir.CoreTest do
           ref: nil,
           identifier: issue_identifier,
           issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+          state_reconcile_grace_until_ms: System.monotonic_time(:millisecond) + 120_000,
           started_at: DateTime.utc_now()
         }
       },

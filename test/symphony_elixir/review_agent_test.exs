@@ -83,6 +83,25 @@ defmodule SymphonyElixir.ReviewAgentTest do
     def stop_session(_session), do: :ok
   end
 
+  defmodule MaxIterationsWithPartialReviewer do
+    def start_session(workspace, opts), do: {:ok, %{workspace: workspace, opts: opts}}
+
+    def run_turn(_session, _prompt, _issue, opts) do
+      on_message = Keyword.fetch!(opts, :on_message)
+
+      on_message.(%{
+        payload: %{
+          "method" => "item/agentMessage/delta",
+          "params" => %{"delta" => "partial reviewer thought that must not become a block reason"}
+        }
+      })
+
+      {:error, {:turn_failed, "max_iterations reached"}}
+    end
+
+    def stop_session(_session), do: :ok
+  end
+
   describe "parse_response/1" do
     test "accepts approved verdict JSON inside surrounding text" do
       assert {:ok, %{verdict: :approve, comments: []}} =
@@ -176,10 +195,18 @@ defmodule SymphonyElixir.ReviewAgentTest do
 
       try do
         source = source_for_repo!(repo)
-        result = %{verdict: :block, comments: [], findings: [finding("missing text")], reason: "Unsafe to continue."}
 
-        assert {:error, {:review_agent_unverifiable, %{verdict: :block, failures: [_failure]}}} =
+        result = %{
+          verdict: :block,
+          comments: [],
+          findings: [finding("missing text")],
+          reason: "Unsafe to continue."
+        }
+
+        assert {:error, {:review_agent_inconclusive, {:review_agent_unverifiable, payload}}} =
                  ReviewAgent.validate_findings(result, source)
+
+        assert %{verdict: :block, failures: [_failure]} = payload
       after
         File.rm_rf(test_root)
       end
@@ -191,10 +218,18 @@ defmodule SymphonyElixir.ReviewAgentTest do
 
       try do
         source = source_for_repo!(repo)
-        result = %{verdict: :block, comments: [], findings: [finding("grounded evidence line", "other.txt")], reason: "Unsafe."}
 
-        assert {:error, {:review_agent_unverifiable, %{failures: [%{reason: {:file_not_in_review_context, "other.txt"}}]}}} =
+        result = %{
+          verdict: :block,
+          comments: [],
+          findings: [finding("grounded evidence line", "other.txt")],
+          reason: "Unsafe."
+        }
+
+        assert {:error, {:review_agent_inconclusive, {:review_agent_unverifiable, payload}}} =
                  ReviewAgent.validate_findings(result, source)
+
+        assert %{failures: [%{reason: {:file_not_in_review_context, "other.txt"}}]} = payload
       after
         File.rm_rf(test_root)
       end
@@ -208,7 +243,7 @@ defmodule SymphonyElixir.ReviewAgentTest do
         source = source_for_repo!(repo)
         result = %{verdict: :request_changes, comments: [], findings: [finding("wrong quote")]}
 
-        assert {:error, {:review_agent_unverifiable, %{verdict: :request_changes}}} =
+        assert {:error, {:review_agent_inconclusive, {:review_agent_unverifiable, %{verdict: :request_changes}}}} =
                  ReviewAgent.validate_findings(result, source)
       after
         File.rm_rf(test_root)
@@ -308,7 +343,7 @@ defmodule SymphonyElixir.ReviewAgentTest do
     end
   end
 
-  test "evaluate propagates a block whose findings pass self-check and validation" do
+  test "evaluate returns a block error whose findings pass self-check and validation" do
     test_root = unique_tmp("symphony-elixir-review-agent-self-check-ok")
 
     try do
@@ -320,7 +355,7 @@ defmodule SymphonyElixir.ReviewAgentTest do
         review_agent: %{enabled: true, kind: "codex", command: "codex app-server"}
       )
 
-      assert {:ok, %{verdict: :block, findings: [finding], reason: "Unsafe to continue."}} =
+      assert {:error, {:review_agent_blocked, %{reason: "Unsafe to continue.", findings: [finding]}}} =
                ReviewAgent.evaluate(issue(), repo, Config.settings!(), review_agent_module: SequenceReviewer)
 
       assert finding.quoted_snippet == "grounded evidence line"
@@ -334,7 +369,7 @@ defmodule SymphonyElixir.ReviewAgentTest do
     end
   end
 
-  test "evaluate keeps only validated findings after self-check" do
+  test "evaluate keeps only validated findings in the block error after self-check" do
     test_root = unique_tmp("symphony-elixir-review-agent-self-check-filter")
 
     try do
@@ -347,7 +382,7 @@ defmodule SymphonyElixir.ReviewAgentTest do
         review_agent: %{enabled: true, kind: "codex", command: "codex app-server"}
       )
 
-      assert {:ok, %{verdict: :block, findings: [finding]}} =
+      assert {:error, {:review_agent_blocked, %{findings: [finding]}}} =
                ReviewAgent.evaluate(issue(), repo, Config.settings!(), review_agent_module: SequenceReviewer)
 
       assert finding.quoted_snippet == "grounded evidence line"
@@ -391,6 +426,29 @@ defmodule SymphonyElixir.ReviewAgentTest do
                ReviewAgent.evaluate(issue(), repo, Config.settings!(), review_agent_module: SequenceReviewer)
     after
       clear_sequence_responses!()
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "evaluate classifies reviewer turn-budget exhaustion as inconclusive without partial thought reason" do
+    test_root = unique_tmp("symphony-elixir-review-agent-max-iterations")
+
+    try do
+      repo = git_repo_with_change!(test_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        review_agent: %{enabled: true, kind: "codex", command: "codex app-server"}
+      )
+
+      review_opts = [review_agent_module: MaxIterationsWithPartialReviewer]
+
+      assert {:error, {:review_agent_inconclusive, reason}} =
+               ReviewAgent.evaluate(issue(), repo, Config.settings!(), review_opts)
+
+      assert {:max_iterations, {:turn_failed, "max_iterations reached"}} = reason
+
+      refute inspect({:max_iterations, {:turn_failed, "max_iterations reached"}}) =~ "partial reviewer thought"
+    after
       File.rm_rf(test_root)
     end
   end

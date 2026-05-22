@@ -526,6 +526,18 @@ defmodule SymphonyElixir.Orchestrator do
         emit_run_failed(running_entry, error, nil)
         state
 
+      terminal_review_agent_block?(reason) ->
+        Logger.error(
+          "Agent task exited for issue_id=#{issue_id} session_id=#{session_id} " <>
+            "reason=#{inspect(reason)}; reviewer block is not retried"
+        )
+
+        blocked_state = review_agent_blocked_state(state, running_entry)
+        maybe_comment_review_agent_block(issue_id, running_entry, reason, blocked_state)
+        state = maybe_transition_review_agent_blocked_issue(state, issue_id, running_entry, blocked_state)
+        emit_run_failed(running_entry, error, nil)
+        state
+
       true ->
         Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
@@ -545,6 +557,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp agent_exit_reason_summary({%RuntimeError{message: message}, _stacktrace}) when is_binary(message) do
     strip_ansi(message)
+  end
+
+  defp agent_exit_reason_summary({:review_agent_blocked, payload}) do
+    "review_agent blocked: #{review_agent_block_reason(payload)}"
   end
 
   defp agent_exit_reason_summary({%{__exception__: true} = exception, _stacktrace}) do
@@ -567,6 +583,156 @@ defmodule SymphonyElixir.Orchestrator do
     reason
     |> inspect()
     |> String.contains?(@terminal_agent_setup_error_marker)
+  end
+
+  defp terminal_review_agent_block?({:review_agent_blocked, _reason}), do: true
+  defp terminal_review_agent_block?(_reason), do: false
+
+  defp maybe_comment_review_agent_block(issue_id, running_entry, reason, blocked_state)
+       when is_binary(issue_id) and is_map(running_entry) and is_binary(blocked_state) do
+    body = review_agent_block_comment(reason, blocked_state)
+
+    case Tracker.create_comment(issue_id, body) do
+      :ok ->
+        :ok
+
+      {:error, comment_reason} ->
+        Logger.warning(
+          "Failed to post review-agent block comment for issue_id=#{issue_id}: " <>
+            "#{inspect(comment_reason)}"
+        )
+    end
+  rescue
+    exception ->
+      Logger.warning(
+        "Failed to post review-agent block comment for issue_id=#{issue_id}: " <>
+          "#{Exception.message(exception)}"
+      )
+  end
+
+  defp maybe_comment_review_agent_block(_issue_id, _running_entry, _reason, _blocked_state), do: :ok
+
+  defp maybe_transition_review_agent_blocked_issue(%State{} = state, issue_id, running_entry, blocked_state)
+       when is_binary(issue_id) and is_map(running_entry) and is_binary(blocked_state) do
+    case Tracker.update_issue_state(issue_id, blocked_state) do
+      :ok ->
+        issue =
+          running_entry
+          |> Map.get(:issue)
+          |> case do
+            %Issue{} = issue -> %Issue{issue | state: blocked_state, updated_at: DateTime.utc_now()}
+            _ -> nil
+          end
+
+        state =
+          if issue do
+            put_watching_issue(state, issue)
+          else
+            state
+          end
+
+        release_issue_claim(state, issue_id)
+
+      {:error, transition_reason} ->
+        Logger.warning(
+          "Failed to move review-agent blocked issue to #{blocked_state}: " <>
+            "issue_id=#{issue_id} reason=#{inspect(transition_reason)}"
+        )
+
+        release_issue_claim(state, issue_id)
+    end
+  rescue
+    exception ->
+      Logger.warning(
+        "Failed to move review-agent blocked issue to #{blocked_state}: " <>
+          "issue_id=#{issue_id} reason=#{Exception.message(exception)}"
+      )
+
+      release_issue_claim(state, issue_id)
+  end
+
+  defp maybe_transition_review_agent_blocked_issue(%State{} = state, _issue_id, _running_entry, _blocked_state), do: state
+
+  defp review_agent_block_comment(reason, blocked_state) do
+    """
+    Symphony stopped this run without retrying because the reviewer agent returned a verified blocking verdict.
+
+    Reason: #{review_agent_block_reason(reason)}
+
+    #{review_agent_block_findings_section(reason)}
+
+    Target human-review state: #{blocked_state}.
+    """
+  end
+
+  defp review_agent_blocked_state(%State{} = state, running_entry) do
+    state
+    |> running_repo_key(running_entry)
+    |> Config.review_agent_blocked_state()
+  end
+
+  defp review_agent_block_reason({:review_agent_blocked, payload}), do: review_agent_block_reason(payload)
+  defp review_agent_block_reason(%{reason: reason}) when is_binary(reason) and reason != "", do: reason
+  defp review_agent_block_reason(reason) when is_binary(reason) and reason != "", do: reason
+  defp review_agent_block_reason(_reason), do: "review_agent blocked the run"
+
+  defp review_agent_block_findings_section({:review_agent_blocked, payload}), do: review_agent_block_findings_section(payload)
+
+  defp review_agent_block_findings_section(%{findings: findings}) when is_list(findings) and findings != [] do
+    body =
+      findings
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {finding, index} -> "#{index}. #{review_agent_block_finding_text(finding)}" end)
+
+    "Verified findings:\n#{body}"
+  end
+
+  defp review_agent_block_findings_section(_reason), do: "Verified findings: none provided"
+
+  defp review_agent_block_finding_text(finding) when is_map(finding) do
+    finding
+    |> review_agent_block_finding_summary()
+    |> review_agent_block_finding_with_location(review_agent_block_finding_location(finding))
+    |> review_agent_block_finding_with_fix(review_agent_block_finding_suggested_fix(finding))
+  end
+
+  defp review_agent_block_finding_text(finding), do: inspect(finding)
+
+  defp review_agent_block_finding_summary(finding) do
+    review_agent_block_finding_field(finding, :summary, "summary") || "Finding"
+  end
+
+  defp review_agent_block_finding_location(finding) do
+    file = review_agent_block_finding_field(finding, :file, "file") || "unknown file"
+
+    case review_agent_block_finding_line_range(finding) do
+      nil -> file
+      {start_line, end_line} -> "#{file}:#{start_line}-#{end_line}"
+    end
+  end
+
+  defp review_agent_block_finding_suggested_fix(finding) do
+    review_agent_block_finding_field(finding, :suggested_fix, "suggested_fix")
+  end
+
+  defp review_agent_block_finding_with_location(summary, location), do: "#{summary} (#{location})"
+
+  defp review_agent_block_finding_with_fix(text, fix) when is_binary(fix) and fix != "" do
+    "#{text} Suggested fix: #{fix}"
+  end
+
+  defp review_agent_block_finding_with_fix(text, _fix), do: text
+
+  defp review_agent_block_finding_field(finding, atom_key, string_key) do
+    Map.get(finding, atom_key) || Map.get(finding, string_key)
+  end
+
+  defp review_agent_block_finding_line_range(finding) do
+    case Map.get(finding, :line_range) || Map.get(finding, "line_range") do
+      {start_line, end_line} when is_integer(start_line) and is_integer(end_line) -> {start_line, end_line}
+      [start_line, end_line] when is_integer(start_line) and is_integer(end_line) -> {start_line, end_line}
+      _ -> nil
+    end
   end
 
   defp maybe_comment_terminal_agent_setup_failure(issue_id, running_entry, reason)
@@ -4227,6 +4393,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminal_status_for_reason(:timeout), do: "timeout"
   defp terminal_status_for_reason({:timeout, _reason}), do: "timeout"
+  defp terminal_status_for_reason({:review_agent_blocked, _reason}), do: "blocked"
   defp terminal_status_for_reason(_reason), do: "failure"
 
   defp ignore_missing_run({:error, :run_not_found}), do: :ok

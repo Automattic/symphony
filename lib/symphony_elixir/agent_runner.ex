@@ -50,13 +50,21 @@ defmodule SymphonyElixir.AgentRunner do
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
 
-        if terminal_agent_setup_error?(reason) do
-          exit({:terminal_agent_setup_error, reason})
-        else
-          raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        cond do
+          terminal_agent_setup_error?(reason) ->
+            exit({:terminal_agent_setup_error, reason})
+
+          terminal_review_agent_block?(reason) ->
+            exit(reason)
+
+          true ->
+            raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
         end
     end
   end
+
+  defp terminal_review_agent_block?({:review_agent_blocked, _reason}), do: true
+  defp terminal_review_agent_block?(_reason), do: false
 
   defp terminal_agent_setup_error?(reason) do
     reason
@@ -408,7 +416,7 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp initial_review_agent_state, do: %{phase: :not_run, request_change_rounds: 0}
+  defp initial_review_agent_state, do: %{phase: :not_run, request_change_rounds: 0, inconclusive_retries: 0}
 
   defp maybe_review_agent_next_turn(run_context, _turn_number, _max_turns) do
     config = run_context.opts |> Keyword.fetch!(:settings) |> Map.fetch!(:review_agent)
@@ -429,7 +437,21 @@ defmodule SymphonyElixir.AgentRunner do
     case evaluate_review_agent(run_context) do
       {:ok, result} ->
         emit_review_agent_verdict(run_context, result, round, config.max_iterations)
-        handle_review_agent_result(result, run_context, config)
+
+        case handle_review_agent_result(result, run_context, config) do
+          {:error, {:review_agent_inconclusive, reason}} ->
+            handle_review_agent_inconclusive(run_context, config, round, reason)
+
+          other ->
+            other
+        end
+
+      {:error, {:review_agent_blocked, payload} = reason} ->
+        emit_review_agent_blocked(run_context, payload, round, config.max_iterations)
+        {:error, reason}
+
+      {:error, {:review_agent_inconclusive, reason}} ->
+        handle_review_agent_inconclusive(run_context, config, round, reason)
 
       {:error, reason} ->
         {:error, {:review_agent_failed, reason}}
@@ -438,37 +460,59 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp review_agent_next_turn(_run_context, _config), do: :normal_continuation
 
-  defp handle_review_agent_result(%{verdict: :approve} = result, run_context, _config) do
+  defp handle_review_agent_result(result, run_context, config), do: handle_review_agent_result(result, run_context, config, [])
+
+  defp handle_review_agent_result(%{verdict: :approve} = result, run_context, _config, _opts) do
     {:review_agent_turn,
      %{
        run_context
        | review_agent: %{
            phase: :complete,
-           request_change_rounds: review_agent_request_change_rounds(run_context)
+           request_change_rounds: review_agent_request_change_rounds(run_context),
+           inconclusive_retries: review_agent_inconclusive_retries(run_context)
          },
          next_prompt: ReviewAgent.approval_prompt(result, run_context.opts)
      }}
   end
 
-  defp handle_review_agent_result(%{verdict: :request_changes} = result, run_context, config) do
-    if review_agent_correction_round_available?(run_context, config) do
+  defp handle_review_agent_result(%{verdict: :request_changes} = result, run_context, config, opts) do
+    if review_agent_correction_round_available?(run_context, config) or Keyword.get(opts, :force_request_changes, false) do
       {:review_agent_turn,
        %{
          run_context
          | review_agent: %{
              phase: :awaiting_correction,
              request_change_rounds: next_review_agent_request_change_round(run_context),
+             inconclusive_retries: review_agent_inconclusive_retries(run_context),
              comments: result.comments
            },
            next_prompt: ReviewAgent.request_changes_prompt(result)
        }}
     else
-      {:error, {:review_agent_blocked, "review_agent.max_iterations reached: #{ReviewAgent.block_reason(result)}"}}
+      {:error, {:review_agent_inconclusive, :review_agent_max_iterations_reached}}
     end
   end
 
-  defp handle_review_agent_result(%{verdict: :block} = result, _run_context, _config) do
-    {:error, {:review_agent_blocked, ReviewAgent.block_reason(result)}}
+  defp handle_review_agent_inconclusive(run_context, config, round, reason) do
+    if review_agent_inconclusive_retry_available?(run_context) do
+      Logger.info("Reviewer agent was inconclusive for #{issue_context(run_context.issue)} reason=#{inspect(reason)}; retrying reviewer once with a fresh session")
+
+      run_context =
+        put_inconclusive_retries(run_context, review_agent_inconclusive_retries(run_context) + 1)
+
+      review_agent_next_turn(run_context, config)
+    else
+      Logger.warning("Reviewer agent remained inconclusive for #{issue_context(run_context.issue)} reason=#{inspect(reason)}; downgrading to request_changes")
+
+      result = %{
+        verdict: :request_changes,
+        comments: ["reviewer did not converge"],
+        reason: "reviewer did not converge"
+      }
+
+      emit_review_agent_verdict(run_context, result, round, config.max_iterations)
+      handle_review_agent_result(result, run_context, config, force_request_changes: true)
+    end
   end
 
   defp emit_review_agent_verdict(
@@ -504,6 +548,23 @@ defmodule SymphonyElixir.AgentRunner do
     send_codex_update(codex_update_recipient, issue, event, :reviewer)
   end
 
+  defp emit_review_agent_blocked(run_context, payload, round, max_iterations) do
+    result = %{
+      verdict: :block,
+      reason: review_agent_block_payload_reason(payload),
+      comments: review_agent_block_payload_comments(payload)
+    }
+
+    emit_review_agent_verdict(run_context, result, round, max_iterations)
+  end
+
+  defp review_agent_block_payload_reason(%{reason: reason}) when is_binary(reason), do: reason
+  defp review_agent_block_payload_reason(reason) when is_binary(reason), do: reason
+  defp review_agent_block_payload_reason(reason), do: inspect(reason)
+
+  defp review_agent_block_payload_comments(%{comments: comments}) when is_list(comments), do: comments
+  defp review_agent_block_payload_comments(_payload), do: []
+
   defp review_agent_verdict_reason(%{reason: reason}) when is_binary(reason) and reason != "", do: reason
   defp review_agent_verdict_reason(%{comments: [comment | _]}) when is_binary(comment), do: comment
   defp review_agent_verdict_reason(_result), do: nil
@@ -515,6 +576,19 @@ defmodule SymphonyElixir.AgentRunner do
   defp next_review_agent_request_change_round(run_context), do: review_agent_request_change_rounds(run_context) + 1
 
   defp review_agent_request_change_rounds(%{review_agent: %{request_change_rounds: rounds}}) when is_integer(rounds), do: rounds
+
+  defp review_agent_inconclusive_retries(%{review_agent: %{inconclusive_retries: retries}}) when is_integer(retries), do: retries
+  defp review_agent_inconclusive_retries(_run_context), do: 0
+
+  defp review_agent_inconclusive_retry_available?(run_context), do: review_agent_inconclusive_retries(run_context) < 1
+
+  defp put_inconclusive_retries(run_context, retries) when is_integer(retries) do
+    review_agent =
+      run_context.review_agent
+      |> Map.put(:inconclusive_retries, retries)
+
+    %{run_context | review_agent: review_agent}
+  end
 
   defp evaluate_review_agent(%{
          issue: issue,

@@ -210,6 +210,11 @@ defmodule SymphonyElixir.Config do
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
 
+  @spec review_agent_blocked_state(String.t()) :: String.t()
+  def review_agent_blocked_state(repo_key) when is_binary(repo_key) do
+    settings_for_repo!(repo_key).ci.escalation_state
+  end
+
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
     case Schema.resolve_runtime_turn_sandbox_policy(settings!(), workspace) do

@@ -103,6 +103,7 @@ pre_push_review:
   runtime: claude
   command: claude --model claude-opus-4-7 --dangerously-skip-permissions
   max_iterations: 1
+  run_on: first_push
 
 pull_requests:
   enabled: true

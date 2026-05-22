@@ -56,6 +56,9 @@ description:
      matches the latest scope; update it if it no longer does.
 6. Write/update PR body explicitly using `.github/pull_request_template.md`:
    - Fill every section with concrete content for this change.
+   - If referencing a Linear issue, use only the human-readable Linear
+     identifier (for example, `WOOA7S-929`); do not include the full Linear URL
+     in the PR description.
    - Replace all placeholder comments (`<!-- ... -->`).
    - Keep bullets/checkboxes where template expects them.
    - If PR already exists, refresh body content so it reflects the total PR
@@ -107,6 +110,7 @@ else
 fi
 
 # Write/edit PR body to match .github/pull_request_template.md before validation.
+# Mention Linear issues by identifier only (for example, WOOA7S-929), not URL.
 # Example workflow:
 # 1) open the template and draft body content for this PR
 # 2) gh pr edit --body-file /tmp/pr_body.md

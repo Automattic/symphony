@@ -68,13 +68,14 @@ agent:
     # turn_ms: 3600000
     # read_ms: 5000
     # stall_ms: 300000
-    # command_ms: 600000
+    command_ms: 1500000
 
 pre_push_review:
   enabled: true
   runtime: codex
   command: codex app-server
   max_iterations: 1
+  run_on: first_push
 
 pull_requests:
   enabled: true

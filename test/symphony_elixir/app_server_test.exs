@@ -1862,10 +1862,12 @@ defmodule SymphonyElixir.AppServerTest do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-1005")
       codex_binary = Path.join(test_root, "fake-codex")
+      codex_pid_file = Path.join(test_root, "fake-codex.pid")
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
       #!/bin/sh
+      printf '%s\\n' "$$" > '#{codex_pid_file}'
       count=0
 
       while IFS= read -r _line; do
@@ -1913,6 +1915,16 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert {:error, :turn_timeout} =
                AppServer.run(workspace, "Validate turn timeout with side output", issue)
+
+      assert eventually(fn -> File.exists?(codex_pid_file) end, 20)
+
+      codex_pid =
+        codex_pid_file
+        |> File.read!()
+        |> String.trim()
+        |> String.to_integer()
+
+      assert eventually(fn -> not os_pid_alive?(codex_pid) end, 20)
     after
       File.rm_rf(test_root)
     end
@@ -5212,6 +5224,13 @@ defmodule SymphonyElixir.AppServerTest do
     if Port.info(port), do: Port.close(port)
   rescue
     ArgumentError -> :ok
+  end
+
+  defp os_pid_alive?(pid) when is_integer(pid) and pid > 0 do
+    case System.cmd("kill", ["-0", to_string(pid)], stderr_to_stdout: true) do
+      {_output, 0} -> true
+      {_output, _status} -> false
+    end
   end
 
   defp assert_codex_mcp_config_matches_transport(codex_config) do

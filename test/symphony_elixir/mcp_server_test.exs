@@ -1041,6 +1041,10 @@ defmodule SymphonyElixir.McpServerTest do
       assert log =~ ~s(method="tools/call")
       assert log =~ "request_id=77"
       assert log =~ "session_id="
+      assert log =~ "exception_kind=:error"
+      assert log =~ ~s(exception="BadMapError")
+      assert log =~ "exception_message="
+      assert log =~ "stacktrace_preview="
     after
       close_socket(socket)
       McpServer.stop_session(session, server: server)

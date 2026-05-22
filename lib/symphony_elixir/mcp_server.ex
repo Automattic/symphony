@@ -559,14 +559,11 @@ defmodule SymphonyElixir.McpServer do
     authenticate_connection(server, socket)
   rescue
     error ->
-      Logger.error("MCP connection crashed error=#{Exception.format(:error, error, __STACKTRACE__)}")
+      Logger.error("MCP connection crashed #{format_exception_fields(:error, error, __STACKTRACE__)}")
       :ok
   catch
     kind, reason ->
-      Logger.error(
-        "MCP connection exited kind=#{inspect(kind)} reason=#{inspect(reason)} " <>
-          "stack=#{Exception.format_stacktrace(__STACKTRACE__)}"
-      )
+      Logger.error("MCP connection exited #{format_exception_fields(kind, reason, __STACKTRACE__)}")
 
       :ok
   after
@@ -652,7 +649,7 @@ defmodule SymphonyElixir.McpServer do
 
       Logger.error(
         "MCP handler crashed #{format_request_meta(request_meta)} " <>
-          "error=#{Exception.format(:error, error, stacktrace)}"
+          format_exception_fields(:error, error, stacktrace)
       )
 
       crash_response(payload, error)
@@ -662,7 +659,7 @@ defmodule SymphonyElixir.McpServer do
 
       Logger.error(
         "MCP handler exited #{format_request_meta(request_meta)} " <>
-          "kind=#{inspect(kind)} reason=#{inspect(reason)} stack=#{Exception.format_stacktrace(stacktrace)}"
+          format_exception_fields(kind, reason, stacktrace)
       )
 
       crash_response(payload, {kind, reason})
@@ -865,6 +862,49 @@ defmodule SymphonyElixir.McpServer do
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{inspect(value)}" end)
+  end
+
+  defp format_exception_fields(kind, reason, stacktrace) do
+    [
+      exception_kind: kind,
+      exception: exception_name(kind, reason),
+      exception_message: exception_message(kind, reason),
+      stacktrace_preview: stacktrace_preview(stacktrace)
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{inspect(value)}" end)
+  end
+
+  defp exception_name(:error, reason) do
+    :error
+    |> Exception.normalize(reason)
+    |> Map.fetch!(:__struct__)
+    |> Module.split()
+    |> Enum.join(".")
+  end
+
+  defp exception_name(kind, _reason), do: inspect(kind)
+
+  defp exception_message(:error, reason) do
+    :error
+    |> Exception.normalize(reason)
+    |> Exception.message()
+    |> single_line_preview(500)
+  end
+
+  defp exception_message(_kind, reason), do: reason |> inspect() |> single_line_preview(500)
+
+  defp stacktrace_preview(stacktrace) do
+    stacktrace
+    |> Exception.format_stacktrace()
+    |> single_line_preview(1_000)
+  end
+
+  defp single_line_preview(value, limit) do
+    value
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> String.slice(0, limit)
   end
 
   defp redacted_preview(line) do

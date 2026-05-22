@@ -2563,39 +2563,39 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ",")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "tracker.active_states"
+    assert message =~ "issues.states.active"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_concurrent_agents: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "agent.max_concurrent_agents"
+    assert message =~ "agent.concurrency.max_total"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_issue: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "agent.max_tokens_per_issue"
+    assert message =~ "agent.limits.tokens_per_issue"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_day: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "agent.max_tokens_per_day"
+    assert message =~ "agent.limits.tokens_per_day"
 
     write_workflow_file!(Workflow.workflow_file_path(), worker_max_concurrent_agents_per_host: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "worker.max_concurrent_agents_per_host"
+    assert message =~ "workers.max_concurrent_agents_per_host"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_turn_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "agent.turn_timeout_ms"
+    assert message =~ "agent.timeouts.turn_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_read_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "agent.read_timeout_ms"
+    assert message =~ "agent.timeouts.read_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_stall_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "agent.stall_timeout_ms"
+    assert message =~ "agent.timeouts.stall_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_command_timeout_ms: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "agent.command_timeout_ms"
+    assert message =~ "agent.timeouts.command_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       watchdog: %{enabled: true, tick_interval_ms: 0, no_progress_threshold_ms: "bad"}
@@ -2607,7 +2607,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), workspace_strategy: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "workspace.strategy"
+    assert message =~ "workspaces.strategy"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},
@@ -2638,7 +2638,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_turn_sandbox_policy: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
-    assert message =~ "agent.turn_sandbox_policy"
+    assert message =~ "agent.permissions.filesystem.turn_policy"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_approval_policy: "future-policy",
@@ -2728,7 +2728,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: "never")
 
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-    assert message =~ ~s(agent.approval_policy="never" is no longer supported for Codex)
+    assert message =~ ~s(agent.permissions.approval_policy="never" is no longer supported for Codex)
     assert message =~ "auto_approve_all"
   end
 
@@ -2764,7 +2764,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       )
 
       assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-      assert message =~ "workspace.repo is required"
+      assert message =~ "workspaces.repo is required"
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_strategy: "worktree",
@@ -2772,7 +2772,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       )
 
       assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-      assert message =~ "workspace.repo does not exist"
+      assert message =~ "workspaces.repo does not exist"
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_strategy: "worktree",
@@ -2780,7 +2780,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       )
 
       assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-      assert message =~ "workspace.repo is not a valid git repository"
+      assert message =~ "workspaces.repo is not a valid git repository"
 
       create_primary_repo!(primary_repo)
       File.write!(Path.join(primary_repo, "dirty.txt"), "dirty\n")
@@ -2855,7 +2855,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-    assert message =~ "workspace.attachments.public_upload_extensions"
+    assert message =~ "workspaces.attachments.public_upload_extensions"
     assert message =~ "must contain only file extensions like .png"
   end
 
@@ -3143,7 +3143,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-    assert message =~ "agent.sandbox_runtime.kind=\"srt\" does not support agent.network_access.mode=\"open\""
+
+    assert message =~
+             "agent.permissions.outer_sandbox.runtime=\"srt\" does not support agent.permissions.network.mode=\"open\""
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_kind: "claude",
@@ -3152,7 +3154,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-    assert message =~ "agent.sandbox_runtime.kind=\"srt\" is only supported for agent.kind=codex"
+    assert message =~ "agent.permissions.outer_sandbox.runtime=\"srt\" is only supported for agent.runtime=codex"
   end
 
   test "schema parses agent MCP defaults and declared servers" do
@@ -3203,7 +3205,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-    assert message =~ ~s(agent.mcp.inherit="all" is not supported for agent.kind=claude)
+    assert message =~ ~s(agent.mcp.inherit="all" is not supported for agent.runtime=claude)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agent_mcp: %{

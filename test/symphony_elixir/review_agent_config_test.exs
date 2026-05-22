@@ -70,8 +70,8 @@ defmodule SymphonyElixir.ReviewAgentConfigTest do
       )
 
       assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-      assert message =~ "review_agent"
-      assert message =~ "kind"
+      assert message =~ "pre_push_review"
+      assert message =~ "runtime"
       assert message =~ "command"
     end
 
@@ -86,8 +86,8 @@ defmodule SymphonyElixir.ReviewAgentConfigTest do
       )
 
       assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-      assert message =~ "review_agent"
-      assert message =~ "kind"
+      assert message =~ "pre_push_review"
+      assert message =~ "runtime"
       assert message =~ "max_iterations"
     end
   end

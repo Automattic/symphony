@@ -67,7 +67,7 @@ defmodule SymphonyElixir.CoreTest do
     end
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "polling.interval_ms"
+    assert message =~ "issues.poll_interval_ms"
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
@@ -108,7 +108,7 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), ci: %{enabled: true, max_retries: 0})
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "ci.max_retries"
+    assert message =~ "pull_requests.checks.max_fix_attempts"
 
     review_agent_config =
       %ReviewAgentConfig{}
@@ -123,14 +123,14 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.max_turns"
+    assert message =~ "agent.limits.max_turns"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "tracker.active_states"
+    assert message =~ "issues.states.active"
 
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
     System.delete_env("LINEAR_API_KEY")
@@ -239,11 +239,11 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_approval_policy: 123)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.approval_policy"
+    assert message =~ "agent.permissions.approval_policy"
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_thread_sandbox: 123)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.thread_sandbox"
+    assert message =~ "agent.permissions.filesystem.sandbox"
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
@@ -303,7 +303,7 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "pr_review.cooldown_minutes"
+    assert message =~ "pull_requests.review_comments.rework_delay_minutes"
 
     write_workflow_file!(Workflow.workflow_file_path(), pr_review_mode: "invalid")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()

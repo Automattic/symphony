@@ -292,7 +292,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
 
     assert {:error, {:invalid_symphony_config, message}} = Config.system()
-    assert message =~ "repos routing rules are invalid"
+    assert message =~ "repositories routing rules are invalid"
     assert message =~ "identical match rules"
     assert message =~ "web"
     assert message =~ "api"
@@ -320,7 +320,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
 
     assert {:error, {:invalid_symphony_config, message}} = Config.system()
-    assert message =~ "repos routing rules are invalid"
+    assert message =~ "repositories routing rules are invalid"
     assert message =~ "ambiguous team-only catch-all"
     assert message =~ "fallback"
   end
@@ -350,7 +350,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
                })
              )
 
-    assert duplicate_message =~ "repos names must be unique"
+    assert duplicate_message =~ "repositories keys must be unique"
 
     assert {:error, {:invalid_symphony_config, default_message}} =
              SystemSchema.parse(
@@ -362,7 +362,7 @@ defmodule SymphonyElixir.ConfigSplitTest do
                })
              )
 
-    assert default_message =~ "repos can include at most one default repo"
+    assert default_message =~ "repositories can include at most one default repo"
   end
 
   test "system schema rejects unknown top-level keys and empty repos" do
@@ -375,8 +375,49 @@ defmodule SymphonyElixir.ConfigSplitTest do
     assert {:error, {:invalid_symphony_config, empty_repos_message}} =
              SystemSchema.parse(system_config(%{"repositories" => []}))
 
-    assert empty_repos_message =~ "repos"
+    assert empty_repos_message =~ "repositories"
     assert empty_repos_message =~ "can't be blank"
+  end
+
+  test "system schema validation errors use operator config paths" do
+    assert {:error, {:invalid_symphony_config, message}} =
+             SystemSchema.parse(
+               system_config(%{
+                 "issues" => %{
+                   "provider" => "memory",
+                   "poll_interval_ms" => 0
+                 },
+                 "agent" => %{
+                   "runtime" => "future-runtime",
+                   "command" => "codex app-server",
+                   "concurrency" => %{"max_total" => 0}
+                 },
+                 "pull_requests" => %{
+                   "enabled" => true,
+                   "checks" => %{"enabled" => true, "max_fix_attempts" => 0}
+                 },
+                 "repositories" => [
+                   %{
+                     "workflow" => "",
+                     "route" => %{"team" => "Test"}
+                   }
+                 ]
+               })
+             )
+
+    assert message =~ "issues.poll_interval_ms"
+    assert message =~ "agent.runtime"
+    assert message =~ "agent.concurrency.max_total"
+    assert message =~ "pull_requests.checks.max_fix_attempts"
+    assert message =~ "repositories.key"
+    assert message =~ "repositories.workflow"
+
+    refute message =~ "tracker"
+    refute message =~ "polling"
+    refute message =~ ~r/\brepos\b/
+    refute message =~ "pr_review"
+    refute message =~ "ci."
+    refute message =~ "max_concurrent_agents"
   end
 
   test "system schema maps nested operator config and resolves repo workflow paths" do
@@ -486,8 +527,8 @@ defmodule SymphonyElixir.ConfigSplitTest do
     SymphonyElixir.Workflow.set_symphony_file_path(Path.join(root, "symphony.yml"))
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "workspace.strategy is global"
-    assert message =~ "repos[].workspace"
+    assert message =~ "workspaces.strategy is global"
+    assert message =~ "repositories[].workspace"
     assert message =~ "web"
     assert message =~ "api"
   end

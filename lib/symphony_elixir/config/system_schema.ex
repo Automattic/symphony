@@ -33,6 +33,142 @@ defmodule SymphonyElixir.Config.SystemSchema do
     "workspace" => "use `workspaces`"
   }
 
+  @operator_error_paths %{
+    "ci" => "pull_requests.checks",
+    "dependencies" => "dependency_audit",
+    "learnings" => "pull_requests.learnings",
+    "observability" => "dashboard",
+    "polling" => "issues",
+    "pr_review" => "pull_requests",
+    "quality_gate" => "issue_gate",
+    "review_agent" => "pre_push_review",
+    "server" => "dashboard",
+    "tracker" => "issues",
+    "worker" => "workers",
+    "workspace" => "workspaces",
+    "agent.kind" => "agent.runtime",
+    "agent.max_concurrent_agents" => "agent.concurrency.max_total",
+    "agent.max_concurrent_agents_by_state" => "agent.concurrency.max_by_issue_state",
+    "agent.max_retry_backoff_ms" => "agent.limits.retry_backoff_max_ms",
+    "agent.max_tokens_per_day" => "agent.limits.tokens_per_day",
+    "agent.max_tokens_per_issue" => "agent.limits.tokens_per_issue",
+    "agent.max_turns" => "agent.limits.max_turns",
+    "agent.network_access" => "agent.permissions.network",
+    "agent.network_access.allowed_domains" => "agent.permissions.network.allowed_domains",
+    "agent.network_access.denied_domains" => "agent.permissions.network.denied_domains",
+    "agent.network_access.mode" => "agent.permissions.network.mode",
+    "agent.approval_policy" => "agent.permissions.approval_policy",
+    "agent.project_guide_files" => "agent.prompts.project_guide_files",
+    "agent.include_project_guides" => "agent.prompts.include_project_guides",
+    "agent.read_timeout_ms" => "agent.timeouts.read_ms",
+    "agent.sandbox_runtime" => "agent.permissions.outer_sandbox",
+    "agent.sandbox_runtime.command" => "agent.permissions.outer_sandbox.command",
+    "agent.sandbox_runtime.enable_weaker_network_isolation" => "agent.permissions.outer_sandbox.enable_weaker_network_isolation",
+    "agent.sandbox_runtime.kind" => "agent.permissions.outer_sandbox.runtime",
+    "agent.stall_timeout_ms" => "agent.timeouts.stall_ms",
+    "agent.thread_sandbox" => "agent.permissions.filesystem.sandbox",
+    "agent.turn_sandbox_policy" => "agent.permissions.filesystem.turn_policy",
+    "agent.turn_timeout_ms" => "agent.timeouts.turn_ms",
+    "agent.command_timeout_ms" => "agent.timeouts.command_ms",
+    "ci.enabled" => "pull_requests.checks.enabled",
+    "ci.escalation_state" => "pull_requests.checks.escalate_to_state",
+    "ci.flaky_retry" => "pull_requests.checks.retry_failed_once",
+    "ci.log_excerpt_lines" => "pull_requests.checks.log_excerpt_lines",
+    "ci.max_retries" => "pull_requests.checks.max_fix_attempts",
+    "ci.poll_interval_ms" => "pull_requests.poll_interval_ms",
+    "dependencies.allow_git_sources" => "dependency_audit.allow_git_sources",
+    "dependencies.allow_path_sources" => "dependency_audit.allow_path_sources",
+    "dependencies.allow_registries" => "dependency_audit.allow_registries",
+    "learnings.enabled" => "pull_requests.learnings.enabled",
+    "learnings.max_per_run" => "pull_requests.learnings.max_per_run",
+    "learnings.max_total_per_repo" => "pull_requests.learnings.max_total_per_repo",
+    "learnings.model" => "pull_requests.learnings.model",
+    "learnings.provider" => "pull_requests.learnings.provider",
+    "observability.dashboard_enabled" => "dashboard.enabled",
+    "observability.refresh_ms" => "dashboard.refresh_ms",
+    "observability.render_interval_ms" => "dashboard.render_interval_ms",
+    "observability.snapshot_publish_ms" => "dashboard.snapshot_publish_ms",
+    "observability.transcript_buffer_size" => "dashboard.transcript_buffer_size",
+    "polling.interval_ms" => "issues.poll_interval_ms",
+    "pr_review.auto_reply" => "pull_requests.review_comments.reply_after_addressing",
+    "pr_review.auto_request_review" => "pull_requests.review_comments.request_review_after_push",
+    "pr_review.cooldown_minutes" => "pull_requests.review_comments.rework_delay_minutes",
+    "pr_review.ignored_users" => "pull_requests.review_comments.ignored_reviewers",
+    "pr_review.mode" => "pull_requests.enabled",
+    "pr_review.poll_interval_ms" => "pull_requests.poll_interval_ms",
+    "pr_review.stale_days" => "pull_requests.review_comments.stale_after_days",
+    "quality_gate.clarification_floor" => "issue_gate.clarification_floor",
+    "quality_gate.enabled" => "issue_gate.enabled",
+    "quality_gate.max_clarification_rounds" => "issue_gate.max_clarification_rounds",
+    "quality_gate.min_score" => "issue_gate.pass_threshold",
+    "quality_gate.model" => "issue_gate.model",
+    "quality_gate.on_error" => "issue_gate.on_error",
+    "quality_gate.pass_threshold" => "issue_gate.pass_threshold",
+    "quality_gate.provider" => "issue_gate.provider",
+    "repos" => "repositories",
+    "repos.assignee" => "repositories.route.assignee",
+    "repos.base_branch" => "repositories.base_branch",
+    "repos.default" => "repositories.default",
+    "repos.labels" => "repositories.route.labels",
+    "repos.name" => "repositories.key",
+    "repos.projects" => "repositories.route.projects",
+    "repos.team" => "repositories.route.team",
+    "repos.workflow" => "repositories.workflow",
+    "repos.workspace" => "repositories.workspace",
+    "repos.workspace.fetch_before_dispatch" => "repositories.workspace.fetch_before_dispatch",
+    "repos.workspace.repo" => "repositories.workspace.repo",
+    "repos.workspace.strategy" => "repositories.workspace.strategy",
+    "review_agent.command" => "pre_push_review.command",
+    "review_agent.enabled" => "pre_push_review.enabled",
+    "review_agent.kind" => "pre_push_review.runtime",
+    "review_agent.max_iterations" => "pre_push_review.max_iterations",
+    "server.host" => "dashboard.host",
+    "server.port" => "dashboard.port",
+    "tracker.active_states" => "issues.states.active",
+    "tracker.api_key" => "issues.linear.api_key",
+    "tracker.assignee" => "issues.linear.assignee",
+    "tracker.endpoint" => "issues.linear.endpoint",
+    "tracker.kind" => "issues.provider",
+    "tracker.labels" => "issues.linear.scope.labels",
+    "tracker.project_slug" => "issues.linear.scope.project_slug",
+    "tracker.team" => "issues.linear.scope.team",
+    "tracker.terminal_states" => "issues.states.terminal",
+    "watchdog.no_progress_threshold_ms" => "watchdog.no_progress_threshold_ms",
+    "watchdog.tick_interval_ms" => "watchdog.tick_interval_ms",
+    "worker.max_concurrent_agents_per_host" => "workers.max_concurrent_agents_per_host",
+    "worker.ssh_hosts" => "workers.ssh_hosts",
+    "workspace.attachments" => "workspaces.attachments",
+    "workspace.attachments.allowed_hosts" => "workspaces.attachments.allowed_hosts",
+    "workspace.attachments.public_upload_extensions" => "workspaces.attachments.public_upload_extensions",
+    "workspace.fetch_before_dispatch" => "workspaces.fetch_before_dispatch",
+    "workspace.lifecycle" => "workspaces.cleanup",
+    "workspace.lifecycle.age_gc_enabled" => "workspaces.cleanup.enabled",
+    "workspace.lifecycle.gc_interval_ms" => "workspaces.cleanup.interval_ms",
+    "workspace.lifecycle.max_age_days" => "workspaces.cleanup.max_age_days",
+    "workspace.lifecycle.min_free_bytes" => "workspaces.cleanup.min_free_bytes",
+    "workspace.lifecycle.orphan_action" => "workspaces.cleanup.orphan_action",
+    "workspace.lifecycle.trash_dir" => "workspaces.cleanup.trash_dir",
+    "workspace.repo" => "workspaces.repo",
+    "workspace.root" => "workspaces.root",
+    "workspace.sandbox" => "agent.permissions.filesystem",
+    "workspace.sandbox.allow_read_paths" => "agent.permissions.filesystem.allow_read_paths",
+    "workspace.strategy" => "workspaces.strategy"
+  }
+
+  @operator_error_message_rewrites [
+    {"quality_gate.", "issue_gate."},
+    {"quality_gate", "issue_gate"},
+    {"review_agent.", "pre_push_review."},
+    {"review_agent", "pre_push_review"},
+    {"learnings.", "pull_requests.learnings."},
+    {"pr_review.", "pull_requests."},
+    {"ci.", "pull_requests.checks."},
+    {"tracker.", "issues."},
+    {"polling.", "issues."},
+    {"worker.", "workers."},
+    {"workspace.", "workspaces."}
+  ]
+
   defmodule Repo do
     @moduledoc false
 
@@ -617,7 +753,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
     case duplicate_names do
       [] -> changeset
-      _duplicates -> add_error(changeset, :repos, "names must be unique")
+      _duplicates -> add_error(changeset, :repos, "keys must be unique")
     end
   end
 
@@ -778,14 +914,30 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   defp flatten_errors(errors, prefix) when is_list(errors) do
     Enum.flat_map(errors, fn
-      error when is_binary(error) -> [prefix <> " " <> error]
+      error when is_binary(error) -> [format_error(prefix, error)]
       nested -> flatten_errors(nested, prefix)
     end)
+  end
+
+  defp format_error(nil, error), do: rewrite_operator_error_message(error)
+
+  defp format_error(prefix, error) do
+    operator_error_path(prefix) <> " " <> rewrite_operator_error_message(error)
+  end
+
+  defp operator_error_path(prefix) do
+    Map.get(@operator_error_paths, prefix, prefix)
   end
 
   defp translate_error({message, options}) do
     Enum.reduce(options, message, fn {key, value}, acc ->
       String.replace(acc, "%{#{key}}", inspect(value))
+    end)
+  end
+
+  defp rewrite_operator_error_message(message) do
+    Enum.reduce(@operator_error_message_rewrites, message, fn {from, to}, acc ->
+      String.replace(acc, from, to)
     end)
   end
 end

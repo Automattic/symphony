@@ -61,7 +61,7 @@ defmodule SymphonyElixir.QualityGateConfigTest do
       )
 
       assert {:error, {:invalid_workflow_config, message}} = Config.settings()
-      assert message =~ "quality_gate"
+      assert message =~ "issue_gate"
       assert message =~ "model"
     end
 

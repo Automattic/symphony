@@ -1798,7 +1798,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp validate_agent_approval_policy(%Agent{kind: "codex", approval_policy: "never"}) do
-    {:error, ~s(agent.approval_policy="never" is no longer supported for Codex; use "auto_approve_all" for unattended auto-approval.)}
+    {:error, ~s(agent.permissions.approval_policy="never" is no longer supported for Codex; use "auto_approve_all" for unattended auto-approval.)}
   end
 
   defp validate_agent_approval_policy(_agent), do: :ok
@@ -1808,7 +1808,7 @@ defmodule SymphonyElixir.Config.Schema do
          sandbox_runtime: %Agent.SandboxRuntime{kind: "srt"},
          network_access: %Agent.NetworkAccess{mode: "open"}
        }) do
-    {:error, "agent.sandbox_runtime.kind=\"srt\" does not support agent.network_access.mode=\"open\""}
+    {:error, "agent.permissions.outer_sandbox.runtime=\"srt\" does not support agent.permissions.network.mode=\"open\""}
   end
 
   defp validate_agent_sandbox_runtime(%Agent{kind: "codex"}), do: :ok
@@ -1818,13 +1818,13 @@ defmodule SymphonyElixir.Config.Schema do
        do: :ok
 
   defp validate_agent_sandbox_runtime(%Agent{sandbox_runtime: %Agent.SandboxRuntime{kind: kind}}) do
-    {:error, "agent.sandbox_runtime.kind=#{inspect(kind)} is only supported for agent.kind=codex"}
+    {:error, "agent.permissions.outer_sandbox.runtime=#{inspect(kind)} is only supported for agent.runtime=codex"}
   end
 
   defp validate_agent_sandbox_runtime(_agent), do: :ok
 
   defp validate_agent_mcp(%Agent{kind: "claude", mcp: %Agent.Mcp{inherit: "all"}}) do
-    {:error, ~s(agent.mcp.inherit="all" is not supported for agent.kind=claude; declare MCP servers explicitly.)}
+    {:error, ~s(agent.mcp.inherit="all" is not supported for agent.runtime=claude; declare MCP servers explicitly.)}
   end
 
   defp validate_agent_mcp(%Agent{kind: "codex", mcp: %Agent.Mcp{servers: servers}}) when is_map(servers) do

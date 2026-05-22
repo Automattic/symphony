@@ -324,21 +324,6 @@ defmodule SymphonyElixir.StatusDashboard.Renderer do
     |> DateTime.to_string()
   end
 
-  @spec dashboard_url(String.t(), non_neg_integer() | nil, non_neg_integer() | nil) ::
-          String.t() | nil
-  def dashboard_url(_host, nil, nil), do: nil
-  def dashboard_url(_host, 0, nil), do: nil
-
-  def dashboard_url(host, configured_port, bound_port) do
-    port = bound_port || configured_port
-
-    if is_integer(port) and port > 0 do
-      "http://#{dashboard_url_host(host)}:#{port}/"
-    else
-      nil
-    end
-  end
-
   @spec prune_samples([{integer(), integer()}], integer()) :: [{integer(), integer()}]
   def prune_samples(samples, now_ms) do
     min_timestamp = now_ms - @throughput_window_ms
@@ -517,27 +502,7 @@ defmodule SymphonyElixir.StatusDashboard.Renderer do
   defp format_mailbox_depth(_mailbox_len), do: nil
 
   defp dashboard_url do
-    dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
-  end
-
-  defp dashboard_url_host(host) when host in ["0.0.0.0", "::", "[::]", ""], do: "127.0.0.1"
-
-  defp dashboard_url_host(host) when is_binary(host) do
-    trimmed_host = String.trim(host)
-
-    cond do
-      trimmed_host in ["0.0.0.0", "::", "[::]", ""] ->
-        "127.0.0.1"
-
-      String.starts_with?(trimmed_host, "[") and String.ends_with?(trimmed_host, "]") ->
-        trimmed_host
-
-      String.contains?(trimmed_host, ":") ->
-        "[#{trimmed_host}]"
-
-      true ->
-        trimmed_host
-    end
+    URLUtils.dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
   end
 
   defp format_running_rows(running, running_event_width) do

@@ -4520,16 +4520,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute Enum.any?(snapshot.skipped, &match?(%{issue_id: "issue-running"}, &1))
   end
 
-  test "status dashboard prefers the bound server port and normalizes wildcard hosts" do
-    assert Renderer.dashboard_url("127.0.0.1", 0, nil) == nil
-
-    assert Renderer.dashboard_url("0.0.0.0", 0, 43_123) ==
-             "http://127.0.0.1:43123/"
-
-    assert Renderer.dashboard_url("::1", 4000, nil) ==
-             "http://[::1]:4000/"
-  end
-
   test "status dashboard renders next refresh countdown and checking marker" do
     waiting_snapshot =
       {:ok,

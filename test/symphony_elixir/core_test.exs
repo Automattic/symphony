@@ -3698,8 +3698,8 @@ defmodule SymphonyElixir.CoreTest do
                           verdict: :request_changes,
                           round: 2,
                           max_iterations: 1,
-                          reason: "reviewer did not converge",
-                          comments: ["reviewer did not converge"]
+                          reason: "reviewer did not converge: request-change limit reached",
+                          comments: ["reviewer did not converge: request-change limit reached"]
                         }
                       }}
 

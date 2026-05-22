@@ -588,5 +588,9 @@ verification:
 You are working on {{ issue.identifier }}.
 ```
 
-The body is the issue prompt template. `prompts.pr` is used for explicit PR runs. The repo workflow
-front matter is intentionally small; operator/runtime settings belong in `symphony.yml`.
+The body is the repo-specific issue prompt template. `prompts.pr` is used for explicit PR runs.
+Before either rendered template, Symphony injects a managed runtime context with workspace,
+untrusted-input, scoped-tool, workpad, secret-handling, and final-response rules. `WORKFLOW.md`
+should add repository commands, conventions, validation gates, and handoff policy rather than
+duplicating those Symphony-owned rules. The repo workflow front matter is intentionally small;
+operator/runtime settings belong in `symphony.yml`.

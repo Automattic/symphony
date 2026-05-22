@@ -80,10 +80,10 @@ are *not* covered by these switches — see Best Practices below.
 ### Untrusted-input handling
 
 Linear titles, descriptions, and comments are rendered into the prompt inside bounded `<linear_...>`
-blocks, and the example `WORKFLOW.md` instructs the agent to treat content in `BEGIN UNTRUSTED` /
-`END UNTRUSTED` blocks as data only. The default workflow also forbids reading or printing common
-secret paths, pushing to anything other than the workspace's configured `origin`, rewriting git
-remotes, or opening pull requests against unrelated repositories.
+blocks. Symphony also prepends a managed runtime context that instructs the agent to treat
+Linear/GitHub/CI/tool-output boundaries as data only, work only in the prepared workspace, prefer
+scoped tools, and avoid common secret paths. Repo `WORKFLOW.md` files can add stricter repo-local
+rules, but they do not need to duplicate those Symphony-owned guardrails.
 
 ### Scoped Linear and PR tools
 

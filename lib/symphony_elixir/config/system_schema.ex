@@ -122,6 +122,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     "review_agent.enabled" => "pre_push_review.enabled",
     "review_agent.kind" => "pre_push_review.runtime",
     "review_agent.max_iterations" => "pre_push_review.max_iterations",
+    "review_agent.run_on" => "pre_push_review.run_on",
     "server.host" => "dashboard.host",
     "server.port" => "dashboard.port",
     "tracker.active_states" => "issues.states.active",
@@ -616,13 +617,14 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   defp normalize_pre_push_review(config) do
     with {:ok, config} <- section_map(config, "pre_push_review"),
-         :ok <- reject_unknown_section_keys(config, ~w(enabled runtime command max_iterations), "pre_push_review") do
+         :ok <- reject_unknown_section_keys(config, ~w(enabled runtime command max_iterations run_on), "pre_push_review") do
       {:ok,
        %{}
        |> maybe_put("enabled", Map.get(config, "enabled"))
        |> maybe_put("kind", Map.get(config, "runtime"))
        |> maybe_put("command", Map.get(config, "command"))
-       |> maybe_put("max_iterations", Map.get(config, "max_iterations"))}
+       |> maybe_put("max_iterations", Map.get(config, "max_iterations"))
+       |> maybe_put("run_on", Map.get(config, "run_on"))}
     end
   end
 

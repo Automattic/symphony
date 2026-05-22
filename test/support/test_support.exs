@@ -1086,7 +1086,8 @@ defmodule SymphonyElixir.TestSupport do
         kv("enabled", Map.get(config, :enabled)),
         kv("runtime", Map.get(config, :kind)),
         kv("command", Map.get(config, :command)),
-        kv("max_iterations", Map.get(config, :max_iterations))
+        kv("max_iterations", Map.get(config, :max_iterations)),
+        kv("run_on", Map.get(config, :run_on))
       ]
       |> Enum.reject(&is_nil/1)
 

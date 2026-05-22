@@ -44,7 +44,7 @@ such as `~/.ssh`, `~/.aws`, `~/.config/gh`, `*.pem`, `*.key`, and the agent runt
 stores under `~/.codex` and `~/.claude`. `workspace.sandbox.allow_read_paths` lets you carve narrow
 exceptions when a repo legitimately needs something like `~/.npmrc`.
 `workspace.sandbox.allow_write_paths` is the write-side counterpart: it adds entries to the Claude
-runtime's `sandbox.filesystem.allowWrite` so the agent can write under specific hosts paths beyond
+runtime's `sandbox.filesystem.allowWrite` so the agent can write under specific host paths beyond
 the Claude Code default (workspace + `/tmp`). Codex/SRT already authors a broader writable set
 under `/tmp` and the workspace, so this knob only affects the Claude runtime today.
 

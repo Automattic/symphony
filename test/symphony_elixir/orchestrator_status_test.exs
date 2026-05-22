@@ -2248,6 +2248,83 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert %{tracker: :linear, reason: nil, since: nil, consecutive_failures: 0} = state.tracker_health
   end
 
+  test "review agent repo gate preserves enabled and disabled config without logging errors" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      review_agent: [enabled: true, kind: "codex", command: "codex app-server", max_iterations: 1]
+    )
+
+    enabled_log =
+      capture_log([level: :error], fn ->
+        assert Orchestrator.review_agent_enabled_for_repo_for_test("default")
+      end)
+
+    assert enabled_log == ""
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      review_agent: [enabled: false]
+    )
+
+    disabled_log =
+      capture_log([level: :error], fn ->
+        refute Orchestrator.review_agent_enabled_for_repo_for_test("default")
+      end)
+
+    assert disabled_log == ""
+  end
+
+  test "review agent repo gate logs expected review-agent config failures before returning disabled" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      review_agent: [enabled: "sometimes"]
+    )
+
+    log =
+      capture_log([level: :error], fn ->
+        refute Orchestrator.review_agent_enabled_for_repo_for_test("default")
+      end)
+
+    assert log =~ "review_agent_config_failed repo_key=default"
+    assert log =~ "reason=ArgumentError:"
+  end
+
+  test "review agent repo gate lets unexpected config exceptions bubble" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    previous_file_reader = Application.fetch_env(:symphony_elixir, :config_cache_file_reader)
+
+    on_exit(fn ->
+      case previous_file_reader do
+        {:ok, file_reader} -> Application.put_env(:symphony_elixir, :config_cache_file_reader, file_reader)
+        :error -> Application.delete_env(:symphony_elixir, :config_cache_file_reader)
+      end
+
+      Cache.clear()
+    end)
+
+    Application.put_env(:symphony_elixir, :config_cache_file_reader, fn _path ->
+      raise RuntimeError, "config cache exploded"
+    end)
+
+    Cache.clear()
+
+    assert_raise RuntimeError, "config cache exploded", fn ->
+      Orchestrator.review_agent_enabled_for_repo_for_test("default")
+    end
+  end
+
+  test "current tracker kind logs expected config failures before returning unknown" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: %{bad: "value"})
+
+    log =
+      capture_log([level: :error], fn ->
+        assert Orchestrator.current_tracker_kind_for_test() == :unknown
+      end)
+
+    assert log =~ "tracker_config_failed"
+    assert log =~ "reason=ArgumentError:"
+  end
+
   test "orchestrator snapshot stacks tracker unavailable with other dispatch blockers" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "linear",

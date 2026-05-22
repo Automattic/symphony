@@ -939,7 +939,9 @@ defmodule SymphonyElixir.Orchestrator do
     Config.settings!().tracker.kind
     |> normalize_tracker_kind()
   rescue
-    _ -> :unknown
+    exception in [ArgumentError, KeyError, MatchError, FunctionClauseError] ->
+      Logger.error("tracker_config_failed reason=#{config_exception_reason(exception)}")
+      :unknown
   end
 
   defp normalize_tracker_kind(:linear), do: :linear
@@ -977,6 +979,18 @@ defmodule SymphonyElixir.Orchestrator do
   def poll_candidate_issue_buckets_for_test(%State{} = state, repos, fetcher, now_ms)
       when is_list(repos) and is_function(fetcher, 1) and is_integer(now_ms) do
     poll_candidate_issue_buckets(state, repos, fetcher, now_ms)
+  end
+
+  @doc false
+  @spec current_tracker_kind_for_test() :: atom()
+  def current_tracker_kind_for_test do
+    current_tracker_kind()
+  end
+
+  @doc false
+  @spec review_agent_enabled_for_repo_for_test(String.t() | nil) :: boolean()
+  def review_agent_enabled_for_repo_for_test(repo_key) do
+    review_agent_enabled_for_repo(repo_key)
   end
 
   defp poll_candidate_issue_buckets(%State{} = state, repos, fetcher, now_ms)
@@ -2617,7 +2631,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_output_tokens: 0,
             codex_total_tokens: 0,
             reviewer_input_tokens: 0,
-            review_agent_enabled: review_agent_enabled_for_repo(repo_key),
+            review_agent_enabled: review_agent_enabled_for_repo(repo_key, issue),
             last_reported_uncached_input_tokens: 0,
             last_reported_cached_input_tokens: 0,
             last_reported_cache_creation_input_tokens: 0,
@@ -4378,15 +4392,32 @@ defmodule SymphonyElixir.Orchestrator do
     do: max(Map.get(entry, :reviewer_total_tokens, 0), 0)
 
   defp review_agent_enabled?(%{review_agent: %{enabled: true}}), do: true
-  defp review_agent_enabled?(_settings), do: false
+  defp review_agent_enabled?(%{review_agent: %{enabled: false}}), do: false
 
-  defp review_agent_enabled_for_repo(repo_key) do
+  defp review_agent_enabled_for_repo(repo_key, issue \\ nil) do
     repo_key
     |> Config.settings_for_repo!()
     |> review_agent_enabled?()
   rescue
-    _ -> false
+    exception in [ArgumentError, KeyError, MatchError, FunctionClauseError] ->
+      log_review_agent_config_failed(repo_key, issue, exception)
+      false
   end
+
+  defp log_review_agent_config_failed(repo_key, %Issue{} = issue, exception) do
+    Logger.error("review_agent_config_failed repo_key=#{log_value(repo_key)} #{issue_context(issue)} reason=#{config_exception_reason(exception)}")
+  end
+
+  defp log_review_agent_config_failed(repo_key, _issue, exception) do
+    Logger.error("review_agent_config_failed repo_key=#{log_value(repo_key)} reason=#{config_exception_reason(exception)}")
+  end
+
+  defp config_exception_reason(exception) do
+    "#{inspect(exception.__struct__)}: #{Exception.message(exception)}"
+  end
+
+  defp log_value(value) when is_binary(value), do: value
+  defp log_value(value), do: inspect(value)
 
   defp verification_port(%{verification: %{port: port}}) when is_integer(port), do: port
   defp verification_port(_running_entry), do: nil

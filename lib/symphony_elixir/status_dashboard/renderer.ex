@@ -785,8 +785,7 @@ defmodule SymphonyElixir.StatusDashboard.Renderer do
     else
       retrying
       |> Enum.sort_by(&retry_due_in_ms/1)
-      |> Enum.map_join(", ", &format_retry_summary/1)
-      |> String.split(", ")
+      |> Enum.map(&format_retry_summary/1)
     end
   end
 

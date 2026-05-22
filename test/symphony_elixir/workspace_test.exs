@@ -1,0 +1,237 @@
+defmodule SymphonyElixir.WorkspaceTest do
+  use SymphonyElixir.TestSupport
+
+  describe "validate/2" do
+    test "accepts local paths under the workspace root" do
+      test_root = unique_tmp("workspace-validate-local")
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join([workspace_root, "default", "RSM-1"])
+
+      try do
+        File.mkdir_p!(workspace)
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+        assert :ok = Workspace.validate(workspace)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "rejects local symlink escapes under the workspace root" do
+      test_root = unique_tmp("workspace-validate-symlink")
+      workspace_root = Path.join(test_root, "workspaces")
+      outside_root = Path.join(test_root, "outside")
+      workspace = Path.join([workspace_root, "default", "RSM-SYM"])
+
+      try do
+        File.mkdir_p!(Path.dirname(workspace))
+        File.mkdir_p!(outside_root)
+        File.ln_s!(outside_root, workspace)
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+        assert {:ok, canonical_root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
+
+        assert {:error, {:workspace_symlink_escape, ^workspace, ^canonical_root}} =
+                 Workspace.validate(workspace)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "rejects local paths outside the workspace root" do
+      test_root = unique_tmp("workspace-validate-outside")
+      workspace_root = Path.join(test_root, "workspaces")
+      outside = Path.join(test_root, "outside")
+
+      try do
+        File.mkdir_p!(workspace_root)
+        File.mkdir_p!(outside)
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+        assert {:ok, canonical_outside} = SymphonyElixir.PathSafety.canonicalize(outside)
+        assert {:ok, canonical_root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
+
+        assert {:error, {:workspace_outside_root, ^canonical_outside, ^canonical_root}} =
+                 Workspace.validate(outside)
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "rejects invalid remote workspace paths before remote commands" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "/remote/workspaces",
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_path_unreadable, "   ", :empty}} =
+               Workspace.validate("   ", "worker-01")
+
+      assert {:error, {:workspace_path_unreadable, "/remote/work\nspace", :invalid_characters}} =
+               Workspace.validate("/remote/work\nspace", "worker-01")
+
+      assert {:error, {:workspace_path_unreadable, "/remote/work" <> <<0>> <> "space", :invalid_characters}} =
+               Workspace.validate("/remote/work" <> <<0>> <> "space", "worker-01")
+
+      assert {:error, {:workspace_outside_root, "/tmp/outside", "/remote/workspaces"}} =
+               Workspace.validate("/tmp/outside", "worker-01")
+
+      assert {:error, {:workspace_equals_root, "/remote/workspaces", "/remote/workspaces"}} =
+               Workspace.validate("/remote/workspaces", "worker-01")
+
+      assert :ok = Workspace.validate("/remote/workspaces/default/RSM-1", "worker-01")
+    end
+  end
+
+  test "remote remove rejects paths outside the configured root without invoking ssh" do
+    test_root = unique_tmp("workspace-remote-remove-validate")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn -> restore_env("PATH", previous_path) end)
+
+    try do
+      fake_ssh = Path.join(test_root, "ssh")
+      trace_file = Path.join(test_root, "ssh.trace")
+      File.mkdir_p!(test_root)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      printf 'ssh called\\n' >> #{shell_quote(trace_file)}
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "/remote/workspaces",
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_outside_root, "/tmp/outside", "/remote/workspaces"}, ""} =
+               Workspace.remove("/tmp/outside", "worker-01")
+
+      refute File.exists?(trace_file)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner rejects explicit workspace paths outside the root before before_run hook" do
+    test_root = unique_tmp("agent-runner-workspace-validate")
+    workspace_root = Path.join(test_root, "workspaces")
+    outside = Path.join(test_root, "outside")
+    marker = Path.join(test_root, "before-run.marker")
+
+    try do
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(outside)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        hook_before_run: "touch #{shell_quote(marker)}"
+      )
+
+      issue = %Issue{
+        id: "issue-workspace-bypass",
+        identifier: "RSM-BYPASS",
+        title: "Workspace bypass",
+        description: "Reject explicit outside workspace",
+        state: "In Progress",
+        url: "https://example.org/issues/RSM-BYPASS",
+        labels: []
+      }
+
+      assert_raise RuntimeError, ~r/workspace_outside_root/, fn ->
+        AgentRunner.run(issue, nil,
+          workspace_path: outside,
+          issue_enricher: fn issue -> {:ok, issue} end
+        )
+      end
+
+      refute File.exists?(marker)
+      refute File.exists?(Path.join([workspace_root, "default", "RSM-BYPASS"]))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "concurrent worktree creation is idempotent and cleanup removes branch and directory" do
+    test_root = unique_tmp("workspace-concurrent-worktree")
+    primary_repo = Path.join(test_root, "primary")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      create_primary_repo!(primary_repo)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      tasks =
+        for _ <- 1..2 do
+          Task.async(fn -> Workspace.create_for_issue("RSM-CONCURRENT") end)
+        end
+
+      results = Enum.map(tasks, &Task.await(&1, 10_000))
+      assert [{:ok, workspace}, {:ok, workspace}] = results
+
+      assert {:ok, expected_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "RSM-CONCURRENT"]))
+
+      assert workspace == expected_workspace
+      assert File.dir?(workspace)
+      assert git_branch_exists?(primary_repo, "auto/RSM-CONCURRENT")
+      assert worktree_count(primary_repo, workspace) == 1
+
+      assert :ok = Workspace.remove_issue_workspaces("RSM-CONCURRENT")
+      refute File.exists?(workspace)
+      refute git_branch_exists?(primary_repo, "auto/RSM-CONCURRENT")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp unique_tmp(name) do
+    Path.join(System.tmp_dir!(), "symphony-elixir-#{name}-#{System.unique_integer([:positive])}")
+  end
+
+  defp create_primary_repo!(primary_repo) do
+    File.mkdir_p!(primary_repo)
+    git!(primary_repo, ["init", "-b", "main"])
+    git!(primary_repo, ["config", "user.name", "Test User"])
+    git!(primary_repo, ["config", "user.email", "test@example.com"])
+    File.write!(Path.join(primary_repo, "README.md"), "initial\n")
+    git!(primary_repo, ["add", "README.md"])
+    git!(primary_repo, ["commit", "-m", "initial"])
+  end
+
+  defp git!(repo, args) do
+    case Workspace.safe_git(["-C", repo | args]) do
+      {output, 0} -> String.trim(output)
+      {output, status} -> flunk("git #{Enum.join(args, " ")} failed with #{status}: #{output}")
+    end
+  end
+
+  defp git_branch_exists?(repo, branch) do
+    case Workspace.safe_git(["-C", repo, "rev-parse", "--verify", "refs/heads/#{branch}"]) do
+      {_output, 0} -> true
+      {_output, _status} -> false
+    end
+  end
+
+  defp worktree_count(repo, workspace) do
+    repo
+    |> git!(["worktree", "list", "--porcelain"])
+    |> String.split("\n", trim: true)
+    |> Enum.count(&(&1 == "worktree #{workspace}"))
+  end
+
+  defp shell_quote(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+end

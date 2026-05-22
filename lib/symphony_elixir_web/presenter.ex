@@ -287,7 +287,7 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp normalize_poller_status(status) when status in [:timeout, :unavailable], do: status
+  defp normalize_poller_status(:unavailable), do: :unavailable
   defp normalize_poller_status(_status), do: :unavailable
 
   defp integer_or_nil(value) when is_integer(value), do: value

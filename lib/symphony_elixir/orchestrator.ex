@@ -4909,6 +4909,8 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  # CiPoller.status/0 and PrReviewPoller.status/0 read from a shared ETS
+  # table, so this snapshot never blocks on a busy or degraded poller.
   defp poller_status_snapshot do
     %{
       ci: CiPoller.status(),

@@ -22,6 +22,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   @conflict_max_retries 3
   @github_error_backoff_threshold 3
   @max_github_error_backoff_ms 300_000
+  @status_table :pr_review_poller_status
 
   defmodule State do
     @moduledoc false
@@ -47,26 +48,32 @@ defmodule SymphonyElixir.PrReviewPoller do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
+  # Reads the last-published poller status from a shared ETS table so the
+  # orchestrator snapshot loop does not block on a synchronous GenServer.call
+  # when the poller is mid-cycle on a slow remote.
   @doc false
-  @spec status(GenServer.name(), timeout()) :: map() | :timeout | :unavailable
-  def status(name \\ __MODULE__, timeout \\ 1_000) do
-    GenServer.call(name, :status, timeout)
-  catch
-    :exit, {:timeout, _reason} -> :timeout
-    :exit, _reason -> :unavailable
+  @spec status() :: map() | :unavailable
+  def status do
+    case :ets.whereis(@status_table) do
+      :undefined ->
+        :unavailable
+
+      _table ->
+        case :ets.lookup(@status_table, :current) do
+          [{:current, status}] -> status
+          _other -> :unavailable
+        end
+    end
   end
 
   @impl true
   def init(opts) do
     poll_interval_ms = poll_interval_ms(opts)
     opts = poller_opts(opts, poll_interval_ms)
+    state = %State{opts: opts, poll_interval_ms: poll_interval_ms}
+    publish_status(state)
 
-    {:ok, schedule_poll(%State{opts: opts, poll_interval_ms: poll_interval_ms}, 0)}
-  end
-
-  @impl true
-  def handle_call(:status, _from, %State{} = state) do
-    {:reply, poller_status(state), state}
+    {:ok, schedule_poll(state, 0)}
   end
 
   @impl true
@@ -77,6 +84,7 @@ defmodule SymphonyElixir.PrReviewPoller do
         {:error, message, reason} -> handle_poll_failure(state, message, reason)
       end
 
+    publish_status(state)
     {:noreply, schedule_poll(state, delay_ms)}
   end
 
@@ -2330,6 +2338,27 @@ defmodule SymphonyElixir.PrReviewPoller do
       current_backoff_ms: state.current_backoff_ms,
       poll_interval_ms: state.poll_interval_ms
     }
+  end
+
+  defp publish_status(%State{} = state) do
+    ensure_status_table()
+    :ets.insert(@status_table, {:current, poller_status(state)})
+    :ok
+  end
+
+  defp ensure_status_table do
+    case :ets.whereis(@status_table) do
+      :undefined ->
+        try do
+          :ets.new(@status_table, [:set, :public, :named_table, read_concurrency: true])
+          :ok
+        rescue
+          ArgumentError -> :ok
+        end
+
+      _table ->
+        :ok
+    end
   end
 
   defp poller_opts(opts, poll_interval_ms) do

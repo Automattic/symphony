@@ -109,6 +109,15 @@ defmodule SymphonyElixir.CiPollerTest do
   end
 
   setup do
+    audit_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-ci-poller-audit-#{System.unique_integer([:positive])}"
+      )
+
+    previous_audit_dir = Application.get_env(:symphony_elixir, :audit_log_dir)
+    Application.put_env(:symphony_elixir, :audit_log_dir, audit_root)
+
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :ci_test_issues)
       Application.delete_env(:symphony_elixir, :ci_test_status)
@@ -119,6 +128,14 @@ defmodule SymphonyElixir.CiPollerTest do
       Application.delete_env(:symphony_elixir, :ci_test_recipient)
       Application.delete_env(:symphony_elixir, :ci_test_review_activity)
       Application.delete_env(:symphony_elixir, :ci_test_ci_record)
+
+      if previous_audit_dir do
+        Application.put_env(:symphony_elixir, :audit_log_dir, previous_audit_dir)
+      else
+        Application.delete_env(:symphony_elixir, :audit_log_dir)
+      end
+
+      File.rm_rf(audit_root)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -128,7 +145,7 @@ defmodule SymphonyElixir.CiPollerTest do
     )
 
     Application.put_env(:symphony_elixir, :ci_test_recipient, self())
-    :ok
+    {:ok, audit_dir: audit_root}
   end
 
   test "disabled ci config makes no GitHub calls" do

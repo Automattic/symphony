@@ -93,6 +93,11 @@ defmodule SymphonyElixir.CiPollerTest do
     def delete_ci_check(_issue_id), do: :ok
   end
 
+  defmodule RaisingRunStore do
+    def list_runs(:all), do: raise("ci poll exploded")
+    def list_ci_checks, do: []
+  end
+
   defmodule FailingTransitionTracker do
     def fetch_issues_by_states(_states), do: {:ok, []}
 
@@ -658,6 +663,60 @@ defmodule SymphonyElixir.CiPollerTest do
     assert [%{status: "escalated", ci_retry_count: 3, error: ":rate_limited"}] = RunStore.list_ci_checks()
   end
 
+  test "poll callback backs off, emits degradation audit, and recovers" do
+    {:ok, state} =
+      CiPoller.init(
+        tracker: FakeTracker,
+        run_store: RaisingRunStore,
+        poll_interval_ms: 100,
+        poller_max_backoff_ms: 250,
+        poller_degraded_threshold: 2,
+        repo_key: @repo_key
+      )
+
+    Process.cancel_timer(state.timer_ref)
+
+    log =
+      capture_log([level: :error], fn ->
+        assert {:noreply, failed_once} = CiPoller.handle_info(:poll, state)
+        assert failed_once.consecutive_failures == 1
+        assert failed_once.current_backoff_ms == 100
+        Process.cancel_timer(failed_once.timer_ref)
+
+        assert {:noreply, degraded} = CiPoller.handle_info(:poll, failed_once)
+        assert degraded.consecutive_failures == 2
+        assert degraded.current_backoff_ms == 200
+        assert degraded.degraded?
+        Process.cancel_timer(degraded.timer_ref)
+
+        assert {:noreply, capped} = CiPoller.handle_info(:poll, degraded)
+        assert capped.consecutive_failures == 3
+        assert capped.current_backoff_ms == 250
+        Process.cancel_timer(capped.timer_ref)
+
+        successful = %{capped | opts: Keyword.put(capped.opts, :run_store, RunStore)}
+
+        info_log =
+          capture_log([level: :info], fn ->
+            assert {:noreply, recovered} = CiPoller.handle_info(:poll, successful)
+            assert recovered.consecutive_failures == 0
+            assert recovered.current_backoff_ms == nil
+            refute recovered.degraded?
+            Process.cancel_timer(recovered.timer_ref)
+          end)
+
+        assert info_log =~ "CI poll recovered after 3 consecutive failures"
+      end)
+
+    assert log =~ "CI poll raised"
+    assert log =~ "ci poll exploded"
+    assert log =~ "CI poll backing off after 2 consecutive failures; next poll in 200ms"
+    assert log =~ "CI poll backing off after 3 consecutive failures; next poll in 250ms"
+
+    assert audit_event?("poller_degraded", "ci", "degraded")
+    assert audit_event?("poller_recovered", "ci", "recovered")
+  end
+
   defp in_review_issue do
     %Issue{
       id: "issue-2401",
@@ -720,5 +779,13 @@ defmodule SymphonyElixir.CiPollerTest do
         %{name: "specs retry", status: "COMPLETED", conclusion: "FAILURE", run_id: "987"}
       ]
     }
+  end
+
+  defp audit_event?(event_type, poller, status) do
+    {:ok, events} = SymphonyElixir.AuditLog.query(event_type: event_type)
+
+    Enum.any?(events, fn event ->
+      event["poller"] == poller and event["status"] == status
+    end)
   end
 end

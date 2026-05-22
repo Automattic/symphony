@@ -53,6 +53,9 @@ defmodule SymphonyElixir.CoreTest do
     assert config.pr_review.ignored_users == []
     assert config.pr_review.auto_reply == false
     assert config.pr_review.auto_request_review == false
+    assert config.poller.backoff_base_ms == nil
+    assert config.poller.max_backoff_ms == 300_000
+    assert config.poller.degraded_threshold == 3
     assert config.ci.enabled == false
     assert config.ci.poll_interval_ms == nil
     assert config.ci.log_excerpt_lines == 200
@@ -71,6 +74,16 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      poller: %{backoff_base_ms: 5_000, max_backoff_ms: 60_000, degraded_threshold: 4}
+    )
+
+    assert %{
+             backoff_base_ms: 5_000,
+             max_backoff_ms: 60_000,
+             degraded_threshold: 4
+           } = Config.settings!().poller
 
     write_workflow_file!(Workflow.workflow_file_path(),
       pr_review_mode: "polling",

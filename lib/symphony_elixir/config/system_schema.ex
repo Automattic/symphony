@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   @primary_key false
   @allowed_keys ~w(
-    agent dashboard dependency_audit github issue_gate issues notifications pre_push_review pull_requests
+    agent dashboard dependency_audit github issue_gate issues notifications poller pre_push_review pull_requests
     repositories verification watchdog workers workspaces
   )
 
@@ -277,6 +277,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
   embedded_schema do
     embeds_one(:tracker, Schema.Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Schema.Polling, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:poller, Schema.Poller, on_replace: :update, defaults_to_struct: true)
     embeds_one(:watchdog, Schema.Watchdog, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Schema.Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Schema.Worker, on_replace: :update, defaults_to_struct: true)
@@ -320,6 +321,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     %{
       "tracker" => struct_to_map(system_config.tracker),
       "polling" => struct_to_map(system_config.polling),
+      "poller" => struct_to_map(system_config.poller),
       "watchdog" => struct_to_map(system_config.watchdog),
       "workspace" => workspace_to_map(system_config.workspace),
       "worker" => struct_to_map(system_config.worker),
@@ -380,6 +382,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast(attrs, [])
     |> cast_embed(:tracker, with: &Schema.Tracker.changeset/2)
     |> cast_embed(:polling, with: &Schema.Polling.changeset/2)
+    |> cast_embed(:poller, with: &Schema.Poller.changeset/2)
     |> cast_embed(:watchdog, with: &Schema.Watchdog.changeset/2)
     |> cast_embed(:workspace, with: &Schema.Workspace.changeset/2)
     |> cast_embed(:worker, with: &Schema.Worker.changeset/2)
@@ -428,6 +431,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
          {:ok, worker} <- normalize_workers(Map.get(config, "workers", %{})),
          {:ok, pre_push_review} <- normalize_pre_push_review(Map.get(config, "pre_push_review", %{})),
          {:ok, pull_requests} <- normalize_pull_requests(Map.get(config, "pull_requests", %{})),
+         {:ok, poller} <- normalize_poller(Map.get(config, "poller", %{})),
          {:ok, issue_gate} <- normalize_issue_gate(Map.get(config, "issue_gate", %{})),
          {:ok, dependency_audit} <- normalize_dependency_audit(Map.get(config, "dependency_audit", %{})),
          {:ok, dashboard} <- normalize_dashboard(Map.get(config, "dashboard", %{})) do
@@ -444,6 +448,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
        |> maybe_put("verification", Map.get(config, "verification"))
        |> maybe_put("review_agent", pre_push_review)
        |> merge_sections(pull_requests)
+       |> maybe_put("poller", poller)
        |> maybe_put("quality_gate", issue_gate)
        |> maybe_put("dependencies", dependency_audit)
        |> maybe_put("watchdog", Map.get(config, "watchdog"))
@@ -677,6 +682,13 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   defp pr_review_mode(_invalid),
     do: {:error, {:invalid_symphony_config, "`pull_requests.enabled` must be a boolean"}}
+
+  defp normalize_poller(config) do
+    with {:ok, config} <- section_map(config, "poller"),
+         :ok <- reject_unknown_section_keys(config, ~w(backoff_base_ms max_backoff_ms degraded_threshold), "poller") do
+      {:ok, config}
+    end
+  end
 
   defp normalize_issue_gate(config) do
     with {:ok, config} <- section_map(config, "issue_gate"),

@@ -525,6 +525,7 @@ defmodule SymphonyElixir.TestSupport do
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
+          poller: nil,
           watchdog: nil,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           workspace_strategy: "clone",
@@ -598,6 +599,7 @@ defmodule SymphonyElixir.TestSupport do
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
+    poller = Keyword.get(config, :poller)
     watchdog = Keyword.get(config, :watchdog)
     workspace_root = Keyword.get(config, :workspace_root)
     workspace_strategy = Keyword.get(config, :workspace_strategy)
@@ -672,6 +674,7 @@ defmodule SymphonyElixir.TestSupport do
           terminal_states: tracker_terminal_states,
           interval_ms: poll_interval_ms
         }),
+        poller && "poller: #{yaml_value(poller)}",
         watchdog_yaml(watchdog),
         workspaces_yaml(
           workspace_root,

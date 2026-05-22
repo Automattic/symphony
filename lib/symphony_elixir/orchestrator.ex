@@ -4899,11 +4899,19 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_lifecycle: workspace_lifecycle_snapshot(state),
       budget: budget_snapshot(state),
       dispatch_state: dispatch_state_snapshot(state),
+      pollers: poller_status_snapshot(),
       polling: %{
         checking?: state.poll_check_in_progress == true,
         next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
         poll_interval_ms: state.poll_interval_ms
       }
+    }
+  end
+
+  defp poller_status_snapshot do
+    %{
+      ci: CiPoller.status(),
+      pr_review: PrReviewPoller.status()
     }
   end
 

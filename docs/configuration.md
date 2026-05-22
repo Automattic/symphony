@@ -146,6 +146,29 @@ workspaces:
 Issue workspaces are created under `workspaces.root/<repo_key>/<issue_key>`. The agent cwd is always
 the issue workspace, never the source repository.
 
+**Storage inventory and cleanup planning** are read-only today. Use the dry-run task to inspect
+estimated storage use before deciding whether to archive or remove anything manually:
+
+```bash
+mix symphony.cleanup --dry-run --config /path/to/symphony.yml
+```
+
+The report includes app log usage, audit usage by day, run-store usage, workspace-root usage, the
+run-store core dump directory, and known Symphony temp directory patterns such as MCP socket dirs
+and per-session agent homes. Override roots explicitly when inspecting an offline install:
+
+```bash
+mix symphony.cleanup --dry-run \
+  --state-root /path/to/state-root \
+  --logs-root /path/to/logs-root \
+  --workspace-root /path/to/workspaces \
+  --temp-root /path/to/tmp
+```
+
+When `--temp-root` is omitted, Symphony scans the system temp directory and `/tmp` for known
+per-session Symphony temp patterns. The task does not delete files; `--apply` is rejected until
+explicit deletion controls exist.
+
 ### `agent`
 
 Agent runtime, limits, timeouts, prompts, permissions, and MCP settings.

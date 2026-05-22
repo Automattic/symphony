@@ -7,6 +7,8 @@ defmodule SymphonyElixir.Codex.MessageHumanizer do
   one-line description.
   """
 
+  alias SymphonyElixir.Format
+
   @spec humanize(term()) :: String.t()
   def humanize(nil), do: "no agent message yet"
 
@@ -974,43 +976,7 @@ defmodule SymphonyElixir.Codex.MessageHumanizer do
 
   defp map_value(_map, _keys), do: nil
 
-  defp format_count(nil), do: "0"
+  defp format_count(value), do: Format.format_count(value)
 
-  defp format_count(value) when is_integer(value) do
-    value
-    |> Integer.to_string()
-    |> group_thousands()
-  end
-
-  defp format_count(value) when is_binary(value) do
-    value
-    |> String.trim()
-    |> Integer.parse()
-    |> case do
-      {number, ""} -> group_thousands(Integer.to_string(number))
-      _ -> value
-    end
-  end
-
-  defp format_count(value), do: to_string(value)
-
-  defp group_thousands(value) when is_binary(value) do
-    sign = if String.starts_with?(value, "-"), do: "-", else: ""
-    unsigned = if sign == "", do: value, else: String.slice(value, 1, String.length(value) - 1)
-
-    unsigned
-    |> String.reverse()
-    |> String.replace(~r/(\d{3})(?=\d)/, "\\1,")
-    |> String.reverse()
-    |> prepend(sign)
-  end
-
-  defp prepend("", value), do: value
-  defp prepend(prefix, value), do: prefix <> value
-
-  defp truncate(value, max) when byte_size(value) > max do
-    value |> String.slice(0, max) |> Kernel.<>("...")
-  end
-
-  defp truncate(value, _max), do: value
+  defp truncate(value, max), do: Format.truncate(value, max)
 end

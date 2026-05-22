@@ -10,7 +10,7 @@ defmodule SymphonyElixir.StatusDashboard.Renderer do
   """
 
   alias SymphonyElixir.Codex.MessageHumanizer
-  alias SymphonyElixir.{Config, HttpServer, URLUtils}
+  alias SymphonyElixir.{Config, Format, HttpServer, URLUtils}
 
   @throughput_window_ms 5_000
   @throughput_graph_window_ms 10 * 60 * 1000
@@ -938,25 +938,7 @@ defmodule SymphonyElixir.StatusDashboard.Renderer do
 
   defp format_bytes(_bytes), do: "n/a"
 
-  defp format_count(nil), do: "0"
-
-  defp format_count(value) when is_integer(value) do
-    value
-    |> Integer.to_string()
-    |> group_thousands()
-  end
-
-  defp format_count(value) when is_binary(value) do
-    value
-    |> String.trim()
-    |> Integer.parse()
-    |> case do
-      {number, ""} -> group_thousands(Integer.to_string(number))
-      _ -> value
-    end
-  end
-
-  defp format_count(value), do: to_string(value)
+  defp format_count(value), do: Format.format_count(value)
 
   defp running_table_header_row(running_event_width) do
     header =
@@ -1053,25 +1035,10 @@ defmodule SymphonyElixir.StatusDashboard.Renderer do
     end
   end
 
-  defp group_thousands(value) when is_binary(value) do
-    sign = if String.starts_with?(value, "-"), do: "-", else: ""
-    unsigned = if sign == "", do: value, else: String.slice(value, 1, String.length(value) - 1)
-
-    unsigned
-    |> String.reverse()
-    |> String.replace(~r/(\d{3})(?=\d)/, "\\1,")
-    |> String.reverse()
-    |> prepend(sign)
-  end
-
-  defp prepend("", value), do: value
-  defp prepend(prefix, value), do: prefix <> value
-
   defp format_tps(value) when is_number(value) do
     value
     |> trunc()
-    |> Integer.to_string()
-    |> group_thousands()
+    |> Format.format_count()
   end
 
   defp in_bucket?(timestamp, bucket_start, bucket_end, true),
@@ -1236,9 +1203,5 @@ defmodule SymphonyElixir.StatusDashboard.Renderer do
 
   defp summarize_message(message), do: MessageHumanizer.humanize(message)
 
-  defp truncate(value, max) when byte_size(value) > max do
-    value |> String.slice(0, max) |> Kernel.<>("...")
-  end
-
-  defp truncate(value, _max), do: value
+  defp truncate(value, max), do: Format.truncate(value, max)
 end

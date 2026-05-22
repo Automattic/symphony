@@ -1246,11 +1246,10 @@ defmodule SymphonyElixir.AppServerTest do
       assert trace =~ "\"api.openai.com\"=\"allow\""
       refute trace =~ "evil.example.com"
 
-      # Local Codex keeps the implicit symphony MCP server on a Unix socket.
+      # Local Codex keeps the implicit symphony MCP server on a Unix socket when
+      # the runner permits AF_UNIX bind; restrictive sandboxes fall back to TCP.
       codex_config = File.read!(codex_config_copy)
-      assert codex_config =~ ~s(args = ["--socket", )
-      refute codex_config =~ "--tcp-host"
-      refute codex_config =~ "--tcp-port"
+      assert_codex_mcp_config_matches_transport(codex_config)
     after
       File.rm_rf(test_root)
     end
@@ -1430,9 +1429,6 @@ defmodule SymphonyElixir.AppServerTest do
       assert settings["network"]["deniedDomains"] == ["github.com"]
 
       allow_unix_sockets = settings["network"]["allowUnixSockets"]
-      assert is_list(allow_unix_sockets)
-      assert Enum.any?(allow_unix_sockets, &String.contains?(&1, "symphony-mcp-"))
-      refute Enum.member?(allow_unix_sockets, System.tmp_dir!())
 
       refute "~/.npmrc" in settings["filesystem"]["denyRead"]
       assert "~/.ssh" in settings["filesystem"]["denyRead"]
@@ -1460,11 +1456,20 @@ defmodule SymphonyElixir.AppServerTest do
       assert settings["enableWeakerNetworkIsolation"] == false
 
       codex_config = File.read!(codex_config_copy)
-      assert codex_config =~ ~s(args = ["--socket", )
+
+      case assert_codex_mcp_config_matches_transport(codex_config) do
+        :unix ->
+          assert is_list(allow_unix_sockets)
+          assert Enum.any?(allow_unix_sockets, &String.contains?(&1, "symphony-mcp-"))
+          refute Enum.member?(allow_unix_sockets, System.tmp_dir!())
+
+        :tcp ->
+          assert unix_socket_bind_probe() == {:error, :eperm}
+          assert allow_unix_sockets in [nil, []]
+      end
+
       assert codex_config =~ ~s(SYMPHONY_MCP_SESSION_TOKEN = )
       assert codex_config =~ "PATH = "
-      refute codex_config =~ "--tcp-host"
-      refute codex_config =~ "--tcp-port"
       refute codex_config =~ "--session"
     after
       File.rm_rf(test_root)
@@ -5207,6 +5212,23 @@ defmodule SymphonyElixir.AppServerTest do
     if Port.info(port), do: Port.close(port)
   rescue
     ArgumentError -> :ok
+  end
+
+  defp assert_codex_mcp_config_matches_transport(codex_config) do
+    cond do
+      codex_config =~ ~s(args = ["--socket", ) ->
+        refute codex_config =~ "--tcp-host"
+        refute codex_config =~ "--tcp-port"
+        :unix
+
+      codex_config =~ ~s(args = ["--tcp-host", "127.0.0.1", "--tcp-port", ) ->
+        assert unix_socket_bind_probe() == {:error, :eperm}
+        refute codex_config =~ "--socket"
+        :tcp
+
+      true ->
+        flunk("expected generated Codex MCP config to use a Unix socket or loopback TCP fallback")
+    end
   end
 
   defp eventually(fun, attempts)

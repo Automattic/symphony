@@ -72,22 +72,24 @@ defmodule SymphonyElixir.McpServerTest do
   end
 
   test "startup reaper leaves a live managed socket directory alone" do
-    first_server = unique_server()
-    start_supervised!({McpServer, name: first_server}, id: first_server)
+    if_unix_socket_bind_supported(fn ->
+      first_server = unique_server()
+      start_supervised!({McpServer, name: first_server}, id: first_server)
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: first_server,
-        shim_path: "/tmp/shim"
-      )
+      {:ok, session} =
+        McpServer.start_session(%{workspace: System.tmp_dir!()},
+          server: first_server,
+          shim_path: "/tmp/shim"
+        )
 
-    second_server = unique_server()
-    start_supervised!({McpServer, name: second_server}, id: second_server)
+      second_server = unique_server()
+      start_supervised!({McpServer, name: second_server}, id: second_server)
 
-    assert File.dir?(session.socket_dir)
-    assert File.exists?(session.socket_path)
+      assert File.dir?(session.socket_dir)
+      assert File.exists?(session.socket_path)
 
-    McpServer.stop_session(session, server: first_server)
+      McpServer.stop_session(session, server: first_server)
+    end)
   end
 
   test "startup reaper leaves a fresh managed socket directory without sock alone" do
@@ -117,9 +119,20 @@ defmodule SymphonyElixir.McpServerTest do
       )
 
     try do
-      assert String.starts_with?(session.socket_dir, "/tmp/symphony-mcp-")
-      assert File.dir?(session.socket_dir)
-      assert File.exists?(session.socket_path)
+      case unix_socket_probe_case() do
+        :supported ->
+          assert session.transport == :unix
+          assert String.starts_with?(session.socket_dir, "/tmp/symphony-mcp-")
+          assert File.dir?(session.socket_dir)
+          assert File.exists?(session.socket_path)
+
+        :eperm ->
+          assert session.transport == :tcp
+          assert session.socket_dir == nil
+          assert session.socket_path == nil
+          assert session.tcp_host == "127.0.0.1"
+          assert is_integer(session.tcp_port)
+      end
     after
       McpServer.stop_session(session, server: server)
     end
@@ -141,15 +154,26 @@ defmodule SymphonyElixir.McpServerTest do
       )
 
     try do
-      assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
-      assert File.dir?(session.socket_dir)
-      assert File.exists?(session.socket_path)
+      case unix_socket_probe_case() do
+        :supported ->
+          assert session.transport == :unix
+          assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
+          assert File.dir?(session.socket_dir)
+          assert File.exists?(session.socket_path)
+
+        :eperm ->
+          assert session.transport == :tcp
+          assert session.socket_dir == nil
+          assert session.socket_path == nil
+      end
     after
       McpServer.stop_session(session, server: server)
     end
 
-    refute File.exists?(session.socket_path)
-    refute File.exists?(session.socket_dir)
+    if session.transport == :unix do
+      refute File.exists?(session.socket_path)
+      refute File.exists?(session.socket_dir)
+    end
   end
 
   test "sessions fall back to :mcp_socket_root application env when no opt is supplied" do
@@ -173,9 +197,18 @@ defmodule SymphonyElixir.McpServerTest do
       )
 
     try do
-      assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
-      assert File.dir?(session.socket_dir)
-      assert File.exists?(session.socket_path)
+      case unix_socket_probe_case() do
+        :supported ->
+          assert session.transport == :unix
+          assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
+          assert File.dir?(session.socket_dir)
+          assert File.exists?(session.socket_path)
+
+        :eperm ->
+          assert session.transport == :tcp
+          assert session.socket_dir == nil
+          assert session.socket_path == nil
+      end
     after
       McpServer.stop_session(session, server: server)
     end
@@ -215,31 +248,30 @@ defmodule SymphonyElixir.McpServerTest do
       )
 
     try do
-      assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
-      assert File.dir?(session.socket_dir)
-      assert File.exists?(session.socket_path)
+      case unix_socket_probe_case() do
+        :supported ->
+          assert session.transport == :unix
+          assert String.starts_with?(session.socket_dir, Path.join(custom_root, "symphony-mcp-"))
+          assert File.dir?(session.socket_dir)
+          assert File.exists?(session.socket_path)
+
+        :eperm ->
+          assert session.transport == :tcp
+          assert session.socket_dir == nil
+          assert session.socket_path == nil
+      end
     after
       McpServer.stop_session(session, server: server)
     end
   end
 
   test "concurrent sessions sharing a run_id do not clobber each other's socket" do
-    server = unique_server()
-    start_supervised!({McpServer, name: server})
-    run_id = "shared-run-#{System.unique_integer([:positive])}"
+    if_unix_socket_bind_supported(fn ->
+      server = unique_server()
+      start_supervised!({McpServer, name: server})
+      run_id = "shared-run-#{System.unique_integer([:positive])}"
 
-    {:ok, first_session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        run_id: run_id,
-        shim_path: "/tmp/shim"
-      )
-
-    try do
-      assert File.dir?(first_session.socket_dir)
-      assert File.exists?(first_session.socket_path)
-
-      {:ok, second_session} =
+      {:ok, first_session} =
         McpServer.start_session(%{workspace: System.tmp_dir!()},
           server: server,
           run_id: run_id,
@@ -247,60 +279,74 @@ defmodule SymphonyElixir.McpServerTest do
         )
 
       try do
-        assert first_session.socket_dir != second_session.socket_dir
-        assert first_session.socket_path != second_session.socket_path
+        assert File.dir?(first_session.socket_dir)
+        assert File.exists?(first_session.socket_path)
+
+        {:ok, second_session} =
+          McpServer.start_session(%{workspace: System.tmp_dir!()},
+            server: server,
+            run_id: run_id,
+            shim_path: "/tmp/shim"
+          )
+
+        try do
+          assert first_session.socket_dir != second_session.socket_dir
+          assert first_session.socket_path != second_session.socket_path
+
+          assert File.dir?(first_session.socket_dir),
+                 "first session's socket_dir was removed by second session start"
+
+          assert File.exists?(first_session.socket_path),
+                 "first session's socket file was removed by second session start"
+        after
+          McpServer.stop_session(second_session, server: server)
+        end
 
         assert File.dir?(first_session.socket_dir),
-               "first session's socket_dir was removed by second session start"
+               "first session's socket_dir was removed by second session stop"
 
         assert File.exists?(first_session.socket_path),
-               "first session's socket file was removed by second session start"
+               "first session's socket file was removed by second session stop"
       after
-        McpServer.stop_session(second_session, server: server)
+        McpServer.stop_session(first_session, server: server)
       end
-
-      assert File.dir?(first_session.socket_dir),
-             "first session's socket_dir was removed by second session stop"
-
-      assert File.exists?(first_session.socket_path),
-             "first session's socket file was removed by second session stop"
-    after
-      McpServer.stop_session(first_session, server: server)
-    end
+    end)
   end
 
   test "lists scoped Linear and GitHub tools over a token-authenticated Unix socket" do
-    server = unique_server()
-    start_supervised!({McpServer, name: server})
+    if_unix_socket_bind_supported(fn ->
+      server = unique_server()
+      start_supervised!({McpServer, name: server})
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+      {:ok, session} =
+        McpServer.start_session(%{workspace: System.tmp_dir!()},
+          server: server,
+          socket_path: socket_path(),
+          shim_path: "/tmp/shim"
+        )
 
-    assert {:ok, %File.Stat{mode: mode}} = File.stat(session.socket_path)
-    assert Bitwise.band(mode, 0o777) == 0o600
+      assert {:ok, %File.Stat{mode: mode}} = File.stat(session.socket_path)
+      assert Bitwise.band(mode, 0o777) == 0o600
 
-    socket = connect!(session.socket_path, session.token)
+      socket = connect!(session.socket_path, session.token)
 
-    try do
-      response = request!(socket, 1, "tools/list")
-      tool_names = response["result"]["tools"] |> Enum.map(& &1["name"])
+      try do
+        response = request!(socket, 1, "tools/list")
+        tool_names = response["result"]["tools"] |> Enum.map(& &1["name"])
 
-      assert "linear_get_current_issue" in tool_names
-      assert "linear_get_comments" in tool_names
-      assert "linear_add_comment" in tool_names
-      assert "github_create_pull_request" in tool_names
-      assert "github_get_failed_run_log" in tool_names
-      refute "linear.add_comment" in tool_names
-      refute "linear_set_assignee" in tool_names
-      refute "mcp__claude_ai_Linear__create_comment" in tool_names
-    after
-      close_socket(socket)
-      McpServer.stop_session(session, server: server)
-    end
+        assert "linear_get_current_issue" in tool_names
+        assert "linear_get_comments" in tool_names
+        assert "linear_add_comment" in tool_names
+        assert "github_create_pull_request" in tool_names
+        assert "github_get_failed_run_log" in tool_names
+        refute "linear.add_comment" in tool_names
+        refute "linear_set_assignee" in tool_names
+        refute "mcp__claude_ai_Linear__create_comment" in tool_names
+      after
+        close_socket(socket)
+        McpServer.stop_session(session, server: server)
+      end
+    end)
   end
 
   test "lists scoped tools over token-authenticated loopback TCP" do
@@ -407,14 +453,8 @@ defmodule SymphonyElixir.McpServerTest do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!(), tool_scope: :read_only},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
-
-    socket = connect!(session.socket_path, session.token)
+    session = start_transport_session!(%{workspace: System.tmp_dir!(), tool_scope: :read_only}, server)
+    socket = connect_session!(session)
 
     try do
       response = request!(socket, 1, "tools/list")
@@ -469,8 +509,8 @@ defmodule SymphonyElixir.McpServerTest do
       tool_opts: [linear_client: linear_client]
     }
 
-    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
-    socket = connect!(session.socket_path, session.token)
+    session = start_transport_session!(context, server)
+    socket = connect_session!(session)
 
     try do
       response =
@@ -518,8 +558,8 @@ defmodule SymphonyElixir.McpServerTest do
       tool_opts: [linear_client: linear_client]
     }
 
-    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
-    socket = connect!(session.socket_path, session.token)
+    session = start_transport_session!(context, server)
+    socket = connect_session!(session)
 
     try do
       response =
@@ -575,8 +615,8 @@ defmodule SymphonyElixir.McpServerTest do
       tool_opts: [git_runner: git_runner, gh_runner: gh_runner]
     }
 
-    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
-    socket = connect!(session.socket_path, session.token)
+    session = start_transport_session!(context, server)
+    socket = connect_session!(session)
 
     try do
       response =
@@ -667,8 +707,8 @@ defmodule SymphonyElixir.McpServerTest do
       tool_opts: [git_runner: git_runner, gh_runner: gh_runner]
     }
 
-    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
-    socket = connect!(session.socket_path, session.token)
+    session = start_transport_session!(context, server)
+    socket = connect_session!(session)
 
     try do
       response =
@@ -756,8 +796,8 @@ defmodule SymphonyElixir.McpServerTest do
       tool_opts: [git_runner: git_runner, gh_runner: gh_runner]
     }
 
-    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
-    socket = connect!(session.socket_path, session.token)
+    session = start_transport_session!(context, server)
+    socket = connect_session!(session)
 
     try do
       response =
@@ -800,15 +840,10 @@ defmodule SymphonyElixir.McpServerTest do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
 
-    first = connect!(session.socket_path, session.token)
-    second = connect!(session.socket_path, session.token)
+    first = connect_session!(session)
+    second = connect_session!(session)
 
     try do
       assert request!(first, 1, "initialize")["result"]["serverInfo"]["name"] == "symphony"
@@ -824,48 +859,23 @@ defmodule SymphonyElixir.McpServerTest do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
 
     McpServer.stop_session(session, server: server)
 
-    # Socket may already be removed; connect will fail before auth, which is
+    # Listener may already be removed; connect will fail before auth, which is
     # also acceptable. The key invariant is the token can't be used to do work.
-    case :socket.open(:local, :stream) do
-      {:ok, socket} ->
-        case :socket.connect(socket, %{family: :local, path: session.socket_path}) do
-          :ok ->
-            :socket.send(socket, "symphony-session-token: #{session.token}\r\n\r\n")
-            assert {:error, _reason} = request(socket, 1, "tools/list")
-            close_socket(socket)
-
-          {:error, _reason} ->
-            :socket.close(socket)
-        end
-
-      {:error, _reason} ->
-        :ok
-    end
+    assert_stopped_session_rejects_token(session)
   end
 
   test "rejects connections that omit the session token header" do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
 
     try do
-      {:ok, socket} = :socket.open(:local, :stream)
-      :ok = :socket.connect(socket, %{family: :local, path: session.socket_path})
+      socket = open_transport_socket!(session)
       :ok = :socket.send(socket, "X-Other: value\r\n\r\n")
       assert {:error, _reason} = request(socket, 1, "tools/list")
       close_socket(socket)
@@ -878,15 +888,10 @@ defmodule SymphonyElixir.McpServerTest do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
 
     try do
-      bogus = connect!(session.socket_path, "not-a-real-token")
+      bogus = connect_session!(%{session | token: "not-a-real-token"})
       assert {:error, _reason} = request(bogus, 1, "tools/list")
       close_socket(bogus)
     after
@@ -898,14 +903,9 @@ defmodule SymphonyElixir.McpServerTest do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
 
-    socket = connect!(session.socket_path, session.token)
+    socket = connect_session!(session)
 
     try do
       response = request!(socket, 99, "resources/list")
@@ -946,8 +946,8 @@ defmodule SymphonyElixir.McpServerTest do
       ]
     }
 
-    {:ok, session} = McpServer.start_session(context, server: server, socket_path: socket_path(), shim_path: "/tmp/shim")
-    socket = connect!(session.socket_path, session.token)
+    session = start_transport_session!(context, server)
+    socket = connect_session!(session)
 
     try do
       _ =
@@ -969,12 +969,7 @@ defmodule SymphonyElixir.McpServerTest do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
-    {:ok, session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+    session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
 
     state = :sys.get_state(server)
     {acceptor_ref, _id} = Enum.find(state.acceptors, fn {_ref, id} -> id == session.id end)
@@ -986,28 +981,21 @@ defmodule SymphonyElixir.McpServerTest do
     updated = :sys.get_state(server)
     refute Map.has_key?(updated.sessions, session.id)
     refute Map.has_key?(updated.acceptors, acceptor_ref)
-    refute File.exists?(session.socket_path)
+
+    if session.transport == :unix do
+      refute File.exists?(session.socket_path)
+    end
   end
 
   test "server remains available after stopping a session" do
     server = unique_server()
     start_supervised!({McpServer, name: server})
 
-    {:ok, first_session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+    first_session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
 
     assert :ok = McpServer.stop_session(first_session, server: server)
 
-    {:ok, second_session} =
-      McpServer.start_session(%{workspace: System.tmp_dir!()},
-        server: server,
-        socket_path: socket_path(),
-        shim_path: "/tmp/shim"
-      )
+    second_session = start_transport_session!(%{workspace: System.tmp_dir!()}, server)
 
     assert Process.whereis(server)
     McpServer.stop_session(second_session, server: server)
@@ -1023,6 +1011,91 @@ defmodule SymphonyElixir.McpServerTest do
 
   defp socket_path do
     Path.join(System.tmp_dir!(), "symphony-mcp-test-#{System.unique_integer([:positive])}.sock")
+  end
+
+  defp start_transport_session!(context, server, opts \\ []) do
+    opts =
+      [server: server, shim_path: "/tmp/shim"]
+      |> Keyword.merge(opts)
+
+    assert {:ok, session} = McpServer.start_session(context, opts)
+    session
+  end
+
+  defp connect_session!(%{transport: :tcp, tcp_port: port, token: token}) do
+    connect_tcp!(port, token)
+  end
+
+  defp connect_session!(%{transport: :unix, socket_path: path, token: token}) do
+    connect!(path, token)
+  end
+
+  defp open_transport_socket!(%{transport: :tcp, tcp_port: port}) do
+    {:ok, socket} = :socket.open(:inet, :stream)
+    :ok = :socket.connect(socket, %{family: :inet, addr: {127, 0, 0, 1}, port: port})
+    socket
+  end
+
+  defp open_transport_socket!(%{transport: :unix, socket_path: path}) do
+    {:ok, socket} = :socket.open(:local, :stream)
+    :ok = :socket.connect(socket, %{family: :local, path: path})
+    socket
+  end
+
+  defp assert_stopped_session_rejects_token(%{transport: :tcp, tcp_port: port, token: token}) do
+    case :socket.open(:inet, :stream) do
+      {:ok, socket} ->
+        case :socket.connect(socket, %{family: :inet, addr: {127, 0, 0, 1}, port: port}) do
+          :ok ->
+            :socket.send(socket, "symphony-session-token: #{token}\r\n\r\n")
+            assert {:error, _reason} = request(socket, 1, "tools/list")
+            close_socket(socket)
+
+          {:error, _reason} ->
+            :socket.close(socket)
+        end
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp assert_stopped_session_rejects_token(%{transport: :unix, socket_path: path, token: token}) do
+    case :socket.open(:local, :stream) do
+      {:ok, socket} ->
+        case :socket.connect(socket, %{family: :local, path: path}) do
+          :ok ->
+            :socket.send(socket, "symphony-session-token: #{token}\r\n\r\n")
+            assert {:error, _reason} = request(socket, 1, "tools/list")
+            close_socket(socket)
+
+          {:error, _reason} ->
+            :socket.close(socket)
+        end
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp unix_socket_probe_case do
+    case unix_socket_bind_probe() do
+      :ok -> :supported
+      {:error, :eperm} -> :eperm
+      {:error, reason} -> flunk("AF_UNIX socket bind probe failed with unexpected reason: #{inspect(reason)}")
+    end
+  end
+
+  defp if_unix_socket_bind_supported(fun) when is_function(fun, 0) do
+    case unix_socket_probe_case() do
+      :supported ->
+        fun.()
+
+      :eperm ->
+        # Some CI/sandbox runners permit child Codex to connect to a managed
+        # Unix socket but deny the parent BEAM process permission to bind one.
+        assert unix_socket_bind_probe() == {:error, :eperm}
+    end
   end
 
   defp preserve_socket_root_overrides do

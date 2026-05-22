@@ -501,10 +501,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         {:ok, mcp_config} = Jason.decode(File.read!(mcp_config_path))
         assert get_in(mcp_config, ["mcpServers", "symphony", "command"]) =~ "symphony-mcp-shim"
 
-        assert get_in(mcp_config, ["mcpServers", "symphony", "args"]) == [
-                 "--socket",
-                 session.mcp_session.socket_path
-               ]
+        assert_claude_mcp_config_matches_transport(mcp_config, session.mcp_session)
 
         assert get_in(mcp_config, ["mcpServers", "symphony", "env", "SYMPHONY_MCP_SESSION_TOKEN"]) ==
                  session.mcp_session.token
@@ -519,12 +516,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  "Bash(git remote set-url:*)"
                ]
 
-        assert File.exists?(session.mcp_session.socket_path)
+        if session.mcp_session.transport == :unix do
+          assert File.exists?(session.mcp_session.socket_path)
+        end
+
         assert :ok = AppServer.stop_session(session)
         refute File.exists?(settings_path)
         refute File.exists?(mcp_config_path)
         refute File.exists?(Path.dirname(settings_path))
-        refute File.exists?(session.mcp_session.socket_path)
+
+        if session.mcp_session.transport == :unix do
+          refute File.exists?(session.mcp_session.socket_path)
+        end
       after
         File.rm_rf(test_root)
       end
@@ -2013,14 +2016,23 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         {:ok, session} = AppServer.start_session(workspace)
         assert File.exists?(session.settings_path)
-        assert File.exists?(session.mcp_session.socket_path)
+
+        if session.mcp_session.transport == :unix do
+          assert File.exists?(session.mcp_session.socket_path)
+        else
+          assert session.mcp_session.transport == :tcp
+          assert unix_socket_bind_probe() == {:error, :eperm}
+        end
 
         assert {:error, {:exit_status, status}} = AppServer.run_turn(session, "do the thing", %{}, [])
         assert status > 0
 
         assert :ok = AppServer.stop_session(session)
         refute File.exists?(session.settings_path)
-        refute File.exists?(session.mcp_session.socket_path)
+
+        if session.mcp_session.transport == :unix do
+          refute File.exists?(session.mcp_session.socket_path)
+        end
       after
         File.rm_rf(test_root)
       end
@@ -2224,7 +2236,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         refute traced_argv =~ "remote task"
         assert File.read!(stdin_trace_file) == "remote task"
         refute traced_command =~ "--remote-control"
-        assert traced_argv =~ "-R #{session.mcp_remote_socket_path}:#{session.mcp_session.socket_path}"
+
+        if session.mcp_session.transport == :unix do
+          assert traced_argv =~ "-R #{session.mcp_remote_socket_path}:#{session.mcp_session.socket_path}"
+        else
+          assert session.mcp_session.transport == :tcp
+          assert unix_socket_bind_probe() == {:error, :eperm}
+          refute traced_argv =~ "-R "
+        end
       after
         File.rm_rf(test_root)
       end
@@ -2617,5 +2636,23 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
     printf '%s\\n' 'ssh failed'
     exit #{status}
     """
+  end
+
+  defp assert_claude_mcp_config_matches_transport(mcp_config, %{transport: :unix} = mcp_session) do
+    assert get_in(mcp_config, ["mcpServers", "symphony", "args"]) == [
+             "--socket",
+             mcp_session.socket_path
+           ]
+  end
+
+  defp assert_claude_mcp_config_matches_transport(mcp_config, %{transport: :tcp} = mcp_session) do
+    assert unix_socket_bind_probe() == {:error, :eperm}
+
+    assert get_in(mcp_config, ["mcpServers", "symphony", "args"]) == [
+             "--tcp-host",
+             "127.0.0.1",
+             "--tcp-port",
+             Integer.to_string(mcp_session.tcp_port)
+           ]
   end
 end

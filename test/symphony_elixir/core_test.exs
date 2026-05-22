@@ -2,6 +2,7 @@ defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Ci, as: CiConfig
+  alias SymphonyElixir.Config.Schema.ReviewAgent, as: ReviewAgentConfig
   alias SymphonyElixir.Config.Schema.Tracker, as: TrackerConfig
   alias SymphonyElixir.Secret
 
@@ -100,10 +101,22 @@ defmodule SymphonyElixir.CoreTest do
       |> Ecto.Changeset.apply_changes()
 
     assert ci_config.escalation_state == "In Review"
+    assert Config.review_agent_blocked_state(Config.repo_key!()) == "In Review"
 
     write_workflow_file!(Workflow.workflow_file_path(), ci: %{enabled: true, max_retries: 0})
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "ci.max_retries"
+
+    review_agent_config =
+      %ReviewAgentConfig{}
+      |> ReviewAgentConfig.changeset(%{enabled: true})
+
+    refute review_agent_config.valid?
+
+    assert {"is required when review_agent.enabled is true", [validation: :required]} in Keyword.get_values(
+             review_agent_config.errors,
+             :kind
+           )
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()

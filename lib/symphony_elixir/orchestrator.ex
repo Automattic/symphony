@@ -32,7 +32,6 @@ defmodule SymphonyElixir.Orchestrator do
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
   @post_pr_review_state "In Review"
-  @review_agent_blocked_state "Needs Human"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @default_transcript_buffer_size 200
@@ -533,8 +532,9 @@ defmodule SymphonyElixir.Orchestrator do
             "reason=#{inspect(reason)}; reviewer block is not retried"
         )
 
-        maybe_comment_review_agent_block(issue_id, running_entry, reason)
-        state = maybe_transition_review_agent_blocked_issue(state, issue_id, running_entry, reason)
+        blocked_state = review_agent_blocked_state(state, running_entry)
+        maybe_comment_review_agent_block(issue_id, running_entry, reason, blocked_state)
+        state = maybe_transition_review_agent_blocked_issue(state, issue_id, running_entry, blocked_state)
         emit_run_failed(running_entry, error, nil)
         state
 
@@ -588,9 +588,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp terminal_review_agent_block?({:review_agent_blocked, _reason}), do: true
   defp terminal_review_agent_block?(_reason), do: false
 
-  defp maybe_comment_review_agent_block(issue_id, running_entry, reason)
-       when is_binary(issue_id) and is_map(running_entry) do
-    body = review_agent_block_comment(reason)
+  defp maybe_comment_review_agent_block(issue_id, running_entry, reason, blocked_state)
+       when is_binary(issue_id) and is_map(running_entry) and is_binary(blocked_state) do
+    body = review_agent_block_comment(reason, blocked_state)
 
     case Tracker.create_comment(issue_id, body) do
       :ok ->
@@ -610,17 +610,17 @@ defmodule SymphonyElixir.Orchestrator do
       )
   end
 
-  defp maybe_comment_review_agent_block(_issue_id, _running_entry, _reason), do: :ok
+  defp maybe_comment_review_agent_block(_issue_id, _running_entry, _reason, _blocked_state), do: :ok
 
-  defp maybe_transition_review_agent_blocked_issue(%State{} = state, issue_id, running_entry, _reason)
-       when is_binary(issue_id) and is_map(running_entry) do
-    case Tracker.update_issue_state(issue_id, @review_agent_blocked_state) do
+  defp maybe_transition_review_agent_blocked_issue(%State{} = state, issue_id, running_entry, blocked_state)
+       when is_binary(issue_id) and is_map(running_entry) and is_binary(blocked_state) do
+    case Tracker.update_issue_state(issue_id, blocked_state) do
       :ok ->
         issue =
           running_entry
           |> Map.get(:issue)
           |> case do
-            %Issue{} = issue -> %Issue{issue | state: @review_agent_blocked_state, updated_at: DateTime.utc_now()}
+            %Issue{} = issue -> %Issue{issue | state: blocked_state, updated_at: DateTime.utc_now()}
             _ -> nil
           end
 
@@ -635,25 +635,25 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, transition_reason} ->
         Logger.warning(
-          "Failed to move review-agent blocked issue to #{@review_agent_blocked_state}: " <>
+          "Failed to move review-agent blocked issue to #{blocked_state}: " <>
             "issue_id=#{issue_id} reason=#{inspect(transition_reason)}"
         )
 
-        state
+        release_issue_claim(state, issue_id)
     end
   rescue
     exception ->
       Logger.warning(
-        "Failed to move review-agent blocked issue to #{@review_agent_blocked_state}: " <>
+        "Failed to move review-agent blocked issue to #{blocked_state}: " <>
           "issue_id=#{issue_id} reason=#{Exception.message(exception)}"
       )
 
-      state
+      release_issue_claim(state, issue_id)
   end
 
-  defp maybe_transition_review_agent_blocked_issue(%State{} = state, _issue_id, _running_entry, _reason), do: state
+  defp maybe_transition_review_agent_blocked_issue(%State{} = state, _issue_id, _running_entry, _blocked_state), do: state
 
-  defp review_agent_block_comment(reason) do
+  defp review_agent_block_comment(reason, blocked_state) do
     """
     Symphony stopped this run without retrying because the reviewer agent returned a verified blocking verdict.
 
@@ -661,8 +661,14 @@ defmodule SymphonyElixir.Orchestrator do
 
     #{review_agent_block_findings_section(reason)}
 
-    The issue was moved to #{@review_agent_blocked_state} for human review.
+    Target human-review state: #{blocked_state}.
     """
+  end
+
+  defp review_agent_blocked_state(%State{} = state, running_entry) do
+    state
+    |> running_repo_key(running_entry)
+    |> Config.review_agent_blocked_state()
   end
 
   defp review_agent_block_reason({:review_agent_blocked, payload}), do: review_agent_block_reason(payload)

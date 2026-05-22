@@ -5130,8 +5130,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(worker_pid, :finish)
   end
 
-  test "review-agent blocked exit comments, moves to Needs Human, and does not schedule retry" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", tracker_api_token: nil)
+  test "review-agent blocked exit comments, moves to configured escalation state, and does not schedule retry" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_api_token: nil,
+      ci: %{escalation_state: "Needs Human"}
+    )
+
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
     issue = %Issue{
@@ -5181,6 +5186,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert body =~ "reviewer agent returned a verified blocking verdict"
     assert body =~ "Reason: Unsafe to continue."
     assert body =~ "Breaks the retry contract. (lib/example.ex:10-12)"
+    assert body =~ "Target human-review state: Needs Human."
 
     assert_receive {:memory_tracker_state_update, "issue-review-agent-blocked", "Needs Human"}, 1_000
 
@@ -5188,6 +5194,52 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute Map.has_key?(completed_state.retry_attempts, issue.id)
     refute MapSet.member?(completed_state.claimed, issue.id)
     assert %{state: "Needs Human"} = completed_state.watching[issue.id]
+
+    send(worker_pid, :finish)
+  end
+
+  test "review-agent blocked exit releases claim when escalation state transition fails" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", tracker_api_token: nil)
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+    Application.put_env(:symphony_elixir, :memory_tracker_update_issue_state_result, {:error, :state_not_found})
+
+    issue = %Issue{
+      id: "issue-review-agent-blocked-transition-fails",
+      identifier: "MT-REVIEW-BLOCKED-TRANSITION-FAILS",
+      title: "Review agent blocked transition fails",
+      state: "In Progress"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ReviewAgentBlockedTransitionFailsOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: stop_process(pid)
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-review-agent-blocked-transition-fails"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        session_id: "thread-review-agent-blocked-transition-fails"
+      })
+
+    put_running_run!(issue, run_id, started_at, %{session_id: "thread-review-agent-blocked-transition-fails"})
+    put_running_entry(pid, issue, running_entry)
+
+    send(
+      pid,
+      {:DOWN, worker_ref, :process, worker_pid, {:review_agent_blocked, %{reason: "Unsafe to continue.", findings: [%{summary: "Verified block."}]}}}
+    )
+
+    assert_receive {:memory_tracker_comment, "issue-review-agent-blocked-transition-fails", body}, 1_000
+    assert body =~ "Target human-review state: In Review."
+
+    completed_state = wait_for_orchestrator_state(pid, &(map_size(&1.running) == 0), 1_000)
+    refute Map.has_key?(completed_state.retry_attempts, issue.id)
+    refute MapSet.member?(completed_state.claimed, issue.id)
 
     send(worker_pid, :finish)
   end

@@ -174,10 +174,22 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp complete_reviewer_comment_record(record, opts) do
-    if Map.get(record, :status) == "rework_requested" do
-      do_complete_reviewer_comment_record(record, opts)
-    else
-      :ok
+    cond do
+      Map.get(record, :status) == "rework_requested" ->
+        do_complete_reviewer_comment_record(record, opts)
+
+      has_pending_reviewer_comments?(record) ->
+        do_complete_reviewer_comment_record(record, opts)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp has_pending_reviewer_comments?(record) do
+    case Map.get(record, :pending_reviewer_comments) do
+      [_ | _] -> true
+      _ -> false
     end
   end
 

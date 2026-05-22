@@ -1442,6 +1442,35 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [%{last_addressed_comment_id: "comment-2", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
   end
 
+  test "auto reply fires for non-rework statuses when pending comments are present" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_ignored_users: ["agent-user"],
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "cooling_down",
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
+    assert reply_body =~ "addressed"
+
+    assert [%{last_addressed_comment_id: "comment-1", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+  end
+
   test "auto reply does not duplicate successful replies when request review fails after cursor advancement" do
     now = ~U[2026-05-01 09:00:00Z]
 
@@ -1616,7 +1645,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert stored_error =~ "comment-1"
   end
 
-  test "completion ignores pending comments unless the review record is waiting for rework" do
+  test "completion advances pending comments for any status when auto reply is disabled" do
     now = ~U[2026-05-01 09:00:00Z]
 
     :ok =
@@ -1636,12 +1665,11 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [
              %{
                status: "watching",
-               pending_last_addressed_comment_id: "comment-1",
-               pending_reviewer_comments: [%{id: "comment-1"}]
-             } = record
+               last_addressed_comment_id: "comment-1",
+               pending_last_addressed_comment_id: nil,
+               pending_reviewer_comments: []
+             }
            ] = RunStore.list_pr_reviews()
-
-    refute Map.has_key?(record, :last_addressed_comment_id)
   end
 
   test "polling clears stale pending comments after the addressed cursor catches up" do

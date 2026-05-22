@@ -127,8 +127,9 @@ to bind directly, set `SYMPHONY_ALLOW_REMOTE_BIND=1`.
 
 Symphony reads two files:
 
-- **`symphony.yml`**: operator config for issue-source settings, workspaces, agents, pollers,
-  gates, notifications, and the `repositories:` list. Plain YAML, no front-matter fences.
+- **`symphony.yml`**: operator config for issue-source settings, workspaces, agents, pollers
+  including bounded poller backoff, gates, notifications, and the `repositories:` list. Plain
+  YAML, no front-matter fences.
 - **`WORKFLOW.md`**: repo-local prompt body and per-repo hooks. YAML front matter between two
   `---` lines, then the prompt template. Each repo listed under `repositories:` has its own
   `WORKFLOW.md`.

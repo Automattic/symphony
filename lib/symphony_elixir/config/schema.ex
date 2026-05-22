@@ -162,6 +162,28 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Poller do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:backoff_base_ms, :integer)
+      field(:max_backoff_ms, :integer, default: 300_000)
+      field(:degraded_threshold, :integer, default: 3)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:backoff_base_ms, :max_backoff_ms, :degraded_threshold], empty_values: [])
+      |> validate_number(:backoff_base_ms, greater_than: 0)
+      |> validate_number(:max_backoff_ms, greater_than: 0)
+      |> validate_number(:degraded_threshold, greater_than: 0)
+    end
+  end
+
   defmodule Watchdog do
     @moduledoc false
     use Ecto.Schema
@@ -1564,6 +1586,7 @@ defmodule SymphonyElixir.Config.Schema do
   embedded_schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:poller, Poller, on_replace: :update, defaults_to_struct: true)
     embeds_one(:watchdog, Watchdog, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
@@ -1744,6 +1767,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast(attrs, [])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
+    |> cast_embed(:poller, with: &Poller.changeset/2)
     |> cast_embed(:watchdog, with: &Watchdog.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)

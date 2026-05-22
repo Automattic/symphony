@@ -10,6 +10,8 @@ defmodule SymphonyElixirWeb.Presenter do
     file_change
     linear_comment
     linear_state_change
+    poller_degraded
+    poller_recovered
     pr_opened
     prompt_sent
     refused_agent_action
@@ -58,6 +60,7 @@ defmodule SymphonyElixirWeb.Presenter do
             |> Enum.map(&skipped_entry_payload/1),
           run_history: Enum.map(run_history, &run_history_payload/1),
           codex_totals: normalize_codex_totals(Map.get(snapshot, :codex_totals)),
+          pollers: normalize_pollers(Map.get(snapshot, :pollers)),
           pause: normalize_pause(Map.get(snapshot, :pause)),
           budget: normalize_budget(Map.get(snapshot, :budget)),
           dispatch_state: normalize_dispatch_state(snapshot),
@@ -265,6 +268,30 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp normalize_token_map(_tokens), do: normalize_token_map(%{})
+
+  defp normalize_pollers(pollers) when is_map(pollers) do
+    %{
+      ci: normalize_poller_status(Map.get(pollers, :ci, Map.get(pollers, "ci"))),
+      pr_review: normalize_poller_status(Map.get(pollers, :pr_review, Map.get(pollers, "pr_review")))
+    }
+  end
+
+  defp normalize_pollers(_pollers), do: %{ci: :unavailable, pr_review: :unavailable}
+
+  defp normalize_poller_status(%{} = status) do
+    %{
+      status: Map.get(status, :status, Map.get(status, "status")),
+      consecutive_failures: integer_map_value(status, :consecutive_failures),
+      current_backoff_ms: integer_or_nil(Map.get(status, :current_backoff_ms, Map.get(status, "current_backoff_ms"))),
+      poll_interval_ms: integer_or_nil(Map.get(status, :poll_interval_ms, Map.get(status, "poll_interval_ms")))
+    }
+  end
+
+  defp normalize_poller_status(:unavailable), do: :unavailable
+  defp normalize_poller_status(_status), do: :unavailable
+
+  defp integer_or_nil(value) when is_integer(value), do: value
+  defp integer_or_nil(_value), do: nil
 
   defp integer_map_value(map, key, default \\ 0) do
     string_key = Atom.to_string(key)

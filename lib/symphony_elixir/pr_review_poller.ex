@@ -6,7 +6,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.{CiPoller, Config, Notifications, RunStore, Tracker, Workspace}
+  alias SymphonyElixir.{AuditLog, CiPoller, Config, Notifications, RunStore, Tracker, Workspace}
   alias SymphonyElixir.GitHub.PullRequest
   alias SymphonyElixir.Learnings.Reflection
   alias SymphonyElixir.Linear.Issue
@@ -22,10 +22,18 @@ defmodule SymphonyElixir.PrReviewPoller do
   @conflict_max_retries 3
   @github_error_backoff_threshold 3
   @max_github_error_backoff_ms 300_000
+  @status_table :pr_review_poller_status
 
   defmodule State do
     @moduledoc false
-    defstruct [:timer_ref, :poll_interval_ms, opts: []]
+    defstruct [
+      :timer_ref,
+      :poll_interval_ms,
+      consecutive_failures: 0,
+      current_backoff_ms: nil,
+      degraded?: false,
+      opts: []
+    ]
   end
 
   @type poll_summary :: %{
@@ -40,34 +48,44 @@ defmodule SymphonyElixir.PrReviewPoller do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
+  # Reads the last-published poller status from a shared ETS table so the
+  # orchestrator snapshot loop does not block on a synchronous GenServer.call
+  # when the poller is mid-cycle on a slow remote.
+  @doc false
+  @spec status() :: map() | :unavailable
+  def status do
+    case :ets.whereis(@status_table) do
+      :undefined ->
+        :unavailable
+
+      _table ->
+        case :ets.lookup(@status_table, :current) do
+          [{:current, status}] -> status
+          _other -> :unavailable
+        end
+    end
+  end
+
   @impl true
   def init(opts) do
     poll_interval_ms = poll_interval_ms(opts)
-    opts = Keyword.put(opts, :poll_interval_ms, poll_interval_ms)
+    opts = poller_opts(opts, poll_interval_ms)
+    state = %State{opts: opts, poll_interval_ms: poll_interval_ms}
+    publish_status(state)
 
-    {:ok, schedule_poll(%State{opts: opts, poll_interval_ms: poll_interval_ms}, 0)}
+    {:ok, schedule_poll(state, 0)}
   end
 
   @impl true
   def handle_info(:poll, %State{} = state) do
-    try do
-      case poll_once(state.opts) do
-        {:ok, summary} ->
-          Logger.debug("PR review poll completed: #{inspect(summary)}")
-          log_poll_action_warnings(summary)
-
-        {:error, reason} ->
-          Logger.warning("PR review poll failed: #{inspect(reason)}")
+    {state, delay_ms} =
+      case poll_cycle_result(state) do
+        :ok -> {handle_poll_success(state), state.poll_interval_ms}
+        {:error, message, reason} -> handle_poll_failure(state, message, reason)
       end
-    rescue
-      exception ->
-        Logger.error("PR review poll raised: #{Exception.format(:error, exception, __STACKTRACE__)}")
-    catch
-      kind, reason ->
-        Logger.error("PR review poll failed with #{kind}: #{Exception.format(kind, reason, __STACKTRACE__)}")
-    end
 
-    {:noreply, schedule_poll(state, state.poll_interval_ms)}
+    publish_status(state)
+    {:noreply, schedule_poll(state, delay_ms)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -2200,6 +2218,173 @@ defmodule SymphonyElixir.PrReviewPoller do
     poll_interval_ms(opts)
     |> Kernel.*(Integer.pow(2, exponent))
     |> min(@max_github_error_backoff_ms)
+  end
+
+  defp poll_cycle_result(%State{} = state) do
+    case poll_once(state.opts) do
+      {:ok, summary} ->
+        Logger.debug("PR review poll completed: #{inspect(summary)}")
+        log_poll_action_warnings(summary)
+        :ok
+
+      {:error, reason} ->
+        {:error, "PR review poll failed: #{inspect(reason)}", reason}
+    end
+  rescue
+    exception ->
+      formatted = Exception.format(:error, exception, __STACKTRACE__)
+      {:error, "PR review poll raised: #{formatted}", exception}
+  catch
+    kind, reason ->
+      formatted = Exception.format(kind, reason, __STACKTRACE__)
+      {:error, "PR review poll failed with #{kind}: #{formatted}", {kind, reason}}
+  end
+
+  defp handle_poll_success(%State{consecutive_failures: 0} = state), do: reset_poll_failure_state(state)
+
+  defp handle_poll_success(%State{} = state) do
+    Logger.info("PR review poll recovered after #{state.consecutive_failures} consecutive failures")
+    maybe_record_poller_recovered(state)
+    reset_poll_failure_state(state)
+  end
+
+  defp handle_poll_failure(%State{} = state, message, reason) do
+    consecutive_failures = state.consecutive_failures + 1
+    backoff_ms = poll_cycle_backoff_ms(state, consecutive_failures)
+    degraded? = state.degraded? or consecutive_failures >= poller_degraded_threshold(state.opts)
+
+    maybe_log_poll_failure(state, consecutive_failures, backoff_ms, message)
+    maybe_record_poller_degraded(state, consecutive_failures, backoff_ms, reason)
+
+    {%{
+       state
+       | consecutive_failures: consecutive_failures,
+         current_backoff_ms: backoff_ms,
+         degraded?: degraded?
+     }, backoff_ms}
+  end
+
+  defp reset_poll_failure_state(%State{} = state) do
+    %{state | consecutive_failures: 0, current_backoff_ms: nil, degraded?: false}
+  end
+
+  defp maybe_log_poll_failure(%State{consecutive_failures: 0}, _consecutive_failures, _backoff_ms, message) do
+    Logger.error(message)
+  end
+
+  defp maybe_log_poll_failure(%State{current_backoff_ms: previous_backoff_ms}, consecutive_failures, backoff_ms, _message)
+       when is_integer(previous_backoff_ms) and backoff_ms > previous_backoff_ms do
+    Logger.error("PR review poll backing off after #{consecutive_failures} consecutive failures; next poll in #{backoff_ms}ms")
+  end
+
+  defp maybe_log_poll_failure(_state, _consecutive_failures, _backoff_ms, _message), do: :ok
+
+  defp maybe_record_poller_degraded(%State{degraded?: true}, _consecutive_failures, _backoff_ms, _reason), do: :ok
+
+  defp maybe_record_poller_degraded(%State{} = state, consecutive_failures, backoff_ms, reason) do
+    if consecutive_failures >= poller_degraded_threshold(state.opts) do
+      record_poller_audit(
+        %{
+          event_type: "poller_degraded",
+          poller: "pr_review",
+          status: "degraded",
+          consecutive_failures: consecutive_failures,
+          current_backoff_ms: backoff_ms,
+          reason: inspect(reason)
+        },
+        state.opts
+      )
+    end
+  end
+
+  defp maybe_record_poller_recovered(%State{degraded?: true} = state) do
+    record_poller_audit(
+      %{
+        event_type: "poller_recovered",
+        poller: "pr_review",
+        status: "recovered",
+        consecutive_failures: state.consecutive_failures,
+        previous_backoff_ms: state.current_backoff_ms
+      },
+      state.opts
+    )
+  end
+
+  defp maybe_record_poller_recovered(_state), do: :ok
+
+  defp record_poller_audit(attrs, opts) do
+    attrs
+    |> Map.put(:repo_key, safe_repo_key(opts))
+    |> AuditLog.record()
+    |> case do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Failed to record PR review poller audit event: #{inspect(reason)}")
+    end
+  end
+
+  defp poll_cycle_backoff_ms(%State{opts: opts}, consecutive_failures) do
+    exponent = max(consecutive_failures - 1, 0)
+
+    opts
+    |> poller_backoff_base_ms()
+    |> Kernel.*(Integer.pow(2, exponent))
+    |> min(poller_max_backoff_ms(opts))
+  end
+
+  defp poller_status(%State{} = state) do
+    %{
+      status: if(state.degraded?, do: :degraded, else: :running),
+      consecutive_failures: state.consecutive_failures,
+      current_backoff_ms: state.current_backoff_ms,
+      poll_interval_ms: state.poll_interval_ms
+    }
+  end
+
+  defp publish_status(%State{} = state) do
+    ensure_status_table()
+    :ets.insert(@status_table, {:current, poller_status(state)})
+    :ok
+  end
+
+  defp ensure_status_table do
+    case :ets.whereis(@status_table) do
+      :undefined ->
+        try do
+          :ets.new(@status_table, [:set, :public, :named_table, read_concurrency: true])
+          :ok
+        rescue
+          ArgumentError -> :ok
+        end
+
+      _table ->
+        :ok
+    end
+  end
+
+  defp poller_opts(opts, poll_interval_ms) do
+    poller = poller_config(opts)
+
+    opts
+    |> Keyword.put(:poll_interval_ms, poll_interval_ms)
+    |> Keyword.put(:poller_backoff_base_ms, positive_integer(Keyword.get(opts, :poller_backoff_base_ms)) || positive_integer(Map.get(poller, :backoff_base_ms)) || poll_interval_ms)
+    |> Keyword.put(:poller_max_backoff_ms, positive_integer(Keyword.get(opts, :poller_max_backoff_ms)) || positive_integer(Map.get(poller, :max_backoff_ms)) || 300_000)
+    |> Keyword.put(:poller_degraded_threshold, positive_integer(Keyword.get(opts, :poller_degraded_threshold)) || positive_integer(Map.get(poller, :degraded_threshold)) || 3)
+  end
+
+  defp poller_config(opts) do
+    settings = Keyword.get(opts, :settings) || Config.settings!()
+    Map.get(settings, :poller, %{})
+  end
+
+  defp poller_backoff_base_ms(opts), do: Keyword.fetch!(opts, :poller_backoff_base_ms)
+  defp poller_max_backoff_ms(opts), do: Keyword.fetch!(opts, :poller_max_backoff_ms)
+  defp poller_degraded_threshold(opts), do: Keyword.fetch!(opts, :poller_degraded_threshold)
+
+  defp positive_integer(value) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value), do: nil
+
+  defp safe_repo_key(opts) do
+    Keyword.get(opts, :repo_key) || Application.get_env(:symphony_elixir, :primary_repo_name)
   end
 
   defp action_atom("rework"), do: :rework

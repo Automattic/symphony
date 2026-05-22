@@ -1212,6 +1212,9 @@ not require recognizing or validating extension fields unless that extension is 
 - `issues.states.active`: list of strings, default `["Todo", "In Progress"]`
 - `issues.states.terminal`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `issues.poll_interval_ms`: integer, default `30000`
+- `poller.backoff_base_ms`: positive integer or null; null uses the effective poll interval
+- `poller.max_backoff_ms`: positive integer, default `300000`
+- `poller.degraded_threshold`: positive integer, default `3`
 - `workspaces.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `repositories[].workspace.strategy`: `clone` or `worktree`, defaulting through global
   `workspaces.strategy`

@@ -552,6 +552,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                "active?" => true,
                "blockers" => []
              },
+             "pollers" => %{
+               "ci" => "unavailable",
+               "pr_review" => "unavailable"
+             },
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
 

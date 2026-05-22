@@ -1362,10 +1362,15 @@ defmodule SymphonyElixir.Workspace do
 
   defp validate_workspace_path(workspace, worker_host)
        when is_binary(workspace) and is_binary(worker_host) do
-    expanded_workspace = Path.expand(workspace)
-    expanded_root = Path.expand(Config.settings!().workspace.root)
-    expanded_root_prefix = expanded_root <> "/"
+    root = Config.settings!().workspace.root
 
+    with :ok <- validate_remote_workspace_candidate(workspace),
+         :ok <- validate_remote_workspace_root(root) do
+      validate_remote_workspace_containment(workspace, root)
+    end
+  end
+
+  defp validate_remote_workspace_candidate(workspace) do
     cond do
       String.trim(workspace) == "" ->
         {:error, {:workspace_path_unreadable, workspace, :empty}}
@@ -1373,11 +1378,32 @@ defmodule SymphonyElixir.Workspace do
       String.contains?(workspace, ["\n", "\r", <<0>>]) ->
         {:error, {:workspace_path_unreadable, workspace, :invalid_characters}}
 
-      expanded_workspace == expanded_root ->
-        {:error, {:workspace_equals_root, expanded_workspace, expanded_root}}
+      not String.starts_with?(workspace, "/") ->
+        {:error, {:workspace_path_unreadable, workspace, :relative}}
 
-      not String.starts_with?(expanded_workspace <> "/", expanded_root_prefix) ->
-        {:error, {:workspace_outside_root, expanded_workspace, expanded_root}}
+      ".." in Path.split(workspace) ->
+        {:error, {:workspace_path_unreadable, workspace, :parent_directory_segment}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_remote_workspace_root(root) do
+    if String.starts_with?(root, "/") do
+      :ok
+    else
+      {:error, {:workspace_root_unreadable, root, :relative}}
+    end
+  end
+
+  defp validate_remote_workspace_containment(workspace, root) do
+    cond do
+      workspace == root ->
+        {:error, {:workspace_equals_root, workspace, root}}
+
+      not String.starts_with?(workspace <> "/", root <> "/") ->
+        {:error, {:workspace_outside_root, workspace, root}}
 
       true ->
         :ok

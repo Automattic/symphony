@@ -73,6 +73,12 @@ defmodule SymphonyElixir.WorkspaceTest do
       assert {:error, {:workspace_path_unreadable, "/remote/work" <> <<0>> <> "space", :invalid_characters}} =
                Workspace.validate("/remote/work" <> <<0>> <> "space", "worker-01")
 
+      assert {:error, {:workspace_path_unreadable, "remote/workspaces/default/RSM-1", :relative}} =
+               Workspace.validate("remote/workspaces/default/RSM-1", "worker-01")
+
+      assert {:error, {:workspace_path_unreadable, "/remote/workspaces/../outside", :parent_directory_segment}} =
+               Workspace.validate("/remote/workspaces/../outside", "worker-01")
+
       assert {:error, {:workspace_outside_root, "/tmp/outside", "/remote/workspaces"}} =
                Workspace.validate("/tmp/outside", "worker-01")
 
@@ -80,6 +86,26 @@ defmodule SymphonyElixir.WorkspaceTest do
                Workspace.validate("/remote/workspaces", "worker-01")
 
       assert :ok = Workspace.validate("/remote/workspaces/default/RSM-1", "worker-01")
+    end
+
+    test "rejects remote workspace validation when the configured root uses tilde" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "~/workspaces",
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_root_unreadable, "~/workspaces", :relative}} =
+               Workspace.validate("/home/symphony/workspaces/default/RSM-1", "worker-01")
+    end
+
+    test "rejects remote workspace validation when the configured root is relative" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "relative/workspaces",
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_root_unreadable, "relative/workspaces", :relative}} =
+               Workspace.validate("/relative/workspaces/default/RSM-1", "worker-01")
     end
   end
 
@@ -117,7 +143,7 @@ defmodule SymphonyElixir.WorkspaceTest do
     end
   end
 
-  test "agent runner rejects explicit workspace paths outside the root before before_run hook" do
+  test "agent runner rejects explicit workspace paths outside the root and does not invoke before_run" do
     test_root = unique_tmp("agent-runner-workspace-validate")
     workspace_root = Path.join(test_root, "workspaces")
     outside = Path.join(test_root, "outside")

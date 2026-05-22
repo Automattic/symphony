@@ -565,6 +565,9 @@ Fields:
   - Relative paths are expanded according to the host runtime's path rules; in the Elixir
     implementation this is relative to the current process working directory.
   - Workspace containment checks normalize paths to absolute paths before use.
+  - For SSH workers, `root` SHOULD be an absolute path on the remote host; orchestrator-side remote
+    path validation MUST reject relative and `~` roots because their expansion would occur on a
+    different host.
 - `strategy`, `repo`, `fetch_before_dispatch`
   - Defaults for `repositories[].workspace`.
   - Multi-repo configs SHOULD set worktree population under each repo instead of globally.

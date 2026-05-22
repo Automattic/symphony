@@ -2967,7 +2967,7 @@ defmodule SymphonyElixir.CoreTest do
       File.chmod!(fake_ssh, 0o755)
 
       write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: "~/.symphony-remote-workspaces",
+        workspace_root: "/remote/home/.symphony-remote-workspaces",
         worker_ssh_hosts: ["worker-a", "worker-b"]
       )
 

@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.StatusDashboardSnapshotTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.StatusDashboard.Renderer
   alias SymphonyElixir.TestSupport.Snapshot
 
   @terminal_columns 115
@@ -498,7 +499,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
   end
 
   defp render_snapshot(snapshot_data, tps) do
-    StatusDashboard.format_snapshot_content_for_test(snapshot_data, tps, @terminal_columns)
+    Renderer.format_snapshot_content(snapshot_data, tps, @terminal_columns)
   end
 
   defp running_entry(overrides) do

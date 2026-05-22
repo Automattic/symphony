@@ -2,6 +2,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.ClaudeCode.AppServer
+  alias SymphonyElixir.StatusDashboard.Renderer
   alias SymphonyElixir.Tracker.Memory, as: MemoryTracker
   alias SymphonyElixirWeb.ObservabilityPubSub
 
@@ -4114,7 +4115,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          rate_limits: nil
        }}
 
-    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    rendered = Renderer.format_snapshot_content(snapshot_data, 0.0)
 
     assert rendered =~ "│ Repos:"
     assert rendered =~ "default"
@@ -4144,7 +4145,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          rate_limits: nil
        }}
 
-    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    rendered = Renderer.format_snapshot_content(snapshot_data, 0.0)
 
     assert rendered =~ "│ Repos:"
     assert rendered =~ "default"
@@ -4289,7 +4290,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard still renders unavailable when no successful snapshot exists" do
-    rendered = StatusDashboard.format_snapshot_content_for_test(:error, 0.0)
+    rendered = Renderer.format_snapshot_content(:error, 0.0)
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
     assert plain =~ "Orchestrator snapshot unavailable"
@@ -4519,12 +4520,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard prefers the bound server port and normalizes wildcard hosts" do
-    assert StatusDashboard.dashboard_url_for_test("127.0.0.1", 0, nil) == nil
+    assert Renderer.dashboard_url("127.0.0.1", 0, nil) == nil
 
-    assert StatusDashboard.dashboard_url_for_test("0.0.0.0", 0, 43_123) ==
+    assert Renderer.dashboard_url("0.0.0.0", 0, 43_123) ==
              "http://127.0.0.1:43123/"
 
-    assert StatusDashboard.dashboard_url_for_test("::1", 4000, nil) ==
+    assert Renderer.dashboard_url("::1", 4000, nil) ==
              "http://[::1]:4000/"
   end
 
@@ -4539,7 +4540,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          polling: %{checking?: false, next_poll_in_ms: 2_000, poll_interval_ms: 30_000}
        }}
 
-    waiting_rendered = StatusDashboard.format_snapshot_content_for_test(waiting_snapshot, 0.0)
+    waiting_rendered = Renderer.format_snapshot_content(waiting_snapshot, 0.0)
     assert waiting_rendered =~ "Next refresh:"
     assert waiting_rendered =~ "2s"
 
@@ -4553,7 +4554,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          polling: %{checking?: true, next_poll_in_ms: nil, poll_interval_ms: 30_000}
        }}
 
-    checking_rendered = StatusDashboard.format_snapshot_content_for_test(checking_snapshot, 0.0)
+    checking_rendered = Renderer.format_snapshot_content(checking_snapshot, 0.0)
     assert checking_rendered =~ "checking now…"
   end
 
@@ -4567,7 +4568,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          rate_limits: nil
        }}
 
-    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    rendered = Renderer.format_snapshot_content(snapshot_data, 0.0)
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
     assert plain =~ ~r/No active agents\r?\n│\s*\r?\n├─ Watching/
@@ -4594,7 +4595,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          rate_limits: nil
        }}
 
-    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0, 180)
+    rendered = Renderer.format_snapshot_content(snapshot_data, 0.0, 180)
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
     assert plain =~ "PR / LINEAR URL"
@@ -4635,7 +4636,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          rate_limits: nil
        }}
 
-    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    rendered = Renderer.format_snapshot_content(snapshot_data, 0.0)
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
     assert plain =~ ~r/MT-777.*\r?\n│\s*\r?\n├─ Backoff queue/s
@@ -4651,7 +4652,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          rate_limits: nil
        }}
 
-    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    rendered = Renderer.format_snapshot_content(snapshot_data, 0.0)
 
     assert rendered |> String.split("\n") |> List.last() == "╰─"
   end
@@ -4708,15 +4709,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard computes rolling 5-second token throughput" do
-    assert StatusDashboard.rolling_tps([], 10_000, 0) == 0.0
+    assert Renderer.rolling_tps([], 10_000, 0) == 0.0
 
-    assert StatusDashboard.rolling_tps([{9_000, 20}], 10_000, 40) == 20.0
+    assert Renderer.rolling_tps([{9_000, 20}], 10_000, 40) == 20.0
 
     # sample older than 5s is dropped from the window
-    assert StatusDashboard.rolling_tps([{4_900, 10}], 10_000, 90) == 0.0
+    assert Renderer.rolling_tps([{4_900, 10}], 10_000, 90) == 0.0
 
     tps =
-      StatusDashboard.rolling_tps(
+      Renderer.rolling_tps(
         [{9_500, 10}, {9_000, 40}, {8_000, 80}],
         10_000,
         95
@@ -4727,16 +4728,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "status dashboard throttles tps updates to once per second" do
     {first_second, first_tps} =
-      StatusDashboard.throttled_tps(nil, nil, 10_000, [{9_000, 20}], 40)
+      Renderer.throttled_tps(nil, nil, 10_000, [{9_000, 20}], 40)
 
     {same_second, same_tps} =
-      StatusDashboard.throttled_tps(first_second, first_tps, 10_500, [{9_000, 20}], 200)
+      Renderer.throttled_tps(first_second, first_tps, 10_500, [{9_000, 20}], 200)
 
     assert same_second == first_second
     assert same_tps == first_tps
 
     {next_second, next_tps} =
-      StatusDashboard.throttled_tps(same_second, same_tps, 11_000, [{10_500, 200}], 260)
+      Renderer.throttled_tps(same_second, same_tps, 11_000, [{10_500, 200}], 260)
 
     assert next_second == 11
     refute next_tps == same_tps
@@ -4744,7 +4745,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "status dashboard formats timestamps at second precision" do
     dt = ~U[2026-02-15 21:36:38.987654Z]
-    assert StatusDashboard.format_timestamp_for_test(dt) == "2026-02-15 21:36:38Z"
+    assert Renderer.format_timestamp(dt) == "2026-02-15 21:36:38Z"
   end
 
   test "status dashboard renders 10-minute TPS graph snapshot for steady throughput" do
@@ -4756,7 +4757,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         {timestamp, div(timestamp, 100)}
       end
 
-    assert StatusDashboard.tps_graph_for_test(samples, now_ms, current_tokens) ==
+    assert Renderer.tps_graph(samples, now_ms, current_tokens) ==
              "████████████████████████"
   end
 
@@ -4769,7 +4770,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     {current_tokens, samples} = graph_samples_from_rates(rates_per_bucket)
 
-    assert StatusDashboard.tps_graph_for_test(samples, now_ms, current_tokens) ==
+    assert Renderer.tps_graph(samples, now_ms, current_tokens) ==
              "▁▂▂▂▃▃▃▃▄▄▄▅▅▅▆▆▆▆▇▇▇██▅"
   end
 
@@ -4779,10 +4780,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     next_current_tokens = current_tokens + 120
     samples = graph_samples_for_stability_test(now_ms)
 
-    graph_at_now = StatusDashboard.tps_graph_for_test(samples, now_ms, current_tokens)
+    graph_at_now = Renderer.tps_graph(samples, now_ms, current_tokens)
 
     graph_next_second =
-      StatusDashboard.tps_graph_for_test(samples, now_ms + 1_000, next_current_tokens)
+      Renderer.tps_graph(samples, now_ms + 1_000, next_current_tokens)
 
     historical_changes =
       graph_at_now
@@ -4807,22 +4808,25 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "status dashboard renders last codex message in EVENT column" do
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-233",
-        state: "running",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 12,
-        runtime_seconds: 15,
-        last_codex_event: :notification,
-        last_codex_message: %{
-          event: :notification,
-          message: %{
-            "method" => "turn/completed",
-            "params" => %{"turn" => %{"status" => "completed"}}
+      Renderer.format_running_summary(
+        %{
+          identifier: "MT-233",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/completed",
+              "params" => %{"turn" => %{"status" => "completed"}}
+            }
           }
-        }
-      })
+        },
+        Renderer.running_event_width(nil)
+      )
 
     plain = Regex.replace(~r/\e\[[\\d;]*m/, row, "")
 
@@ -4842,16 +4846,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         " after\nline"
 
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-898",
-        state: "running",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 12,
-        runtime_seconds: 15,
-        last_codex_event: :notification,
-        last_codex_message: payload
-      })
+      Renderer.format_running_summary(
+        %{
+          identifier: "MT-898",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: payload
+        },
+        Renderer.running_event_width(nil)
+      )
 
     plain = Regex.replace(~r/\e\[[0-9;]*m/, row, "")
 
@@ -4864,7 +4871,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     terminal_columns = 140
 
     row =
-      StatusDashboard.format_running_summary_for_test(
+      Renderer.format_running_summary(
         %{
           identifier: "MT-598",
           state: "running",
@@ -4881,7 +4888,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
             }
           }
         },
-        terminal_columns
+        Renderer.running_event_width(terminal_columns)
       )
 
     plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
@@ -4930,7 +4937,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       message = Map.put(payload, "method", method)
 
       humanized =
-        StatusDashboard.humanize_codex_message(%{event: :notification, message: message})
+        Renderer.humanize_codex_message(%{event: :notification, message: message})
 
       assert humanized =~ expected_fragment
     end)
@@ -4969,16 +4976,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert StatusDashboard.humanize_codex_message(completed) =~
+    assert Renderer.humanize_codex_message(completed) =~
              "dynamic tool call completed (linear_graphql)"
 
-    assert StatusDashboard.humanize_codex_message(failed) =~
+    assert Renderer.humanize_codex_message(failed) =~
              "dynamic tool call failed (linear_graphql)"
 
-    assert StatusDashboard.humanize_codex_message(failed) =~
+    assert Renderer.humanize_codex_message(failed) =~
              "Cannot query field"
 
-    assert StatusDashboard.humanize_codex_message(unsupported) =~
+    assert Renderer.humanize_codex_message(unsupported) =~
              "unsupported dynamic tool call rejected (unknown_tool)"
   end
 
@@ -4997,8 +5004,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert StatusDashboard.humanize_codex_message(wrapped) =~ "turn completed"
-    assert StatusDashboard.humanize_codex_message(wrapped) =~ "new 10"
+    assert Renderer.humanize_codex_message(wrapped) =~ "turn completed"
+    assert Renderer.humanize_codex_message(wrapped) =~ "new 10"
   end
 
   test "status dashboard formats legacy Claude input tokens as new tokens with cache buckets" do
@@ -5020,7 +5027,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert StatusDashboard.humanize_codex_message(message) ==
+    assert Renderer.humanize_codex_message(message) ==
              "thread token usage updated (new 800, cached 9,200, created 400, out 600, total 11,000)"
   end
 
@@ -5036,7 +5043,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert StatusDashboard.humanize_codex_message(message) ==
+    assert Renderer.humanize_codex_message(message) ==
              "command completed (recovered malformed Codex frame)"
   end
 
@@ -5049,7 +5056,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert StatusDashboard.humanize_codex_message(message) == "git status --short"
+    assert Renderer.humanize_codex_message(message) == "git status --short"
   end
 
   test "status dashboard formats auto-approval updates from codex" do
@@ -5064,7 +5071,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    humanized = StatusDashboard.humanize_codex_message(message)
+    humanized = Renderer.humanize_codex_message(message)
     assert humanized =~ "command approval requested"
     assert humanized =~ "auto-approved"
   end
@@ -5081,7 +5088,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    humanized = StatusDashboard.humanize_codex_message(message)
+    humanized = Renderer.humanize_codex_message(message)
     assert humanized =~ "tool requires user input"
     assert humanized =~ "auto-answered"
   end
@@ -5119,13 +5126,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert StatusDashboard.humanize_codex_message(reasoning_message) =~
+    assert Renderer.humanize_codex_message(reasoning_message) =~
              "reasoning update: compare retry paths for Linear polling"
 
-    assert StatusDashboard.humanize_codex_message(message_delta) =~
+    assert Renderer.humanize_codex_message(message_delta) =~
              "agent message streaming: writing workpad reconciliation update"
 
-    assert StatusDashboard.humanize_codex_message(fallback_reasoning) == "reasoning update"
+    assert Renderer.humanize_codex_message(fallback_reasoning) == "reasoning update"
   end
 
   test "application stop skips offline status in test runtime" do

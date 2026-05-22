@@ -54,6 +54,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Codex.DynamicTool,
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
+          SymphonyElixir.StatusDashboard.Renderer,
           SymphonyElixir.LogFile,
           SymphonyElixir.Workflow,
           SymphonyElixir.WorkflowStore,

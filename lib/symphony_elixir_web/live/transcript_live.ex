@@ -7,7 +7,8 @@ defmodule SymphonyElixirWeb.TranscriptLive do
 
   require Logger
 
-  alias SymphonyElixir.{Config, StatusDashboard}
+  alias SymphonyElixir.Codex.MessageHumanizer
+  alias SymphonyElixir.Config
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @raw_limit 2_400
@@ -490,7 +491,7 @@ defmodule SymphonyElixirWeb.TranscriptLive do
   defp humanized_summary(event) do
     event
     |> summarize_for_status_dashboard()
-    |> StatusDashboard.humanize_codex_message()
+    |> MessageHumanizer.humanize()
     |> truncate(@summary_limit)
   end
 

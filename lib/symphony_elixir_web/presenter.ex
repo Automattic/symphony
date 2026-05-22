@@ -3,7 +3,8 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{AuditLog, Config, Orchestrator, StatusDashboard, URLUtils}
+  alias SymphonyElixir.{AuditLog, Config, Orchestrator, URLUtils}
+  alias SymphonyElixir.Codex.MessageHumanizer
 
   @audit_page_size 200
   @audit_event_types ~w(
@@ -967,7 +968,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp current_repo_key, do: Config.repo_key_or_nil()
 
   defp summarize_message(nil), do: nil
-  defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+  defp summarize_message(message), do: MessageHumanizer.humanize(message)
 
   defp entry_uncached_input_tokens(entry) when is_map(entry) do
     case Map.get(entry, :uncached_input_tokens) do

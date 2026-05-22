@@ -188,13 +188,17 @@ defmodule SymphonyElixir.AgentSandboxConfig do
     # `allowLocalBinding: true` permits bind/listen on 127.0.0.0/8 only.
     # Mix 1.19+ `Mix.Sync.PubSub` opens an ephemeral loopback socket on every
     # mix subcommand; outbound allowlist and credential deny-reads are unaffected.
+    network =
+      %{
+        "allowedDomains" => srt_allowed_domains(network_mode, allowed_domains),
+        "deniedDomains" => normalize_domains(denied_domains),
+        "allowLocalBinding" => true
+      }
+      |> maybe_put_srt_allow_unix_sockets(Keyword.get(opts, :allow_unix_socket_paths, []))
+
     {:ok,
      %{
-       "network" => %{
-         "allowedDomains" => srt_allowed_domains(network_mode, allowed_domains),
-         "deniedDomains" => normalize_domains(denied_domains),
-         "allowLocalBinding" => true
-       },
+       "network" => network,
        "filesystem" => %{
          "denyRead" => @deny_read_paths |> Enum.reject(&(&1 in allow_read_paths)) |> expand_home_paths(),
          "allowRead" => allow_read_paths,
@@ -321,6 +325,13 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
   defp srt_allowed_domains("block", _allowed_domains), do: []
   defp srt_allowed_domains(_mode, allowed_domains), do: normalize_domains(allowed_domains)
+
+  defp maybe_put_srt_allow_unix_sockets(network, paths) do
+    case paths |> normalize_sandbox_paths() |> Enum.uniq() do
+      [] -> network
+      paths -> Map.put(network, "allowUnixSockets", paths)
+    end
+  end
 
   defp srt_allow_write_paths(extra_paths) do
     ([".", "/tmp", System.tmp_dir!()] ++ @srt_codex_runtime_write_paths ++ normalize_sandbox_paths(extra_paths))

@@ -277,12 +277,12 @@ An optional outer-sandbox wrapper using `@anthropic-ai/sandbox-runtime`.
   is needed.
 - With SRT enabled, Symphony sends Codex an `externalSandbox` turn policy so SRT owns command
   sandbox enforcement (avoids nesting `sandbox-exec` inside `sandbox-exec`).
-- With SRT enabled, Symphony exposes its implicit local MCP server on a random `127.0.0.1`
-  loopback TCP port instead of a Unix socket, because SRT's macOS profile blocks sandboxed Unix
-  socket connects. The MCP server still requires the per-session token before accepting messages.
-- Outside SRT, Symphony prefers a managed Unix socket. If the OS denies that managed socket bind
-  with `EPERM`, Symphony falls back to a random `127.0.0.1` loopback TCP port. Explicit socket
-  paths remain strict and report the bind error.
+- With SRT enabled, Symphony keeps its implicit local MCP server on a managed Unix socket and
+  grants SRT access only to that per-session socket directory through `network.allowUnixSockets`.
+  The MCP server still requires the per-session token before accepting messages.
+- Symphony prefers a managed Unix socket. If the OS denies that managed socket bind with `EPERM`,
+  Symphony falls back to a random `127.0.0.1` loopback TCP port. Explicit socket paths remain
+  strict and report the bind error.
 - Symphony emits `enableWeakerNestedSandbox: true` for Linux/Docker compatibility.
   `enable_weaker_network_isolation` maps directly to the same SRT setting; keep it `false`
   unless required.

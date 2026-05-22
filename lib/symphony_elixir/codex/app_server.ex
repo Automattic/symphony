@@ -1191,6 +1191,8 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     case Jason.decode(payload_string) do
       {:ok, payload} ->
+        log_stdout_frame_diagnostic(payload, payload_string)
+
         handle_decoded_payload(
           port,
           on_message,
@@ -1466,7 +1468,11 @@ defmodule SymphonyElixir.Codex.AppServer do
             metadata
           )
 
-          Logger.debug("Codex notification: #{inspect(method)}")
+          Logger.debug(
+            "Codex notification forwarded method=#{inspect(method)} raw_bytes=#{byte_size(payload_string)} " <>
+              "forwarded_bytes=#{byte_size(forwarded_raw)} compacted=#{forwarded_raw != payload_string}"
+          )
+
           continue_or_timeout(port, on_message, stream_context, method, payload)
         end
     end
@@ -3618,19 +3624,81 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp log_non_json_stream_line(data, stream_label) do
+    data = to_string(data)
+
     text =
       data
-      |> to_string()
       |> String.trim()
       |> String.slice(0, @max_stream_log_bytes)
 
     if text != "" do
       if String.match?(text, ~r/\b(error|warn|warning|failed|fatal|panic|exception)\b/i) do
-        Logger.warning("Codex #{stream_label} output: #{text}")
+        Logger.warning("Codex #{stream_label} output: #{text} bytes=#{byte_size(data)}")
       else
-        Logger.debug("Codex #{stream_label} output: #{text}")
+        Logger.debug("Codex #{stream_label} output: #{text} bytes=#{byte_size(data)}")
       end
     end
+  end
+
+  defp log_stdout_frame_diagnostic(payload, raw) do
+    raw = to_string(raw)
+    method = payload_method(payload)
+    item = payload_item(payload)
+
+    fields =
+      [
+        {"method", method},
+        {"bytes", byte_size(raw)},
+        {"item_type", item_field(item, "type")},
+        {"item_status", item_field(item, "status")},
+        {"item_id", item_field(item, "id")},
+        {"item_source", item_field(item, "source")},
+        {"command_bytes", command_byte_size(payload)},
+        {"noisy_field_bytes", noisy_item_field_byte_sizes(item)}
+      ]
+
+    Logger.debug("Codex stdout frame #{format_diagnostic_fields(fields)}")
+  end
+
+  defp payload_item(%{"params" => %{"item" => %{} = item}}), do: item
+  defp payload_item(_payload), do: nil
+
+  defp item_field(%{} = item, field) when is_binary(field) do
+    case Map.get(item, field) do
+      value when is_binary(value) or is_integer(value) or is_boolean(value) -> value
+      _value -> nil
+    end
+  end
+
+  defp item_field(_item, _field), do: nil
+
+  defp command_byte_size(payload) when is_map(payload) do
+    case command_from_payload(payload) do
+      command when is_binary(command) -> byte_size(command)
+      _command -> nil
+    end
+  end
+
+  defp noisy_item_field_byte_sizes(%{} = item) do
+    noisy_item_fields()
+    |> Enum.reduce(%{}, fn field, acc ->
+      case Map.get(item, field) do
+        value when is_binary(value) -> Map.put(acc, field, byte_size(value))
+        _value -> acc
+      end
+    end)
+    |> case do
+      map when map == %{} -> nil
+      map -> map
+    end
+  end
+
+  defp noisy_item_field_byte_sizes(_item), do: nil
+
+  defp format_diagnostic_fields(fields) do
+    fields
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{inspect(value)}" end)
   end
 
   defp protocol_message_candidate?(data) do
@@ -3795,8 +3863,6 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata
     end
   end
-
-  defp maybe_set_usage(metadata, _payload), do: metadata
 
   defp usage_from_payload(payload) when is_map(payload) do
     map_value(payload, ["usage", :usage]) ||

@@ -514,10 +514,16 @@ defmodule SymphonyElixir.PromptBuilder do
   defp reviewer_comments_ledger_instructions do
     """
     For each comment below, do EXACTLY ONE of the following before you stop:
-      a) Commit a fix that resolves the comment, and reference the comment id in the commit message body.
-      b) Reply to the comment thread explaining why no code change is being made (pushback).
+      a) Commit a fix that resolves the comment, reference the comment id in the commit message body, then reply with the commit hash and concrete change.
+      b) Reply with explicit pushback explaining why no code change is being made.
       c) Reply deferring the change with concrete reasoning (e.g., out of scope for this PR plus a follow-up reference).
-    Do not silently skip a comment. The review agent verifies each comment id has either an associated commit or an outbound reply.
+      d) Reply that the comment is non-actionable when it is only a generated summary, duplicate, or informational note.
+    Make each reply read as an automated Symphony AI response. Prefer specific wording like:
+      - "Symphony AI handled this in `<commit>`: removed the duplicate fallback while keeping the lookup order unchanged."
+      - "Symphony AI is leaving this unchanged because `<reason>`."
+      - "Symphony AI is deferring this because `<reason>`; follow-up: `<issue>`."
+      - "Symphony AI is not making a code change here because this is a generated PR overview, not an actionable request."
+    Do not silently skip a comment, and do not rely on Symphony's generic auto-reply fallback as the primary response. The review agent verifies each comment id has either an associated commit or an outbound reply.
 
     """
   end

@@ -270,9 +270,11 @@ When a ticket has an attached PR, run this protocol before moving to `In Review`
    - Inline review comments via `github_list_pr_review_comments()`.
    - Review summaries and states via `github_list_pr_reviews()`.
 3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
-   - code/test/docs updated to address it AND a short reply is posted on that thread via `github_reply_to_review_comment(comment_id, body)` confirming what changed (link the addressing commit when useful), or
-   - explicit, justified pushback reply is posted on that thread via `github_reply_to_review_comment(comment_id, body)`.
+   - code/test/docs updated to address it AND a short Symphony AI reply is posted on that thread via `github_reply_to_review_comment(comment_id, body)` confirming what changed and naming the addressing commit hash, or
+   - explicit, justified Symphony AI pushback reply is posted on that thread via `github_reply_to_review_comment(comment_id, body)`, or
+   - explicit Symphony AI defer/non-actionable reply is posted with concrete reasoning (for example, out of scope with a follow-up issue, duplicate feedback, or generated PR overview).
    Replies are mandatory even when the comment is addressed in code, including during the first PR feedback sweep before moving to `In Review`. Top-level PR comments use `github_add_pr_comment` instead.
+   Use natural, specific wording such as `Symphony AI handled this in <commit>: <what changed>` or `Symphony AI is leaving this unchanged because <reason>`.
 4. Update the workpad plan/checklist to include each feedback item and its resolution status.
 5. Re-run validation after feedback-driven changes and push updates.
 6. Repeat this sweep until there are no outstanding actionable comments.

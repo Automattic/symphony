@@ -462,7 +462,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           [
             :binary,
             :exit_status,
-            args: [~c"-lc", String.to_charlist(wrapped_command)],
+            args: local_shell_args(settings, wrapped_command),
             cd: String.to_charlist(workspace),
             env: AgentEnv.build_with(%{"CODEX_HOME" => codex_home.home_path}),
             line: @port_line_bytes
@@ -516,6 +516,19 @@ defmodule SymphonyElixir.Codex.AppServer do
     case System.find_executable("bash") do
       nil -> {:error, :bash_not_found}
       executable -> {:ok, executable}
+    end
+  end
+
+  defp local_shell_args(settings, command) do
+    command = String.to_charlist(command)
+
+    case sandbox_runtime(settings) do
+      %Schema.Agent.SandboxRuntime{kind: "srt"} ->
+        # Keep SRT deny-listed operator profiles out of the local wrapper path.
+        [~c"--noprofile", ~c"--norc", ~c"-c", command]
+
+      _runtime ->
+        [~c"-lc", command]
     end
   end
 

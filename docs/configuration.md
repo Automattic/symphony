@@ -316,8 +316,10 @@ An optional outer-sandbox wrapper using `@anthropic-ai/sandbox-runtime`.
   metadata roots, and the shared sensitive-path deny lists. The file is removed when the session
   stops.
 - Shell startup files such as `~/.zshrc`, `~/.zshenv`, and `~/.bash_profile` are in both the
-  read-deny and write-deny lists. Codex may log a non-fatal PATH update warning when those writes
-  are blocked; Symphony does not grant access to silence that warning.
+  read-deny and write-deny lists. For local SRT-wrapped Codex launches, Symphony disables shell
+  startup files so the wrapper does not need profile access under SRT. Codex may still log a
+  non-fatal PATH update warning when writes are blocked; Symphony does not grant access to silence
+  that warning.
 - `agent.permissions.network.mode: open` is **rejected** with SRT (no unrestricted domain
   wildcard). Use `allowlist` or `block`.
 - **Local only:** remote SSH workers reject `runtime: srt` because the temp settings file is

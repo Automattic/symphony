@@ -434,10 +434,39 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
       assert rendered =~ expected
       assert rendered =~ "3 consecutive failures since 13:48:09"
 
-      if reason != :unknown do
+      if is_atom(reason) and reason != :unknown do
         refute rendered =~ Atom.to_string(reason)
       end
     end
+  end
+
+  test "snapshot fixture: dispatch paused by invalid config blocker" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil,
+         dispatch_state: %{
+           active?: false,
+           blockers: [
+             %{
+               kind: :config_invalid,
+               message: "Invalid WORKFLOW.md config: notifications.channels entries with kind: slack require webhook_url",
+               since: ~U[2026-05-08 13:48:09Z],
+               consecutive_failures: 3
+             }
+           ]
+         }
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+
+    assert rendered =~ "config invalid"
+    assert rendered =~ "Invalid WORKFLOW.md config: notifications.channels entries with kind: slack require webhook_url"
+    assert rendered =~ "3 consecutive failures since 13:48:09"
+    refute rendered =~ "linear tracker unavailable"
   end
 
   test "snapshot fixture: workspace dirty blocker alone does not pause dispatch" do

@@ -1425,6 +1425,12 @@ defmodule SymphonyElixir.ExtensionsTest do
             dirty_summary: "M WORKFLOW.md"
           },
           %{
+            kind: :config_invalid,
+            message: "Invalid WORKFLOW.md config: notifications.channels entries with kind: slack require webhook_url",
+            since: ~U[2026-05-08 13:48:09Z],
+            consecutive_failures: 3
+          },
+          %{
             kind: :tracker_unavailable,
             tracker: :linear,
             reason: :linear_api_request,
@@ -1449,6 +1455,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "88.4M / 5M"
     assert html =~ "resets 2026-05-09"
     assert html =~ "ops-control-blocker-budget"
+    assert html =~ "Config invalid"
+    assert html =~ "Invalid WORKFLOW.md config: notifications.channels entries with kind: slack require webhook_url"
+    assert html =~ "ops-control-blocker-config_invalid"
     assert html =~ "Linear tracker unavailable"
     assert html =~ "Linear API request failed"
     assert html =~ "3 consecutive failures"

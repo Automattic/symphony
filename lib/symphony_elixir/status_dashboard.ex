@@ -924,6 +924,16 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_blocker_line(%{
+         kind: :config_invalid,
+         message: message,
+         since: since,
+         consecutive_failures: consecutive_failures
+       }) do
+    "config invalid: #{message} " <>
+      "(#{format_count(consecutive_failures)} consecutive failures since #{format_time_of_day(since)})"
+  end
+
+  defp format_blocker_line(%{
          kind: :tracker_unavailable,
          tracker: tracker,
          reason: reason,

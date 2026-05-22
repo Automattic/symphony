@@ -2,6 +2,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.ClaudeCode.AppServer
+  alias SymphonyElixir.Codex.MessageHumanizer
   alias SymphonyElixir.StatusDashboard.Renderer
   alias SymphonyElixir.Tracker.Memory, as: MemoryTracker
   alias SymphonyElixirWeb.ObservabilityPubSub
@@ -4937,7 +4938,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       message = Map.put(payload, "method", method)
 
       humanized =
-        Renderer.humanize_codex_message(%{event: :notification, message: message})
+        MessageHumanizer.humanize(%{event: :notification, message: message})
 
       assert humanized =~ expected_fragment
     end)
@@ -4976,16 +4977,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert Renderer.humanize_codex_message(completed) =~
+    assert MessageHumanizer.humanize(completed) =~
              "dynamic tool call completed (linear_graphql)"
 
-    assert Renderer.humanize_codex_message(failed) =~
+    assert MessageHumanizer.humanize(failed) =~
              "dynamic tool call failed (linear_graphql)"
 
-    assert Renderer.humanize_codex_message(failed) =~
+    assert MessageHumanizer.humanize(failed) =~
              "Cannot query field"
 
-    assert Renderer.humanize_codex_message(unsupported) =~
+    assert MessageHumanizer.humanize(unsupported) =~
              "unsupported dynamic tool call rejected (unknown_tool)"
   end
 
@@ -5004,8 +5005,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert Renderer.humanize_codex_message(wrapped) =~ "turn completed"
-    assert Renderer.humanize_codex_message(wrapped) =~ "new 10"
+    assert MessageHumanizer.humanize(wrapped) =~ "turn completed"
+    assert MessageHumanizer.humanize(wrapped) =~ "new 10"
   end
 
   test "status dashboard formats legacy Claude input tokens as new tokens with cache buckets" do
@@ -5027,7 +5028,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert Renderer.humanize_codex_message(message) ==
+    assert MessageHumanizer.humanize(message) ==
              "thread token usage updated (new 800, cached 9,200, created 400, out 600, total 11,000)"
   end
 
@@ -5043,7 +5044,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert Renderer.humanize_codex_message(message) ==
+    assert MessageHumanizer.humanize(message) ==
              "command completed (recovered malformed Codex frame)"
   end
 
@@ -5056,7 +5057,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert Renderer.humanize_codex_message(message) == "git status --short"
+    assert MessageHumanizer.humanize(message) == "git status --short"
   end
 
   test "status dashboard formats auto-approval updates from codex" do
@@ -5071,7 +5072,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    humanized = Renderer.humanize_codex_message(message)
+    humanized = MessageHumanizer.humanize(message)
     assert humanized =~ "command approval requested"
     assert humanized =~ "auto-approved"
   end
@@ -5088,7 +5089,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    humanized = Renderer.humanize_codex_message(message)
+    humanized = MessageHumanizer.humanize(message)
     assert humanized =~ "tool requires user input"
     assert humanized =~ "auto-answered"
   end
@@ -5126,13 +5127,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       }
     }
 
-    assert Renderer.humanize_codex_message(reasoning_message) =~
+    assert MessageHumanizer.humanize(reasoning_message) =~
              "reasoning update: compare retry paths for Linear polling"
 
-    assert Renderer.humanize_codex_message(message_delta) =~
+    assert MessageHumanizer.humanize(message_delta) =~
              "agent message streaming: writing workpad reconciliation update"
 
-    assert Renderer.humanize_codex_message(fallback_reasoning) == "reasoning update"
+    assert MessageHumanizer.humanize(fallback_reasoning) == "reasoning update"
   end
 
   test "application stop skips offline status in test runtime" do

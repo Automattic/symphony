@@ -1,0 +1,1016 @@
+defmodule SymphonyElixir.Codex.MessageHumanizer do
+  @moduledoc """
+  Renders codex orchestrator messages as short, human-readable summaries.
+
+  Used by the status dashboard's running-row label, the LiveView transcript,
+  and the web presenter — anywhere a single codex event needs to become a
+  one-line description.
+  """
+
+  @spec humanize(term()) :: String.t()
+  def humanize(nil), do: "no agent message yet"
+
+  def humanize(%{event: event, message: message}) do
+    payload = unwrap_codex_message_payload(message)
+
+    (humanize_codex_event(event, message, payload) || humanize_codex_payload(payload))
+    |> truncate(140)
+  end
+
+  def humanize(%{message: message}) do
+    message
+    |> unwrap_codex_message_payload()
+    |> humanize_codex_payload()
+    |> truncate(140)
+  end
+
+  def humanize(message) do
+    message
+    |> unwrap_codex_message_payload()
+    |> humanize_codex_payload()
+    |> truncate(140)
+  end
+
+  defp humanize_codex_event(:session_started, _message, payload) do
+    session_id = map_value(payload, ["session_id", :session_id])
+
+    if is_binary(session_id) do
+      "session started (#{session_id})"
+    else
+      "session started"
+    end
+  end
+
+  defp humanize_codex_event(:turn_input_required, _message, _payload), do: "turn blocked: waiting for user input"
+
+  defp humanize_codex_event(:approval_auto_approved, message, payload) do
+    method =
+      map_value(payload, ["method", :method]) ||
+        map_path(message, ["payload", "method"]) ||
+        map_path(message, [:payload, :method])
+
+    decision = map_value(message, ["decision", :decision])
+
+    base =
+      if is_binary(method) do
+        "#{humanize_codex_method(method, payload)} (auto-approved)"
+      else
+        "approval request auto-approved"
+      end
+
+    if is_binary(decision), do: "#{base}: #{decision}", else: base
+  end
+
+  defp humanize_codex_event(:tool_input_auto_answered, message, payload) do
+    answer = map_value(message, ["answer", :answer])
+
+    base =
+      case humanize_codex_method("item/tool/requestUserInput", payload) do
+        nil -> "tool input auto-answered"
+        text -> "#{text} (auto-answered)"
+      end
+
+    if is_binary(answer), do: "#{base}: #{inline_text(answer)}", else: base
+  end
+
+  defp humanize_codex_event(:tool_call_completed, _message, payload),
+    do: humanize_dynamic_tool_event("dynamic tool call completed", payload)
+
+  defp humanize_codex_event(:tool_call_failed, message, payload),
+    do: humanize_dynamic_tool_event("dynamic tool call failed", payload, message)
+
+  defp humanize_codex_event(:unsupported_tool_call, _message, payload),
+    do: humanize_dynamic_tool_event("unsupported dynamic tool call rejected", payload)
+
+  defp humanize_codex_event(:turn_ended_with_error, message, _payload), do: "turn ended with error: #{format_reason(message)}"
+  defp humanize_codex_event(:startup_failed, message, _payload), do: "startup failed: #{format_reason(message)}"
+  defp humanize_codex_event(:turn_failed, _message, payload), do: humanize_codex_method("turn/failed", payload)
+  defp humanize_codex_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
+
+  defp humanize_codex_event(:command_completed_recovered, _message, _payload),
+    do: "command completed (recovered malformed Codex frame)"
+
+  defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event from codex"
+  defp humanize_codex_event(_event, _message, _payload), do: nil
+
+  defp unwrap_codex_message_payload(%{} = message) do
+    cond do
+      is_binary(map_value(message, ["method", :method])) -> message
+      is_binary(map_value(message, ["session_id", :session_id])) -> message
+      is_binary(map_value(message, ["reason", :reason])) -> message
+      true -> map_value(message, ["payload", :payload]) || message
+    end
+  end
+
+  defp unwrap_codex_message_payload(message), do: message
+
+  defp humanize_codex_payload(%{} = payload) do
+    case map_value(payload, ["method", :method]) do
+      method when is_binary(method) ->
+        humanize_codex_method(method, payload)
+
+      _ ->
+        cond do
+          is_binary(map_value(payload, ["session_id", :session_id])) ->
+            "session started (#{map_value(payload, ["session_id", :session_id])})"
+
+          match?(%{"error" => _}, payload) ->
+            "error: #{format_error_value(Map.get(payload, "error"))}"
+
+          true ->
+            payload
+            |> inspect(pretty: true, limit: 30)
+            |> String.replace("\n", " ")
+            |> sanitize_ansi_and_control_bytes()
+            |> String.trim()
+        end
+    end
+  end
+
+  defp humanize_codex_payload(payload) when is_binary(payload) do
+    payload
+    |> String.replace("\n", " ")
+    |> sanitize_ansi_and_control_bytes()
+    |> String.trim()
+  end
+
+  defp humanize_codex_payload(payload) do
+    payload
+    |> inspect(pretty: true, limit: 20)
+    |> String.replace("\n", " ")
+    |> sanitize_ansi_and_control_bytes()
+    |> String.trim()
+  end
+
+  defp sanitize_ansi_and_control_bytes(value) when is_binary(value) do
+    value
+    |> String.replace(~r/\x1B\[[0-9;]*[A-Za-z]/, "")
+    |> String.replace(~r/\x1B./, "")
+    |> String.replace(~r/[\x00-\x1F\x7F]/, "")
+  end
+
+  defp humanize_codex_method("thread/started", payload) do
+    thread_id = map_path(payload, ["params", "thread", "id"]) || map_path(payload, [:params, :thread, :id])
+
+    if is_binary(thread_id) do
+      "thread started (#{thread_id})"
+    else
+      "thread started"
+    end
+  end
+
+  defp humanize_codex_method("turn/started", payload) do
+    turn_id = map_path(payload, ["params", "turn", "id"]) || map_path(payload, [:params, :turn, :id])
+
+    if is_binary(turn_id) do
+      "turn started (#{turn_id})"
+    else
+      "turn started"
+    end
+  end
+
+  defp humanize_codex_method("turn/completed", payload) do
+    status =
+      map_path(payload, ["params", "turn", "status"]) ||
+        map_path(payload, [:params, :turn, :status]) ||
+        "completed"
+
+    usage =
+      map_path(payload, ["params", "usage"]) ||
+        map_path(payload, [:params, :usage]) ||
+        map_path(payload, ["params", "tokenUsage"]) ||
+        map_path(payload, [:params, :tokenUsage]) ||
+        map_value(payload, ["usage", :usage])
+
+    usage_suffix =
+      case format_usage_counts(usage) do
+        nil -> ""
+        usage_text -> " (#{usage_text})"
+      end
+
+    "turn completed (#{status})#{usage_suffix}"
+  end
+
+  defp humanize_codex_method("turn/failed", payload) do
+    error_message =
+      map_path(payload, ["params", "error", "message"]) ||
+        map_path(payload, [:params, :error, :message])
+
+    if is_binary(error_message), do: "turn failed: #{error_message}", else: "turn failed"
+  end
+
+  defp humanize_codex_method("turn/cancelled", _payload), do: "turn cancelled"
+
+  defp humanize_codex_method("turn/diff/updated", payload) do
+    diff =
+      map_path(payload, ["params", "diff"]) ||
+        map_path(payload, [:params, :diff]) ||
+        ""
+
+    if is_binary(diff) and diff != "" do
+      line_count = diff |> String.split("\n", trim: true) |> length()
+      "turn diff updated (#{line_count} lines)"
+    else
+      "turn diff updated"
+    end
+  end
+
+  defp humanize_codex_method("turn/plan/updated", payload) do
+    plan_entries =
+      map_path(payload, ["params", "plan"]) ||
+        map_path(payload, [:params, :plan]) ||
+        map_path(payload, ["params", "steps"]) ||
+        map_path(payload, [:params, :steps]) ||
+        map_path(payload, ["params", "items"]) ||
+        map_path(payload, [:params, :items]) ||
+        []
+
+    if is_list(plan_entries) do
+      "plan updated (#{length(plan_entries)} steps)"
+    else
+      "plan updated"
+    end
+  end
+
+  defp humanize_codex_method("thread/tokenUsage/updated", payload) do
+    usage =
+      map_path(payload, ["params", "tokenUsage", "total"]) ||
+        map_path(payload, [:params, :tokenUsage, :total]) ||
+        map_value(payload, ["usage", :usage])
+
+    case format_usage_counts(usage) do
+      nil -> "thread token usage updated"
+      usage_text -> "thread token usage updated (#{usage_text})"
+    end
+  end
+
+  defp humanize_codex_method("item/started", payload), do: humanize_item_lifecycle("started", payload)
+  defp humanize_codex_method("item/completed", payload), do: humanize_item_lifecycle("completed", payload)
+
+  defp humanize_codex_method("item/agentMessage/delta", payload),
+    do: humanize_streaming_event("agent message streaming", payload)
+
+  defp humanize_codex_method("item/plan/delta", payload),
+    do: humanize_streaming_event("plan streaming", payload)
+
+  defp humanize_codex_method("item/reasoning/summaryTextDelta", payload),
+    do: humanize_streaming_event("reasoning summary streaming", payload)
+
+  defp humanize_codex_method("item/reasoning/summaryPartAdded", payload),
+    do: humanize_streaming_event("reasoning summary section added", payload)
+
+  defp humanize_codex_method("item/reasoning/textDelta", payload),
+    do: humanize_streaming_event("reasoning text streaming", payload)
+
+  defp humanize_codex_method("item/commandExecution/outputDelta", payload),
+    do: humanize_streaming_event("command output streaming", payload)
+
+  defp humanize_codex_method("item/fileChange/outputDelta", payload),
+    do: humanize_streaming_event("file change output streaming", payload)
+
+  defp humanize_codex_method("item/commandExecution/requestApproval", payload) do
+    command = extract_command(payload)
+
+    if is_binary(command) do
+      "command approval requested (#{command})"
+    else
+      "command approval requested"
+    end
+  end
+
+  defp humanize_codex_method("item/fileChange/requestApproval", payload) do
+    change_count = map_path(payload, ["params", "fileChangeCount"]) || map_path(payload, ["params", "changeCount"])
+
+    if is_integer(change_count) and change_count > 0 do
+      "file change approval requested (#{change_count} files)"
+    else
+      "file change approval requested"
+    end
+  end
+
+  defp humanize_codex_method("item/tool/requestUserInput", payload) do
+    question =
+      map_path(payload, ["params", "question"]) ||
+        map_path(payload, ["params", "prompt"]) ||
+        map_path(payload, [:params, :question]) ||
+        map_path(payload, [:params, :prompt])
+
+    if is_binary(question) and String.trim(question) != "" do
+      "tool requires user input: #{inline_text(question)}"
+    else
+      "tool requires user input"
+    end
+  end
+
+  defp humanize_codex_method("tool/requestUserInput", payload),
+    do: humanize_codex_method("item/tool/requestUserInput", payload)
+
+  defp humanize_codex_method("account/updated", payload) do
+    auth_mode =
+      map_path(payload, ["params", "authMode"]) ||
+        map_path(payload, [:params, :authMode]) ||
+        "unknown"
+
+    "account updated (auth #{auth_mode})"
+  end
+
+  defp humanize_codex_method("account/rateLimits/updated", payload) do
+    rate_limits =
+      map_path(payload, ["params", "rateLimits"]) ||
+        map_path(payload, [:params, :rateLimits])
+
+    "rate limits updated: #{format_rate_limits_summary(rate_limits)}"
+  end
+
+  defp humanize_codex_method("account/chatgptAuthTokens/refresh", _payload), do: "account auth token refresh requested"
+
+  defp humanize_codex_method("item/tool/call", payload) do
+    tool = dynamic_tool_name(payload)
+
+    if is_binary(tool) and String.trim(tool) != "" do
+      "dynamic tool call requested (#{tool})"
+    else
+      "dynamic tool call requested"
+    end
+  end
+
+  defp humanize_codex_method(<<"codex/event/", suffix::binary>>, payload) do
+    humanize_codex_wrapper_event(suffix, payload)
+  end
+
+  defp humanize_codex_method(method, payload) do
+    msg_type =
+      map_path(payload, ["params", "msg", "type"]) ||
+        map_path(payload, [:params, :msg, :type])
+
+    if is_binary(msg_type) do
+      "#{method} (#{msg_type})"
+    else
+      method
+    end
+  end
+
+  defp humanize_dynamic_tool_event(base, payload, message \\ nil) do
+    tool_text =
+      case dynamic_tool_name(payload) do
+        tool when is_binary(tool) ->
+          trimmed = String.trim(tool)
+
+          if trimmed == "" do
+            base
+          else
+            "#{base} (#{trimmed})"
+          end
+
+        _ ->
+          base
+      end
+
+    case dynamic_tool_error_summary(message) do
+      summary when is_binary(summary) and summary != "" -> "#{tool_text}: #{summary}"
+      _ -> tool_text
+    end
+  end
+
+  defp dynamic_tool_error_summary(message) do
+    output =
+      map_path(message, ["result", "output"]) ||
+        map_path(message, [:result, :output])
+
+    with output when is_binary(output) <- output,
+         {:ok, decoded} <- Jason.decode(output) do
+      graphql_error_message(decoded) ||
+        map_path(decoded, ["error", "message"]) ||
+        map_path(decoded, [:error, :message])
+    else
+      _ -> nil
+    end
+    |> case do
+      summary when is_binary(summary) -> inline_text(summary)
+      _ -> nil
+    end
+  end
+
+  defp graphql_error_message(payload) do
+    case map_path(payload, ["error", "body", "errors"]) ||
+           map_path(payload, [:error, :body, :errors]) do
+      [%{} = error | _] ->
+        map_value(error, ["message", :message])
+
+      _ ->
+        nil
+    end
+  end
+
+  defp dynamic_tool_name(payload) do
+    map_path(payload, ["params", "tool"]) ||
+      map_path(payload, ["params", "name"]) ||
+      map_path(payload, [:params, :tool]) ||
+      map_path(payload, [:params, :name])
+  end
+
+  defp humanize_item_lifecycle(state, payload) do
+    item =
+      map_path(payload, ["params", "item"]) ||
+        map_path(payload, [:params, :item]) ||
+        %{}
+
+    item_type = item |> map_value(["type", :type]) |> humanize_item_type()
+    item_status = map_value(item, ["status", :status])
+    item_id = map_value(item, ["id", :id])
+
+    details =
+      []
+      |> append_if_present(short_id(item_id))
+      |> append_if_present(humanize_status(item_status))
+
+    detail_suffix = if details == [], do: "", else: " (#{Enum.join(details, ", ")})"
+    "item #{state}: #{item_type}#{detail_suffix}"
+  end
+
+  defp humanize_codex_wrapper_event("mcp_startup_update", payload) do
+    server =
+      map_path(payload, ["params", "msg", "server"]) ||
+        map_path(payload, [:params, :msg, :server]) ||
+        "mcp"
+
+    state =
+      map_path(payload, ["params", "msg", "status", "state"]) ||
+        map_path(payload, [:params, :msg, :status, :state]) ||
+        "updated"
+
+    "mcp startup: #{server} #{state}"
+  end
+
+  defp humanize_codex_wrapper_event("mcp_startup_complete", _payload), do: "mcp startup complete"
+  defp humanize_codex_wrapper_event("task_started", _payload), do: "task started"
+  defp humanize_codex_wrapper_event("user_message", _payload), do: "user message received"
+
+  defp humanize_codex_wrapper_event("item_started", payload) do
+    case wrapper_payload_type(payload) do
+      "token_count" -> humanize_codex_wrapper_event("token_count", payload)
+      type when is_binary(type) -> "item started (#{humanize_item_type(type)})"
+      _ -> "item started"
+    end
+  end
+
+  defp humanize_codex_wrapper_event("item_completed", payload) do
+    case wrapper_payload_type(payload) do
+      "token_count" -> humanize_codex_wrapper_event("token_count", payload)
+      type when is_binary(type) -> "item completed (#{humanize_item_type(type)})"
+      _ -> "item completed"
+    end
+  end
+
+  defp humanize_codex_wrapper_event("agent_message_delta", payload),
+    do: humanize_streaming_event("agent message streaming", payload)
+
+  defp humanize_codex_wrapper_event("agent_message_content_delta", payload),
+    do: humanize_streaming_event("agent message content streaming", payload)
+
+  defp humanize_codex_wrapper_event("agent_reasoning_delta", payload),
+    do: humanize_streaming_event("reasoning streaming", payload)
+
+  defp humanize_codex_wrapper_event("reasoning_content_delta", payload),
+    do: humanize_streaming_event("reasoning content streaming", payload)
+
+  defp humanize_codex_wrapper_event("agent_reasoning_section_break", _payload), do: "reasoning section break"
+  defp humanize_codex_wrapper_event("agent_reasoning", payload), do: humanize_reasoning_update(payload)
+  defp humanize_codex_wrapper_event("turn_diff", _payload), do: "turn diff updated"
+  defp humanize_codex_wrapper_event("exec_command_begin", payload), do: humanize_exec_command_begin(payload)
+  defp humanize_codex_wrapper_event("exec_command_end", payload), do: humanize_exec_command_end(payload)
+  defp humanize_codex_wrapper_event("exec_command_output_delta", _payload), do: "command output streaming"
+  defp humanize_codex_wrapper_event("mcp_tool_call_begin", _payload), do: "mcp tool call started"
+  defp humanize_codex_wrapper_event("mcp_tool_call_end", _payload), do: "mcp tool call completed"
+
+  defp humanize_codex_wrapper_event("token_count", payload) do
+    usage = extract_first_path(payload, token_usage_paths())
+
+    case format_usage_counts(usage) do
+      nil -> "token count update"
+      usage_text -> "token count update (#{usage_text})"
+    end
+  end
+
+  defp humanize_codex_wrapper_event(other, payload) do
+    msg_type =
+      map_path(payload, ["params", "msg", "type"]) ||
+        map_path(payload, [:params, :msg, :type])
+
+    if is_binary(msg_type) do
+      "#{other} (#{msg_type})"
+    else
+      other
+    end
+  end
+
+  defp humanize_exec_command_begin(payload) do
+    command =
+      map_path(payload, ["params", "msg", "command"]) ||
+        map_path(payload, [:params, :msg, :command]) ||
+        map_path(payload, ["params", "msg", "parsed_cmd"]) ||
+        map_path(payload, [:params, :msg, :parsed_cmd])
+
+    command = normalize_command(command)
+
+    if is_binary(command) do
+      command
+    else
+      "command started"
+    end
+  end
+
+  defp humanize_exec_command_end(payload) do
+    exit_code =
+      map_path(payload, ["params", "msg", "exit_code"]) ||
+        map_path(payload, [:params, :msg, :exit_code]) ||
+        map_path(payload, ["params", "msg", "exitCode"]) ||
+        map_path(payload, [:params, :msg, :exitCode])
+
+    if is_integer(exit_code) do
+      "command completed (exit #{exit_code})"
+    else
+      "command completed"
+    end
+  end
+
+  defp format_usage_counts(usage) when is_map(usage) do
+    legacy_input =
+      parse_integer(
+        map_value(usage, [
+          "input_tokens",
+          :input_tokens,
+          "prompt_tokens",
+          :prompt_tokens,
+          "inputTokens",
+          :inputTokens,
+          "promptTokens",
+          :promptTokens
+        ])
+      )
+
+    cached =
+      parse_integer(
+        map_value(usage, [
+          "cached_input_tokens",
+          :cached_input_tokens,
+          "cachedInputTokens",
+          :cachedInputTokens,
+          "cache_read_input_tokens",
+          :cache_read_input_tokens
+        ])
+      )
+
+    codex_cached =
+      parse_integer(
+        map_value(usage, [
+          "cached_input_tokens",
+          :cached_input_tokens,
+          "cachedInputTokens",
+          :cachedInputTokens
+        ])
+      )
+
+    input =
+      parse_integer(
+        map_value(usage, [
+          "uncached_input_tokens",
+          :uncached_input_tokens,
+          "uncachedInputTokens",
+          :uncachedInputTokens
+        ])
+      ) ||
+        cond do
+          is_integer(legacy_input) and anthropic_cache_usage?(usage) -> legacy_input
+          is_integer(legacy_input) and is_integer(codex_cached) -> max(legacy_input - codex_cached, 0)
+          true -> legacy_input
+        end
+
+    cache_creation =
+      parse_integer(
+        map_value(usage, [
+          "cache_creation_input_tokens",
+          :cache_creation_input_tokens,
+          "cacheCreationInputTokens",
+          :cacheCreationInputTokens
+        ])
+      )
+
+    output =
+      parse_integer(
+        map_value(usage, [
+          "output_tokens",
+          :output_tokens,
+          "completion_tokens",
+          :completion_tokens,
+          "outputTokens",
+          :outputTokens,
+          "completionTokens",
+          :completionTokens
+        ])
+      )
+
+    total =
+      parse_integer(
+        map_value(usage, [
+          "total_tokens",
+          :total_tokens,
+          "total",
+          :total,
+          "totalTokens",
+          :totalTokens
+        ])
+      )
+
+    parts =
+      []
+      |> append_usage_part("new", input)
+      |> append_usage_part("cached", cached)
+      |> append_usage_part("created", cache_creation)
+      |> append_usage_part("out", output)
+      |> append_usage_part("total", total)
+
+    case parts do
+      [] -> nil
+      _ -> Enum.join(parts, ", ")
+    end
+  end
+
+  defp format_usage_counts(_usage), do: nil
+
+  defp anthropic_cache_usage?(usage) do
+    is_integer(
+      parse_integer(
+        map_value(usage, [
+          "cache_read_input_tokens",
+          :cache_read_input_tokens,
+          "cacheReadInputTokens",
+          :cacheReadInputTokens,
+          "cache_creation_input_tokens",
+          :cache_creation_input_tokens,
+          "cacheCreationInputTokens",
+          :cacheCreationInputTokens
+        ])
+      )
+    )
+  end
+
+  defp append_usage_part(parts, _label, value) when not is_integer(value), do: parts
+  defp append_usage_part(parts, label, value), do: parts ++ ["#{label} #{format_count(value)}"]
+
+  defp format_rate_limits_summary(nil), do: "n/a"
+
+  defp format_rate_limits_summary(rate_limits) when is_map(rate_limits) do
+    primary = map_value(rate_limits, ["primary", :primary])
+    secondary = map_value(rate_limits, ["secondary", :secondary])
+
+    primary_text = format_rate_limit_bucket_summary(primary)
+    secondary_text = format_rate_limit_bucket_summary(secondary)
+
+    cond do
+      primary_text != nil and secondary_text != nil -> "primary #{primary_text}; secondary #{secondary_text}"
+      primary_text != nil -> "primary #{primary_text}"
+      secondary_text != nil -> "secondary #{secondary_text}"
+      true -> "n/a"
+    end
+  end
+
+  defp format_rate_limits_summary(_rate_limits), do: "n/a"
+
+  defp format_rate_limit_bucket_summary(bucket) when is_map(bucket) do
+    used_percent = map_value(bucket, ["usedPercent", :usedPercent])
+    window_mins = map_value(bucket, ["windowDurationMins", :windowDurationMins])
+
+    cond do
+      is_number(used_percent) and is_integer(window_mins) ->
+        "#{used_percent}% / #{window_mins}m"
+
+      is_number(used_percent) ->
+        "#{used_percent}% used"
+
+      true ->
+        nil
+    end
+  end
+
+  defp format_rate_limit_bucket_summary(_bucket), do: nil
+
+  defp format_error_value(%{"message" => message}) when is_binary(message), do: message
+  defp format_error_value(%{message: message}) when is_binary(message), do: message
+  defp format_error_value(error), do: inspect(error, limit: 10)
+
+  defp format_reason(message) when is_map(message) do
+    case map_value(message, ["reason", :reason]) do
+      nil ->
+        message
+        |> inspect(limit: 10)
+        |> inline_text()
+
+      reason ->
+        format_error_value(reason)
+    end
+  end
+
+  defp format_reason(other), do: format_error_value(other)
+
+  defp humanize_streaming_event(label, payload) do
+    case extract_delta_preview(payload) do
+      nil -> label
+      preview -> "#{label}: #{preview}"
+    end
+  end
+
+  defp humanize_reasoning_update(payload) do
+    case extract_reasoning_focus(payload) do
+      nil -> "reasoning update"
+      focus -> "reasoning update: #{focus}"
+    end
+  end
+
+  defp extract_reasoning_focus(payload) do
+    value = extract_first_path(payload, reasoning_focus_paths())
+
+    if is_binary(value) do
+      trimmed = String.trim(value)
+      if trimmed == "", do: nil, else: inline_text(trimmed)
+    else
+      nil
+    end
+  end
+
+  defp extract_delta_preview(payload) do
+    delta = extract_first_path(payload, delta_paths())
+
+    case delta do
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+        if trimmed == "", do: nil, else: inline_text(trimmed)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp extract_command(payload) do
+    payload
+    |> map_path(["params", "parsedCmd"])
+    |> fallback_command(payload)
+    |> normalize_command()
+  end
+
+  defp fallback_command(nil, payload) do
+    map_path(payload, ["params", "command"]) ||
+      map_path(payload, ["params", "cmd"]) ||
+      map_path(payload, ["params", "argv"]) ||
+      map_path(payload, ["params", "args"])
+  end
+
+  defp fallback_command(command, _payload), do: command
+
+  defp normalize_command(%{} = command) do
+    binary_command = map_value(command, ["parsedCmd", :parsedCmd, "command", :command, "cmd", :cmd])
+    args = map_value(command, ["args", :args, "argv", :argv])
+
+    if is_binary(binary_command) and is_list(args) do
+      normalize_command([binary_command | args])
+    else
+      normalize_command(binary_command || args)
+    end
+  end
+
+  defp normalize_command(command) when is_binary(command), do: inline_text(command)
+
+  defp normalize_command(command) when is_list(command) do
+    if Enum.all?(command, &is_binary/1) do
+      command
+      |> Enum.join(" ")
+      |> inline_text()
+    else
+      nil
+    end
+  end
+
+  defp normalize_command(_command), do: nil
+
+  defp humanize_item_type(nil), do: "item"
+
+  defp humanize_item_type(type) when is_binary(type) do
+    type
+    |> String.replace(~r/([a-z0-9])([A-Z])/, "\\1 \\2")
+    |> String.replace("_", " ")
+    |> String.replace("/", " ")
+    |> String.downcase()
+    |> String.trim()
+  end
+
+  defp humanize_item_type(type), do: to_string(type)
+
+  defp humanize_status(status) when is_binary(status) do
+    status
+    |> String.replace("_", " ")
+    |> String.replace("-", " ")
+    |> String.downcase()
+    |> String.trim()
+  end
+
+  defp humanize_status(_status), do: nil
+
+  defp short_id(id) when is_binary(id) and byte_size(id) > 12, do: String.slice(id, 0, 12)
+  defp short_id(id) when is_binary(id), do: id
+  defp short_id(_id), do: nil
+
+  defp append_if_present(list, value) when is_binary(value) and value != "", do: list ++ [value]
+  defp append_if_present(list, _value), do: list
+
+  defp wrapper_payload_type(payload) do
+    map_path(payload, ["params", "msg", "payload", "type"]) ||
+      map_path(payload, [:params, :msg, :payload, :type])
+  end
+
+  defp inline_text(text) when is_binary(text) do
+    text
+    |> String.replace("\n", " ")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> truncate(80)
+  end
+
+  defp inline_text(other), do: other |> to_string() |> inline_text()
+
+  defp parse_integer(value) when is_integer(value), do: value
+
+  defp parse_integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} -> parsed
+      _ -> nil
+    end
+  end
+
+  defp parse_integer(_value), do: nil
+
+  defp token_usage_paths do
+    [
+      ["params", "msg", "payload", "info", "total_token_usage"],
+      [:params, :msg, :payload, :info, :total_token_usage],
+      ["params", "msg", "info", "total_token_usage"],
+      [:params, :msg, :info, :total_token_usage],
+      ["params", "tokenUsage", "total"],
+      [:params, :tokenUsage, :total]
+    ]
+  end
+
+  defp delta_paths do
+    [
+      ["params", "delta"],
+      [:params, :delta],
+      ["params", "msg", "delta"],
+      [:params, :msg, :delta],
+      ["params", "textDelta"],
+      [:params, :textDelta],
+      ["params", "msg", "textDelta"],
+      [:params, :msg, :textDelta],
+      ["params", "outputDelta"],
+      [:params, :outputDelta],
+      ["params", "msg", "outputDelta"],
+      [:params, :msg, :outputDelta],
+      ["params", "text"],
+      [:params, :text],
+      ["params", "msg", "text"],
+      [:params, :msg, :text],
+      ["params", "summaryText"],
+      [:params, :summaryText],
+      ["params", "msg", "summaryText"],
+      [:params, :msg, :summaryText],
+      ["params", "msg", "content"],
+      [:params, :msg, :content],
+      ["params", "msg", "payload", "delta"],
+      [:params, :msg, :payload, :delta],
+      ["params", "msg", "payload", "textDelta"],
+      [:params, :msg, :payload, :textDelta],
+      ["params", "msg", "payload", "outputDelta"],
+      [:params, :msg, :payload, :outputDelta],
+      ["params", "msg", "payload", "text"],
+      [:params, :msg, :payload, :text],
+      ["params", "msg", "payload", "summaryText"],
+      [:params, :msg, :payload, :summaryText],
+      ["params", "msg", "payload", "content"],
+      [:params, :msg, :payload, :content]
+    ]
+  end
+
+  defp reasoning_focus_paths do
+    [
+      ["params", "reason"],
+      [:params, :reason],
+      ["params", "summaryText"],
+      [:params, :summaryText],
+      ["params", "summary"],
+      [:params, :summary],
+      ["params", "text"],
+      [:params, :text],
+      ["params", "msg", "reason"],
+      [:params, :msg, :reason],
+      ["params", "msg", "summaryText"],
+      [:params, :msg, :summaryText],
+      ["params", "msg", "summary"],
+      [:params, :msg, :summary],
+      ["params", "msg", "text"],
+      [:params, :msg, :text],
+      ["params", "msg", "payload", "reason"],
+      [:params, :msg, :payload, :reason],
+      ["params", "msg", "payload", "summaryText"],
+      [:params, :msg, :payload, :summaryText],
+      ["params", "msg", "payload", "summary"],
+      [:params, :msg, :payload, :summary],
+      ["params", "msg", "payload", "text"],
+      [:params, :msg, :payload, :text]
+    ]
+  end
+
+  defp extract_first_path(payload, paths) do
+    Enum.find_value(paths, fn path ->
+      map_path(payload, path)
+    end)
+  end
+
+  defp map_path(data, [key | rest]) when is_map(data) do
+    case fetch_map_key(data, key) do
+      {:ok, value} when rest == [] -> value
+      {:ok, value} -> map_path(value, rest)
+      :error -> nil
+    end
+  end
+
+  defp map_path(_data, _path), do: nil
+
+  defp fetch_map_key(map, key) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        {:ok, value}
+
+      :error ->
+        alternate = alternate_key(key)
+
+        if alternate == key do
+          :error
+        else
+          Map.fetch(map, alternate)
+        end
+    end
+  end
+
+  defp alternate_key(key) when is_binary(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> key
+  end
+
+  defp alternate_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp alternate_key(key), do: key
+
+  defp map_value(map, keys) when is_map(map) and is_list(keys) do
+    Enum.find_value(keys, &Map.get(map, &1))
+  end
+
+  defp map_value(_map, _keys), do: nil
+
+  defp format_count(nil), do: "0"
+
+  defp format_count(value) when is_integer(value) do
+    value
+    |> Integer.to_string()
+    |> group_thousands()
+  end
+
+  defp format_count(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> Integer.parse()
+    |> case do
+      {number, ""} -> group_thousands(Integer.to_string(number))
+      _ -> value
+    end
+  end
+
+  defp format_count(value), do: to_string(value)
+
+  defp group_thousands(value) when is_binary(value) do
+    sign = if String.starts_with?(value, "-"), do: "-", else: ""
+    unsigned = if sign == "", do: value, else: String.slice(value, 1, String.length(value) - 1)
+
+    unsigned
+    |> String.reverse()
+    |> String.replace(~r/(\d{3})(?=\d)/, "\\1,")
+    |> String.reverse()
+    |> prepend(sign)
+  end
+
+  defp prepend("", value), do: value
+  defp prepend(prefix, value), do: prefix <> value
+
+  defp truncate(value, max) when byte_size(value) > max do
+    value |> String.slice(0, max) |> Kernel.<>("...")
+  end
+
+  defp truncate(value, _max), do: value
+end

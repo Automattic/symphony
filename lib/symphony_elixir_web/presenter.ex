@@ -4,7 +4,7 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{AuditLog, Config, Orchestrator, URLUtils}
-  alias SymphonyElixir.StatusDashboard.Renderer
+  alias SymphonyElixir.Codex.MessageHumanizer
 
   @audit_page_size 200
   @audit_event_types ~w(
@@ -941,7 +941,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp current_repo_key, do: Config.repo_key_or_nil()
 
   defp summarize_message(nil), do: nil
-  defp summarize_message(message), do: Renderer.humanize_codex_message(message)
+  defp summarize_message(message), do: MessageHumanizer.humanize(message)
 
   defp entry_uncached_input_tokens(entry) when is_map(entry) do
     case Map.get(entry, :uncached_input_tokens) do

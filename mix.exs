@@ -32,7 +32,6 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.OneShot,
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
-          SymphonyElixir.ProcessTree,
           SymphonyElixir.CiPoller,
           SymphonyElixir.PrReviewPoller,
           SymphonyElixir.McpServer,

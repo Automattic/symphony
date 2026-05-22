@@ -428,12 +428,14 @@ A set var substitutes the value; an empty var drops the entry; a missing var kee
   below the app-server's practical stdio frame size. During initialize, Symphony opts out of Codex
   `turn/diff/updated`, `item/commandExecution/outputDelta`, and `item/fileChange/outputDelta`
   notifications, whose aggregated diffs and streaming output can become too large for the stdio
-  stream on broad changes. Executor sessions additionally opt out of `item/agentMessage/delta`;
-  read-only reviewer sessions keep agent-message deltas enabled so reviewer JSON can still be
-  reconstructed from streamed text. Terminal `item/completed` notifications remain enabled for
-  command tracking, and Symphony compacts known noisy string fields before forwarding them to the
-  transcript/audit pipeline. Linear comment create/update dynamic tools return compact
-  acknowledgements rather than echoing full comment bodies back into Codex.
+  stream on broad changes. Symphony drains the app-server stdout port in a dedicated process before
+  decoding and transcript/audit handling so slow event callbacks do not block the OS pipe. Executor
+  sessions additionally opt out of `item/agentMessage/delta`; read-only reviewer sessions keep
+  agent-message deltas enabled so reviewer JSON can still be reconstructed from streamed text.
+  Terminal `item/completed` notifications remain enabled for command tracking, and Symphony
+  compacts known noisy string fields before forwarding them to the transcript/audit pipeline.
+  Linear comment create/update dynamic tools return compact acknowledgements rather than echoing
+  full comment bodies back into Codex.
 - **Codex remote workers:** `inherit: allowlist` and `inherit: all` are rejected (Symphony only
   reads the orchestrator's host config). Declare servers explicitly under `servers`.
 - **Claude:** `inherit: allowlist` reads only the top-level `mcpServers` map in

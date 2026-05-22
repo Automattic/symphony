@@ -1874,8 +1874,9 @@ Continuation processing:
 Transport handling requirements:
 
 - Follow the transport and framing rules of the configured adapter.
-- For stdio-based transports, keep protocol stream handling separate from diagnostic stderr
-  handling unless the targeted protocol specifies otherwise.
+- For stdio-based transports, keep protocol stdout draining separate from event processing, and
+  keep both separate from diagnostic stderr handling unless the targeted protocol specifies
+  otherwise.
 
 ### 10.4 Emitted Runtime Events (Upstream to Orchestrator)
 
@@ -3247,7 +3248,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Request/response read timeout is enforced
 - Turn timeout is enforced
 - Transport framing required by the targeted protocol is handled correctly
-- For stdio-based transports, diagnostic stderr handling is kept separate from the protocol stream
+- For stdio-based transports, stdout draining is kept separate from protocol event processing, and
+  diagnostic stderr handling is kept separate from the protocol stream
 - Command/file-change approvals are handled according to the implementation's documented policy
 - Unsupported dynamic tool calls are rejected without stalling the session
 - User input requests are handled according to the implementation's documented policy and do not

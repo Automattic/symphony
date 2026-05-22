@@ -4046,6 +4046,76 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server discards trailing partial stdout fragments on exit" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-trailing-fragment-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-96")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-96"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-96","status":"inProgress","items":[]}}}'
+            ;;
+          4)
+            printf '%s' '{"method":"turn/completed"'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-trailing-fragment",
+        identifier: "MT-96",
+        title: "Trailing stdout fragment",
+        description: "Ensure partial stdout at process exit is ignored",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-96",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
+      assert {:error, {:port_exit, 0}} =
+               AppServer.run(workspace, "Ignore trailing fragment", issue, on_message: on_message)
+
+      assert_received {:app_server_message, %{event: :turn_ended_with_error, reason: {:port_exit, 0}}}
+      refute_received {:app_server_message, %{event: :malformed}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server keeps JSON frames intact when codex stderr fires mid-frame" do
     test_root =
       Path.join(
@@ -4117,6 +4187,111 @@ defmodule SymphonyElixir.AppServerTest do
       assert_received {:app_server_message, %{event: :turn_completed}}
       refute_received {:app_server_message, %{event: :malformed}}
       assert log =~ "codex stderr noise that would otherwise split the frame"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server drains stdout while callbacks process previous events" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stdout-pump-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-99")
+      codex_binary = Path.join(test_root, "fake-codex")
+      marker_file = Path.join(test_root, "stdout-burst.done")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      marker_file="#{marker_file}"
+      chunk=$(printf '%4096s' '' | tr ' ' x)
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-99"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-99","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"method":"item/started","params":{"item":{"id":"gate","type":"commandExecution"}}}'
+
+            i=0
+            while [ "$i" -lt 256 ]; do
+              printf '{"method":"item/completed","params":{"item":{"id":"cmd-%s","type":"commandExecution","aggregatedOutput":"%s"}}}\\n' "$i" "$chunk"
+              i=$((i + 1))
+            done
+
+            printf '%s\\n' '{"method":"turn/completed"}'
+            printf '%s\\n' done > "$marker_file"
+            sleep 1
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_turn_timeout_ms: 5_000
+      )
+
+      issue = %Issue{
+        id: "issue-stdout-pump",
+        identifier: "MT-99",
+        title: "Stdout pump",
+        description: "Ensure stdout is drained independently from event callback work",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-99",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+
+      on_message = fn
+        %{
+          event: :notification,
+          payload: %{"method" => "item/started", "params" => %{"item" => %{"id" => "gate"}}}
+        } ->
+          send(test_pid, {:callback_blocked, self()})
+
+          receive do
+            :release_callback -> :ok
+          after
+            3_000 -> :ok
+          end
+
+        %{event: :turn_completed} ->
+          send(test_pid, :turn_completed)
+
+        _message ->
+          :ok
+      end
+
+      task = Task.async(fn -> AppServer.run(workspace, "Drain stdout burst", issue, on_message: on_message) end)
+
+      assert_receive {:callback_blocked, callback_pid}, 5_000
+      assert eventually(fn -> File.exists?(marker_file) end, 200)
+
+      send(callback_pid, :release_callback)
+
+      assert {:ok, _result} = Task.await(task, 5_000)
+      assert_receive :turn_completed, 1_000
     after
       File.rm_rf(test_root)
     end
@@ -4230,7 +4405,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         agent_command: "#{codex_binary} app-server",
-        agent_turn_timeout_ms: 1_000
+        agent_turn_timeout_ms: 5_000
       )
 
       issue = %Issue{
@@ -4768,11 +4943,7 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
       assert {:ok, _result} =
-               AppServer.run_turn(
-                 codex_project_guides_session(codex_binary, workspace),
-                 "Codex prompt",
-                 issue!("MT-CODEX-GUIDES-DEFAULT")
-               )
+               AppServer.run(workspace, "Codex prompt", issue!("MT-CODEX-GUIDES-DEFAULT"))
 
       assert codex_turn_prompt(trace_file) == "Codex prompt"
     after
@@ -4806,11 +4977,7 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
       assert {:ok, _result} =
-               AppServer.run_turn(
-                 codex_project_guides_session(codex_binary, workspace),
-                 "Codex explicit prompt",
-                 issue!("MT-CODEX-GUIDES-EXPLICIT")
-               )
+               AppServer.run(workspace, "Codex explicit prompt", issue!("MT-CODEX-GUIDES-EXPLICIT"))
 
       prompt = codex_turn_prompt(trace_file)
       assert prompt =~ "Codex explicit prompt\n\n## Project conventions"
@@ -4830,11 +4997,7 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
       assert {:ok, _result} =
-               AppServer.run_turn(
-                 codex_project_guides_session(codex_binary, workspace),
-                 "Codex disabled prompt",
-                 issue!("MT-CODEX-GUIDES-DISABLED")
-               )
+               AppServer.run(workspace, "Codex disabled prompt", issue!("MT-CODEX-GUIDES-DISABLED"))
 
       assert codex_turn_prompt(trace_file) == "Codex disabled prompt"
     after
@@ -4850,46 +5013,20 @@ defmodule SymphonyElixir.AppServerTest do
       printf 'JSON:%s\\n' "$line" >> "$trace_file"
 
       case "$line" in
+        *'"id":1'*)
+          printf '%s\\n' '{"id":1,"result":{}}'
+          ;;
+        *'"method":"thread/start"'*)
+          printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-guides-#{suffix}"}}}'
+          ;;
         *'"method":"turn/start"'*)
           printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-guides-#{suffix}","status":"inProgress","items":[]}}}'
           printf '%s\\n' '{"method":"turn/completed"}'
           exit 0
           ;;
-        *)
-          exit 0
-          ;;
       esac
     done
     """
-  end
-
-  defp codex_project_guides_session(codex_binary, workspace) do
-    port =
-      Port.open({:spawn_executable, String.to_charlist(codex_binary)}, [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        line: 1_048_576,
-        cd: String.to_charlist(workspace)
-      ])
-
-    %{
-      port: port,
-      metadata: %{},
-      approval_policy: %{},
-      auto_approve_requests: false,
-      thread_sandbox: "workspace-write",
-      turn_sandbox_policy: %{},
-      thread_id: "thread-project-guides",
-      workspace: workspace,
-      worker_host: nil,
-      command_security: %{},
-      launch_cleanup_paths: [],
-      mcp_session: nil,
-      mcp_remote_shim_path: nil,
-      mcp_remote_codex_home: nil,
-      settings: SymphonyElixir.Config.settings!()
-    }
   end
 
   defp codex_turn_prompt(trace_file) do
@@ -5053,6 +5190,18 @@ defmodule SymphonyElixir.AppServerTest do
         if Port.info(port), do: Port.close(port)
         if Port.info(other_port), do: Port.close(other_port)
       end
+    end
+  end
+
+  defp eventually(fun, attempts)
+  defp eventually(_fun, 0), do: false
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(50)
+      eventually(fun, attempts - 1)
     end
   end
 end

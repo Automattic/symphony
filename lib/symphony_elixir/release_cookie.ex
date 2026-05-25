@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.ReleaseCookie do
   @moduledoc """
-  Resolves and applies the Erlang distribution cookie at release boot.
+  Resolves the Erlang distribution cookie at release boot.
 
   Distribution itself is only used for local remote-console/observer access; the
   control plane is HTTP (see `SymphonyElixir.ControlClient`). The cookie is still
@@ -9,9 +9,10 @@ defmodule SymphonyElixir.ReleaseCookie do
 
   The `bin/symphony` script applies this cookie via `rel/env.sh.eex` before the VM
   boots. The Burrito-packaged binary boots the BEAM directly and never sources
-  `env.sh`, so for that launch path the same resolution runs here, in `runtime.exs`,
-  via `:erlang.set_cookie/2`. Both paths converge on the same persisted value, so a
-  daemon started either way accepts a `bin/symphony remote` shell.
+  `env.sh`, so for that launch path `runtime.exs` resolves the same value via
+  `resolve!/0` and applies it with `:erlang.set_cookie/2`. Both paths converge on
+  the same persisted value, so a daemon started either way accepts a
+  `bin/symphony remote` shell.
 
   Resolution mirrors `rel/env.sh.eex`:
 
@@ -31,23 +32,10 @@ defmodule SymphonyElixir.ReleaseCookie do
   @insecure_cookie "symphony"
 
   @doc """
-  Resolves the cookie and applies it to the local node via `:erlang.set_cookie/2`.
+  Returns the cookie to use, generating and persisting one on first boot.
 
-  Raises if the cookie is missing, insecure, or the persisted file is not
-  owner-only — failing closed, exactly as `rel/env.sh.eex` does.
-  """
-  @spec apply!() :: :ok
-  def apply! do
-    cookie = resolve!()
-    # Only a distributed node has a cookie to protect; setting one on
-    # nonode@nohost raises. Resolving still runs so a bad/insecure cookie fails
-    # the boot regardless of distribution state.
-    if Node.alive?(), do: :erlang.set_cookie(node(), String.to_atom(cookie))
-    :ok
-  end
-
-  @doc """
-  Returns the resolved cookie without touching the running node.
+  Raises if the resolved cookie is empty, insecure, or read from a file that is
+  not owner-only — failing closed, exactly as `rel/env.sh.eex` does.
   """
   @spec resolve!() :: String.t()
   def resolve! do

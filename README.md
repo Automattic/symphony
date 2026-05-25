@@ -1,9 +1,12 @@
 # Symphony
 
-Symphony is an Elixir/OTP service that runs autonomous, isolated agent sessions on Linear issues
-and existing GitHub pull requests so teams can manage the work, not the agents. It claims issues or
-accepts an explicit PR, creates isolated workspaces, launches Codex or Claude against a repo-owned
-workflow prompt, recovers stalled runs, retries failures, and reports outcomes back to the tracker.
+Symphony runs coding agents (Codex or Claude) on your Linear issues and GitHub pull requests, so
+your team manages the work instead of babysitting the agents.
+
+It watches Linear for issues to pick up, creates an isolated workspace for each one, runs the agent
+against a workflow prompt you define per repo, and keeps the run moving — retrying failures and
+recovering stalled sessions — until there is a pull request to review. You can also point it at an
+existing PR from the CLI to address review comments, fix failing CI, or resolve conflicts.
 
 [Demo video](.github/media/symphony-demo.mp4)
 
@@ -20,19 +23,15 @@ workflow prompt, recovers stalled runs, retries failures, and reports outcomes b
 Linear issue or PR -> Symphony -> workspace -> agent -> pull request
 ```
 
-Symphony claims eligible Linear issues, creates a fresh workspace per issue, launches the configured
-agent against that repository's `WORKFLOW.md`, and keeps the run moving until there is a pull
-request with validation evidence. Failed runs are retried with backoff and stalled agents are
-detected and recovered, so long-running queues do not need constant operator supervision.
+1. **Pick up work.** Symphony polls Linear and claims eligible issues (or you hand it a PR directly).
+2. **Isolate it.** Each run gets a fresh workspace — a clean checkout or worktree, never your source repo.
+3. **Run the agent.** It launches the configured agent against that repo's `WORKFLOW.md` prompt.
+4. **Keep it moving.** Failed runs retry with backoff, stalled agents are detected and recovered, and
+   results are reported back to Linear — so a long queue does not need constant supervision.
 
-Operators can also run Symphony directly on an existing PR via the CLI. PR runs create the workspace
-from the PR head branch, use a PR prompt branch when configured, push updates back to the PR head
-branch, and do not create a second pull request.
-
-During app-server sessions, Symphony also serves scoped client-side `linear_*` tools so repo skills
-can read and update only the current Linear issue through Symphony-controlled operations. If a
-claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`), Symphony
-stops the active agent for that issue and cleans up matching workspaces.
+Issue runs end with a pull request and validation evidence. PR runs push back to the existing PR head
+branch instead of opening a second one. If a claimed issue moves to a terminal state (`Done`,
+`Closed`, `Cancelled`, `Duplicate`), Symphony stops its agent and cleans up the workspace.
 
 <details>
 <summary>Glossary</summary>
@@ -52,127 +51,67 @@ stops the active agent for that issue and cleans up matching workspaces.
 
 ## Features
 
-- **Multi-repo orchestration** so one Symphony process can supervise several repositories from a
-  single `symphony.yml`, with per-repo Linear selectors and conflict detection for issues that
-  match more than one repo.
-- **LiveView dashboard** for active runs, watched issues, the retry queue, quality-gate state,
-  captured learnings, per-issue transcripts, and the local audit timeline.
+- **Multi-repo orchestration** — one process supervises several repositories from a single
+  `symphony.yml`, with per-repo Linear selectors and conflict detection.
+- **LiveView dashboard** — active runs, watched issues, the retry queue, quality-gate state,
+  per-issue transcripts, and an audit timeline.
+- **Operator controls** — pause, resume, and stop, persisted across restarts.
+- **PR-driven runs** — work an existing pull request from the CLI for review comments, failing CI, and
+  conflict fixes.
+- **Recovery** — a watchdog and retry queue handle stalled or failed sessions.
+- **Durable run store** — run history, retry backoff, captured learnings, token totals, and
+  notification dedupe.
+- **Workspace guardrails** — age-based cleanup, startup orphan removal, and disk free-space pauses.
+- **Scoped agent tools** — current-issue Linear updates, GitHub PR evidence, and attachment handling.
+- **Quality gate** — optionally scores issue clarity before dispatch so unclear work is held back.
+- **Executor + reviewer runs** — an optional read-only reviewer agent gates the executor's push.
+- **Docker runner** — host Symphony with mounted repos, state, logs, and agent credentials.
 
 ![Symphony Web dashboard screenshot](.github/media/elixir-screenshot-web.png)
 
-- **Operator controls** for pause, resume, and stop, persisted across restarts so dispatch state
-  survives a deploy.
-- **PR-driven runs** from the CLI for review comments, failing CI, and conflict-fix workflows on
-  existing pull requests.
-- **Watchdog and retry recovery** for stalled or failed agent sessions.
-- **Durable run store** for run history, retry backoff, captured learnings, aggregate token totals,
-  and notification dedupe markers.
-- **Workspace lifecycle guardrails** for age-based cleanup, startup orphan reporting/removal, and
-  disk free-space dispatch pauses.
-- **Scoped agent tools** for current-issue Linear updates, GitHub PR evidence, and attachment
-  handling.
-- **Quality gate** that can score issue clarity before dispatch so unclear work is held instead of
-  reaching the agent.
-- **Verification dev server orchestration** for parallel worktree runs: per-issue port allocation,
-  dev-server lifecycle, and health checks via `SYMPHONY_VERIFICATION_PORT`.
-- **Learnings capture** from merged PR reviews, fed back into future workflow prompts.
-- **Executor + reviewer runs** with an optional read-only reviewer agent that gates the executor's
-  push on a structured verdict.
-- **Docker runner** for hosting Symphony with mounted repos, state, logs, and agent credentials.
-
-## Setup
+## Quickstart
 
 Symphony works best in codebases that have adopted
 [harness engineering](https://openai.com/index/harness-engineering/): scripts, tests, docs, and
 workflow prompts that let coding agents work safely.
 
-1. Get a Linear personal token from Settings -> Security & access -> Personal API keys, and export
-   it as `LINEAR_API_KEY`.
-2. Install the Elixir/Erlang toolchain and build Symphony:
+1. **Get a Linear token** from Settings → Security & access → Personal API keys, and export it as
+   `LINEAR_API_KEY`. Symphony reads all secrets from the environment — to avoid plaintext `.env`
+   files on disk, load them through a secrets manager such as
+   [1Password Environments](https://1password.com/blog/1password-environments-env-files-public-beta),
+   `op run`, or `direnv` (see [docs/security.md](docs/security.md)).
+2. **Install the toolchain and build:**
 
    ```bash
    cd symphony
-   mise trust
-   mise install
+   mise trust && mise install
    mise exec -- mix setup
    mise exec -- mix build
    ```
 
-3. Run `mise exec -- ./bin/symphony init` from the operator repo to scaffold `symphony.yml`, then
-   edit the deterministic operator fields such as issue scope, agent command, workspace root, and
+3. **Scaffold operator config.** Run `mise exec -- ./bin/symphony init` from your operator repo to
+   create `symphony.yml`, then edit the issue scope, agent command, workspace root, and
    `repositories:`.
-4. Invoke the `symphony-init-workflow` skill from Codex or Claude in each target repo so the agent
-   inspects the repo and writes a tailored `WORKFLOW.md`.
-5. Start Symphony from this repository root:
+4. **Write a workflow per repo.** Invoke the `symphony-init-workflow` skill from Codex or Claude in
+   each target repo; the agent inspects the repo and writes a tailored `WORKFLOW.md`.
+5. **Start Symphony:**
 
    ```bash
    mise exec -- ./bin/symphony
    ```
 
-The LiveView dashboard is available at `http://127.0.0.1:4000` by default when the dashboard is
-enabled. Orchestrator snapshots are published to an ETS cache on a configurable
-`dashboard.snapshot_publish_ms` cadence so dashboard reads do not block the orchestration loop.
-
-The dashboard also exposes an Audit tab at `/audit`, with filters, per-record expansion, daily
-hash-chain verification, and NDJSON export. The same filtered audit stream is available from
-`/api/v1/audit`.
-
-**Exposing the dashboard remotely.** The HTTP dashboard and `/api/v1/*` endpoints have no built-in
-authentication. Do not set `SYMPHONY_SERVER_HOST=0.0.0.0` directly. If you need remote access, keep
-the bind on `127.0.0.1` and front the port with a reverse proxy that handles auth, such as
-Tailscale, Cloudflare Access, nginx basic auth, or similar. If you know what you are doing and want
-to bind directly, set `SYMPHONY_ALLOW_REMOTE_BIND=1`.
+The LiveView dashboard runs at `http://127.0.0.1:4000` by default. It has no built-in authentication
+and binds to loopback only — to expose it remotely, front it with a reverse proxy that handles auth
+(Tailscale, Cloudflare Access, nginx). See [docs/security.md](docs/security.md) for details.
 
 ## Configuration
 
 Symphony reads two files:
 
-- **`symphony.yml`**: operator config for issue-source settings, workspaces, agents, pollers
-  including bounded poller backoff, gates, notifications, and the `repositories:` list. Plain
-  YAML, no front-matter fences.
-- **`WORKFLOW.md`**: repo-local prompt body and per-repo hooks. YAML front matter between two
-  `---` lines, then the prompt template. Each repo listed under `repositories:` has its own
-  `WORKFLOW.md`.
-
-Start Symphony from a directory containing `symphony.yml`:
-
-```bash
-./bin/symphony
-```
-
-For a new operator config, scaffold the deterministic YAML first:
-
-```bash
-./bin/symphony init
-```
-
-`symphony init` writes only `symphony.yml`; it does not create `WORKFLOW.md` or guess repository
-validation commands. If `symphony.yml` already exists, rerun with `--force` only after reviewing the
-printed diff.
-
-After editing `symphony.yml`, invoke the shared `symphony-init-workflow` skill from Codex or Claude
-inside the target repository. The skill inspects repo files and CI scripts, asks for clarification
-when commands are ambiguous, writes `WORKFLOW.md`, and validates it with Symphony's runtime parser.
-
-Run a single issue synchronously without starting the poll loop or dashboard:
-
-```bash
-./bin/symphony run ACME-123 --timeout 30m --no-retry
-```
-
-One-shot runs use the same `symphony.yml` and repo `WORKFLOW.md` resolution as service mode, create
-the normal isolated workspace, write durable run history, and exit when the issue run succeeds,
-fails, or times out.
-
-Pass `--config` to point at a different operator config:
-
-```bash
-./bin/symphony --config ./symphony.claude.yml
-```
-
-If `--config` is omitted, Symphony reads `./symphony.yml` from the current working directory and
-exits with an error if it is missing. Per-repo `WORKFLOW.md` files are resolved from each entry
-under `repositories:` and never need to be passed on the command line.
+- **`symphony.yml`** — operator config: issue source, workspaces, agents, pollers, gates,
+  notifications, and the `repositories:` list. Plain YAML.
+- **`WORKFLOW.md`** — repo-local prompt and per-repo hooks. YAML front matter, then the prompt
+  template. Each repo under `repositories:` has its own.
 
 Minimal `symphony.yml`:
 
@@ -214,77 +153,67 @@ Title: {{ issue.title }}
 Body: {{ issue.description }}
 ```
 
-Symphony prepends a managed runtime context before the issue body or `prompts.pr`. That managed
-context covers workspace isolation, untrusted Linear/GitHub/CI/tool-output handling, scoped
-Linear/GitHub tools, workpad usage, obvious secret paths, and final-response shape. Keep
-`WORKFLOW.md` focused on repo-specific commands, conventions, validation gates, and handoff policy.
+The Markdown body is the issue prompt; `prompts.pr` is the optional PR-mode template. Symphony
+prepends a managed runtime context (workspace isolation, untrusted-input handling, scoped tools,
+secret handling, response shape) before either, so keep `WORKFLOW.md` focused on repo-specific
+commands, conventions, and validation gates.
 
-The Markdown body remains the issue prompt. `prompts.pr` is an optional PR-mode template rendered
-with `pr`, `issue`, `repo_key`, `agent`, `reviewer_comments`, and `ci_failure`; if omitted, Symphony
-uses a built-in PR prompt with the same managed context.
+For the full reference — every supported key, defaults, prompt variables, CLI flags, and the issue
+gate — see [docs/configuration.md](docs/configuration.md).
 
-For issue-mode runs, Symphony bootstraps the configured tracker before the first agent turn by
-moving `Todo` issues to `In Progress` and creating the configured workpad comment if one is not
-already present. Agents still own reconciling and updating that workpad during execution.
+## Running
 
-When `agent.prompts.include_project_guides` is enabled, Symphony can append repo prose guides to the
-rendered prompt without enabling agent runtime settings discovery. The default is `CLAUDE.md` for
-Claude and no extra files for Codex, since Codex already discovers workspace `AGENTS.md`; set
-`agent.prompts.project_guide_files` to an explicit relative-path list to override either default.
+Start the service from a directory containing `symphony.yml` (or pass `--config` to point elsewhere):
 
-The issue gate is disabled by default. To opt in, set `issue_gate.enabled: true` and provide
-`ANTHROPIC_API_KEY` or configure another provider/model under `issue_gate`.
+```bash
+./bin/symphony                       # start the service
+./bin/symphony --config ./other.yml  # use a different operator config
+```
 
-For the full reference of supported keys, defaults, and CLI flags, see
-[docs/configuration.md](docs/configuration.md).
+Run a single issue synchronously, without the poll loop or dashboard:
 
-## Docker
+```bash
+./bin/symphony run ACME-123 --timeout 30m --no-retry
+```
 
-The Docker runtime mounts your operator config, repositories, credentials, and agent command into
-the Symphony service. See [docker/README.md](docker/README.md).
+Work an existing PR:
 
-## Operator Controls
+```bash
+./bin/symphony pr 123 --intent "address review comments"
+```
 
-The dashboard exposes dispatch controls at `/`:
+### Operator controls
 
-- `Pause Dispatch` stops new issue dispatches while in-flight agents continue.
-- `Resume Dispatch` clears the persisted pause flag.
-- `Stop` on a running issue terminates that issue's active agent session, records the run as
-  `stopped`, and leaves the Linear issue state unchanged.
-
-The CLI reaches the running daemon over an HTTP control plane on the same port as the dashboard
-(`http://127.0.0.1:4000` by default, loopback-only). No distributed Erlang setup is required:
+The dashboard exposes **Pause**, **Resume**, and per-issue **Stop** at `/`. The same controls are
+available from the CLI over a loopback HTTP control plane on the dashboard port — no distributed
+Erlang setup required:
 
 ```bash
 mise exec -- mix symphony.pause "deploy window"
 mise exec -- mix symphony.resume
 mise exec -- mix symphony.stop ACME-123
-mise exec -- mix symphony.pr 123 --intent "address review comments"
+mise exec -- mix symphony.pr 123 --intent "fix failing CI"
 ```
 
-Release binaries expose the same PR entry point:
+`Pause` stops new dispatches while in-flight agents continue; `Stop` ends one issue's session and
+records it as `stopped` without changing the Linear issue state.
 
-```bash
-./bin/symphony pr 123 --intent "fix failing CI"
-```
+### Docker
 
-Discovery is automatic: when the daemon starts it writes `<state-root>/control_url` and a bearer
-token to `<state-root>/control_token` (both `0600`). Override either with `SYMPHONY_CONTROL_URL` or
-`SYMPHONY_CONTROL_TOKEN` for remote setups (e.g. when the daemon is reverse-proxied).
+The Docker runtime mounts your operator config, repositories, credentials, and agent command into
+the service. See [docker/README.md](docker/README.md).
 
 ## Documentation
 
-- [docs/configuration.md](docs/configuration.md): full configuration reference for `WORKFLOW.md`,
-  CLI flags, defaults, and supported values.
-- [docs/security.md](docs/security.md): threat model, built-in protections, and operational best
-  practices.
-- [docs/development.md](docs/development.md): toolchain, testing, packaging, and fork notes for
-  contributors.
-- [docs/releasing.md](docs/releasing.md): how to version and publish a release.
+- [docs/configuration.md](docs/configuration.md) — full config reference for `symphony.yml`,
+  `WORKFLOW.md`, CLI flags, and defaults.
+- [docs/security.md](docs/security.md) — threat model, built-in protections, and best practices.
+- [docs/development.md](docs/development.md) — toolchain, testing, packaging, and fork notes.
+- [docs/releasing.md](docs/releasing.md) — how to version and publish a release.
 - [docs/logging.md](docs/logging.md),
   [docs/quality_gate_security.md](docs/quality_gate_security.md), and
-  [docs/token_accounting.md](docs/token_accounting.md): operational deep-dives.
-- [WORKFLOW.md](WORKFLOW.md): the example in-repo workflow contract and agent prompt.
+  [docs/token_accounting.md](docs/token_accounting.md) — operational deep-dives.
+- [WORKFLOW.md](WORKFLOW.md) — the example in-repo workflow contract and agent prompt.
 
 ## About This Fork
 

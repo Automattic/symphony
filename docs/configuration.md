@@ -491,6 +491,15 @@ dashboard:
 
 CLI `--host` and `--port` override these listener settings.
 
+The dashboard also serves an Audit tab at `/audit` (filters, per-record expansion, daily hash-chain
+verification, NDJSON export); the same filtered stream is available from `/api/v1/audit`.
+
+**Control plane.** CLI commands (`mix symphony.pause`, `symphony.resume`, `symphony.stop`,
+`symphony.pr`) reach the running daemon over a loopback HTTP control plane on the dashboard port.
+Discovery is automatic: on start the daemon writes `<state-root>/control_url` and a bearer token to
+`<state-root>/control_token` (both `0600`). Override either with `SYMPHONY_CONTROL_URL` or
+`SYMPHONY_CONTROL_TOKEN` for remote setups (e.g. when the daemon is reverse-proxied).
+
 ### `watchdog`
 
 Progress watchdog for stalled runs.

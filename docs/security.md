@@ -172,6 +172,12 @@ read from environment variables. The quality gate explicitly ignores credentials
   independently observable and revocable.
 - Rotate the Linear and provider keys on a schedule. Revoking a key is the fastest kill switch
   short of stopping the service.
+- Avoid committing plaintext `.env` files. A secrets manager that injects environment variables at
+  runtime keeps keys out of disk and Git history. For example,
+  [1Password Environments](https://1password.com/blog/1password-environments-env-files-public-beta)
+  (public beta) mounts a virtual `.env` over a UNIX pipe, so `LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
+  and other keys are read on demand and never written to disk. `op run -- ./bin/symphony` and
+  `direnv` are other common ways to load secrets without a checked-in file.
 
 ### Operations
 

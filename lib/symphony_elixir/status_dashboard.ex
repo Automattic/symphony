@@ -300,8 +300,6 @@ defmodule SymphonyElixir.StatusDashboard do
     if startup_snapshot_pending?(started_at_ms, now_ms), do: :pending, else: :error
   end
 
-  defp snapshot_data_for_render(snapshot_data, _last_successful_snapshot_data, _started_at_ms, _now_ms), do: snapshot_data
-
   defp startup_snapshot_pending?(started_at_ms, now_ms) when is_integer(started_at_ms) and is_integer(now_ms) do
     now_ms - started_at_ms < @startup_snapshot_grace_ms
   end

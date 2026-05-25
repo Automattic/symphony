@@ -52,6 +52,27 @@ jobs:
             echo "::error::No changelog.txt entry found for version $VERSION. Add a '## $VERSION' section."
             exit 1
           fi
+          # Append macOS install instructions. The binaries are ad-hoc signed
+          # but not notarized (no Apple Developer ID), so Gatekeeper warns that
+          # it cannot verify them. Tell users how to clear the quarantine flag.
+          cat >> release_notes.md <<'NOTES'
+
+## Installing on macOS
+
+These binaries are self-contained but not notarized by Apple, so on first launch
+macOS Gatekeeper warns that it "cannot verify" the binary. This is expected for
+an unsigned download — it does not mean the binary is unsafe. To run it, clear
+the quarantine flag after downloading:
+
+```bash
+xattr -d com.apple.quarantine ./symphony_macos_arm64   # or symphony_macos_x86_64
+chmod +x ./symphony_macos_arm64
+./symphony_macos_arm64
+```
+
+Alternatively, right-click the binary in Finder and choose **Open**, then confirm
+**Open** in the dialog.
+NOTES
 
       - name: Set up mise tools
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3

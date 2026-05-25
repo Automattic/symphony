@@ -53,3 +53,20 @@ Each guard fails the run loudly rather than producing a partial release:
   so run it from the commit you intend to ship.
 - Only macOS binaries are produced today; there is no Linux binary or published
   Docker image.
+
+## macOS Gatekeeper
+
+The binaries are ad-hoc signed by Burrito but **not** signed with an Apple
+Developer ID or notarized, because the project has no Apple Developer Program
+membership. As a result, macOS Gatekeeper shows "Apple could not verify
+`symphony_macos_arm64` is free of malware…" on first launch. This is a provenance
+check, not a sign that anything is wrong with the binary.
+
+The release workflow appends an **Installing on macOS** section to every release's
+notes that tells users to clear the quarantine flag
+(`xattr -d com.apple.quarantine …`) or right-click → **Open**.
+
+To remove the warning entirely (silent launch), the build would need to codesign
+each binary with a Developer ID Application certificate, run hardened-runtime
+notarization via `xcrun notarytool`, and distribute the notarized archive. That
+requires a paid Apple Developer account and is not set up today.

@@ -1,0 +1,10 @@
+# Changelog
+
+All notable changes to Symphony are documented here. The section for each
+version is used as the body of its GitHub Release (see
+`.github/workflows/release.yml`).
+
+## 0.0.1
+
+- Initial release of the Symphony agent orchestration service.
+- Ships self-contained macOS binaries (arm64 and x86_64) built with Burrito.

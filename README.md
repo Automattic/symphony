@@ -280,6 +280,7 @@ token to `<state-root>/control_token` (both `0600`). Override either with `SYMPH
   practices.
 - [docs/development.md](docs/development.md): toolchain, testing, packaging, and fork notes for
   contributors.
+- [docs/releasing.md](docs/releasing.md): how to version and publish a release.
 - [docs/logging.md](docs/logging.md),
   [docs/quality_gate_security.md](docs/quality_gate_security.md), and
   [docs/token_accounting.md](docs/token_accounting.md): operational deep-dives.

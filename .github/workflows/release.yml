@@ -1,0 +1,77 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.0.1 (must match mix.exs)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release
+    # macOS host so Burrito can produce the macOS binaries; mise installs Zig
+    # for the cross-compile to x86_64.
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify input version matches mix.exs
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version '$version' is not semver (expected e.g. 0.0.1)."
+            exit 1
+          fi
+          mix_version="$(grep -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+"' mix.exs | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+          if [ "$version" != "$mix_version" ]; then
+            echo "::error::Input version $version does not match mix.exs version $mix_version. Bump mix.exs first."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Extract changelog entry
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v ver="$VERSION" '
+            $0 == "## " ver { flag = 1; next }
+            /^## / && flag { flag = 0 }
+            flag { print }
+          ' changelog.txt > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "::error::No changelog.txt entry found for version $VERSION. Add a '## $VERSION' section."
+            exit 1
+          fi
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          install: true
+          cache: true
+
+      - name: Fetch prod dependencies
+        run: MIX_ENV=prod mix deps.get
+
+      - name: Build release binaries
+        run: MIX_ENV=prod mix release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          # Creates the v<version> tag at this commit if it does not exist.
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          files: |
+            burrito_out/symphony_macos_arm64
+            burrito_out/symphony_macos_x86_64

@@ -52,23 +52,19 @@ defmodule SymphonyElixir.ReleaseCookie do
   @spec resolve!() :: String.t()
   def resolve! do
     case System.get_env("SYMPHONY_COOKIE") do
-      nil -> from_state_root()
-      "" -> from_state_root()
+      cookie when cookie in [nil, ""] -> from_state_root()
       cookie -> validate!(cookie)
     end
   end
 
   defp from_state_root do
     path = Paths.erlang_cookie_file()
-
-    case File.stat(path) do
-      {:ok, stat} -> read_existing!(path, stat)
-      {:error, :enoent} -> create!(path)
-      {:error, reason} -> raise "could not read Erlang cookie #{path}: #{inspect(reason)}"
-    end
+    if File.exists?(path), do: read_existing!(path), else: create!(path)
   end
 
-  defp read_existing!(path, %File.Stat{mode: mode}) do
+  defp read_existing!(path) do
+    mode = File.stat!(path).mode
+
     if band(mode, 0o077) != 0 do
       raise "#{path} must be readable only by its owner; got mode #{Integer.to_string(band(mode, 0o777), 8)}."
     end
@@ -91,7 +87,7 @@ defmodule SymphonyElixir.ReleaseCookie do
 
   defp validate!(cookie) do
     cond do
-      cookie in [nil, ""] -> raise "Erlang distribution cookie is empty."
+      cookie == "" -> raise "Erlang distribution cookie is empty."
       cookie == @insecure_cookie -> raise ~s(Refusing to use insecure Erlang distribution cookie "#{@insecure_cookie}".)
       true -> cookie
     end

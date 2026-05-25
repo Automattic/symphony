@@ -56,6 +56,15 @@ defmodule SymphonyElixir.ReleaseCookieTest.Module do
     assert_raise RuntimeError, ~r/insecure Erlang distribution cookie/, fn -> ReleaseCookie.resolve!() end
   end
 
+  test "refuses an empty persisted cookie" do
+    path = Paths.erlang_cookie_file()
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "   \n")
+    File.chmod!(path, 0o600)
+
+    assert_raise RuntimeError, ~r/cookie is empty/, fn -> ReleaseCookie.resolve!() end
+  end
+
   test "refuses a group- or world-readable persisted cookie" do
     path = Paths.erlang_cookie_file()
     File.mkdir_p!(Path.dirname(path))
@@ -70,6 +79,24 @@ defmodule SymphonyElixir.ReleaseCookieTest.Module do
     assert :ok = ReleaseCookie.apply!()
     # Resolution still persisted a cookie even though there was no node to set it on.
     assert File.read!(Paths.erlang_cookie_file()) =~ ~r/^[0-9a-f]{64}\n$/
+  end
+
+  test "apply!/0 sets the resolved cookie on a distributed node" do
+    case :net_kernel.start([:"symphony-cookie-test@127.0.0.1", :longnames]) do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+    end
+
+    original = :erlang.get_cookie()
+
+    on_exit(fn ->
+      :erlang.set_cookie(node(), original)
+      :net_kernel.stop()
+    end)
+
+    assert Node.alive?()
+    assert :ok = ReleaseCookie.apply!()
+    assert Atom.to_string(:erlang.get_cookie()) == ReleaseCookie.resolve!()
   end
 
   test "apply!/0 still fails closed on an insecure cookie" do

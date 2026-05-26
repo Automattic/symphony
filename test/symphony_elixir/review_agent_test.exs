@@ -354,6 +354,29 @@ defmodule SymphonyElixir.ReviewAgentTest do
     end
   end
 
+  test "evaluate uses origin HEAD when no base branch is configured" do
+    test_root = unique_tmp("symphony-elixir-review-agent-origin-head")
+
+    try do
+      repo = git_repo_with_origin_head_change!(test_root, "trunk")
+      put_sequence_responses!([~s({"verdict":"approve","comments":[]})])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        review_agent: %{enabled: true, kind: "codex", command: "codex app-server"}
+      )
+
+      assert {:ok, %{verdict: :approve}} =
+               ReviewAgent.evaluate(issue(), repo, Config.settings!(), review_agent_module: SequenceReviewer)
+
+      assert_receive {:review_agent_sequence_call, 1, prompt, _opts}
+      assert prompt =~ "feature.txt"
+      assert prompt =~ "grounded evidence line"
+    after
+      clear_sequence_responses!()
+      File.rm_rf(test_root)
+    end
+  end
+
   test "evaluate returns a block error whose findings pass self-check and validation" do
     test_root = unique_tmp("symphony-elixir-review-agent-self-check-ok")
 
@@ -539,6 +562,23 @@ defmodule SymphonyElixir.ReviewAgentTest do
 
   defp git_repo_with_change!(test_root) do
     repo = git_repo!(test_root)
+    File.write!(Path.join(repo, "feature.txt"), "grounded evidence line\n")
+    git!(repo, ["add", "feature.txt"])
+    git!(repo, ["commit", "-m", "feat: add grounded evidence"])
+    repo
+  end
+
+  defp git_repo_with_origin_head_change!(test_root, branch) do
+    repo = Path.join(test_root, "repo")
+    File.mkdir_p!(repo)
+    git!(repo, ["init", "-b", branch])
+    git!(repo, ["config", "user.name", "Test User"])
+    git!(repo, ["config", "user.email", "test@example.com"])
+    File.write!(Path.join(repo, "README.md"), "# review stream\n")
+    git!(repo, ["add", "README.md"])
+    git!(repo, ["commit", "-m", "initial"])
+    git!(repo, ["update-ref", "refs/remotes/origin/#{branch}", "HEAD"])
+    git!(repo, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/#{branch}"])
     File.write!(Path.join(repo, "feature.txt"), "grounded evidence line\n")
     git!(repo, ["add", "feature.txt"])
     git!(repo, ["commit", "-m", "feat: add grounded evidence"])

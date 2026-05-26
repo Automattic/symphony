@@ -13,7 +13,7 @@ defmodule SymphonyElixir.DependencyAudit do
   alias SymphonyElixir.PathSafety
   alias SymphonyElixir.Workspace
 
-  @default_base_ref "origin/main"
+  @last_resort_base_ref "origin/main"
 
   @trusted_git_patterns [
     "github.com/elixir-lang/*",
@@ -42,9 +42,9 @@ defmodule SymphonyElixir.DependencyAudit do
   @spec audit(Path.t(), keyword()) :: {:ok, []} | {:hold, [audit_item()]} | {:error, term()}
   def audit(workspace, opts \\ []) do
     settings = Keyword.get(opts, :settings) || Config.settings!()
-    base_ref = Keyword.get(opts, :base_ref) || configured_base_ref(Keyword.get(opts, :repo_key))
     command_runner = Keyword.get(opts, :command_runner, &run_git/3)
     workspace = Path.expand(workspace)
+    base_ref = Keyword.get(opts, :base_ref) || default_base_ref(workspace, Keyword.get(opts, :repo_key), command_runner)
 
     case resolve_base_ref(workspace, base_ref, command_runner) do
       {:ok, base_ref} ->
@@ -417,7 +417,25 @@ defmodule SymphonyElixir.DependencyAudit do
   defp configured_base_ref(repo_key) do
     case Config.repo_base_branch(repo_key) do
       {:ok, branch} when is_binary(branch) and branch != "" -> "origin/#{branch}"
-      _ -> @default_base_ref
+      _ -> nil
+    end
+  end
+
+  defp default_base_ref(workspace, repo_key, command_runner) do
+    configured_base_ref(repo_key) || origin_head_base_ref(workspace, command_runner) || @last_resort_base_ref
+  end
+
+  defp origin_head_base_ref(workspace, command_runner) do
+    case command_runner.("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cd: workspace) do
+      {output, 0} when is_binary(output) -> origin_head_base_ref_from_output(output)
+      _ -> nil
+    end
+  end
+
+  defp origin_head_base_ref_from_output(output) do
+    case String.trim(output) do
+      "origin/" <> branch when branch != "" -> "origin/#{branch}"
+      _output -> nil
     end
   end
 

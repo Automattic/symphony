@@ -61,6 +61,18 @@ defmodule SymphonyElixir.DependencyAuditTest do
     assert {:ok, []} = DependencyAudit.audit(repo, settings: Config.settings!())
   end
 
+  test "discovers origin HEAD base branch when base_ref is omitted", %{repo: repo} do
+    write_package_json!(repo, %{"dependencies" => %{}})
+    commit_base!(repo)
+    git!(repo, ["update-ref", "refs/remotes/origin/trunk", "HEAD"])
+    git!(repo, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"])
+    git!(repo, ["update-ref", "-d", "refs/remotes/origin/main"])
+
+    write_package_json!(repo, %{"dependencies" => %{"helper" => "^1.0.0"}})
+
+    assert {:ok, []} = DependencyAudit.audit(repo)
+  end
+
   test "git audit commands ignore malicious repo fsmonitor config", %{repo: repo} do
     write_package_json!(repo, %{"dependencies" => %{}})
     commit_base!(repo)
@@ -330,6 +342,19 @@ defmodule SymphonyElixir.DependencyAuditTest do
     assert %{package: "base_ref", to: "origin/main", from: nil} = hold
     assert hold.reason =~ "base_ref_unavailable"
     assert hold.reason =~ "unknown revision"
+  end
+
+  test "uses last-resort base ref when origin HEAD output is blank" do
+    assert {:ok, []} =
+             DependencyAudit.audit("/tmp/repo",
+               settings: Config.settings!(),
+               command_runner: fn
+                 "git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], _opts -> {"\n", 0}
+                 "git", ["rev-parse", "--verify", "origin/main^{commit}"], _opts -> {"abc123\n", 0}
+                 "git", ["diff", "--name-only", "origin/main", "--"], _opts -> {"", 0}
+                 "git", ["ls-files", "--others", "--exclude-standard"], _opts -> {"", 0}
+               end
+             )
   end
 
   test "holds when the rev-parse output is non-binary" do

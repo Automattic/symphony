@@ -78,6 +78,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> append_ci_failure(ci_failure)
     |> append_pr_conflict(pr_conflict)
     |> append_review_agent_instructions(Keyword.get(opts, :settings), opts)
+    |> append_feedback_protocol(Keyword.get(opts, :settings))
     |> append_linear_input_warnings(linear_input_warnings)
     |> append_codex_transport_output_guard(agent_context, opts)
   end
@@ -134,6 +135,7 @@ defmodule SymphonyElixir.PromptBuilder do
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
     |> append_pr_conflict(pr_conflict)
     |> append_review_agent_instructions(Keyword.get(opts, :settings), opts)
+    |> append_feedback_protocol(Keyword.get(opts, :settings))
     |> append_linear_input_warnings(linear_input_warnings)
     |> append_codex_transport_output_guard(agent_context, opts)
   end
@@ -496,6 +498,46 @@ defmodule SymphonyElixir.PromptBuilder do
       - If the reviewer requests changes, address those comments in the same workspace and stop before push again.
       - If the reviewer approves, follow the injected continuation prompt and complete the normal push/PR handoff.
       """
+  end
+
+  # Poller-aware PR-feedback / CI posture. Symphony knows from config whether its
+  # PR-review and CI pollers are active; the agent (which cannot read symphony.yml)
+  # is told whether to wait for re-activation or to fetch feedback itself.
+  defp append_feedback_protocol(prompt, %{pr_review: %{mode: mode}} = settings) when is_binary(mode) do
+    pr_polling? = mode == "polling"
+    ci_polling? = pr_polling? and ci_poller_enabled?(settings)
+    prompt <> "\n\n" <> feedback_protocol_section(pr_polling?, ci_polling?)
+  end
+
+  defp append_feedback_protocol(prompt, _settings), do: prompt
+
+  defp ci_poller_enabled?(%{ci: %{enabled: enabled}}), do: enabled == true
+  defp ci_poller_enabled?(_settings), do: false
+
+  defp feedback_protocol_section(pr_polling?, ci_polling?) do
+    [
+      "PR feedback and CI delivery:",
+      "",
+      pr_feedback_protocol_line(pr_polling?),
+      ci_feedback_protocol_line(ci_polling?)
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp pr_feedback_protocol_line(true) do
+    "- PR review feedback is delivered by Symphony re-activating you with the reviewer comments embedded in a continuation prompt; wait for that re-activation instead of polling for review feedback with `github_*` tools yourself."
+  end
+
+  defp pr_feedback_protocol_line(false) do
+    "- PR review feedback is not delivered by Symphony; gather it yourself with the available `github_*` tools (for example `github_list_pr_review_comments` and `github_list_pr_reviews`) and resolve each actionable comment before handoff."
+  end
+
+  defp ci_feedback_protocol_line(true) do
+    "- CI failures are delivered by Symphony re-activating you with the failing-check context embedded in a continuation prompt; wait for that re-activation instead of polling check status with `github_*` tools yourself."
+  end
+
+  defp ci_feedback_protocol_line(false) do
+    "- CI status is not delivered by Symphony; check it yourself with the available `github_*` tools (for example `github_get_pr_checks`) and triage failures before handoff."
   end
 
   defp append_linear_input_warnings(prompt, []), do: prompt

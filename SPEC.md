@@ -1066,6 +1066,13 @@ Fallback prompt behavior:
 - If project guides are enabled and at least one configured guide is present, the runtime MAY append
   a `## Project conventions` section after the rendered workflow prompt. If no configured guide is
   present, the section SHOULD be omitted rather than rendering an empty heading.
+- When settings are known, the runtime SHOULD append a poller-aware PR-feedback/CI posture derived
+  from config so repo `WORKFLOW.md` templates need not restate it. When the PR-review poller is
+  active (`pr_review.mode == "polling"`), the agent is told PR review feedback arrives via Symphony
+  re-activation (continuation prompt) and to wait rather than poll `github_*` itself; otherwise the
+  agent is told to gather review feedback itself. The CI half follows the CI poller's enablement
+  (`pr_review.mode == "polling"` and `ci.enabled`) independently. When settings are unavailable the
+  section SHOULD be omitted.
 
 ### 5.6 Workflow Validation and Error Surface
 

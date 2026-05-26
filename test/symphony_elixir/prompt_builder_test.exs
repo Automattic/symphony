@@ -139,6 +139,84 @@ defmodule SymphonyElixir.PromptBuilderTest do
     refute prompt =~ "Codex transport output guard:"
   end
 
+  test "prompt builder injects wait-for-reactivation feedback posture when pollers enabled" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
+
+    prompt =
+      PromptBuilder.build_prompt(
+        %Issue{identifier: "MT-200", repo_key: "default"},
+        settings: %{pr_review: %{mode: "polling"}, ci: %{enabled: true}}
+      )
+
+    assert prompt =~ "PR feedback and CI delivery:"
+    assert prompt =~ "PR review feedback is delivered by Symphony re-activating you"
+    assert prompt =~ "CI failures are delivered by Symphony re-activating you"
+    refute prompt =~ "gather it yourself"
+    refute prompt =~ "check it yourself"
+  end
+
+  test "prompt builder injects active-fetch feedback posture when pollers disabled" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
+
+    prompt =
+      PromptBuilder.build_prompt(
+        %Issue{identifier: "MT-201", repo_key: "default"},
+        settings: %{pr_review: %{mode: "tracker"}, ci: %{enabled: true}}
+      )
+
+    assert prompt =~ "PR feedback and CI delivery:"
+    assert prompt =~ "PR review feedback is not delivered by Symphony; gather it yourself"
+    assert prompt =~ "CI status is not delivered by Symphony; check it yourself"
+    refute prompt =~ "delivered by Symphony re-activating you"
+  end
+
+  test "prompt builder splits feedback posture when only the PR-review poller is enabled" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
+
+    prompt =
+      PromptBuilder.build_prompt(
+        %Issue{identifier: "MT-202", repo_key: "default"},
+        settings: %{pr_review: %{mode: "polling"}, ci: %{enabled: false}}
+      )
+
+    assert prompt =~ "PR review feedback is delivered by Symphony re-activating you"
+    assert prompt =~ "CI status is not delivered by Symphony; check it yourself"
+  end
+
+  test "prompt builder treats a missing CI section as a disabled CI poller" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
+
+    prompt =
+      PromptBuilder.build_prompt(
+        %Issue{identifier: "MT-203", repo_key: "default"},
+        settings: %{pr_review: %{mode: "polling"}}
+      )
+
+    assert prompt =~ "PR review feedback is delivered by Symphony re-activating you"
+    assert prompt =~ "CI status is not delivered by Symphony; check it yourself"
+  end
+
+  test "prompt builder omits feedback posture when settings are unavailable" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
+
+    prompt = PromptBuilder.build_prompt(%Issue{identifier: "MT-204", repo_key: "default"})
+
+    refute prompt =~ "PR feedback and CI delivery:"
+  end
+
+  test "compact prompt injects the poller-aware feedback posture" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
+
+    prompt =
+      PromptBuilder.build_compact_prompt(
+        %Issue{identifier: "MT-205", repo_key: "default"},
+        settings: %{pr_review: %{mode: "polling"}, ci: %{enabled: true}}
+      )
+
+    assert prompt =~ "PR feedback and CI delivery:"
+    assert prompt =~ "CI failures are delivered by Symphony re-activating you"
+  end
+
   test "review-agent instructions override active retry guidance" do
     write_workflow_file!(
       Workflow.workflow_file_path(),

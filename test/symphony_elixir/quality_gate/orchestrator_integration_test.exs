@@ -739,7 +739,7 @@ defmodule SymphonyElixir.QualityGate.OrchestratorIntegrationTest do
 
   defp assert_bootstrap_workpad_comment(issue_id) do
     assert_receive {:memory_tracker_comment, ^issue_id, body}, 500
-    assert body =~ "## Codex Workpad"
+    assert body =~ "## Symphony Workpad"
     refute body =~ "skipped"
     refute body =~ "clarification requested"
   end

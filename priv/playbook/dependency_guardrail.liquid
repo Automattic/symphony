@@ -1,0 +1,17 @@
+{% comment %}
+name: dependency_guardrail
+description: Justify dependency changes and keep the lock file diff scoped to the current ticket.
+vars: [lockfile]
+{% endcomment %}## Dependency-change guardrail
+
+If you add, remove, or change packages/dependencies:
+
+- justify the dependency change in the workpad, including why that package is
+  appropriate and why the work should not be implemented inline,
+- verify the `{{ lockfile }}` diff includes only changes relevant to the current
+  ticket,
+- if `{{ lockfile }}` contains irrelevant changes, restore it from the repository
+  default branch, re-run only the required install command, and re-verify before
+  pushing,
+- flag any transitive dependency upgrades that were not explicitly intended in the
+  workpad and in the PR body.

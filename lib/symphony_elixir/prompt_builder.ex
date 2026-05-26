@@ -5,7 +5,11 @@ defmodule SymphonyElixir.PromptBuilder do
 
   alias SymphonyElixir.{AgentLabels, Config, PromptSafety, Workflow}
 
-  @render_opts [strict_variables: true, strict_filters: true]
+  @render_opts [
+    strict_variables: true,
+    strict_filters: true,
+    file_system: {SymphonyElixir.Playbook.FileSystem, nil}
+  ]
   @compact_comment_limit 5
   @codex_transport_output_guard """
   Codex transport output guard:
@@ -58,20 +62,16 @@ defmodule SymphonyElixir.PromptBuilder do
       |> parse_template!()
 
     template
-    |> Solid.render!(
-      %{
-        "attempt" => Keyword.get(opts, :attempt),
-        "agent" => to_solid_value(agent_context),
-        "repo_key" => repo_key,
-        "issue" => issue |> prompt_issue_map(repo_key) |> to_solid_map(),
-        "pr" => issue |> prompt_pr_map(opts) |> to_solid_map(),
-        "reviewer_comments" => to_solid_value(reviewer_comments),
-        "ci_failure" => to_solid_value(ci_failure),
-        "pr_conflict" => to_solid_value(pr_conflict)
-      },
-      @render_opts
-    )
-    |> IO.iodata_to_binary()
+    |> render_template!(%{
+      "attempt" => Keyword.get(opts, :attempt),
+      "agent" => to_solid_value(agent_context),
+      "repo_key" => repo_key,
+      "issue" => issue |> prompt_issue_map(repo_key) |> to_solid_map(),
+      "pr" => issue |> prompt_pr_map(opts) |> to_solid_map(),
+      "reviewer_comments" => to_solid_value(reviewer_comments),
+      "ci_failure" => to_solid_value(ci_failure),
+      "pr_conflict" => to_solid_value(pr_conflict)
+    })
     |> prepend_managed_context(prompt_mode, agent_context, repo_key)
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
     |> append_reviewer_comments(reviewer_comments)
@@ -153,6 +153,32 @@ defmodule SymphonyElixir.PromptBuilder do
       :pr -> :pr
       "pr" -> :pr
       _mode -> :issue
+    end
+  end
+
+  # Renders the workflow template, then fails loud if any `{% render %}` referenced
+  # an unknown playbook partial. `Solid.render!` would silently keep the file-system
+  # fallback text (a missing partial is not a strict variable/filter error), so a
+  # typo'd partial name must be caught here rather than shipped in the prompt.
+  defp render_template!(template, assigns) do
+    case Solid.render(template, assigns, @render_opts) do
+      {:ok, result, errors} ->
+        raise_on_partial_errors!(errors)
+        IO.iodata_to_binary(result)
+
+      {:error, errors, result} ->
+        raise Solid.RenderError, errors: errors, result: result
+    end
+  end
+
+  defp raise_on_partial_errors!(errors) do
+    case Enum.filter(errors, &match?(%Solid.FileSystem.Error{}, &1)) do
+      [] ->
+        :ok
+
+      partial_errors ->
+        reasons = Enum.map_join(partial_errors, "; ", & &1.reason)
+        raise RuntimeError, "template_render_error: #{reasons}"
     end
   end
 

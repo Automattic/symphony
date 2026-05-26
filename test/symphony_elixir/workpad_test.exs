@@ -48,8 +48,8 @@ defmodule SymphonyElixir.WorkpadTest do
     assert_receive {:memory_tracker_comment, "issue-workpad-bootstrap", body}
 
     assert updated_issue.state == "In Progress"
-    assert [%{author: "Claude", body: ^body, created_at: ^now}] = updated_issue.comments
-    assert body =~ "## Claude Workpad"
+    assert [%{author: "Symphony", body: ^body, created_at: ^now}] = updated_issue.comments
+    assert body =~ "## Symphony Workpad"
     assert body =~ "#{Path.expand(workspace)}@abc1234"
     assert body =~ "Symphony created this bootstrap workpad before the first agent turn."
   end
@@ -88,8 +88,8 @@ defmodule SymphonyElixir.WorkpadTest do
              )
 
     assert_receive {:memory_tracker_comment, "issue-sparse-workpad", body}
-    assert [%{author: "Agent", body: ^body}] = updated_issue.comments
-    assert String.starts_with?(body, "## Agent Workpad")
+    assert [%{author: "Symphony", body: ^body}] = updated_issue.comments
+    assert String.starts_with?(body, "## Symphony Workpad")
   end
 
   test "bootstrap ignores malformed comments while searching for an existing workpad" do
@@ -108,7 +108,7 @@ defmodule SymphonyElixir.WorkpadTest do
              Workpad.bootstrap(issue, System.tmp_dir!(), settings: Config.settings!())
 
     assert_receive {:memory_tracker_comment, "issue-malformed-comments", body}
-    assert [%{author: "Claude", body: ^body}, 123] = updated_issue.comments
+    assert [%{author: "Symphony", body: ^body}, 123] = updated_issue.comments
   end
 
   test "bootstrap skips tracker comment creation when issue id is missing" do
@@ -268,8 +268,8 @@ defmodule SymphonyElixir.WorkpadTest do
     assert_receive {:linear_comments_query, %{id: "issue-new-linear-workpad", limit: 100}}
     assert_receive {:linear_add_comment, %{issueId: "issue-new-linear-workpad", body: body}}
 
-    assert [%{author: "Claude", body: ^body}] = updated_issue.comments
-    assert String.starts_with?(body, "## Claude Workpad")
+    assert [%{author: "Symphony", body: ^body}] = updated_issue.comments
+    assert String.starts_with?(body, "## Symphony Workpad")
   end
 
   test "bootstrap returns Linear comment creation failures" do

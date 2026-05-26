@@ -1,0 +1,30 @@
+{% comment %}
+name: workpad_bootstrap
+description: Find, reuse, or create the single persistent Linear workpad comment and reconcile it before new work.
+vars: [agent]
+{% endcomment %}## Workpad bootstrap and reconciliation
+
+Use exactly one persistent Linear comment per issue as the single source of truth
+for plan, acceptance criteria, validation, and handoff notes.
+
+1. Search the issue's active (unresolved) comments for a marker header:
+   `{{ agent.workpad_heading }}`.
+   - For compatibility, also reuse an existing `## Codex Workpad` or
+     `## Claude Workpad` comment if present, and rewrite its header to
+     `{{ agent.workpad_heading }}` while preserving the rest of the comment.
+   - Ignore resolved comments while searching; only active/unresolved comments are
+     eligible to be reused as the live workpad.
+   - If found, reuse that comment; do not create a new workpad comment.
+   - If not found, create one workpad comment and use it for all updates.
+   - Persist the workpad comment ID and only write progress updates to that ID.
+2. Reconcile the workpad before new edits:
+   - Check off items that are already done.
+   - Expand/fix the plan so it is comprehensive for current scope.
+   - Ensure `Acceptance Criteria` and `Validation` are current and still make
+     sense for the task.
+3. Ensure the workpad includes a compact environment stamp at the top as a code
+   fence line: `<host>:<abs-workdir>@<short-sha>`. Do not include metadata already
+   inferable from Linear issue fields (issue ID, status, branch, PR link).
+4. Keep the workpad updated after every meaningful milestone (reproduction
+   captured, plan revised, code landed, validation run, feedback addressed). Never
+   leave completed work unchecked.

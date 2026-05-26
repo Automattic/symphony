@@ -230,61 +230,11 @@ workpad instead of synthesising a `gh` call or widening the prompt-facing API.
     - Do not write the first code edit until this analysis is recorded.
 11. Compact context and proceed to execution.
 
-## PR feedback sweep protocol (required)
+{% render "pr_feedback_sweep" %}
 
-When a ticket has an attached PR, run this protocol before moving to `In Review`:
+{% render "ci_triage" %}
 
-1. Identify the PR number from issue links/attachments.
-2. Gather feedback from all channels:
-   - PR body and metadata via `github_get_pull_request()`.
-   - CI status rollup via `github_get_pr_checks()`.
-   - Top-level PR comments via `github_list_pr_comments()`.
-   - Inline review comments via `github_list_pr_review_comments()`.
-   - Review summaries and states via `github_list_pr_reviews()`.
-3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
-   - code/test/docs updated to address it AND a short Symphony AI reply is posted on that thread via `github_reply_to_review_comment(comment_id, body)` confirming what changed and naming the addressing commit hash, or
-   - explicit, justified Symphony AI pushback reply is posted on that thread via `github_reply_to_review_comment(comment_id, body)`, or
-   - explicit Symphony AI defer/non-actionable reply is posted with concrete reasoning (for example, out of scope with a follow-up issue, duplicate feedback, or generated PR overview).
-   Replies are mandatory even when the comment is addressed in code, including during the first PR feedback sweep before moving to `In Review`. Top-level PR comments use `github_add_pr_comment` instead.
-   Use natural, specific wording such as `Symphony AI handled this in <commit>: <what changed>` or `Symphony AI is leaving this unchanged because <reason>`.
-4. Update the workpad plan/checklist to include each feedback item and its resolution status.
-5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments.
-
-## CI failure triage protocol (required when checks are red)
-
-Use this whenever pushed checks come back failing, at any push gate (including the §7 push gate and the §11 pre-`In Review` loop).
-
-1. Read the check summary via `github_get_pr_checks()` to identify which check
-   failed, then read the failed-step log excerpt via
-   `github_get_failed_run_log()`.
-2. Categorize the failure as flaky/retryable infrastructure or a real code defect.
-3. For real failures, diagnose the root cause, fix it, rerun validation locally, then loop back through the validation, diff-review, commit, and push gates.
-4. Never use `--no-verify`, `--force`, or skipped hooks to bypass failures.
-5. If the failure is in unrelated pre-existing code, document it in the workpad and note it explicitly in the PR description.
-
-## Blocked-access escape hatch (required behavior)
-
-Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
-
-- GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
-- Do not use this escape hatch for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
-- If a non-GitHub required tool is missing, required non-GitHub auth/permission is unavailable, or sandbox/tooling startup blocks all required local work, post one short Linear blocker comment. This is an exception to the single-workpad rule.
-- Record the blocker comment URL in the workpad, then move the ticket to `Backlog` so it does not look like a validated PR review.
-- The blocker comment and workpad brief must include:
-  - what is missing,
-  - why it blocks required acceptance/validation,
-  - exact human action needed to unblock.
-- Keep the blocker comment concise and action-oriented; do not add any other top-level comments.
-
-## In-execution clarification escape hatch (required behavior)
-
-Use this only when planning reaches a fundamentally unclear specification and the issue description plus comments do not provide unambiguous acceptance criteria.
-
-1. Post a short Linear comment with the specific unanswered questions. This is an exception to the single-workpad rule; do not create a second workpad.
-2. Record in the workpad: the unanswered questions, the reason planning could not proceed, and the URL of the Linear comment posted in step 1. The next human picking up the ticket must be able to reconstruct the blocker without re-deriving it.
-3. Move the issue to `Backlog`. This is the documented exception to the status map's `do not modify` rule for `Backlog`.
-4. Stop. Do not guess or implement against a half-spec.
+{% render "escape_hatches" %}
 
 ## Step 2: Execution phase (Todo -> In Progress -> In Review)
 
@@ -386,16 +336,8 @@ Use this only when planning reaches a fundamentally unclear specification and th
 - Use exactly one persistent workpad comment (`{{ agent.workpad_heading }}`) per issue.
 - If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
-- If out-of-scope improvements are found, create a separate Backlog issue rather
-  than expanding current scope, and include a clear
-  title/description/acceptance criteria, same-project assignment, a `related`
-  link to the current issue, and `blockedBy` when the follow-up depends on the
-  current issue.
-- If adding, removing, or changing packages/dependencies:
-  - justify the dependency change in the workpad, including why that package is appropriate and why the work should not be implemented inline,
-  - verify the lock file diff includes only changes relevant to the current ticket,
-  - if the lock file contains irrelevant changes, restore it from `origin/main`, re-run only the required install command, and re-verify before pushing,
-  - flag any transitive dependency upgrades that were not explicitly intended.
+- File out-of-scope improvements as a separate Backlog issue (see the "Out-of-scope improvements" section below) rather than expanding current scope.
+- When changing packages/dependencies, follow the "Dependency-change guardrail" section below; the lock file for this repo is `mix.lock`.
 - If planning cannot derive unambiguous acceptance criteria from the issue description and comments, use the in-execution clarification escape hatch: post the specific Linear questions, record the workpad bookkeeping required by that section, move the issue to `Backlog`, and stop.
 - Do not move to `In Review` unless the `Completion bar before In Review` is satisfied.
 - In `In Review`, do not make changes; wait and poll.
@@ -403,38 +345,8 @@ Use this only when planning reaches a fundamentally unclear specification and th
 - Keep issue text concise, specific, and reviewer-oriented.
 - If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action, move the issue to `Backlog`, and stop.
 
-## Workpad template
+{% render "out_of_scope_backlog" %}
 
-Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
+{% render "dependency_guardrail", lockfile: "mix.lock" %}
 
-````md
-{{ agent.workpad_heading }}
-
-```text
-<hostname>:<abs-path>@<short-sha>
-```
-
-### Plan
-
-- [ ] 1\. Parent task
-  - [ ] 1.1 Child task
-  - [ ] 1.2 Child task
-- [ ] 2\. Parent task
-
-### Acceptance Criteria
-
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-### Validation
-
-- [ ] targeted tests: `<command>`
-
-### Notes
-
-- <short progress note with timestamp>
-
-### Confusions
-
-- <only include when something was confusing during execution>
-````
+{% render "workpad_template", agent: agent %}

@@ -8,7 +8,7 @@ defmodule SymphonyElixir.AgentLabelsTest do
     assert AgentLabels.display_name(:claude) == "Claude"
 
     assert AgentLabels.update_label("codex") == "Codex update"
-    assert AgentLabels.workpad_heading(:claude) == "## Claude Workpad"
+    assert AgentLabels.workpad_heading(:claude) == "## Symphony Workpad"
   end
 
   test "falls back to generic agent labels for unknown or blank kinds" do
@@ -17,8 +17,8 @@ defmodule SymphonyElixir.AgentLabelsTest do
     assert AgentLabels.display_name(123) == "Agent"
 
     assert AgentLabels.update_label(" ") == "Agent update"
-    assert AgentLabels.workpad_heading("unknown") == "## Agent Workpad"
-    assert AgentLabels.workpad_heading(%{}) == "## Agent Workpad"
+    assert AgentLabels.workpad_heading("unknown") == "## Symphony Workpad"
+    assert AgentLabels.workpad_heading(%{}) == "## Symphony Workpad"
   end
 
   test "normalizes kind values" do
@@ -30,7 +30,11 @@ defmodule SymphonyElixir.AgentLabelsTest do
   end
 
   test "returns known workpad markers" do
-    assert AgentLabels.known_workpad_markers() == ["## Codex Workpad", "## Claude Workpad"]
+    assert AgentLabels.known_workpad_markers() == [
+             "## Symphony Workpad",
+             "## Codex Workpad",
+             "## Claude Workpad"
+           ]
   end
 
   test "builds prompt context from normalized kind" do
@@ -38,7 +42,7 @@ defmodule SymphonyElixir.AgentLabelsTest do
              kind: "codex",
              display_name: "Codex",
              update_label: "Codex update",
-             workpad_heading: "## Codex Workpad"
+             workpad_heading: "## Symphony Workpad"
            }
 
     assert AgentLabels.prompt_context("custom").display_name == "Agent"

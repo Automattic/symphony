@@ -1,0 +1,16 @@
+{% comment %}
+name: out_of_scope_backlog
+description: File a separate Backlog issue for meaningful out-of-scope improvements instead of expanding scope.
+vars: []
+{% endcomment %}## Out-of-scope improvements
+
+When you discover a meaningful improvement outside the current ticket's scope, do
+not expand scope. File a separate Linear issue instead. The follow-up issue must:
+
+- include a clear title, description, and acceptance criteria,
+- be placed in `Backlog`,
+- be assigned to the same project as the current issue,
+- link the current issue as `related`,
+- use `blockedBy` when the follow-up depends on the current issue.
+
+Record the new issue ID in the current workpad's `Notes`.

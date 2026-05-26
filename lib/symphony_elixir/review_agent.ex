@@ -12,6 +12,7 @@ defmodule SymphonyElixir.ReviewAgent do
 
   @max_diff_prompt_bytes 120_000
   @self_check_max_iterations 4
+  @last_resort_comparison_base "origin/main"
   @agent_message_methods [
     "item/agentMessage/delta",
     "codex/event/agent_message_delta",
@@ -588,12 +589,19 @@ defmodule SymphonyElixir.ReviewAgent do
   defp origin_head_comparison_base(workspace, worker_host) do
     case git(workspace, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], worker_host) do
       {:ok, output} ->
-        output |> String.trim() |> blank_fallback("origin/main")
+        output |> normalize_origin_head_ref() |> blank_fallback(@last_resort_comparison_base)
 
       {:error, reason} ->
-        Logger.info("ReviewAgent origin/HEAD unresolved, falling back to origin/main reason=#{inspect(reason)}")
-        "origin/main"
+        Logger.info("ReviewAgent origin/HEAD unresolved, falling back to #{@last_resort_comparison_base} reason=#{inspect(reason)}")
+
+        @last_resort_comparison_base
     end
+  end
+
+  defp normalize_origin_head_ref(output) do
+    output
+    |> String.trim()
+    |> String.replace_prefix("refs/remotes/", "")
   end
 
   defp merge_base(workspace, comparison_base, worker_host) do

@@ -108,6 +108,10 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert prompt =~ "Codex transport output guard:"
     assert prompt =~ "redirect full stdout/stderr to a log file"
     assert prompt =~ "tail -200"
+    assert prompt =~ "<your-validation-command>"
+    refute prompt =~ "make all"
+    refute prompt =~ "mix test"
+    refute prompt =~ "HEX_HOME"
   end
 
   test "prompt builder omits Codex transport output guard for non-Codex agents" do
@@ -337,7 +341,10 @@ defmodule SymphonyElixir.PromptBuilderTest do
       )
 
     assert prompt =~ "Codex transport output guard:"
-    assert prompt =~ "make all"
+    assert prompt =~ "<your-validation-command>"
+    refute prompt =~ "make all"
+    refute prompt =~ "mix test"
+    refute prompt =~ "HEX_HOME"
   end
 
   test "compact prompt appends merge conflict instructions and metadata" do

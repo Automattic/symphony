@@ -11,8 +11,8 @@ defmodule SymphonyElixir.PromptBuilder do
   Codex transport output guard:
 
   - Do not stream broad validation commands directly when they may emit large or repetitive output.
-  - For commands such as `make all`, `mix test`, `mix dialyzer`, dependency installs, or coverage, redirect full stdout/stderr to a log file, then print the exit code and at most the final 200 lines.
-  - Example: `LOG=/tmp/symphony-validation.log; HEX_HOME=/private/tmp/symphony-hex-home make all >"$LOG" 2>&1; status=$?; tail -200 "$LOG"; exit $status`
+  - For broad build/test/lint/coverage commands or dependency installs, redirect full stdout/stderr to a log file, then print the exit code and at most the final 200 lines.
+  - Example: `LOG=/tmp/symphony-validation.log; <your-validation-command> >"$LOG" 2>&1; status=$?; tail -200 "$LOG"; exit $status`
   """
   @sensitive_path_examples "`~/.ssh/`, `~/.aws/`, `~/.config/gh/`, `.env*`, `*.pem`, or `*.key`"
   @default_pr_prompt """

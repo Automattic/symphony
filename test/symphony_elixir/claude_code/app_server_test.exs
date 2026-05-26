@@ -544,9 +544,24 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
           assert File.exists?(session.mcp_session.socket_path)
         end
 
+        # Shared skills are provisioned as a session-only Claude plugin outside the worktree.
+        plugin_dir = session.plugin_dir
+        assert Path.dirname(plugin_dir) == Path.dirname(settings_path)
+        refute String.starts_with?(plugin_dir, workspace)
+
+        {:ok, manifest} = Jason.decode(File.read!(Path.join(plugin_dir, ".claude-plugin/plugin.json")))
+        assert manifest["name"] == SymphonyElixir.SharedSkills.plugin_name()
+
+        for name <- SymphonyElixir.SharedSkills.names() do
+          skill_path = Path.join([plugin_dir, "skills", name, "SKILL.md"])
+          assert File.exists?(skill_path)
+          assert File.read!(skill_path) =~ "name: #{name}"
+        end
+
         assert :ok = AppServer.stop_session(session)
         refute File.exists?(settings_path)
         refute File.exists?(mcp_config_path)
+        refute File.exists?(plugin_dir)
         refute File.exists?(Path.dirname(settings_path))
 
         if session.mcp_session.transport == :unix do
@@ -1046,6 +1061,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ "alwaysLoad"
         assert traced_command =~ "symphony-mcp-shim"
         assert traced_command =~ "/tmp/symphony-mcp-"
+        # Shared-skills plugin tree is provisioned on the remote worker too.
+        assert session.plugin_dir =~ "/tmp/symphony-claude-settings-"
+        assert String.ends_with?(session.plugin_dir, "/plugin")
+        assert traced_command =~ "mkdir -p"
+        assert traced_command =~ ".claude-plugin/plugin.json"
+        assert traced_command =~ "SKILL.md"
       after
         File.rm_rf(test_root)
       end
@@ -1232,7 +1253,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert command =~ "rm -f '/remote/workspace/.claude/mcp_config.json'"
       assert command =~ "rm -f '/tmp/symphony-mcp-remote.sock'"
       assert command =~ "rm -f '/tmp/symphony-mcp-shim-remote'"
-      assert command =~ "rmdir '/remote/workspace/.claude' 2>/dev/null || true"
+      assert command =~ "rm -rf '/remote/workspace/.claude' 2>/dev/null || true"
     end
 
     test "logs and returns ok when stubbed remote Claude settings cleanup fails" do
@@ -1695,6 +1716,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  "--mcp-config",
                  session.mcp_config_path,
                  "--strict-mcp-config",
+                 "--plugin-dir",
+                 session.plugin_dir,
                  "--output-format",
                  "stream-json",
                  "--print"
@@ -2278,6 +2301,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ "--mcp-config"
         assert traced_command =~ session.mcp_config_path
         assert traced_command =~ "--strict-mcp-config"
+        assert traced_command =~ "--plugin-dir"
+        assert traced_command =~ session.plugin_dir
         assert traced_command =~ "--output-format"
         assert traced_command =~ "stream-json"
         assert traced_command =~ "--print"

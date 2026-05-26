@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.Codex.McpConfigTest do
   use ExUnit.Case, async: true
 
+  import Bitwise
+
   alias SymphonyElixir.Codex.McpConfig
   alias SymphonyElixir.Config.Schema
 
@@ -164,6 +166,13 @@ defmodule SymphonyElixir.Codex.McpConfigTest do
     assert File.read!(cache_path) == ~s({"cached":true})
     assert {:ok, cache_stat} = File.lstat(cache_path)
     refute cache_stat.type == :symlink
+
+    # Shared skills are materialized under $CODEX_HOME/skills for user-scope discovery.
+    for name <- SymphonyElixir.SharedSkills.names() do
+      skill_path = Path.join([generated_home, "skills", name, "SKILL.md"])
+      assert File.read!(skill_path) =~ "name: #{name}"
+      assert band(File.stat!(skill_path).mode, 0o777) == 0o600
+    end
   end
 
   test "write_home cleans up generated home when setup fails" do

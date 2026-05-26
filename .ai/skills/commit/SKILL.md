@@ -27,8 +27,11 @@ description:
 1. Read session history to identify scope, intent, and rationale.
 2. Inspect the working tree and staged changes (`git status`, `git diff`,
    `git diff --staged`).
-3. Stage intended changes, including new files (`git add -A`) after confirming
-   scope.
+3. Stage only the files that are part of the intended change, using explicit
+   paths (e.g. `git add <path> ...`) rather than a blanket `git add -A`. Some
+   repos constrain changes to a specific scope (e.g. a single package
+   directory) and fail CI on out-of-scope or stray files, so avoid staging
+   anything outside the intended change.
 4. Sanity-check newly added files; if anything looks random or likely ignored
    (build artifacts, logs, temp files), flag it to the user before committing.
 5. If staging is incomplete or includes unrelated files, fix the index or ask

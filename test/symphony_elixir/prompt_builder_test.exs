@@ -31,10 +31,23 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert pr_prompt =~ "Push updates to the current PR head branch."
     assert pr_prompt =~ "Use scoped `github_*` tools"
     assert pr_prompt =~ "PR 123 <linear_issue_title>\nFix failing tests"
+    assert pr_prompt =~ "Never push to a remote other than the workspace's configured `origin`."
+    assert pr_prompt =~ "Never add or rewrite git remotes unless the remote is the configured `origin`."
+
+    assert pr_prompt =~
+             "Never open a pull request against a repository other than the repository configured for this workflow."
+
     assert issue_prompt =~ "Symphony runtime context:"
     assert issue_prompt =~ "Work only in the prepared repository workspace"
     assert issue_prompt =~ "Use the single `## Codex Workpad` Linear workpad comment"
     assert issue_prompt =~ "Issue PR-123"
+    assert issue_prompt =~ "Never push to a remote other than the workspace's configured `origin`."
+
+    assert issue_prompt =~
+             "Never add or rewrite git remotes unless the remote is the configured `origin`."
+
+    assert issue_prompt =~
+             "Never open a pull request against a repository other than the repository configured for this workflow."
   end
 
   test "prompt builder falls back to default PR prompt when PR branch is absent" do

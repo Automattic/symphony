@@ -35,18 +35,11 @@ Continuation context:
 - Resume from the current workspace state instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
 - Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
-- If `review_agent.enabled: true` is configured and you have not received an explicit reviewer-agent approval prompt, the review-agent gate is an expected stopping point even while the issue remains active.
+- If Symphony has injected a review-agent gate, treat it as an expected stopping point even while the issue remains active.
   {% endif %}
 
 Symphony prepends managed runtime context before this workflow. This file adds
 repo-specific status, planning, validation, and handoff rules.
-
-Repository guardrails:
-
-- Never push to a remote other than the workspace's configured `origin`.
-- Never add or rewrite git remotes unless the remote is the configured `origin`.
-- Never open a pull request against a repository other than the repository
-  configured for this workflow.
 
 Issue context:
 Identifier: {{ issue.identifier }}
@@ -325,7 +318,6 @@ Use this only when planning reaches a fundamentally unclear specification and th
       - incomplete hunks, half-finished removals, or reverted-only placeholders.
     - Only push after this review is clean.
     - Record `coverage 100.00% — green` and `diff reviewed — clean` in the workpad before each push.
-    - If `review_agent.enabled: true` is configured in `symphony.yml`, stop before `git push` after validation and diff review are complete. Symphony will run the pre-push reviewer agent and inject the next continuation prompt.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
     - Ensure the PR body is reviewer-facing and includes:

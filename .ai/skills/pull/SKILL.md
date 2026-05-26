@@ -1,10 +1,10 @@
 ---
 name: pull
 description:
-  Pull latest origin/main into the current local branch and resolve merge
-  conflicts (aka update-branch). Use when Codex needs to sync a feature branch
-  with origin, perform a merge-based update (not rebase), and guide conflict
-  resolution best practices.
+  Pull the repo's default/integration branch into the current local branch and
+  resolve merge conflicts (aka update-branch). Use when Codex needs to sync a
+  feature branch with origin, perform a merge-based update (not rebase), and
+  guide conflict resolution best practices.
 ---
 
 # Pull
@@ -18,15 +18,24 @@ description:
 3. Confirm remotes and branches:
    - Ensure the `origin` remote exists.
    - Ensure the current branch is the one to receive the merge.
+   - Determine the repo's default/integration branch rather than assuming
+     `main`. Different repos use different defaults (e.g. `main` vs `trunk`).
+     Resolve it from Symphony's injected runtime context if present, otherwise
+     discover it locally, for example:
+     - `git symbolic-ref --short refs/remotes/origin/HEAD` (yields
+       `origin/<branch>`), or
+     - `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`.
+     Use that branch name in place of `main` in the commands below.
 4. Fetch latest refs:
    - `git fetch origin`
 5. Sync the remote feature branch first:
    - `git pull --ff-only origin $(git branch --show-current)`
    - This pulls branch updates made remotely (for example, a GitHub auto-commit)
-     before merging `origin/main`.
+     before merging the integration branch.
 6. Merge in order:
-   - Prefer `git -c merge.conflictstyle=zdiff3 merge origin/main` for clearer
-     conflict context.
+   - Prefer `git -c merge.conflictstyle=zdiff3 merge origin/<integration-branch>`
+     for clearer conflict context (e.g. `origin/main` or `origin/trunk`,
+     depending on the repo).
 7. If conflicts appear, resolve them (see conflict guidance below), then:
    - `git add <files>`
    - `git commit` (or `git merge --continue` if the merge is paused)

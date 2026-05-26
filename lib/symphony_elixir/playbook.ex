@@ -11,18 +11,34 @@ defmodule SymphonyElixir.Playbook do
   to Solid from the in-memory map below.
   """
 
-  @source_root Path.expand(Path.join([__DIR__, "..", "..", "priv", "playbook"]))
-  @partial_paths @source_root |> Path.join("*.liquid") |> Path.wildcard() |> Enum.sort()
+  # Explicit list (sorted), like `SharedSkills`: adding a partial means editing
+  # this list, which forces a recompile so the new file is embedded. A compile-time
+  # wildcard would not — `@external_resource` only tracks changes to listed files,
+  # not newly added ones.
+  @partial_names ~w(
+    ci_triage
+    continuation_context
+    dependency_guardrail
+    escape_hatches
+    issue_context
+    out_of_scope_backlog
+    pr_feedback_sweep
+    reproduce_and_blast_radius
+    workpad_bootstrap
+    workpad_template
+  )
 
-  for path <- @partial_paths do
-    @external_resource path
+  @source_root Path.expand(Path.join([__DIR__, "..", "..", "priv", "playbook"]))
+
+  for name <- @partial_names do
+    @external_resource Path.join(@source_root, name <> ".liquid")
   end
 
-  @partials (for path <- @partial_paths, into: %{} do
-               {Path.basename(path, ".liquid"), File.read!(path)}
+  @partials (for name <- @partial_names, into: %{} do
+               {name, File.read!(Path.join(@source_root, name <> ".liquid"))}
              end)
 
-  @names @partials |> Map.keys() |> Enum.sort()
+  @names Enum.sort(@partial_names)
 
   @doc "Names of the available playbook partials, sorted."
   @spec names() :: [String.t()]

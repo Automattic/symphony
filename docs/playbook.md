@@ -32,8 +32,10 @@ This catalog is kept in sync with `priv/playbook/` by
 | Partial | Vars | Description |
 | --- | --- | --- |
 | `ci_triage` | — | Triage protocol for red CI checks at any push gate. |
+| `continuation_context` | `attempt` | Retry-attempt guidance shown when Symphony re-activates an issue that is still in an active state. |
 | `dependency_guardrail` | `lockfile` | Justify dependency changes and keep the lock file diff scoped to the current ticket. |
 | `escape_hatches` | — | Blocked-access and in-execution clarification escape hatches; both move the issue to Backlog and stop. |
+| `issue_context` | `issue` | Standard Linear issue fields, description, recent comments, and linked issues for the agent to act on. |
 | `out_of_scope_backlog` | — | File a separate Backlog issue for meaningful out-of-scope improvements instead of expanding scope. |
 | `pr_feedback_sweep` | — | Required sweep of all PR feedback channels; every actionable comment must be resolved or answered before In Review. |
 | `reproduce_and_blast_radius` | — | Capture a reproduction/acceptance signal and a blast-radius analysis before the first code edit. |

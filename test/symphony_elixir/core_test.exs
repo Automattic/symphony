@@ -2631,7 +2631,6 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
     assert prompt =~ "Symphony runtime context:"
     assert prompt =~ "untrusted input"
-    assert prompt =~ "Symphony prepends managed runtime context before this workflow."
     assert prompt =~ "<linear_issue_body>\nRender with rich template variables\n</linear_issue_body>"
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker"

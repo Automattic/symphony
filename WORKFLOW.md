@@ -28,47 +28,9 @@ prompts:
 
 You are working on a Linear ticket `{{ issue.identifier }}`
 
-{% if attempt %}
-Continuation context:
+{% render "continuation_context", attempt: attempt %}
 
-- This is retry attempt #{{ attempt }} because the ticket is still in an active state.
-- Resume from the current workspace state instead of restarting from scratch.
-- Do not repeat already-completed investigation or validation unless needed for new code changes.
-- Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
-- If Symphony has injected a review-agent gate, treat it as an expected stopping point even while the issue remains active.
-  {% endif %}
-
-Symphony prepends managed runtime context before this workflow. This file adds
-repo-specific status, planning, validation, and handoff rules.
-
-Issue context:
-Identifier: {{ issue.identifier }}
-Title: {{ issue.title }}
-Current status: {{ issue.state }}
-Labels: {{ issue.labels }}
-URL: {{ issue.url }}
-
-Description:
-{% if issue.description %}
-{{ issue.description }}
-{% else %}
-No description provided.
-{% endif %}
-
-{% if issue.comments.size > 0 %}
-Recent comments:
-{% for comment in issue.comments %}
-[{{ comment.author }} @ {{ comment.created_at }}]
-{{ comment.body }}
-{% endfor %}
-{% endif %}
-
-{% if issue.linked_issues.size > 0 %}
-Linked issues:
-{% for link in issue.linked_issues %}
-- {{ link.relation }}: {{ link.identifier }} - {{ link.title }} ({{ link.state }})
-{% endfor %}
-{% endif %}
+{% render "issue_context", issue: issue %}
 
 Instructions:
 
@@ -107,12 +69,7 @@ workpad instead of synthesising a `gh` call or widening the prompt-facing API.
 - Treat a single persistent Linear comment as the source of truth for progress.
 - Use that single workpad comment for all progress and handoff notes; do not post separate "done"/summary comments.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: mirror it in the workpad and execute it before considering the work complete.
-- When meaningful out-of-scope improvements are discovered during execution,
-  file a separate Linear issue instead of expanding scope. The follow-up issue
-  must include a clear title, description, and acceptance criteria, be placed in
-  `Backlog`, be assigned to the same project as the current issue, link the
-  current issue as `related`, and use `blockedBy` when the follow-up depends on
-  the current issue.
+- File out-of-scope improvements as a separate Backlog issue (see "Out-of-scope improvements" below) instead of expanding scope.
 - Move status only when the matching quality bar is met.
 - Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.

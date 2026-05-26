@@ -6,8 +6,10 @@ defmodule SymphonyElixir.PlaybookTest do
 
   @expected_names ~w(
     ci_triage
+    continuation_context
     dependency_guardrail
     escape_hatches
+    issue_context
     out_of_scope_backlog
     pr_feedback_sweep
     reproduce_and_blast_radius

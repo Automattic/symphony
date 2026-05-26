@@ -4766,10 +4766,10 @@ defmodule SymphonyElixir.AppServerTest do
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       case "$*" in
+        *"fake-remote-codex"*)
+          ;;
         *"remote"*"get-url"*"origin"*|*"branch"*"--show-current"*)
           exit 0
-          ;;
-        *"fake-remote-codex"*)
           ;;
         *"symphony-mcp-shim"*|*"rm -f "*|*"rm -rf "*"symphony-codex-home"*)
           exit 0
@@ -4925,6 +4925,8 @@ defmodule SymphonyElixir.AppServerTest do
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       case "$*" in
+        *"fake-remote-codex"*)
+          ;;
         *"remote"*"get-url"*"origin"*)
           printf 'DISCOVERY:origin\\n' >> "$trace_file"
           printf '%s\\n' 'git@github.example.com:acme/symphony.git'
@@ -4934,8 +4936,6 @@ defmodule SymphonyElixir.AppServerTest do
           printf 'DISCOVERY:branch\\n' >> "$trace_file"
           printf '%s\\n' 'feature/remote-gh'
           exit 0
-          ;;
-        *"fake-remote-codex"*)
           ;;
         *"symphony-mcp-shim"*|*"rm -f "*|*"rm -rf "*"symphony-codex-home"*)
           exit 0

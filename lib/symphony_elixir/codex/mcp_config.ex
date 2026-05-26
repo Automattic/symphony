@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Codex.McpConfig do
 
   alias SymphonyElixir.AgentMcp
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.SharedSkills
 
   @type runtime_home :: %{
           home_path: Path.t(),
@@ -35,7 +36,8 @@ defmodule SymphonyElixir.Codex.McpConfig do
          :ok <- File.write(config_path, config_toml),
          :ok <- File.chmod(config_path, 0o600),
          :ok <- link_auth_json(home_path, host_codex_home),
-         :ok <- copy_cloud_requirements_cache(home_path, host_codex_home) do
+         :ok <- copy_cloud_requirements_cache(home_path, host_codex_home),
+         :ok <- SharedSkills.write_local_files(SharedSkills.codex_home_files(home_path)) do
       {:ok,
        %{
          home_path: home_path,

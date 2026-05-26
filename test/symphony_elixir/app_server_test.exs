@@ -4841,6 +4841,12 @@ defmodule SymphonyElixir.AppServerTest do
       assert trace =~ "permissions.workspace_write.network.domains="
       assert trace =~ "app-server"
 
+      # Shared skills are provisioned under the remote $CODEX_HOME/skills for user-scope discovery.
+      assert trace =~ "symphony-codex-home"
+      assert trace =~ "/skills/commit/SKILL.md"
+      assert trace =~ "/skills/pull/SKILL.md"
+      assert trace =~ "/skills/linear/SKILL.md"
+
       assert trace =~ ~r/ARGV:.*rm -rf.*symphony-codex-home/,
              "expected remote codex_home to be rm -rf'd on stop_session"
 

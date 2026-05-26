@@ -4,7 +4,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   @behaviour SymphonyElixir.AgentBehaviour
 
   require Logger
-  alias SymphonyElixir.{AgentEnv, AgentMcp, AgentSandboxConfig, Config, DependencyGate, McpServer, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, AgentMcp, AgentSandboxConfig, Config, DependencyGate, McpServer, PathSafety, SharedSkills, SSH}
   alias SymphonyElixir.ClaudeCode.McpConfig
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.Agent
@@ -34,6 +34,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
           worker_host: String.t() | nil,
           settings_path: Path.t(),
           mcp_config_path: Path.t(),
+          plugin_dir: Path.t(),
           mcp_session: McpServer.session() | nil,
           mcp_remote_socket_path: Path.t() | nil,
           mcp_remote_shim_path: Path.t() | nil
@@ -398,6 +399,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
            worker_host: worker_host,
            settings_path: runtime_files.settings_path,
            mcp_config_path: runtime_files.mcp_config_path,
+           plugin_dir: runtime_files.plugin_dir,
            mcp_session: mcp_session,
            mcp_remote_socket_path: remote_socket_path,
            mcp_remote_shim_path: remote_shim_path
@@ -556,15 +558,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     settings_dir = claude_settings_dir(worker_host, mcp_session)
     settings_path = Path.join(settings_dir, "settings.json")
     mcp_config_path = Path.join(settings_dir, "mcp_config.json")
+    plugin_dir = Path.join(settings_dir, "plugin")
 
     with {:ok, mcp_config_json} <- build_mcp_config(mcp_session, effective_socket_path, effective_shim_path, settings),
-         runtime_files = [
+         json_runtime_files = [
            {settings_path, settings_json},
            {mcp_config_path, mcp_config_json}
          ],
-         {:ok, encoded_runtime_files} <- encode_runtime_files(runtime_files),
-         :ok <- write_runtime_files(settings_dir, encoded_runtime_files, worker_host) do
-      {:ok, %{settings_path: settings_path, mcp_config_path: mcp_config_path}}
+         {:ok, encoded_json_files} <- encode_runtime_files(json_runtime_files),
+         # SKILL.md bodies are markdown, not JSON, so they bypass the JSON encoder and are written
+         # verbatim alongside the encoded settings files.
+         runtime_files = encoded_json_files ++ SharedSkills.claude_plugin_files(plugin_dir),
+         :ok <- write_runtime_files(settings_dir, runtime_files, worker_host) do
+      {:ok, %{settings_path: settings_path, mcp_config_path: mcp_config_path, plugin_dir: plugin_dir}}
     end
   end
 
@@ -662,14 +668,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end)
   end
 
-  defp write_local_runtime_file(settings_path, json) do
-    case File.open(settings_path, [:write, :exclusive], fn file -> IO.write(file, json) end) do
-      {:ok, :ok} ->
-        case File.chmod(settings_path, 0o600) do
-          :ok -> :ok
-          {:error, reason} -> {:error, {:claude_settings_write_failed, :chmod, settings_path, reason}}
-        end
-
+  defp write_local_runtime_file(settings_path, contents) do
+    # Binary write (not File.open + IO.write) so UTF-8 SKILL.md bodies are written verbatim rather
+    # than transcoded to latin1. `:exclusive` keeps the create-only guarantee for the runtime files.
+    with :ok <- File.mkdir_p(Path.dirname(settings_path)),
+         :ok <- File.write(settings_path, contents, [:exclusive]) do
+      case File.chmod(settings_path, 0o600) do
+        :ok -> :ok
+        {:error, reason} -> {:error, {:claude_settings_write_failed, :chmod, settings_path, reason}}
+      end
+    else
       {:error, reason} ->
         {:error, {:claude_settings_write_failed, :write, settings_path, reason}}
     end
@@ -796,6 +804,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     write_commands =
       Enum.flat_map(encoded_runtime_files, fn {path, json} ->
         [
+          "mkdir -p #{shell_escape(Path.dirname(path))}",
           "printf %s #{shell_escape(json)} > #{shell_escape(path)}",
           "chmod 0600 #{shell_escape(path)}"
         ]
@@ -822,7 +831,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       remote_path_cleanup_command(socket_path),
       remote_path_cleanup_command(shim_path)
     ])
-    |> Kernel.++(Enum.map(runtime_dirs, fn dir -> "rmdir #{shell_escape(dir)} 2>/dev/null || true" end))
+    # `rm -rf` (not `rmdir`) so the nested `plugin/` skills tree is removed with the settings dir.
+    |> Kernel.++(Enum.map(runtime_dirs, fn dir -> "rm -rf #{shell_escape(dir)} 2>/dev/null || true" end))
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" && ")
   end
@@ -833,8 +843,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp remote_path_cleanup_command(_path), do: nil
 
-  defp claude_settings_args(%{settings_path: settings_path, mcp_config_path: mcp_config_path})
-       when is_binary(settings_path) and is_binary(mcp_config_path) do
+  defp claude_settings_args(%{settings_path: settings_path, mcp_config_path: mcp_config_path, plugin_dir: plugin_dir})
+       when is_binary(settings_path) and is_binary(mcp_config_path) and is_binary(plugin_dir) do
     [
       "--setting-sources",
       "",
@@ -842,7 +852,11 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       settings_path,
       "--mcp-config",
       mcp_config_path,
-      "--strict-mcp-config"
+      "--strict-mcp-config",
+      # Session-only plugin carrying the Symphony shared skills (commit/pull/linear); discovered
+      # without writing SKILL.md files into the workspace worktree.
+      "--plugin-dir",
+      plugin_dir
     ]
   end
 
@@ -948,10 +962,12 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       end
     end)
 
+    # `File.rm_rf` (not `rmdir`) so the nested `plugin/` skills tree is removed along with the
+    # per-session settings dir.
     file_paths
     |> Enum.map(&Path.dirname/1)
     |> Enum.uniq()
-    |> Enum.each(fn dir -> _ = File.rmdir(dir) end)
+    |> Enum.each(fn dir -> _ = File.rm_rf(dir) end)
 
     :ok
   end

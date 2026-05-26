@@ -23,6 +23,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   alias SymphonyElixir.ProcessTree
   alias SymphonyElixir.ProjectGuidePrompt
   alias SymphonyElixir.SensitivePath
+  alias SymphonyElixir.SharedSkills
   alias SymphonyElixir.SSH
 
   @initialize_id 1
@@ -606,17 +607,31 @@ defmodule SymphonyElixir.Codex.AppServer do
           auth_link = shell_escape(Path.join(codex_home, "auth.json"))
 
           {:ok,
-           [
-             "rm -rf #{shell_escape(codex_home)}",
-             "mkdir -p #{shell_escape(codex_home)}",
-             "chmod 0700 #{shell_escape(codex_home)}",
-             "printf %s #{shell_escape(config_toml)} > #{shell_escape(Path.join(codex_home, "config.toml"))}",
-             "chmod 0600 #{shell_escape(Path.join(codex_home, "config.toml"))}",
-             "if [ -e \"$HOME/.codex/auth.json\" ]; then ln -s \"$HOME/.codex/auth.json\" #{auth_link}; fi"
-           ]
+           ([
+              "rm -rf #{shell_escape(codex_home)}",
+              "mkdir -p #{shell_escape(codex_home)}",
+              "chmod 0700 #{shell_escape(codex_home)}",
+              "printf %s #{shell_escape(config_toml)} > #{shell_escape(Path.join(codex_home, "config.toml"))}",
+              "chmod 0600 #{shell_escape(Path.join(codex_home, "config.toml"))}",
+              "if [ -e \"$HOME/.codex/auth.json\" ]; then ln -s \"$HOME/.codex/auth.json\" #{auth_link}; fi"
+            ] ++ remote_shared_skill_commands(codex_home))
            |> Enum.join(" && ")}
         end
     end
+  end
+
+  # Materialize the shared skills under the remote `$CODEX_HOME/skills/<name>/SKILL.md` so Codex
+  # discovers them at user scope, mirroring the local `McpConfig.write_home` provisioning.
+  defp remote_shared_skill_commands(codex_home) do
+    codex_home
+    |> SharedSkills.codex_home_files()
+    |> Enum.flat_map(fn {path, contents} ->
+      [
+        "mkdir -p #{shell_escape(Path.dirname(path))}",
+        "printf %s #{shell_escape(contents)} > #{shell_escape(path)}",
+        "chmod 0600 #{shell_escape(path)}"
+      ]
+    end)
   end
 
   defp start_mcp_session(workspace, worker_host, settings, opts) do

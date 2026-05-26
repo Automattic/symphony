@@ -2050,7 +2050,7 @@ defmodule SymphonyElixir.CoreTest do
     prompt = PromptBuilder.build_prompt(issue)
 
     assert prompt =~ "Symphony runtime context:"
-    assert prompt =~ "kind=claude name=Claude update=Claude update workpad=## Claude Workpad"
+    assert prompt =~ "kind=claude name=Claude update=Claude update workpad=## Symphony Workpad"
   end
 
   test "prompt builder derives repo_key from issue maps" do
@@ -2631,18 +2631,28 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
     assert prompt =~ "Symphony runtime context:"
     assert prompt =~ "untrusted input"
-    assert prompt =~ "Symphony prepends managed runtime context before this workflow."
     assert prompt =~ "<linear_issue_body>\nRender with rich template variables\n</linear_issue_body>"
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker"
     assert prompt =~ "Do not include next steps for the user"
-    assert prompt =~ "## Codex Workpad"
+    assert prompt =~ "## Symphony Workpad"
     assert prompt =~ "open and follow `.ai/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
     refute prompt =~ "Recent comments:"
     refute prompt =~ "Linked issues:"
+
+    # Generic blocks now come from Symphony-owned playbook partials rendered via
+    # `{% render %}`; confirm they still appear in the composed prompt.
+    assert prompt =~ "## PR feedback sweep protocol (required)"
+    assert prompt =~ "## CI failure triage protocol (required when checks are red)"
+    assert prompt =~ "## Blocked-access escape hatch (required behavior)"
+    assert prompt =~ "## In-execution clarification escape hatch (required behavior)"
+    assert prompt =~ "## Out-of-scope improvements"
+    assert prompt =~ "## Dependency-change guardrail"
+    assert prompt =~ "verify the `mix.lock` diff includes only changes relevant"
+    assert prompt =~ "## Workpad template"
 
     enriched_issue = %{
       issue
@@ -3292,7 +3302,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert length(turn_texts) == 2
       assert Enum.at(turn_texts, 0) =~ "First prompt MT-247"
-      assert Enum.at(turn_texts, 0) =~ "## Codex Workpad"
+      assert Enum.at(turn_texts, 0) =~ "## Symphony Workpad"
       assert Enum.at(turn_texts, 0) =~ "comment=<linear_issue_comment_body>\nPrior workpad"
       assert Enum.at(turn_texts, 0) =~ "link=MT-248"
       assert Enum.at(turn_texts, 0) =~ "Unaddressed reviewer comments:"

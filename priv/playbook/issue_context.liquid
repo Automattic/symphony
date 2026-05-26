@@ -1,0 +1,32 @@
+{% comment %}
+name: issue_context
+description: Standard Linear issue fields, description, recent comments, and linked issues for the agent to act on.
+vars: [issue]
+{% endcomment %}Issue context:
+Identifier: {{ issue.identifier }}
+Title: {{ issue.title }}
+Current status: {{ issue.state }}
+Labels: {{ issue.labels }}
+URL: {{ issue.url }}
+
+Description:
+{% if issue.description %}
+{{ issue.description }}
+{% else %}
+No description provided.
+{% endif %}
+
+{% if issue.comments.size > 0 %}
+Recent comments:
+{% for comment in issue.comments %}
+[{{ comment.author }} @ {{ comment.created_at }}]
+{{ comment.body }}
+{% endfor %}
+{% endif %}
+
+{% if issue.linked_issues.size > 0 %}
+Linked issues:
+{% for link in issue.linked_issues %}
+- {{ link.relation }}: {{ link.identifier }} - {{ link.title }} ({{ link.state }})
+{% endfor %}
+{% endif %}

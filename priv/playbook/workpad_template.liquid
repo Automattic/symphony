@@ -1,0 +1,40 @@
+{% comment %}
+name: workpad_template
+description: Canonical structure for the persistent workpad comment.
+vars: [agent]
+{% endcomment %}## Workpad template
+
+Use this exact structure for the persistent workpad comment and keep it updated in
+place throughout execution:
+
+````md
+{{ agent.workpad_heading }}
+
+```text
+<hostname>:<abs-path>@<short-sha>
+```
+
+### Plan
+
+- [ ] 1\. Parent task
+  - [ ] 1.1 Child task
+  - [ ] 1.2 Child task
+- [ ] 2\. Parent task
+
+### Acceptance Criteria
+
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+### Validation
+
+- [ ] targeted tests: `<command>`
+
+### Notes
+
+- <short progress note with timestamp>
+
+### Confusions
+
+- <only include when something was confusing during execution>
+````

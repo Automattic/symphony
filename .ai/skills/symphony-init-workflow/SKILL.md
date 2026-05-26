@@ -66,12 +66,42 @@ already prepends platform-owned guidance for workspace isolation, untrusted
 Linear/GitHub/CI/tool-output handling, scoped tools, workpad usage, obvious
 secret paths, and final-response shape.
 
+### Pull shared playbook blocks instead of re-authoring them
+
+Symphony owns the generic orchestration playbook (PR feedback sweep, CI triage,
+escape hatches, workpad bootstrap/template, out-of-scope→Backlog, dependency
+guardrail) as Solid partials. Pull the blocks your flow needs with `{% render %}`
+instead of copy-pasting the prose — that is what keeps these blocks from drifting
+across repos:
+
+```liquid
+{% render "pr_feedback_sweep" %}
+{% render "workpad_bootstrap", agent: agent %}
+{% render "dependency_guardrail", lockfile: "<your-lock-file>" %}
+```
+
+`{% render %}` uses isolated scope, so pass every variable the partial needs
+(`agent`, `lockfile`, …) explicitly. See [`docs/playbook.md`](../../docs/playbook.md)
+for the full catalog of partial names and their variables. Author only the
+repo-specific structure — status map, step ordering, completion bar, conventions —
+directly in `WORKFLOW.md`, and place the render tags where each block belongs in
+that flow.
+
 ## 4. Validate
 
 Before declaring done, validate with the same parser the runtime uses:
 
 ```bash
 mix run -e 'case SymphonyElixir.Workflow.load("WORKFLOW.md") do {:ok, _} -> :ok; {:error, reason} -> raise inspect(reason) end'
+```
+
+`Workflow.load` only parses the front matter; it does not render the body, so it
+cannot catch a typo'd `{% render %}` partial name. Confirm the prompt actually
+composes by building it once with a stub issue — a bad partial name raises
+`template_render_error`:
+
+```bash
+mix run -e 'SymphonyElixir.Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md")); SymphonyElixir.PromptBuilder.build_prompt(%SymphonyElixir.Linear.Issue{identifier: "VALIDATE-0", title: "validate", state: "In Progress"}); IO.puts("prompt render ok")'
 ```
 
 Also run the discovered targeted or fast local validation when it is practical

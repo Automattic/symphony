@@ -221,6 +221,32 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert prompt =~ "Symphony runtime context:"
   end
 
+  test "build_prompt accepts the {:ok, workflow} shape for the :workflow opt" do
+    loaded =
+      Workflow.parse_repo_workflow("""
+      ---
+      prompts: {}
+      ---
+      Loaded tuple body for {{ issue.identifier }}
+      """)
+
+    assert {:ok, _workflow} = loaded
+
+    issue = %Issue{identifier: "SEAM-2", title: "t", state: "Todo", repo_key: "your-repo"}
+
+    prompt = PromptBuilder.build_prompt(issue, workflow: loaded, prompt_mode: :issue, agent_kind: "codex")
+
+    assert prompt =~ "Loaded tuple body for SEAM-2"
+  end
+
+  test "build_prompt propagates an {:error, reason} :workflow opt as workflow_unavailable" do
+    issue = %Issue{identifier: "SEAM-3", title: "t", state: "Todo", repo_key: "your-repo"}
+
+    assert_raise RuntimeError, ~r/workflow_unavailable/, fn ->
+      PromptBuilder.build_prompt(issue, workflow: {:error, :boom}, prompt_mode: :issue, agent_kind: "codex")
+    end
+  end
+
   test "compact prompt injects the poller-aware feedback posture" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
 

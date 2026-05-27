@@ -43,8 +43,25 @@ defmodule SymphonyElixir.WorkflowPreviewTest do
   test "returns a friendly error when the file is missing" do
     assert {:error, message} = WorkflowPreview.render(file: "/no/such/WORKFLOW.md")
     assert message =~ "/no/such/WORKFLOW.md"
-    assert message =~ "not found"
+    # `:file.format_error(:enoent)` renders the POSIX reason in plain English.
+    assert message =~ "no such file or directory"
     # The message must be human-readable, not a raw error tuple dump.
     refute message =~ "missing_workflow_file"
+  end
+
+  test "returns a friendly error when the front matter is malformed YAML" do
+    path = write!("---\nkey: [unclosed\n---\nbody\n")
+
+    assert {:error, message} = WorkflowPreview.render(file: path)
+    assert message =~ "Could not parse front matter"
+    assert message =~ path
+  end
+
+  test "returns a friendly error when the front matter is not a map" do
+    path = write!("---\njust a scalar string\n---\nbody\n")
+
+    assert {:error, message} = WorkflowPreview.render(file: path)
+    assert message =~ "Could not load workflow file"
+    assert message =~ path
   end
 end

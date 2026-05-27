@@ -18,10 +18,11 @@ defmodule SymphonyElixir.WorkflowPreview do
   @doc """
   Renders the base-issue prompt for the workflow at `:file` (default `WORKFLOW.md`).
 
-  Returns `{:ok, prompt}` or `{:error, human_readable_message}`.
+  Pass `[]` to render the default file. Returns `{:ok, prompt}` or
+  `{:error, human_readable_message}`.
   """
   @spec render(render_opts()) :: {:ok, String.t()} | {:error, String.t()}
-  def render(opts \\ []) do
+  def render(opts) when is_list(opts) do
     file = Keyword.get(opts, :file, @default_file)
     agent_kind = Keyword.get(opts, :agent_kind, @default_agent_kind)
 
@@ -34,12 +35,20 @@ defmodule SymphonyElixir.WorkflowPreview do
     end
   end
 
+  # `Workflow.load/1` reports a few distinct shapes; translate each into a
+  # human-readable line since this is surfaced directly by the preview command.
+  # `:file.format_error/1` turns the POSIX reason (`:enoent`, `:eacces`, ...) into
+  # a readable string, so a missing file and a permission error read differently.
   defp load_error_message(file, {:missing_workflow_file, _path, posix}) do
-    "Workflow file not found: `#{file}` (#{:file.format_error(posix)})"
+    "Could not read workflow file `#{file}`: #{:file.format_error(posix)}"
+  end
+
+  defp load_error_message(file, {:workflow_parse_error, reason}) do
+    "Could not parse front matter in `#{file}`: #{inspect(reason)}"
   end
 
   defp load_error_message(file, reason) do
-    "Could not read workflow file `#{file}`: #{inspect(reason)}"
+    "Could not load workflow file `#{file}`: #{inspect(reason)}"
   end
 
   @doc "Deterministic synthetic issue used for previews."

@@ -23,6 +23,13 @@ variable listed in the partial's `Vars` column explicitly. Because rendering run
 with `strict_variables`, a missing variable fails the prompt build loudly rather
 than rendering blank, and an unknown partial name raises `template_render_error`.
 
+This catalog is a menu, not a checklist: a repo renders only the blocks it wants.
+Some partials are intentionally left unrendered by a given repo — for example,
+symphony's own `WORKFLOW.md` authors richer, repo-specific versions of
+`workpad_bootstrap` and `reproduce_and_blast_radius` inline in its Step 1 (with
+coverage-gate and `pull`-evidence detail), so it skips those two renders while
+leaner repos still use them. An unrendered partial is available, not dead.
+
 This catalog is kept in sync with `priv/playbook/` by
 `test/symphony_elixir/playbook_catalog_test.exs` — edit the partial's
 `{% comment %}` header and this table together.

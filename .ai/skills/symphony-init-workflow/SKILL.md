@@ -66,26 +66,66 @@ already prepends platform-owned guidance for workspace isolation, untrusted
 Linear/GitHub/CI/tool-output handling, scoped tools, workpad usage, obvious
 secret paths, and final-response shape.
 
-### Pull shared playbook blocks instead of re-authoring them
+### Compose from shared playbook blocks instead of re-authoring them
 
-Symphony owns the generic orchestration playbook (PR feedback sweep, CI triage,
-escape hatches, workpad bootstrap/template, out-of-scope→Backlog, dependency
-guardrail) as Solid partials. Pull the blocks your flow needs with `{% render %}`
-instead of copy-pasting the prose — that is what keeps these blocks from drifting
-across repos:
+Symphony owns the generic orchestration playbook as Solid partials so the shared
+prose lives in one place and stops drifting across repos. The author's job is to
+pick which blocks to include and where to place them — not to rewrite the prose.
+Start from the default scaffold below, then prune/reorder/replace blocks and fill
+in the repo-specific parts marked `<repo: …>`:
 
 ```liquid
+You are working on a Linear ticket `{{ issue.identifier }}`
+
+{% render "continuation_context", attempt: attempt %}
+{% render "issue_context", issue: issue %}
+
+{% render "default_posture" %}
+{% render "scoped_tools" %}
+
+## Command and output hygiene
+<repo: long-running-command waits, the test/lint/gate commands you discovered>
+
+## Related skills
+<repo: which skills this repo ships (linear, commit, push, pull, land, …)>
+
+{% render "status_map" %}
+
+## Step 0: Determine current ticket state and route
+<repo: routing skeleton — the order and any repo-specific kickoff steps>
+
+## Step 1: Start/continue execution
+<repo: plan/workpad steps. Render "workpad_bootstrap" and
+ "reproduce_and_blast_radius" here if you don't author richer inline versions.>
+
+## Step 2: Execution phase
+<repo: implement/validate/push/handoff steps and the repo's validation gate>
+
 {% render "pr_feedback_sweep" %}
-{% render "workpad_bootstrap", agent: agent %}
+{% render "ci_triage" %}
+{% render "escape_hatches" %}
+
+## Step 3 / Step 4
+<repo: in-review polling and rework reset>
+
+{% render "completion_bar" %}
+<repo: extra completion criteria, e.g. coverage gate — appended after the render>
+
+{% render "guardrails" %}
+<repo: extra guardrails, e.g. the lock-file rule — appended after the render>
+
+{% render "out_of_scope_backlog" %}
 {% render "dependency_guardrail", lockfile: "<your-lock-file>" %}
+{% render "workpad_template", agent: agent %}
 ```
 
 `{% render %}` uses isolated scope, so pass every variable the partial needs
-(`agent`, `lockfile`, …) explicitly. See [`docs/playbook.md`](../../docs/playbook.md)
-for the full catalog of partial names and their variables. Author only the
-repo-specific structure — status map, step ordering, completion bar, conventions —
-directly in `WORKFLOW.md`, and place the render tags where each block belongs in
-that flow.
+(`agent`, `lockfile`, …) explicitly. `completion_bar` and `guardrails` are
+designed to be *extended*: render the baseline, then add repo-specific bullets on
+the lines right after. See [`docs/playbook.md`](../../docs/playbook.md) for the
+full catalog (names, variables) and the recommended composition. Author only the
+repo-specific structure — step ordering, repo conventions, validation commands —
+directly in `WORKFLOW.md`.
 
 ## 4. Validate
 

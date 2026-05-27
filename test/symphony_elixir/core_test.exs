@@ -2645,14 +2645,23 @@ defmodule SymphonyElixir.CoreTest do
 
     # Generic blocks now come from Symphony-owned playbook partials rendered via
     # `{% render %}`; confirm they still appear in the composed prompt.
+    assert prompt =~ "## Default posture"
+    assert prompt =~ "## Prerequisite: scoped Linear and GitHub tools are available"
+    assert prompt =~ "## Status map"
     assert prompt =~ "## PR feedback sweep protocol (required)"
     assert prompt =~ "## CI failure triage protocol (required when checks are red)"
     assert prompt =~ "## Blocked-access escape hatch (required behavior)"
     assert prompt =~ "## In-execution clarification escape hatch (required behavior)"
+    assert prompt =~ "## Completion bar before In Review"
+    assert prompt =~ "- Required PR metadata is present (`symphony` label)."
+    assert prompt =~ "## Guardrails"
     assert prompt =~ "## Out-of-scope improvements"
     assert prompt =~ "## Dependency-change guardrail"
     assert prompt =~ "verify the `mix.lock` diff includes only changes relevant"
     assert prompt =~ "## Workpad template"
+
+    # Repo-specific extension authored inline after the `guardrails` render.
+    assert prompt =~ "the lock file for this repo is `mix.lock`"
 
     enriched_issue = %{
       issue

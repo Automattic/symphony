@@ -42,6 +42,9 @@ defmodule SymphonyElixir.WorkflowPreviewTest do
 
   test "returns a friendly error when the file is missing" do
     assert {:error, message} = WorkflowPreview.render(file: "/no/such/WORKFLOW.md")
-    assert message =~ "WORKFLOW.md"
+    assert message =~ "/no/such/WORKFLOW.md"
+    assert message =~ "not found"
+    # The message must be human-readable, not a raw error tuple dump.
+    refute message =~ "missing_workflow_file"
   end
 end

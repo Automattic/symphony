@@ -30,8 +30,16 @@ defmodule SymphonyElixir.WorkflowPreview do
         render_workflow(workflow, agent_kind)
 
       {:error, reason} ->
-        {:error, "Could not read workflow file `#{file}`: #{inspect(reason)}"}
+        {:error, load_error_message(file, reason)}
     end
+  end
+
+  defp load_error_message(file, {:missing_workflow_file, _path, posix}) do
+    "Workflow file not found: `#{file}` (#{:file.format_error(posix)})"
+  end
+
+  defp load_error_message(file, reason) do
+    "Could not read workflow file `#{file}`: #{inspect(reason)}"
   end
 
   @doc "Deterministic synthetic issue used for previews."
@@ -61,6 +69,9 @@ defmodule SymphonyElixir.WorkflowPreview do
 
     {:ok, prompt}
   rescue
+    # PromptBuilder raises RuntimeError for template/partial failures; convert all
+    # exceptions to {:error, message} so the preview can report them cleanly and
+    # double as an author lint.
     error -> {:error, Exception.message(error)}
   end
 end

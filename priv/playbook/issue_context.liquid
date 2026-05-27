@@ -10,23 +10,19 @@ Labels: {{ issue.labels }}
 URL: {{ issue.url }}
 
 Description:
-{% if issue.description %}
-{{ issue.description }}
-{% else %}
-No description provided.
-{% endif %}
+{% if issue.description %}{{ issue.description }}{% else %}No description provided.{% endif %}
+{%- if issue.comments.size > 0 %}
 
-{% if issue.comments.size > 0 %}
 Recent comments:
-{% for comment in issue.comments %}
+{% for comment in issue.comments -%}
 [{{ comment.author }} @ {{ comment.created_at }}]
 {{ comment.body }}
-{% endfor %}
-{% endif %}
+{% endfor -%}
+{%- endif -%}
+{%- if issue.linked_issues.size > 0 %}
 
-{% if issue.linked_issues.size > 0 %}
 Linked issues:
-{% for link in issue.linked_issues %}
+{% for link in issue.linked_issues -%}
 - {{ link.relation }}: {{ link.identifier }} - {{ link.title }} ({{ link.state }})
-{% endfor %}
-{% endif %}
+{% endfor -%}
+{%- endif -%}

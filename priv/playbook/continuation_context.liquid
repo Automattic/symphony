@@ -2,7 +2,7 @@
 name: continuation_context
 description: Retry-attempt guidance shown when Symphony re-activates an issue that is still in an active state.
 vars: [attempt]
-{% endcomment %}{% if attempt %}
+{% endcomment %}{%- if attempt -%}
 Continuation context:
 
 - This is retry attempt #{{ attempt }} because the ticket is still in an active state.
@@ -10,4 +10,4 @@ Continuation context:
 - Do not repeat already-completed investigation or validation unless needed for new code changes.
 - Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
 - If Symphony has injected a review-agent gate, treat it as an expected stopping point even while the issue remains active.
-{% endif %}
+{%- endif -%}

@@ -204,6 +204,23 @@ defmodule SymphonyElixir.PromptBuilderTest do
     refute prompt =~ "PR feedback and CI delivery:"
   end
 
+  test "build_prompt renders a pre-loaded workflow passed via :workflow opt" do
+    {:ok, workflow} =
+      Workflow.parse_repo_workflow("""
+      ---
+      prompts: {}
+      ---
+      Preloaded body for {{ issue.identifier }}
+      """)
+
+    issue = %Issue{identifier: "SEAM-1", title: "t", state: "Todo", repo_key: "your-repo"}
+
+    prompt = PromptBuilder.build_prompt(issue, workflow: workflow, prompt_mode: :issue, agent_kind: "codex")
+
+    assert prompt =~ "Preloaded body for SEAM-1"
+    assert prompt =~ "Symphony runtime context:"
+  end
+
   test "compact prompt injects the poller-aware feedback posture" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Issue {{ issue.identifier }}")
 

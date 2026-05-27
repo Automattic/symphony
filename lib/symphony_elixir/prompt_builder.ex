@@ -56,7 +56,8 @@ defmodule SymphonyElixir.PromptBuilder do
     prompt_mode = prompt_mode(opts)
 
     template =
-      workflow_for_prompt(workflow_source)
+      opts
+      |> resolved_workflow(workflow_source)
       |> prompt_template!(prompt_mode)
       |> default_prompt(workflow_source, prompt_mode)
       |> parse_template!()
@@ -308,6 +309,18 @@ defmodule SymphonyElixir.PromptBuilder do
       fallback_prompt(workflow_source)
     else
       prompt
+    end
+  end
+
+  # A caller (e.g. the preview command) may pass an already-loaded workflow via
+  # `:workflow` to render a specific file without going through global Config.
+  # Accept either the raw loaded map or the `{:ok, workflow}` shape `Workflow.load/1`
+  # returns; fall back to config-driven resolution when the opt is absent.
+  defp resolved_workflow(opts, workflow_source) do
+    case Keyword.get(opts, :workflow) do
+      {:ok, _workflow} = loaded -> loaded
+      %{} = workflow -> {:ok, workflow}
+      nil -> workflow_for_prompt(workflow_source)
     end
   end
 

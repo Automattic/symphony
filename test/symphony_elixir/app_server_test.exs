@@ -20,10 +20,15 @@ defmodule SymphonyElixir.AppServerTest do
   defmodule ProcessTreeProbe do
     @moduledoc false
 
+    alias SymphonyElixir.ProcessTree
+
     def terminate_port_descendants(port) do
       recipient = Application.fetch_env!(:symphony_elixir, :process_tree_probe_recipient)
       send(recipient, {:process_tree_cleanup, Port.info(port) != nil})
-      :ok
+      # Delegate to the real cleanup so the spawned process tree is actually
+      # terminated. Recording the call alone would leak the fake-codex busy
+      # loop, leaving an orphaned process pinning a CPU core after the test.
+      ProcessTree.terminate_port_descendants(port)
     end
   end
 

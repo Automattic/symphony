@@ -80,6 +80,12 @@ defmodule SymphonyElixir.CLI do
       ["run" | run_args] ->
         evaluate_run(run_args, deps)
 
+      ["workflow", "preview" | preview_args] ->
+        dispatch_workflow_preview(preview_args)
+
+      ["workflow" | _rest] ->
+        {:error, "Usage: symphony workflow preview [--file WORKFLOW.md] [--agent codex|claude]"}
+
       _args ->
         with :ok <- configure(args, deps) do
           start_runtime(deps)
@@ -122,6 +128,31 @@ defmodule SymphonyElixir.CLI do
         {:error, "Usage: symphony pr <url-or-number> [--intent \"address review comments\"]"}
     end
   end
+
+  defp dispatch_workflow_preview(args) do
+    case OptionParser.parse(args, strict: [file: :string, agent: :string]) do
+      {opts, [], []} ->
+        render_opts =
+          []
+          |> maybe_put(:file, Keyword.get(opts, :file))
+          |> maybe_put(:agent_kind, Keyword.get(opts, :agent))
+
+        case SymphonyElixir.WorkflowPreview.render(render_opts) do
+          {:ok, prompt} ->
+            IO.puts(prompt)
+            {:halt, 0}
+
+          {:error, message} ->
+            {:error, message}
+        end
+
+      _ ->
+        {:error, "Usage: symphony workflow preview [--file WORKFLOW.md] [--agent codex|claude]"}
+    end
+  end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   @spec configure([String.t()], deps()) :: :ok | {:error, String.t()}
   def configure(args, deps \\ runtime_deps()) do
@@ -272,7 +303,8 @@ defmodule SymphonyElixir.CLI do
     "Usage: symphony init [--force]\n" <>
       "       symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]\n" <>
       "       symphony pr <url-or-number> [--intent \"address review comments\"]\n" <>
-      "       symphony run <issue-identifier> [--config <path-to-symphony.yml>] [--timeout <duration>] [--no-retry] [--state-root <path>] [--logs-root <path>]"
+      "       symphony run <issue-identifier> [--config <path-to-symphony.yml>] [--timeout <duration>] [--no-retry] [--state-root <path>] [--logs-root <path>]\n" <>
+      "       symphony workflow preview [--file WORKFLOW.md] [--agent codex|claude]"
   end
 
   @spec run_usage_message() :: String.t()

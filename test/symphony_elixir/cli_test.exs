@@ -301,4 +301,34 @@ defmodule SymphonyElixir.CLITest do
   test "returns ok when symphony.yml exists and the app starts" do
     assert :ok = CLI.evaluate([], base_deps())
   end
+
+  test "workflow preview renders the prompt to stdout" do
+    path = Path.join(System.tmp_dir!(), "cli_preview_#{System.unique_integer([:positive])}.md")
+    File.write!(path, "---\nprompts: {}\n---\nYou are working on `{{ issue.identifier }}`\n")
+    on_exit(fn -> File.rm_rf(path) end)
+
+    output =
+      capture_io(fn ->
+        assert {:halt, 0} = CLI.evaluate(["workflow", "preview", "--file", path], base_deps())
+      end)
+
+    assert output =~ "Symphony runtime context:"
+    assert output =~ "You are working on `ABC-123`"
+  end
+
+  test "workflow preview reports a friendly error for a missing file" do
+    assert {:error, message} =
+             CLI.evaluate(["workflow", "preview", "--file", "/no/such.md"], base_deps())
+
+    assert message =~ "/no/such.md"
+    assert message =~ "no such file or directory"
+  end
+
+  test "workflow without a known subcommand returns a usage hint, not a service start" do
+    assert {:error, message} = CLI.evaluate(["workflow"], base_deps())
+    assert message =~ "symphony workflow preview"
+
+    assert {:error, message} = CLI.evaluate(["workflow", "bogus"], base_deps())
+    assert message =~ "symphony workflow preview"
+  end
 end

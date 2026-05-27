@@ -182,6 +182,22 @@ Work an existing PR:
 ./bin/symphony pr 123 --intent "address review comments"
 ```
 
+### Preview the assembled prompt
+
+`symphony workflow preview` renders the exact base-issue prompt the agent would receive for the
+repo-local `WORKFLOW.md`, using deterministic sample issue data — no Linear access, network, or
+running orchestrator required. Use it to confirm your template and `{% render %}` partials resolve
+correctly before a real run:
+
+```bash
+./bin/symphony workflow preview                       # renders ./WORKFLOW.md
+./bin/symphony workflow preview --file path/to/WORKFLOW.md
+./bin/symphony workflow preview --agent claude        # default: codex
+```
+
+An unknown `{% render %}` partial or undefined variable is reported as an error, so the command
+doubles as a quick workflow lint.
+
 ### Operator controls
 
 The dashboard exposes **Pause**, **Resume**, and per-issue **Stop** at `/`. The same controls are

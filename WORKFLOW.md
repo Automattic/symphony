@@ -1,4 +1,7 @@
 ---
+# Tip: run `symphony workflow preview` to see the fully assembled prompt — managed
+# context, expanded `{% render %}` partials, and sample issue values — exactly as the
+# agent receives it. This comment lives in front matter so it never renders.
 hooks:
   after_create: |
     if command -v mise >/dev/null 2>&1; then

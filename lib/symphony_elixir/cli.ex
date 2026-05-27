@@ -80,6 +80,9 @@ defmodule SymphonyElixir.CLI do
       ["run" | run_args] ->
         evaluate_run(run_args, deps)
 
+      ["workflow", "preview" | preview_args] ->
+        dispatch_workflow_preview(preview_args)
+
       _args ->
         with :ok <- configure(args, deps) do
           start_runtime(deps)
@@ -122,6 +125,31 @@ defmodule SymphonyElixir.CLI do
         {:error, "Usage: symphony pr <url-or-number> [--intent \"address review comments\"]"}
     end
   end
+
+  defp dispatch_workflow_preview(args) do
+    case OptionParser.parse(args, strict: [file: :string, agent: :string]) do
+      {opts, [], []} ->
+        render_opts =
+          []
+          |> maybe_put(:file, Keyword.get(opts, :file))
+          |> maybe_put(:agent_kind, Keyword.get(opts, :agent))
+
+        case SymphonyElixir.WorkflowPreview.render(render_opts) do
+          {:ok, prompt} ->
+            IO.puts(prompt)
+            {:halt, 0}
+
+          {:error, message} ->
+            {:error, message}
+        end
+
+      _ ->
+        {:error, "Usage: symphony workflow preview [--file WORKFLOW.md] [--agent codex|claude]"}
+    end
+  end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   @spec configure([String.t()], deps()) :: :ok | {:error, String.t()}
   def configure(args, deps \\ runtime_deps()) do

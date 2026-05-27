@@ -107,3 +107,20 @@ list, and the repo adds repo-specific bullets below it:
 
 `completion_bar` and `guardrails` are designed for this render-then-append
 pattern.
+
+## Keep repo-authored routing in sync with `status_map`
+
+`status_map` is the canonical state machine, but a repo's `WORKFLOW.md` authors its
+own Step 0 routing table and execution steps around it. The two can drift: a fork
+that hand-edits its routing table can silently omit a state (`Rework`, `Merging`)
+that `status_map` still lists, leaving the agent with no route when it lands on
+that state. When you author routing in a repo `WORKFLOW.md`:
+
+- cover every state `status_map` renders, or state explicitly which ones the repo
+  doesn't use and why;
+- prefer "route per the Status map above" over restating each state's meaning, so
+  the canonical text lives in one place;
+- when repo prose names a protocol — e.g. "run the PR feedback sweep" — render the
+  matching partial (`pr_feedback_sweep`) in the same workflow. `strict_variables`
+  fails the build on an unknown *render*, but it cannot catch a prose reference to
+  a block you forgot to render, so those dangling references slip through silently.

@@ -109,10 +109,10 @@ You are working on a Linear ticket `{{ issue.identifier }}`
 <repo: in-review polling and rework reset>
 
 {% render "completion_bar" %}
-<repo: extra completion criteria, e.g. coverage gate — appended after the render>
+- <repo: extra completion criteria, e.g. coverage gate — appended after the render>
 
 {% render "guardrails" %}
-<repo: extra guardrails, e.g. the lock-file rule — appended after the render>
+- <repo: extra guardrails, e.g. the lock-file rule — appended after the render>
 
 {% render "out_of_scope_backlog" %}
 {% render "dependency_guardrail", lockfile: "<your-lock-file>" %}

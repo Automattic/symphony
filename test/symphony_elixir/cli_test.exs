@@ -320,7 +320,8 @@ defmodule SymphonyElixir.CLITest do
     assert {:error, message} =
              CLI.evaluate(["workflow", "preview", "--file", "/no/such.md"], base_deps())
 
-    assert message =~ "not found"
+    assert message =~ "/no/such.md"
+    assert message =~ "no such file or directory"
   end
 
   test "workflow without a known subcommand returns a usage hint, not a service start" do

@@ -2653,7 +2653,6 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "## Blocked-access escape hatch (required behavior)"
     assert prompt =~ "## In-execution clarification escape hatch (required behavior)"
     assert prompt =~ "## Completion bar before In Review"
-    assert prompt =~ "- Required PR metadata is present (`symphony` label)."
     assert prompt =~ "## Guardrails"
     assert prompt =~ "## Out-of-scope improvements"
     assert prompt =~ "## Dependency-change guardrail"

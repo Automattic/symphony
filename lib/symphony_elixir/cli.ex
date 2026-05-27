@@ -83,6 +83,9 @@ defmodule SymphonyElixir.CLI do
       ["workflow", "preview" | preview_args] ->
         dispatch_workflow_preview(preview_args)
 
+      ["workflow" | _rest] ->
+        {:error, "Usage: symphony workflow preview [--file WORKFLOW.md] [--agent codex|claude]"}
+
       _args ->
         with :ok <- configure(args, deps) do
           start_runtime(deps)
@@ -300,7 +303,8 @@ defmodule SymphonyElixir.CLI do
     "Usage: symphony init [--force]\n" <>
       "       symphony [--config <path-to-symphony.yml>] [--state-root <path>] [--logs-root <path>] [--host <host>] [--port <port>]\n" <>
       "       symphony pr <url-or-number> [--intent \"address review comments\"]\n" <>
-      "       symphony run <issue-identifier> [--config <path-to-symphony.yml>] [--timeout <duration>] [--no-retry] [--state-root <path>] [--logs-root <path>]"
+      "       symphony run <issue-identifier> [--config <path-to-symphony.yml>] [--timeout <duration>] [--no-retry] [--state-root <path>] [--logs-root <path>]\n" <>
+      "       symphony workflow preview [--file WORKFLOW.md] [--agent codex|claude]"
   end
 
   @spec run_usage_message() :: String.t()

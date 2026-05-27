@@ -322,4 +322,12 @@ defmodule SymphonyElixir.CLITest do
 
     assert message =~ "not found"
   end
+
+  test "workflow without a known subcommand returns a usage hint, not a service start" do
+    assert {:error, message} = CLI.evaluate(["workflow"], base_deps())
+    assert message =~ "symphony workflow preview"
+
+    assert {:error, message} = CLI.evaluate(["workflow", "bogus"], base_deps())
+    assert message =~ "symphony workflow preview"
+  end
 end

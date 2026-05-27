@@ -314,8 +314,9 @@ defmodule SymphonyElixir.PromptBuilder do
 
   # A caller (e.g. the preview command) may pass an already-loaded workflow via
   # `:workflow` to render a specific file without going through global Config.
-  # Accept either the raw loaded map or the `{:ok, workflow}` shape `Workflow.load/1`
-  # returns; fall back to config-driven resolution when the opt is absent.
+  # Accept either the raw loaded map or the `{:ok, workflow}` shape that
+  # `Workflow.load/1` / `Workflow.parse_repo_workflow/1` return; fall back to
+  # config-driven resolution when the opt is absent.
   defp resolved_workflow(opts, workflow_source) do
     case Keyword.get(opts, :workflow) do
       {:ok, _workflow} = loaded -> loaded

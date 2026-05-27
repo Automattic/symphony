@@ -1,0 +1,14 @@
+{% comment %}
+name: status_map
+description: Canonical Symphony issue state machine and what each state means for the agent.
+vars: []
+{% endcomment %}## Status map
+
+- `Backlog` -> out of scope for this workflow; do not modify, except when an escape hatch returns the issue to `Backlog` for human input or external unblock.
+- `Todo` -> queued; immediately transition to `In Progress` before active work.
+  - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `In Review`).
+- `In Progress` -> implementation actively underway.
+- `In Review` -> PR is attached and validated; waiting on human approval.
+- `Merging` -> approved by human; follow the repo's landing flow to merge (do not call `gh pr merge` directly).
+- `Rework` -> reviewer requested changes; planning + implementation required.
+- `Done` -> terminal state; no further action required.

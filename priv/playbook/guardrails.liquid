@@ -1,0 +1,16 @@
+{% comment %}
+name: guardrails
+description: Cross-cutting safety and process guardrails for an issue run; repos append repo-specific guardrails after the render.
+vars: []
+{% endcomment %}## Guardrails
+
+- If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
+- For closed/merged branch PRs, create a new branch from the repo's default branch and restart from reproduction/planning as if starting fresh.
+- Do not edit the issue body/description for planning or progress tracking.
+- If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
+- Temporary proof edits are allowed only for local verification and must be reverted before commit.
+- Do not move to `In Review` unless the `Completion bar before In Review` is satisfied.
+- In `In Review`, do not make changes; wait and poll.
+- If state is terminal (`Done`), do nothing and shut down.
+- Keep issue text concise, specific, and reviewer-oriented.
+- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action, move the issue to `Backlog`, and stop.

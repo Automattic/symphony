@@ -1,0 +1,23 @@
+{% comment %}
+name: scoped_tools
+description: How to discover and use the scoped linear_* and github_* tools Symphony injects for the current issue.
+vars: []
+{% endcomment %}## Prerequisite: scoped Linear and GitHub tools are available
+
+Symphony injects scoped `linear_*` and `github_*` tools for the current issue.
+Consult your tool list for the full set — Claude sees them under the
+`mcp__symphony__` prefix (e.g., `mcp__symphony__linear_add_comment`), Codex sees
+the bare names. If no `linear_*` tools are present, stop and ask the user to
+configure Linear.
+
+For PR operations on the current issue, use the scoped `github_*` tools rather
+than shelling out to `gh`. `Bash(gh:*)` is denied for some agent runtimes
+(notably Claude). The scoped tools always operate on the current issue's PR in the
+configured origin repo and accept no owner/repo/PR arguments — Symphony injects
+the scope server-side.
+
+When remote refs need refreshing, use `github_fetch_origin()` instead of trying to
+read SSH config or credential files from the sandbox. It accepts no arguments and
+fetches only the workspace's verified `origin` remote.
+
+Do not craft raw Linear GraphQL from prompts.

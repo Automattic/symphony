@@ -32,48 +32,9 @@ You are working on a Linear ticket `{{ issue.identifier }}`
 
 {% render "issue_context", issue: issue %}
 
-Instructions:
+{% render "default_posture" %}
 
-Only stop early for a true blocker (missing required auth/permissions/secrets).
-If blocked, record it in the workpad and move the issue according to workflow.
-
-## Prerequisite: scoped Linear and GitHub tools are available
-
-Symphony injects scoped `linear_*` and `github_*` tools for the current issue.
-Consult your tool list for the full set — Claude sees them under the
-`mcp__symphony__` prefix (e.g., `mcp__symphony__linear_add_comment`), Codex
-sees the bare names. If no `linear_*` tools are present, stop and ask the user
-to configure Linear.
-
-For PR operations on the current issue, use the scoped `github_*` tools rather
-than shelling out to `gh`. `Bash(gh:*)` is denied for some agent runtimes
-(notably Claude). The scoped tools always operate on the current issue's PR in
-the configured origin repo and accept no owner/repo/PR arguments — Symphony
-injects the scope server-side.
-
-When remote refs need refreshing, use `github_fetch_origin()` instead of trying
-to read SSH config or credential files from the sandbox. It accepts no
-arguments and fetches only the workspace's verified `origin` remote.
-
-Do not craft raw Linear GraphQL from prompts. If a required Linear or GitHub
-operation is outside the available tool set, pause and record the gap in the
-workpad instead of synthesising a `gh` call or widening the prompt-facing API.
-
-## Default posture
-
-- Start by determining the ticket's current status, then follow the matching flow for that status.
-- Start every task by opening the tracking workpad comment and bringing it up to date before doing new implementation work.
-- Spend extra effort up front on planning and verification design before implementation.
-- Reproduce first: always confirm the current behavior/issue signal before changing code so the fix target is explicit.
-- Keep ticket metadata current (state, checklist, acceptance criteria, links).
-- Treat a single persistent Linear comment as the source of truth for progress.
-- Use that single workpad comment for all progress and handoff notes; do not post separate "done"/summary comments.
-- Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: mirror it in the workpad and execute it before considering the work complete.
-- File out-of-scope improvements as a separate Backlog issue (see "Out-of-scope improvements" below) instead of expanding scope.
-- Move status only when the matching quality bar is met.
-- Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
-- Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
-- Use the in-execution clarification escape hatch when planning cannot derive unambiguous acceptance criteria from the issue description and comments; halting is required, not optional, in that case.
+{% render "scoped_tools" %}
 
 ## Command and output hygiene
 
@@ -114,16 +75,7 @@ workpad instead of synthesising a `gh` call or widening the prompt-facing API.
 - `pull`: keep branch updated with latest `origin/main` before handoff.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.ai/skills/land/SKILL.md`, which includes the `land` loop.
 
-## Status map
-
-- `Backlog` -> out of scope for this workflow; do not modify, except when an escape hatch returns the issue to `Backlog` for human input or external unblock.
-- `Todo` -> queued; immediately transition to `In Progress` before active work.
-  - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `In Review`).
-- `In Progress` -> implementation actively underway.
-- `In Review` -> PR is attached and validated; waiting on human approval.
-- `Merging` -> approved by human; execute the `land` skill flow (do not call `gh pr merge` directly).
-- `Rework` -> reviewer requested changes; planning + implementation required.
-- `Done` -> terminal state; no further action required.
+{% render "status_map" %}
 
 ## Step 0: Determine current ticket state and route
 
@@ -275,32 +227,11 @@ workpad instead of synthesising a `gh` call or widening the prompt-facing API.
    - Create a new bootstrap `{{ agent.workpad_heading }}` comment.
    - Build a fresh plan/checklist and execute end-to-end.
 
-## Completion bar before In Review
+{% render "completion_bar" %}
 
-- Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
-- Acceptance criteria and required ticket-provided validation items are complete.
-- Validation/tests are green for the latest commit.
-- PR feedback sweep is complete and no actionable comments remain.
-- PR checks are green, branch is pushed, and PR is linked on the issue.
-- Required PR metadata is present (`symphony` label).
+{% render "guardrails" %}
 
-## Guardrails
-
-- If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
-- If issue state is `Backlog`, do not modify it; wait for human to move it to `Todo`.
-- Do not edit the issue body/description for planning or progress tracking.
-- Use exactly one persistent workpad comment (`{{ agent.workpad_heading }}`) per issue.
-- If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
-- Temporary proof edits are allowed only for local verification and must be reverted before commit.
-- File out-of-scope improvements as a separate Backlog issue (see the "Out-of-scope improvements" section below) rather than expanding current scope.
-- When changing packages/dependencies, follow the "Dependency-change guardrail" section below; the lock file for this repo is `mix.lock`.
-- If planning cannot derive unambiguous acceptance criteria from the issue description and comments, use the in-execution clarification escape hatch: post the specific Linear questions, record the workpad bookkeeping required by that section, move the issue to `Backlog`, and stop.
-- Do not move to `In Review` unless the `Completion bar before In Review` is satisfied.
-- In `In Review`, do not make changes; wait and poll.
-- If state is terminal (`Done`), do nothing and shut down.
-- Keep issue text concise, specific, and reviewer-oriented.
-- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action, move the issue to `Backlog`, and stop.
+- When changing packages/dependencies, follow the dependency-change guardrail below; the lock file for this repo is `mix.lock`.
 
 {% render "out_of_scope_backlog" %}
 

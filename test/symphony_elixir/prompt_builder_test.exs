@@ -295,6 +295,62 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert prompt =~ "Do not treat missing reviewer comments as approval."
   end
 
+  test "review-agent gate is omitted on first_push rework prompts" do
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      prompt: "Ticket {{ issue.identifier }}",
+      review_agent: %{
+        enabled: true,
+        kind: "codex",
+        command: "codex app-server",
+        max_iterations: 1,
+        run_on: "first_push"
+      }
+    )
+
+    issue = %Issue{
+      identifier: "ACME-3710",
+      title: "Skip the gate on rework",
+      description: "Rework runs answer human review feedback",
+      state: "In Progress",
+      url: "https://example.org/issues/ACME-3710",
+      labels: []
+    }
+
+    first_push_prompt = PromptBuilder.build_prompt(issue, settings: Config.settings!())
+    assert first_push_prompt =~ "Review-agent gate:"
+
+    rework_prompt =
+      PromptBuilder.build_prompt(issue,
+        settings: Config.settings!(),
+        reviewer_comments: [
+          %{
+            id: "comment-1",
+            kind: "inline_comment",
+            author: "Reviewer",
+            body: "Please rename this function.",
+            path: "lib/example.ex",
+            line: 7,
+            url: "https://github.com/example/repo/pull/1#discussion_r1"
+          }
+        ]
+      )
+
+    refute rework_prompt =~ "Review-agent gate:"
+
+    ci_prompt =
+      PromptBuilder.build_prompt(issue,
+        settings: Config.settings!(),
+        ci_failure: %{
+          workflow: "ci",
+          run_url: "https://github.com/example/repo/actions/runs/1",
+          log_excerpt: "test failed"
+        }
+      )
+
+    refute ci_prompt =~ "Review-agent gate:"
+  end
+
   test "prompt builder sanitizes linked issue title and state before rendering" do
     write_workflow_file!(
       Workflow.workflow_file_path(),

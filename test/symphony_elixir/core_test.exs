@@ -3590,6 +3590,53 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner skips review-agent first_push on rework run with reviewer comments" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-rework-skip-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = review_agent_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_review_agent_fake_codex!(codex_binary, trace_file)
+      write_review_agent_workflow!(codex_binary, max_turns: 2, run_on: "first_push")
+
+      assert :ok =
+               AgentRunner.run(review_agent_issue(), self(),
+                 workspace_path: repo,
+                 issue_state_fetcher: review_agent_state_fetcher(self(), 2),
+                 issue_enricher: no_op_issue_enricher(),
+                 reviewer_comments: [
+                   %{
+                     id: "comment-1",
+                     kind: "inline_comment",
+                     author: "Reviewer",
+                     body: "Please rename this function.",
+                     path: "lib/example.ex",
+                     line: 7,
+                     url: "https://github.com/example/repo/pull/1#discussion_r1"
+                   }
+                 ],
+                 review_agent_module: ReviewAgentSequenceAppServer
+               )
+
+      refute_receive {:review_agent_start_session, _workspace, _opts}, 50
+      refute_receive {:review_agent_call, _count, _session, _prompt, _issue, _opts}, 50
+
+      turn_texts = review_agent_turn_texts!(trace_file)
+      assert length(turn_texts) == 2
+      refute Enum.any?(turn_texts, &String.contains?(&1, "Review-agent gate"))
+      refute Enum.any?(turn_texts, &String.contains?(&1, "Reviewer agent approved"))
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner preserves approved review-agent handoff in later continuation prompts" do
     test_root =
       Path.join(

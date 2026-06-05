@@ -3,7 +3,7 @@ defmodule SymphonyElixir.PromptBuilder do
   Builds agent prompts from Linear issue data.
   """
 
-  alias SymphonyElixir.{AgentLabels, Config, PromptSafety, Workflow}
+  alias SymphonyElixir.{AgentLabels, Config, PromptSafety, ReviewAgent, Workflow}
 
   @render_opts [
     strict_variables: true,
@@ -520,15 +520,12 @@ defmodule SymphonyElixir.PromptBuilder do
     prompt <> "\n\n" <> pr_conflict_section(pr_conflict)
   end
 
-  defp append_review_agent_instructions(prompt, %{review_agent: %{enabled: true, run_on: "first_push"}}, opts) do
-    case prompt_mode(opts) do
-      :pr -> prompt
-      :issue -> append_review_agent_instructions(prompt)
+  defp append_review_agent_instructions(prompt, %{review_agent: %{enabled: true} = config}, opts) do
+    if ReviewAgent.skip_for_run?(config, opts) do
+      prompt
+    else
+      append_review_agent_instructions(prompt)
     end
-  end
-
-  defp append_review_agent_instructions(prompt, %{review_agent: %{enabled: true}}, _opts) do
-    append_review_agent_instructions(prompt)
   end
 
   defp append_review_agent_instructions(prompt, _settings, _opts), do: prompt

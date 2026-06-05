@@ -459,6 +459,7 @@ pre_push_review:
 
 When enabled, Symphony runs an executor/reviewer loop in the same workspace before push.
 `run_on` defaults to `always`; set it to `first_push` to skip the reviewer on PR follow-up runs while keeping it enabled for initial issue runs.
+Follow-up runs include explicit PR dispatches (`symphony pr`) and automatic rework runs triggered by reviewer comments, CI failures, or PR conflicts; these also omit the review-agent gate from the prompt so the agent can push and exit in a single turn.
 
 ### `issue_gate`
 

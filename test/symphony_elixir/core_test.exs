@@ -3835,6 +3835,72 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner preserves unverifiable finding details when downgrading review-agent verdict" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-agent-unverifiable-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      repo = review_agent_repo!(test_root)
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      write_review_agent_fake_codex!(codex_binary, trace_file)
+      write_review_agent_workflow!(codex_binary, max_turns: 2, max_iterations: 1)
+
+      unverifiable =
+        review_agent_request_changes_response("Preserve the finding content.", %{
+          "quoted_snippet" => "not present in cited evidence"
+        })
+
+      put_review_agent_responses!([unverifiable, unverifiable, unverifiable, unverifiable])
+
+      assert :ok =
+               AgentRunner.run(review_agent_issue(), self(),
+                 workspace_path: repo,
+                 issue_state_fetcher: review_agent_state_fetcher(self(), 3),
+                 issue_enricher: no_op_issue_enricher(),
+                 review_agent_module: ReviewAgentSequenceAppServer
+               )
+
+      assert_receive {:review_agent_call, 1, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 2, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 3, _session, _prompt, _issue, _opts}
+      assert_receive {:review_agent_call, 4, _session, _prompt, _issue, _opts}
+
+      reason = "reviewer did not converge: unverifiable finding at feature.txt:1-1: quoted snippet not found"
+
+      assert_receive {:codex_worker_update, "issue-review-agent-runner",
+                      %{
+                        event: :review_agent_verdict,
+                        agent_phase: :reviewer,
+                        payload: %{
+                          verdict: :request_changes,
+                          round: 1,
+                          max_iterations: 1,
+                          reason: ^reason,
+                          comments: [
+                            ^reason,
+                            "[unverified] Preserve the finding content. (feature.txt:1-1) Suggested fix: Keep the evidence-backed change."
+                          ]
+                        }
+                      }}
+
+      refute_receive {:review_agent_call, 5, _session, _prompt, _issue, _opts}, 50
+
+      turn_texts = review_agent_turn_texts!(trace_file)
+      assert length(turn_texts) == 2
+      assert Enum.at(turn_texts, 1) =~ reason
+      assert Enum.at(turn_texts, 1) =~ "[unverified] Preserve the finding content."
+      assert Enum.at(turn_texts, 1) =~ "Suggested fix: Keep the evidence-backed change."
+    after
+      clear_review_agent_env!()
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner emits a review-agent block verdict event before blocking" do
     test_root =
       Path.join(
@@ -4338,25 +4404,28 @@ defmodule SymphonyElixir.CoreTest do
     repo
   end
 
-  defp review_agent_request_changes_response(summary) do
-    review_agent_verdict_response("request_changes", summary)
+  defp review_agent_request_changes_response(summary, finding_overrides \\ %{}) do
+    review_agent_verdict_response("request_changes", summary, finding_overrides)
   end
 
   defp review_agent_block_response(reason) do
     review_agent_verdict_response("block", reason)
   end
 
-  defp review_agent_verdict_response(verdict, summary) do
+  defp review_agent_verdict_response(verdict, summary, finding_overrides \\ %{}) do
     Jason.encode!(%{
       "verdict" => verdict,
       "findings" => [
-        %{
-          "summary" => summary,
-          "file" => "feature.txt",
-          "line_range" => [1, 1],
-          "quoted_snippet" => "grounded evidence line",
-          "suggested_fix" => "Keep the evidence-backed change."
-        }
+        Map.merge(
+          %{
+            "summary" => summary,
+            "file" => "feature.txt",
+            "line_range" => [1, 1],
+            "quoted_snippet" => "grounded evidence line",
+            "suggested_fix" => "Keep the evidence-backed change."
+          },
+          finding_overrides
+        )
       ],
       "reason" => if(verdict == "block", do: summary, else: "")
     })

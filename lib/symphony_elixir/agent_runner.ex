@@ -529,7 +529,7 @@ defmodule SymphonyElixir.AgentRunner do
 
       result = %{
         verdict: :request_changes,
-        comments: [reason_text],
+        comments: review_agent_inconclusive_comments(reason, reason_text),
         reason: reason_text
       }
 
@@ -544,6 +544,41 @@ defmodule SymphonyElixir.AgentRunner do
       summary -> "reviewer did not converge: #{summary}"
     end
   end
+
+  defp review_agent_inconclusive_comments({:review_agent_unverifiable, %{failures: failures}}, reason_text) when is_list(failures) do
+    comments = Enum.flat_map(failures, &review_agent_unverified_finding_comments/1)
+    [reason_text | comments]
+  end
+
+  defp review_agent_inconclusive_comments(_reason, reason_text), do: [reason_text]
+
+  defp review_agent_unverified_finding_comments(%{finding: finding}) when is_map(finding) do
+    summary = finding |> Map.get(:summary) |> normalize_review_agent_finding_text()
+    suggested_fix = finding |> Map.get(:suggested_fix) |> normalize_review_agent_finding_text()
+
+    if summary == nil and suggested_fix == nil do
+      []
+    else
+      ["[unverified] #{unverified_finding_summary(summary)}#{review_agent_finding_comment_location(finding)}#{unverified_finding_fix(suggested_fix)}"]
+    end
+  end
+
+  defp review_agent_unverified_finding_comments(_failure), do: []
+
+  defp normalize_review_agent_finding_text(text) when is_binary(text) do
+    case String.trim(text) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_review_agent_finding_text(_text), do: nil
+
+  defp unverified_finding_summary(nil), do: "Reviewer finding"
+  defp unverified_finding_summary(summary), do: summary
+
+  defp unverified_finding_fix(nil), do: ""
+  defp unverified_finding_fix(suggested_fix), do: " Suggested fix: #{suggested_fix}"
 
   defp review_agent_inconclusive_summary(:review_agent_max_iterations_reached), do: "request-change limit reached"
   defp review_agent_inconclusive_summary({:max_iterations, _reason}), do: "review turn reached max iterations"
@@ -573,6 +608,14 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp review_agent_finding_location(%{file: file}) when is_binary(file), do: " at #{file}"
   defp review_agent_finding_location(_finding), do: ""
+
+  defp review_agent_finding_comment_location(%{file: file, line_range: {start_line, end_line}})
+       when is_binary(file) and is_integer(start_line) and is_integer(end_line) do
+    " (#{file}:#{start_line}-#{end_line})"
+  end
+
+  defp review_agent_finding_comment_location(%{file: file}) when is_binary(file), do: " (#{file})"
+  defp review_agent_finding_comment_location(_finding), do: ""
 
   defp review_agent_verification_reason(:quoted_snippet_not_found), do: "quoted snippet not found"
   defp review_agent_verification_reason({:file_not_in_review_context, path}) when is_binary(path), do: "file not in review context"

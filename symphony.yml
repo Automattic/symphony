@@ -85,7 +85,7 @@ agent:
       # allowed_domains: []
       # denied_domains: []
     outer_sandbox:
-      runtime: srt
+      # runtime: srt
       command: srt
       enable_weaker_network_isolation: false
   mcp:

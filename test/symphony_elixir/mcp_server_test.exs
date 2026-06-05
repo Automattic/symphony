@@ -1260,22 +1260,24 @@ defmodule SymphonyElixir.McpServerTest do
     # Regression: the shim's stdin pump raised {:no_translation, :unicode, :latin1}
     # on any multi-byte UTF-8 character (em dash, curly quotes), killing the
     # connection — the MCP client saw "MCP error -32000: Connection closed".
-    if System.find_executable("elixir") do
-      if_unix_socket_bind_supported(fn ->
-        server = unique_server()
-        start_supervised!({McpServer, name: server})
+    # The shim runs via `#!/usr/bin/env elixir`; a missing executable fails
+    # the test loudly rather than skipping silently.
+    if_unix_socket_bind_supported(fn ->
+      server = unique_server()
+      start_supervised!({McpServer, name: server})
 
-        {:ok, session} = McpServer.start_session(%{workspace: System.tmp_dir!()}, server: server)
-        on_exit(fn -> McpServer.stop_session(session, server: server) end)
+      {:ok, session} = McpServer.start_session(%{workspace: System.tmp_dir!()}, server: server)
+      on_exit(fn -> McpServer.stop_session(session, server: server) end)
 
-        port =
-          Port.open({:spawn_executable, session.shim_path}, [
-            :binary,
-            :exit_status,
-            {:args, ["--socket", session.socket_path]},
-            {:env, [{~c"SYMPHONY_MCP_SESSION_TOKEN", String.to_charlist(session.token)}]}
-          ])
+      port =
+        Port.open({:spawn_executable, session.shim_path}, [
+          :binary,
+          :exit_status,
+          {:args, ["--socket", session.socket_path]},
+          {:env, [{~c"SYMPHONY_MCP_SESSION_TOKEN", String.to_charlist(session.token)}]}
+        ])
 
+      try do
         assert %{"id" => 1, "result" => _result} =
                  shim_request(port, %{
                    "jsonrpc" => "2.0",
@@ -1297,8 +1299,10 @@ defmodule SymphonyElixir.McpServerTest do
                      }
                    }
                  })
-      end)
-    end
+      after
+        if Port.info(port), do: Port.close(port)
+      end
+    end)
   end
 
   defp shim_request(port, payload) do

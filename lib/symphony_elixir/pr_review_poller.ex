@@ -1341,17 +1341,30 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp maybe_put_pending_comments(attrs, _record, _comments), do: attrs
 
-  defp maybe_put_pending_reviewed_head_sha(attrs, record) do
-    reviewed_head_sha =
-      string_field(record, :pending_reviewer_comments_reviewed_head_sha) ||
-        string_field(attrs, :head_ref_oid) ||
-        string_field(record, :head_ref_oid)
+defp maybe_put_pending_reviewed_head_sha(attrs, record) do
+  existing_reviewed_head_sha = string_field(record, :pending_reviewer_comments_reviewed_head_sha)
+  existing_pending_cursor = string_field(record, :pending_last_addressed_comment_id)
+  new_pending_cursor = string_field(attrs, :pending_last_addressed_comment_id)
 
-    if present?(reviewed_head_sha) do
-      Map.put(attrs, :pending_reviewer_comments_reviewed_head_sha, reviewed_head_sha)
-    else
-      attrs
+  current_head_sha =
+    string_field(attrs, :head_ref_oid) ||
+      string_field(record, :head_ref_oid)
+
+  reviewed_head_sha =
+    cond do
+      present?(existing_reviewed_head_sha) and existing_pending_cursor == new_pending_cursor ->
+        existing_reviewed_head_sha
+
+      true ->
+        current_head_sha || existing_reviewed_head_sha
     end
+
+  if present?(reviewed_head_sha) do
+    Map.put(attrs, :pending_reviewer_comments_reviewed_head_sha, reviewed_head_sha)
+  else
+    attrs
+  end
+end
   end
 
   defp pending_comment_cursor_caught_up?(record) when is_map(record) do

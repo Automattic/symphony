@@ -140,7 +140,9 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         })
 
       "open" ->
-        base
+        put_in(base, ["sandbox", "network"], %{
+          "allowLocalBinding" => true
+        })
     end
   end
 

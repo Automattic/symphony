@@ -31,6 +31,7 @@ defmodule SymphonyElixir.AgentEnv do
     TMPDIR
     SHELL
     TZ
+    SSL_CERT_FILE
   )
 
   @doc """

@@ -301,7 +301,10 @@ commands remain available.
 
 An optional outer-sandbox wrapper using `@anthropic-ai/sandbox-runtime`.
 
-- `runtime: srt` wraps the launch as `srt --settings <temp-settings.json> <agent.command-with-codex-config>`.
+- `runtime: srt` wraps the launch as
+  `srt --settings <temp-settings.json> sh -c <prelude-and-agent.command-with-codex-config>`.
+  The prelude rewrites localhost HTTP(S) proxy environment values to `127.0.0.1` and sets
+  `SSL_CERT_FILE=/etc/ssl/cert.pem` only when it is unset.
 - `command` defaults to `srt`; can be a shell-like string when a wrapper such as `mise exec -- srt`
   is needed.
 - With SRT enabled, Symphony sends Codex an `externalSandbox` turn policy so SRT owns command

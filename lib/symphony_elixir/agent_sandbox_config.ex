@@ -151,7 +151,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   @spec claude_filesystem_settings([String.t()], [String.t()]) :: map()
   def claude_filesystem_settings(allow_read_paths \\ [], allow_write_paths \\ []) do
     allow_read_paths = normalize_allow_read_paths(allow_read_paths)
-    allow_write_paths = normalize_allow_read_paths(allow_write_paths)
+    allow_write_paths = allow_write_paths |> normalize_allow_read_paths() |> expand_home_paths()
 
     base = %{
       "denyRead" => @deny_read_paths |> Enum.reject(&(&1 in allow_read_paths)) |> expand_home_paths(),
@@ -344,6 +344,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
 
   defp srt_allow_write_paths(extra_paths) do
     ([".", "/tmp", System.tmp_dir!()] ++ @srt_codex_runtime_write_paths ++ normalize_sandbox_paths(extra_paths))
+    |> expand_home_paths()
     |> Enum.flat_map(&srt_allow_write_path_variants/1)
     |> Enum.uniq()
   end
@@ -358,6 +359,7 @@ defmodule SymphonyElixir.AgentSandboxConfig do
   end
 
   defp normalize_srt_allow_write_path("."), do: "."
+  defp normalize_srt_allow_write_path("./" <> _rest = path), do: path
   defp normalize_srt_allow_write_path("~/" <> _rest = path), do: path
   defp normalize_srt_allow_write_path("/" <> _rest = path), do: path
   defp normalize_srt_allow_write_path(path), do: "./#{path}"

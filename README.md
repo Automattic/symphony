@@ -54,7 +54,7 @@ branch instead of opening a second one. If a claimed issue moves to a terminal s
 - **Multi-repo orchestration** — one process supervises several repositories from a single
   `symphony.yml`, with per-repo Linear selectors and conflict detection.
 - **LiveView dashboard** — active runs, watched issues, the retry queue, quality-gate state,
-  per-issue transcripts, and an audit timeline.
+  per-issue transcripts with JSON access, and an audit timeline.
 - **Operator controls** — pause, resume, and stop, persisted across restarts.
 - **PR-driven runs** — work an existing pull request from the CLI for review comments, failing CI, and
   conflict fixes.

@@ -31,6 +31,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @stderr_tail_line_count 5
+  @stderr_tail_max_bytes 16_384
+  @codex_stdio_write_failed_pattern ~r/^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?(?:(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR)\s+)?codex_app_server_transport::transport::stdio:\s+Failed to write to stdout\b/
   # Soft cap on the size of any single string field (e.g. aggregatedOutput) we keep on a
   # notification payload before forwarding it to the orchestrator/transcript/audit log. Codex itself
   # is told to suppress streaming deltas, so this only kicks in for terminal item/completed payloads
@@ -58,7 +61,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @srt_default_ssl_cert_file "/etc/ssl/cert.pem"
 
   @type stdout_pump :: %{pid: pid(), ref: reference(), os_pid: pos_integer() | nil} | nil
-  @type stderr_tail :: %{pid: pid(), ref: reference()} | nil
+  @type stderr_tail :: %{pid: pid(), ref: reference(), path: Path.t()} | nil
 
   @type session :: %{
           port: port(),
@@ -174,7 +177,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     metadata = port_metadata(port, worker_host)
 
     with {:ok, session_policies} <- session_policies(workspace, worker_host, settings, tool_scope),
-         {:ok, thread_id} <- do_start_session(port, workspace, session_policies, settings) do
+         {:ok, thread_id} <- do_start_session(port, workspace, session_policies, settings, stderr_tail) do
       {:ok,
        %{
          port: port,
@@ -220,6 +223,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           turn_sandbox_policy: turn_sandbox_policy,
           thread_id: thread_id,
           workspace: workspace,
+          stderr_tail: stderr_tail,
           command_security: command_security,
           settings: settings
         },
@@ -255,6 +259,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       approval_policy: approval_policy,
       turn_sandbox_policy: turn_sandbox_policy,
       settings: settings,
+      stderr_tail: stderr_tail,
       on_message: on_message,
       tool_executor: tool_executor,
       auto_approve_requests: auto_approve_requests,
@@ -283,20 +288,19 @@ defmodule SymphonyElixir.Codex.AppServer do
          tool_executor: tool_executor,
          auto_approve_requests: auto_approve_requests,
          approval_context: approval_context,
+         stderr_tail: stderr_tail,
          metadata: metadata
        }) do
     flush_stderr_transport_messages(port)
 
-    case start_turn(
-           port,
-           thread_id,
-           prompt,
-           issue,
-           workspace,
-           approval_policy,
-           turn_sandbox_policy,
-           settings
-         ) do
+    start_turn_context = %{
+      approval_policy: approval_policy,
+      turn_sandbox_policy: turn_sandbox_policy,
+      settings: settings,
+      stderr_tail: stderr_tail
+    }
+
+    case start_turn(port, thread_id, prompt, issue, workspace, start_turn_context) do
       {:ok, %{turn_id: turn_id, sandbox_startup: sandbox_startup}} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
@@ -319,7 +323,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                auto_approve_requests,
                settings,
                approval_context,
-               sandbox_startup
+               sandbox_startup,
+               stderr_tail
              ) do
           {:ok, result} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
@@ -1050,7 +1055,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp send_initialize(port, settings, session_policies) do
+  defp send_initialize(port, settings, session_policies, stderr_tail) do
     payload = %{
       "method" => "initialize",
       "id" => @initialize_id,
@@ -1069,7 +1074,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     send_message(port, payload)
 
-    with {:ok, _} <- await_response(port, @initialize_id, settings) do
+    with {:ok, _} <- await_response(port, @initialize_id, settings, stderr_tail) do
       send_message(port, %{"method" => "initialized", "params" => %{}})
       :ok
     end
@@ -1090,9 +1095,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp do_start_session(port, workspace, session_policies, settings) do
-    case send_initialize(port, settings, session_policies) do
-      :ok -> start_thread(port, workspace, session_policies, settings)
+  defp do_start_session(port, workspace, session_policies, settings, stderr_tail) do
+    case send_initialize(port, settings, session_policies, stderr_tail) do
+      :ok -> start_thread(port, workspace, session_policies, settings, stderr_tail)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -1106,7 +1111,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            thread_config: thread_config,
            tool_scope: tool_scope
          },
-         settings
+         settings,
+         stderr_tail
        ) do
     params =
       %{
@@ -1123,7 +1129,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       "params" => params
     })
 
-    case await_response(port, @thread_start_id, settings) do
+    case await_response(port, @thread_start_id, settings, stderr_tail) do
       {:ok, %{"thread" => thread_payload}} ->
         case thread_payload do
           %{"id" => thread_id} -> {:ok, thread_id}
@@ -1141,16 +1147,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp maybe_put_thread_config(params, _config), do: params
 
-  defp start_turn(
-         port,
-         thread_id,
-         prompt,
-         issue,
-         workspace,
-         approval_policy,
-         turn_sandbox_policy,
-         settings
-       ) do
+  defp start_turn(port, thread_id, prompt, issue, workspace, context) do
     send_message(port, %{
       "method" => "turn/start",
       "id" => @turn_start_id,
@@ -1164,12 +1161,12 @@ defmodule SymphonyElixir.Codex.AppServer do
         ],
         "cwd" => workspace,
         "title" => "#{issue.identifier}: #{issue.title}",
-        "approvalPolicy" => approval_policy,
-        "sandboxPolicy" => turn_sandbox_policy
+        "approvalPolicy" => context.approval_policy,
+        "sandboxPolicy" => context.turn_sandbox_policy
       }
     })
 
-    case await_response(port, @turn_start_id, settings) do
+    case await_response(port, @turn_start_id, context.settings, context.stderr_tail) do
       {:ok, %{"turn" => %{"id" => turn_id} = turn_payload}} ->
         {:ok,
          %{
@@ -1192,19 +1189,23 @@ defmodule SymphonyElixir.Codex.AppServer do
          auto_approve_requests,
          settings,
          approval_context,
-         sandbox_startup
+         sandbox_startup,
+         stderr_tail
        ) do
     config = settings.agent
 
     receive_loop(
       port,
       on_message,
-      config.turn_timeout_ms,
       "",
-      tool_executor,
-      auto_approve_requests,
-      approval_context,
-      initial_turn_stream_state(config.command_timeout_ms, sandbox_startup)
+      %{
+        timeout_ms: config.turn_timeout_ms,
+        tool_executor: tool_executor,
+        auto_approve_requests: auto_approve_requests,
+        approval_context: approval_context,
+        turn_stream_state: initial_turn_stream_state(config.command_timeout_ms, sandbox_startup),
+        stderr_tail: stderr_tail
+      }
     )
   end
 
@@ -1224,55 +1225,50 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp receive_loop(
-         port,
-         on_message,
-         timeout_ms,
-         pending_line,
-         tool_executor,
-         auto_approve_requests,
-         approval_context,
-         turn_stream_state
-       ) do
+  defp receive_loop(port, on_message, pending_line, stream_context) do
     receive do
       {:codex_stdout_line, ^port, _ref, line} ->
         complete_line = pending_line <> to_string(line)
 
-        handle_incoming(
-          port,
-          on_message,
-          complete_line,
-          timeout_ms,
-          tool_executor,
-          auto_approve_requests,
-          approval_context,
-          turn_stream_state
-        )
+        handle_incoming(port, on_message, complete_line, stream_context)
 
       {:codex_stdout_exit, ^port, _ref, status} ->
-        {:error, {:port_exit, status}}
+        {:error, port_exit_reason(status, stream_context.stderr_tail)}
 
       {:codex_stderr_transport_failed, ^port, _ref, reason} ->
         handle_stderr_transport_failure(port, on_message, reason)
     after
-      receive_timeout_ms(timeout_ms, turn_stream_state) ->
-        case stream_timeout_error(timeout_ms, turn_stream_state) do
+      receive_timeout_ms(stream_context.timeout_ms, stream_context.turn_stream_state) ->
+        case stream_timeout_error(stream_context.timeout_ms, stream_context.turn_stream_state) do
+          {:error, :turn_timeout} -> turn_timeout_error(port, on_message, stream_context.stderr_tail)
           {:error, reason} -> {:error, reason}
-          :ok -> {:error, :turn_timeout}
+          :ok -> turn_timeout_error(port, on_message, stream_context.stderr_tail)
         end
     end
   end
 
-  defp handle_incoming(
-         port,
-         on_message,
-         data,
-         timeout_ms,
-         tool_executor,
-         auto_approve_requests,
-         approval_context,
-         turn_stream_state
-       ) do
+  defp turn_timeout_error(port, on_message, stderr_tail) do
+    case stderr_transport_failure_reason(stderr_tail) do
+      nil -> {:error, :turn_timeout}
+      reason -> handle_stderr_transport_failure(port, on_message, reason)
+    end
+  end
+
+  defp stderr_transport_failure_reason(stderr_tail) do
+    case stderr_tail_text(stderr_tail) do
+      detail when is_binary(detail) ->
+        if codex_stdio_write_failed?(detail) do
+          {:codex_stdio_write_failed, detail}
+        else
+          nil
+        end
+
+      nil ->
+        nil
+    end
+  end
+
+  defp handle_incoming(port, on_message, data, stream_context) do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
@@ -1284,13 +1280,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           on_message,
           payload,
           payload_string,
-          %{
-            timeout_ms: timeout_ms,
-            tool_executor: tool_executor,
-            auto_approve_requests: auto_approve_requests,
-            approval_context: approval_context,
-            turn_stream_state: turn_stream_state
-          }
+          stream_context
         )
 
       {:error, _reason} ->
@@ -1312,7 +1302,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
           protocol_message_candidate?(payload_string) ->
             {updated_turn_stream_state, recovery_event} =
-              update_command_tracking_from_malformed(turn_stream_state, payload_string)
+              update_command_tracking_from_malformed(stream_context.turn_stream_state, payload_string)
 
             emit_message(
               on_message,
@@ -1326,26 +1316,10 @@ defmodule SymphonyElixir.Codex.AppServer do
 
             maybe_emit_malformed_recovery(on_message, recovery_event, payload_string, port)
 
-            continue_turn_stream(
-              port,
-              on_message,
-              timeout_ms,
-              tool_executor,
-              auto_approve_requests,
-              approval_context,
-              updated_turn_stream_state
-            )
+            continue_turn_stream(port, on_message, %{stream_context | turn_stream_state: updated_turn_stream_state})
 
           true ->
-            continue_turn_stream(
-              port,
-              on_message,
-              timeout_ms,
-              tool_executor,
-              auto_approve_requests,
-              approval_context,
-              turn_stream_state
-            )
+            continue_turn_stream(port, on_message, stream_context)
         end
     end
   end
@@ -1438,15 +1412,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       metadata_from_message(port, payload)
     )
 
-    continue_turn_stream(
-      port,
-      on_message,
-      stream_context.timeout_ms,
-      stream_context.tool_executor,
-      stream_context.auto_approve_requests,
-      stream_context.approval_context,
-      stream_context.turn_stream_state
-    )
+    continue_turn_stream(port, on_message, stream_context)
   end
 
   defp handle_turn_completed(port, on_message, payload, payload_string, turn_stream_state) do
@@ -3287,38 +3253,13 @@ defmodule SymphonyElixir.Codex.AppServer do
     turn_stream_state =
       update_command_tracking(stream_context.turn_stream_state, method, payload)
 
-    continue_turn_stream(
-      port,
-      on_message,
-      stream_context.timeout_ms,
-      stream_context.tool_executor,
-      stream_context.auto_approve_requests,
-      stream_context.approval_context,
-      turn_stream_state
-    )
+    continue_turn_stream(port, on_message, %{stream_context | turn_stream_state: turn_stream_state})
   end
 
-  defp continue_turn_stream(
-         port,
-         on_message,
-         timeout_ms,
-         tool_executor,
-         auto_approve_requests,
-         approval_context,
-         turn_stream_state
-       ) do
-    case stream_timeout_error(timeout_ms, turn_stream_state) do
+  defp continue_turn_stream(port, on_message, stream_context) do
+    case stream_timeout_error(stream_context.timeout_ms, stream_context.turn_stream_state) do
       :ok ->
-        receive_loop(
-          port,
-          on_message,
-          timeout_ms,
-          "",
-          tool_executor,
-          auto_approve_requests,
-          approval_context,
-          turn_stream_state
-        )
+        receive_loop(port, on_message, "", stream_context)
 
       {:error, reason} ->
         {:error, reason}
@@ -3665,18 +3606,44 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp normalize_command(_command), do: nil
 
-  defp await_response(port, request_id, settings) do
-    with_timeout_response(port, request_id, settings.agent.read_timeout_ms, "")
+  defp await_response(port, request_id, settings, stderr_tail) do
+    with_timeout_response(port, request_id, settings.agent.read_timeout_ms, "", stderr_tail)
   end
 
-  defp with_timeout_response(port, request_id, timeout_ms, pending_line) do
+  defp port_exit_reason(status, stderr_tail) when is_integer(status) do
+    case stderr_tail_text(stderr_tail) do
+      nil -> {:port_exit, status}
+      stderr -> {:port_exit, status, %{stderr: stderr}}
+    end
+  end
+
+  defp stderr_tail_text(%{path: path}) when is_binary(path) do
+    with {:ok, %{size: size}} when size > 0 <- File.stat(path),
+         offset = max(size - @stderr_tail_max_bytes, 0),
+         {:ok, data} <- read_range(path, offset, size - offset) do
+      data
+      |> strip_ansi()
+      |> String.split(~r/\R/u, trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.take(-@stderr_tail_line_count)
+      |> Enum.join("\n")
+      |> blank_to_nil()
+    else
+      _ -> nil
+    end
+  end
+
+  defp stderr_tail_text(_stderr_tail), do: nil
+
+  defp with_timeout_response(port, request_id, timeout_ms, pending_line, stderr_tail) do
     receive do
       {:codex_stdout_line, ^port, _ref, line} ->
         complete_line = pending_line <> to_string(line)
-        handle_response(port, request_id, complete_line, timeout_ms)
+        handle_response(port, request_id, complete_line, timeout_ms, stderr_tail)
 
       {:codex_stdout_exit, ^port, _ref, status} ->
-        {:error, {:port_exit, status}}
+        {:error, port_exit_reason(status, stderr_tail)}
 
       {:codex_stderr_transport_failed, ^port, _ref, reason} ->
         {:error, reason}
@@ -3686,7 +3653,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_response(port, request_id, data, timeout_ms) do
+  defp handle_response(port, request_id, data, timeout_ms, stderr_tail) do
     payload = to_string(data)
 
     case Jason.decode(payload) do
@@ -3701,11 +3668,11 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       {:ok, %{} = other} ->
         Logger.debug("Ignoring message while waiting for response: #{inspect(other)}")
-        with_timeout_response(port, request_id, timeout_ms, "")
+        with_timeout_response(port, request_id, timeout_ms, "", stderr_tail)
 
       {:error, _} ->
         log_non_json_stream_line(payload, "response stream")
-        with_timeout_response(port, request_id, timeout_ms, "")
+        with_timeout_response(port, request_id, timeout_ms, "", stderr_tail)
     end
   end
 
@@ -3799,7 +3766,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> to_string()
     |> strip_ansi()
     |> String.trim_leading()
-    |> String.match?(~r/^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?(?:(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR)\s+)?codex_app_server_transport::transport::stdio:\s+Failed to write to stdout\b/)
+    |> String.match?(@codex_stdio_write_failed_pattern)
   end
 
   defp strip_ansi(data) do
@@ -3876,6 +3843,7 @@ defmodule SymphonyElixir.Codex.AppServer do
        when is_port(port) and is_integer(os_pid) and os_pid > 0 do
     if function_exported?(process_tree_module, :terminate_descendants, 1) do
       process_tree_module.terminate_descendants(os_pid)
+      terminate_root_process(os_pid)
     else
       process_tree_module.terminate_port_descendants(port)
     end
@@ -3892,6 +3860,13 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   rescue
     ArgumentError -> nil
+  end
+
+  defp terminate_root_process(os_pid) when is_integer(os_pid) and os_pid > 0 do
+    _result = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    :ok
+  rescue
+    _exception -> :ok
   end
 
   defp stdout_pump_loop(%{port: port, owner: owner, owner_monitor_ref: owner_ref, ref: ref} = state) do
@@ -4075,7 +4050,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         })
       end)
 
-    %{pid: pid, ref: ref}
+    %{pid: pid, ref: ref, path: path}
   end
 
   @spec stop_stderr_tail(stderr_tail()) :: :ok
@@ -4134,8 +4109,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp log_stderr_line("", state), do: state
 
   defp log_stderr_line(line, state) do
+    state = maybe_notify_stderr_transport_failure(line, state)
     log_non_json_stream_line(line, "turn stream")
-    maybe_notify_stderr_transport_failure(line, state)
+    state
   end
 
   defp maybe_notify_stderr_transport_failure(line, %{transport_failed?: false, owner: owner, port: port, ref: ref} = state)

@@ -565,6 +565,11 @@ defmodule SymphonyElixir.Orchestrator do
     "review_agent blocked: #{review_agent_block_reason(payload)}"
   end
 
+  defp agent_exit_reason_summary({:port_exit, status, %{stderr: stderr}})
+       when is_integer(status) and is_binary(stderr) do
+    "port_exit #{status}; stderr: #{strip_ansi(stderr)}"
+  end
+
   defp agent_exit_reason_summary({%{__exception__: true} = exception, _stacktrace}) do
     exception
     |> Exception.message()

@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{AuditLog, Config, Orchestrator, URLUtils}
+  alias SymphonyElixir.{AuditLog, Config, Orchestrator, Quality, URLUtils}
   alias SymphonyElixir.Codex.MessageHumanizer
 
   @audit_page_size 200
@@ -108,19 +108,7 @@ defmodule SymphonyElixirWeb.Presenter do
       when is_binary(issue_identifier) do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
-        running = Enum.find(snapshot.running, &(repo_key_matches?(&1, repo_key) and &1.identifier == issue_identifier))
-        watching = snapshot |> Map.get(:watching, []) |> Enum.find(&(repo_key_matches?(&1, repo_key) and &1.identifier == issue_identifier))
-
-        case {running, watching} do
-          {nil, nil} ->
-            {:error, :issue_not_found}
-
-          {%{} = running, _watching} ->
-            {:ok, running_transcript_payload(running, repo_key)}
-
-          {nil, %{} = watching} ->
-            {:ok, watching_transcript_payload(watching, repo_key)}
-        end
+        transcript_payload_from_snapshot(snapshot, repo_key, issue_identifier)
 
       _ ->
         {:error, :snapshot_unavailable}
@@ -900,6 +888,27 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
+  defp retry_transcript_payload(retry, repo_key) do
+    tokens = transcript_tokens(retry)
+    reviewer_tokens = transcript_reviewer_tokens(retry)
+
+    %{
+      repo_key: Map.get(retry, :repo_key) || repo_key,
+      issue_id: retry.issue_id,
+      issue_identifier: retry.identifier,
+      state: Map.get(retry, :state, "retrying"),
+      session_id: Map.get(retry, :session_id),
+      started_at: iso8601(Map.get(retry, :started_at)),
+      last_event_at: iso8601(Map.get(retry, :last_event_at) || Map.get(retry, :last_ran_at)),
+      turn_count: Map.get(retry, :turn_count, 0),
+      tokens: tokens,
+      executor_tokens: executor_tokens(tokens, reviewer_tokens),
+      reviewer_tokens: reviewer_tokens,
+      review_agent_enabled: review_agent_enabled?(retry, reviewer_tokens),
+      events: transcript_events(retry)
+    }
+  end
+
   defp transcript_tokens(%{tokens: tokens}) when is_map(tokens) do
     input_tokens = Map.get(tokens, :input_tokens, 0)
     cached_input_tokens = Map.get(tokens, :cached_input_tokens, 0)
@@ -959,8 +968,46 @@ defmodule SymphonyElixirWeb.Presenter do
     Map.get(entry, :review_agent_enabled, false) == true or Map.get(reviewer_tokens, :total_tokens, 0) > 0
   end
 
-  defp transcript_events(%{transcript_buffer: events}) when is_list(events), do: events
-  defp transcript_events(_running), do: []
+  defp transcript_payload_from_snapshot(snapshot, repo_key, issue_identifier) do
+    case transcript_entry(snapshot, repo_key, issue_identifier) do
+      {:running, running} -> {:ok, running_transcript_payload(running, repo_key)}
+      {:watching, watching} -> {:ok, watching_transcript_payload(watching, repo_key)}
+      {:retry, retry} -> {:ok, retry_transcript_payload(retry, repo_key)}
+      nil -> {:error, :issue_not_found}
+    end
+  end
+
+  defp transcript_entry(snapshot, repo_key, issue_identifier) do
+    [
+      {:running, Map.get(snapshot, :running, [])},
+      {:watching, Map.get(snapshot, :watching, [])},
+      {:retry, Map.get(snapshot, :retrying, [])}
+    ]
+    |> Enum.find_value(fn {kind, entries} ->
+      case Enum.find(entries, &transcript_entry_matches?(&1, repo_key, issue_identifier)) do
+        nil -> nil
+        entry -> {kind, entry}
+      end
+    end)
+  end
+
+  defp transcript_entry_matches?(entry, repo_key, issue_identifier) do
+    repo_key_matches?(entry, repo_key) and Map.get(entry, :identifier) == issue_identifier
+  end
+
+  defp transcript_events(entry) do
+    Quality.transcript_file_events(Map.get(entry, :transcript_path)) ++ buffered_transcript_events(entry)
+  end
+
+  defp buffered_transcript_events(%{transcript_buffer: queue}) do
+    cond do
+      :queue.is_queue(queue) -> :queue.to_list(queue)
+      is_list(queue) -> queue
+      true -> []
+    end
+  end
+
+  defp buffered_transcript_events(_entry), do: []
 
   defp repo_key_matches?(_entry, nil), do: true
   defp repo_key_matches?(entry, repo_key), do: Map.get(entry, :repo_key) == repo_key

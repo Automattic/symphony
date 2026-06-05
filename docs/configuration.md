@@ -497,6 +497,9 @@ CLI `--host` and `--port` override these listener settings.
 
 The dashboard also serves an Audit tab at `/audit` (filters, per-record expansion, daily hash-chain
 verification, NDJSON export); the same filtered stream is available from `/api/v1/audit`.
+Per-issue transcripts are available in the dashboard and as JSON at
+`/api/v1/repos/<repo_key>/issues/<issue_identifier>/transcript` (or
+`/api/v1/issues/<issue_identifier>/transcript` for the default repository).
 
 **Control plane.** CLI commands (`mix symphony.pause`, `symphony.resume`, `symphony.stop`,
 `symphony.pr`) reach the running daemon over a loopback HTTP control plane on the dashboard port.

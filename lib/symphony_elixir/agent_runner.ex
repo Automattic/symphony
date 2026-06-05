@@ -101,9 +101,26 @@ defmodule SymphonyElixir.AgentRunner do
                 remember_verification_dev_server(dev_server_pid)
                 enriched_issue = enrich_issue_for_dispatch(issue, opts)
 
-                with {:ok, bootstrapped_issue} <-
-                       Workpad.bootstrap(enriched_issue, workspace, Keyword.put(opts, :worker_host, worker_host)) do
-                  run_codex_turns(workspace, bootstrapped_issue, codex_update_recipient, opts, worker_host)
+                # Start the comment registry before workpad bootstrap so the
+                # bootstrap comment is recorded as run-owned at creation time
+                # instead of relying on the post-hoc Linear re-query, which can
+                # miss a just-created comment (read lag).
+                with {:ok, linear_comment_registry} <- CommentRegistry.start_link([]),
+                     {:ok, bootstrapped_issue} <-
+                       Workpad.bootstrap(
+                         enriched_issue,
+                         workspace,
+                         opts
+                         |> Keyword.put(:worker_host, worker_host)
+                         |> Keyword.put(:comment_registry, linear_comment_registry)
+                       ) do
+                  run_codex_turns(
+                    workspace,
+                    bootstrapped_issue,
+                    codex_update_recipient,
+                    Keyword.put(opts, :linear_comment_registry, linear_comment_registry),
+                    worker_host
+                  )
                 end
               end
             after
@@ -225,6 +242,20 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_agent_session_info(_recipient, _issue, _agent_module, _session), do: :ok
 
+  # Reuse the registry started before workpad bootstrap (it already owns the
+  # bootstrap comment) and merge in ids recovered from Linear; fall back to a
+  # fresh registry for callers that skip the bootstrap path.
+  defp ensure_comment_registry(opts, seed_ids) do
+    case Keyword.get(opts, :linear_comment_registry) do
+      pid when is_pid(pid) ->
+        Enum.each(seed_ids, &CommentRegistry.record(pid, &1))
+        {:ok, pid}
+
+      nil ->
+        CommentRegistry.start_link(seed_ids: seed_ids)
+    end
+  end
+
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     settings = Keyword.fetch!(opts, :settings)
     max_turns = Keyword.get(opts, :max_turns, settings.agent.max_turns)
@@ -233,7 +264,7 @@ defmodule SymphonyElixir.AgentRunner do
     seed_ids = AgentTools.Linear.recover_comment_registry_seeds(issue, settings.tracker.kind)
 
     with {:ok, agent_module} <- agent_module(),
-         {:ok, linear_comment_registry} <- CommentRegistry.start_link(seed_ids: seed_ids),
+         {:ok, linear_comment_registry} <- ensure_comment_registry(opts, seed_ids),
          {:ok, session} <-
            agent_module.start_session(workspace,
              worker_host: worker_host,

@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Workpad do
   """
 
   alias SymphonyElixir.{AgentLabels, AgentTools, Config, Linear.Issue, Tracker}
+  alias SymphonyElixir.AgentTools.Linear.CommentRegistry
 
   @in_progress_state "In Progress"
   @todo_state "todo"
@@ -110,21 +111,36 @@ defmodule SymphonyElixir.Workpad do
          {:ok, issue} <- create_linear_workpad(issue, workspace, heading, opts) do
       {:ok, issue}
     else
-      workpad_comment when is_map(workpad_comment) -> {:ok, put_existing_workpad_comment(issue, workpad_comment)}
-      {:error, reason} -> {:error, {:workpad_bootstrap_comment_failed, reason}}
+      workpad_comment when is_map(workpad_comment) ->
+        record_workpad_comment(workpad_comment, opts)
+        {:ok, put_existing_workpad_comment(issue, workpad_comment)}
+
+      {:error, reason} ->
+        {:error, {:workpad_bootstrap_comment_failed, reason}}
     end
   end
 
+  # Record the workpad comment id into the run's comment registry at bootstrap
+  # time. Registry seeding in AgentRunner re-queries Linear moments after the
+  # comment is created and can miss it (read lag), leaving the run unable to
+  # update its own workpad (:comment_not_owned_by_run).
   defp create_linear_workpad(issue, workspace, heading, opts) do
     body = bootstrap_body(heading, workspace, opts)
+    context = %{issue: issue, workspace: workspace, comment_registry: Keyword.get(opts, :comment_registry)}
 
-    case AgentTools.Linear.add_comment(%{issue: issue, workspace: workspace}, body, linear_opts(opts)) do
+    case AgentTools.Linear.add_comment(context, body, linear_opts(opts)) do
       {:ok, _response} ->
         {:ok, put_bootstrap_comment(issue, heading, body, opts)}
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Comments come from the Linear API with string keys; a missing or
+  # non-binary id is a no-op in CommentRegistry.record/2.
+  defp record_workpad_comment(comment, opts) do
+    CommentRegistry.record(Keyword.get(opts, :comment_registry), Map.get(comment, "id"))
   end
 
   defp create_tracker_workpad(%Issue{id: issue_id} = issue, workspace, heading, opts) when is_binary(issue_id) do

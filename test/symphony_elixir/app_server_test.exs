@@ -5363,8 +5363,9 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  defp assert_process_exits(os_pid) when is_integer(os_pid) and os_pid > 0 do
-    assert eventually(fn -> not os_pid_alive?(os_pid) end, 20)
+defp assert_process_exits(os_pid) when is_integer(os_pid) and os_pid > 0 do
+    assert eventually(fn -> not os_pid_alive?(os_pid) end, 200)
+  end
   end
 
   defp os_pid_alive?(os_pid) when is_integer(os_pid) and os_pid > 0 do

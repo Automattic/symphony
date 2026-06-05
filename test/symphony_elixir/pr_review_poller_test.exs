@@ -1497,7 +1497,8 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
   test "auto reply and auto request review run only when explicitly enabled" do
     now = ~U[2026-05-01 09:00:00Z]
-    {workspace_path, commit_sha} = git_workspace_with_commit!()
+    {workspace_path, reviewed_sha} = git_workspace_with_commit!()
+    commit_sha = add_git_commit!(workspace_path, "docs: address review comments")
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -1513,6 +1514,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       put_review(now, %{
         status: "rework_requested",
         workspace_path: workspace_path,
+        reviewed_commit_sha: reviewed_sha,
         pending_last_addressed_comment_id: "comment-2",
         pending_reviewer_comments: [
           %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42},
@@ -1539,6 +1541,199 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert_receive {:github_request_review, "https://github.com/example/repo/pull/1780", ["human-reviewer", "maintainer"]}
 
     assert [%{last_addressed_comment_id: "comment-2", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+  end
+
+  test "auto reply uses a recorded follow-up sha that differs from the reviewed sha" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        reviewed_commit_sha: "111111111111",
+        addressed_commit_sha: "222222222222",
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
+
+    assert reply_body ==
+             "Automated note from Symphony AI: this review comment was marked complete after the latest follow-up update. " <>
+               "Follow-up commit: `222222222222`. " <>
+               "Please check the current diff; reply here if it still needs work."
+  end
+
+  test "auto reply omits follow-up commit when workspace HEAD equals the reviewed sha" do
+    now = ~U[2026-05-01 09:00:00Z]
+    {workspace_path, reviewed_sha} = git_workspace_with_commit!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        workspace_path: workspace_path,
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{
+            id: "comment-1",
+            kind: "inline_comment",
+            author: "human-reviewer",
+            body: "Please split this.",
+            path: "lib/example.ex",
+            line: 42,
+            commit_id: reviewed_sha
+          }
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
+
+    assert reply_body ==
+             "Automated note from Symphony AI: this review comment was marked complete after the latest follow-up update. " <>
+               "Please check the current diff; reply here if it still needs work."
+  end
+
+  test "auto reply does not treat current PR head as the reviewed sha" do
+    now = ~U[2026-05-01 09:00:00Z]
+    {workspace_path, reviewed_sha} = git_workspace_with_commit!()
+    follow_up_sha = add_git_commit!(workspace_path, "docs: address review comments")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        workspace_path: workspace_path,
+        head_ref_oid: follow_up_sha,
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{
+            id: "comment-1",
+            kind: "inline_comment",
+            author: "human-reviewer",
+            body: "Please split this.",
+            path: "lib/example.ex",
+            line: 42,
+            commit_id: reviewed_sha
+          }
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
+
+    assert reply_body ==
+             "Automated note from Symphony AI: this review comment was marked complete after the latest follow-up update. " <>
+               "Follow-up commit: `#{follow_up_sha}`. " <>
+               "Please check the current diff; reply here if it still needs work."
+  end
+
+  test "auto reply derives reviewed sha from the most recent pending comment" do
+    now = ~U[2026-05-01 09:00:00Z]
+    {workspace_path, older_reviewed_sha} = git_workspace_with_commit!()
+    latest_reviewed_sha = add_git_commit!(workspace_path, "docs: second review commit")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        workspace_path: workspace_path,
+        pending_last_addressed_comment_id: "comment-2",
+        pending_reviewer_comments: [
+          %{
+            id: "comment-1",
+            kind: "inline_comment",
+            author: "human-reviewer",
+            body: "Please split this.",
+            path: "lib/example.ex",
+            line: 42,
+            commit_id: older_reviewed_sha
+          },
+          %{
+            id: "comment-2",
+            kind: "inline_comment",
+            author: "human-reviewer",
+            body: "Please rename this.",
+            path: "lib/example.ex",
+            line: 84,
+            commit_id: latest_reviewed_sha
+          }
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, first_reply}
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-2"}, second_reply}
+
+    refute first_reply =~ "Follow-up commit:"
+    refute second_reply =~ "Follow-up commit:"
+  end
+
+  test "auto reply omits follow-up commit for remote worker records without a workspace" do
+    now = ~U[2026-05-01 09:00:00Z]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        workspace_path: nil,
+        worker_host: "remote-worker-1",
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
+
+    assert reply_body ==
+             "Automated note from Symphony AI: this review comment was marked complete after the latest follow-up update. " <>
+               "Please check the current diff; reply here if it still needs work."
   end
 
   test "review comments remain pending until the remote PR head advances" do
@@ -2953,6 +3148,15 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     git!(workspace_path, ["commit", "-m", "fix: address review comment"])
 
     {workspace_path, git!(workspace_path, ["rev-parse", "--short=12", "HEAD"]) |> String.trim()}
+  end
+
+  defp add_git_commit!(workspace_path, message) do
+    file_path = Path.join(workspace_path, "change-#{System.unique_integer([:positive])}.md")
+
+    File.write!(file_path, "Review update\n")
+    git!(workspace_path, ["add", file_path])
+    git!(workspace_path, ["commit", "-m", message])
+    git!(workspace_path, ["rev-parse", "--short=12", "HEAD"]) |> String.trim()
   end
 
   defp git!(workspace_path, args) do

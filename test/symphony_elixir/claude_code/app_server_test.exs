@@ -1718,6 +1718,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  "--strict-mcp-config",
                  "--plugin-dir",
                  session.plugin_dir,
+                 "--verbose",
                  "--output-format",
                  "stream-json",
                  "--print"
@@ -2303,6 +2304,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ "--strict-mcp-config"
         assert traced_command =~ "--plugin-dir"
         assert traced_command =~ session.plugin_dir
+        assert traced_command =~ "--verbose"
         assert traced_command =~ "--output-format"
         assert traced_command =~ "stream-json"
         assert traced_command =~ "--print"

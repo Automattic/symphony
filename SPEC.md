@@ -1796,9 +1796,9 @@ Notes:
   placeholder key, which current Codex CLI versions silently ignore.
   Existing user-provided Codex args, such as model overrides before `app-server`, remain present.
 - Claude local launch parses `agent.command` with shell-like word splitting and runs Claude with
-  `--output-format stream-json --print`, feeding prompt input over stdin from a private temporary
-  file. Claude remote launch streams the prompt over SSH stdin into a remote `0600` temporary file
-  before running the equivalent escaped shell command.
+  `--verbose --output-format stream-json --print`, feeding prompt input over stdin from a private
+  temporary file. Claude remote launch streams the prompt over SSH stdin into a remote `0600`
+  temporary file before running the equivalent escaped shell command.
 - Claude prompt text MUST NOT be embedded in local process argv or remote SSH argv. The Elixir
   adapter writes a local prompt file with directory mode `0700` and file mode `0600`, redirects it
   to stdin, and removes it after the turn; remote launch uses stdin to create a remote `0600`

@@ -687,9 +687,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   defp start_port(workspace, command, prompt, nil, session) do
     with {:ok, {executable, command_args}} <- local_command(workspace, command),
          {:ok, prompt_path} <- write_local_prompt_file(workspace, prompt) do
-      args =
-        command_args ++
-          claude_settings_args(session) ++ ["--output-format", "stream-json", "--print"]
+      base_args = command_args ++ claude_settings_args(session)
+      args = base_args ++ claude_stream_json_args(base_args)
 
       case open_local_prompt_port(executable, args, prompt_path, workspace) do
         {:ok, port} ->
@@ -863,9 +862,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp claude_settings_args(_session), do: []
 
+  defp claude_stream_json_args(args) do
+    verbose_args = if "--verbose" in args, do: [], else: ["--verbose"]
+    verbose_args ++ ["--output-format", "stream-json", "--print"]
+  end
+
   defp remote_launch_command(workspace, command_words, session) do
     command =
       (command_words ++ claude_settings_args(session))
+      |> then(&(&1 ++ claude_stream_json_args(&1)))
       |> Enum.map_join(" ", &shell_escape/1)
 
     [
@@ -877,7 +882,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       "cat > \"$prompt_file\"",
       "chmod 0600 \"$prompt_file\"",
       "cd #{shell_escape(workspace)}",
-      "#{@agent_runtime_env}=#{@agent_runtime_env_value} #{command} --output-format stream-json --print < \"$prompt_file\""
+      "#{@agent_runtime_env}=#{@agent_runtime_env_value} #{command} < \"$prompt_file\""
     ]
     |> Enum.join(" && ")
   end

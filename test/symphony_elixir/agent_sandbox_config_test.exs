@@ -221,6 +221,24 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert settings["denyWrite"] == expand_home_paths(AgentSandboxConfig.deny_write_paths())
   end
 
+  test "Claude filesystem settings expand home-relative operator allow_write_paths" do
+    settings =
+      AgentSandboxConfig.claude_filesystem_settings([], [
+        "~/symphony-cache",
+        "./local-cache",
+        "/opt/cache",
+        "relative/cache"
+      ])
+
+    assert settings["allowWrite"] == [
+             "~/symphony-cache",
+             Path.expand("~/symphony-cache"),
+             "./local-cache",
+             "/opt/cache",
+             "relative/cache"
+           ]
+  end
+
   test "Claude filesystem settings omit allowWrite when allow_write_paths empty" do
     settings = AgentSandboxConfig.claude_filesystem_settings()
 
@@ -459,6 +477,30 @@ defmodule SymphonyElixir.AgentSandboxConfigTest do
     assert canonical_tmp_dir in allow_write
     assert link in allow_write
     assert canonical_link in allow_write
+  end
+
+  test "srt settings expand home-relative operator allow_write_paths" do
+    assert {:ok, settings} =
+             AgentSandboxConfig.srt_settings(
+               "allowlist",
+               [],
+               [],
+               [],
+               allow_write_paths: [
+                 "~/symphony-cache",
+                 "./local-cache",
+                 "/opt/cache",
+                 "relative/cache"
+               ]
+             )
+
+    allow_write = settings["filesystem"]["allowWrite"]
+
+    assert "~/symphony-cache" in allow_write
+    assert Path.expand("~/symphony-cache") in allow_write
+    assert "./local-cache" in allow_write
+    assert "/opt/cache" in allow_write
+    assert "./relative/cache" in allow_write
   end
 
   test "srt settings keep absolute write roots when canonicalization fails" do

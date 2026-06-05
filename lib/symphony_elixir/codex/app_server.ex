@@ -3472,8 +3472,6 @@ defmodule SymphonyElixir.Codex.AppServer do
     Map.put(turn_stream_state, :tool_failure_circuit_breaker, %{breaker | chain: nil})
   end
 
-  defp record_tool_execution_success(turn_stream_state), do: turn_stream_state
-
   defp record_tool_execution_failure(
          %{tool_failure_circuit_breaker: %{threshold: threshold} = breaker} = turn_stream_state,
          signature

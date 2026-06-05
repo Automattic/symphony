@@ -4,6 +4,12 @@ defmodule SymphonyMcpShim do
   @moduledoc false
 
   def main(args) do
+    # Keep stdin byte-oriented: MCP payloads are UTF-8 JSON, and the default
+    # unicode/latin1 translation makes IO.binstream raise
+    # {:no_translation, :unicode, :latin1} on any multi-byte character,
+    # which kills the connection ("MCP error -32000: Connection closed").
+    :ok = :io.setopts(:standard_io, encoding: :latin1)
+
     with {:ok, endpoint, token} <- parse_args(args),
          {:ok, socket} <- open_socket(endpoint),
          :ok <- connect_socket(socket, endpoint),

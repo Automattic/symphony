@@ -1256,6 +1256,76 @@ defmodule SymphonyElixir.McpServerTest do
     McpServer.stop_session(second_session, server: server)
   end
 
+  test "shim forwards multi-byte UTF-8 payloads without crashing" do
+    # Regression: the shim's stdin pump raised {:no_translation, :unicode, :latin1}
+    # on any multi-byte UTF-8 character (em dash, curly quotes), killing the
+    # connection — the MCP client saw "MCP error -32000: Connection closed".
+    if System.find_executable("elixir") do
+      if_unix_socket_bind_supported(fn ->
+        server = unique_server()
+        start_supervised!({McpServer, name: server})
+
+        {:ok, session} = McpServer.start_session(%{workspace: System.tmp_dir!()}, server: server)
+        on_exit(fn -> McpServer.stop_session(session, server: server) end)
+
+        port =
+          Port.open({:spawn_executable, session.shim_path}, [
+            :binary,
+            :exit_status,
+            {:args, ["--socket", session.socket_path]},
+            {:env, [{~c"SYMPHONY_MCP_SESSION_TOKEN", String.to_charlist(session.token)}]}
+          ])
+
+        assert %{"id" => 1, "result" => _result} =
+                 shim_request(port, %{
+                   "jsonrpc" => "2.0",
+                   "id" => 1,
+                   "method" => "initialize",
+                   "params" => %{}
+                 })
+
+        assert %{"id" => 2} =
+                 shim_request(port, %{
+                   "jsonrpc" => "2.0",
+                   "id" => 2,
+                   "method" => "tools/call",
+                   "params" => %{
+                     "name" => "linear_update_comment",
+                     "arguments" => %{
+                       "comment_id" => "abc",
+                       "body" => "workpad — “quoted” 多位元組內容"
+                     }
+                   }
+                 })
+      end)
+    end
+  end
+
+  defp shim_request(port, payload) do
+    Port.command(port, Jason.encode!(payload) <> "\n")
+
+    port
+    |> receive_shim_line("")
+    |> Jason.decode!()
+  end
+
+  defp receive_shim_line(port, buffer) do
+    receive do
+      {^port, {:data, data}} ->
+        buffer = buffer <> data
+
+        case String.split(buffer, "\n", parts: 2) do
+          [line, _rest] -> line
+          [_incomplete] -> receive_shim_line(port, buffer)
+        end
+
+      {^port, {:exit_status, status}} ->
+        flunk("shim exited with status #{status} buffered=#{inspect(buffer)}")
+    after
+      15_000 -> flunk("timed out waiting for shim response buffered=#{inspect(buffer)}")
+    end
+  end
+
   defp unique_server do
     :"mcp_server_test_#{System.unique_integer([:positive])}"
   end

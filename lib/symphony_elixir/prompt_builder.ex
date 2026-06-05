@@ -677,7 +677,8 @@ defmodule SymphonyElixir.PromptBuilder do
       - "Symphony AI is leaving this unchanged because `<reason>`."
       - "Symphony AI is deferring this because `<reason>`; follow-up: `<issue>`."
       - "Symphony AI is not making a code change here because this is a generated PR overview, not an actionable request."
-    Do not silently skip a comment, and do not rely on Symphony's generic auto-reply fallback as the primary response. The review agent verifies each comment id has either an associated commit or an outbound reply.
+    Never paste internal comment ids (for example `PRR_...` node ids or raw numeric ids) into reply text posted to GitHub; readers cannot interpret them. Refer to the comment naturally (for example "this review" or "this comment"). Comment ids belong only in commit message bodies.
+    Do not silently skip a comment, and do not rely on Symphony's generic auto-reply fallback as the primary response. The review agent verifies each comment id has either an associated commit or an outbound reply; that check is internal and does not require quoting the id in the reply text.
 
     """
   end

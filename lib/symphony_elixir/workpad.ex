@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Workpad do
   """
 
   alias SymphonyElixir.{AgentLabels, AgentTools, Config, Linear.Issue, Tracker}
+  alias SymphonyElixir.AgentTools.Linear.CommentRegistry
 
   @in_progress_state "In Progress"
   @todo_state "todo"
@@ -136,13 +137,11 @@ defmodule SymphonyElixir.Workpad do
     end
   end
 
+  # Comments come from the Linear API with string keys; a missing or
+  # non-binary id is a no-op in CommentRegistry.record/2.
   defp record_workpad_comment(comment, opts) do
-    AgentTools.Linear.CommentRegistry.record(Keyword.get(opts, :comment_registry), comment_id(comment))
+    CommentRegistry.record(Keyword.get(opts, :comment_registry), Map.get(comment, "id"))
   end
-
-  defp comment_id(%{"id" => id}) when is_binary(id), do: id
-  defp comment_id(%{id: id}) when is_binary(id), do: id
-  defp comment_id(_comment), do: nil
 
   defp create_tracker_workpad(%Issue{id: issue_id} = issue, workspace, heading, opts) when is_binary(issue_id) do
     body = bootstrap_body(heading, workspace, opts)

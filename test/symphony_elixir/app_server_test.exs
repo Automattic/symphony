@@ -1922,8 +1922,10 @@ defmodule SymphonyElixir.AppServerTest do
             ;;
           3)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1005","status":"inProgress","items":[]}}}'
-            while true; do
-              printf '%s\\n' 'ERROR codex_models_manager::manager: failed to refresh available models'
+            # Exit once stdout closes so sandboxed runs (where pgrep-based
+            # descendant cleanup cannot enumerate processes) do not leak a
+            # busy loop that outlives the test.
+            while printf '%s\\n' 'ERROR codex_models_manager::manager: failed to refresh available models'; do
               sleep 0.01
             done
             ;;

@@ -1334,6 +1334,8 @@ defmodule SymphonyElixir.PrReviewPoller do
       url: string_field(comment, :url),
       path: string_field(comment, :path),
       line: integer_field(comment, :line),
+      commit_id: string_field(comment, :commit_id),
+      review_id: string_field(comment, :review_id),
       created_at: datetime_field(comment, :created_at),
       updated_at: datetime_field(comment, :updated_at)
     }
@@ -1897,11 +1899,18 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp addressed_commit_sha(record) do
-    normalize_commit_sha(string_field(record, :addressed_commit_sha)) ||
-      current_workspace_commit_sha(record)
+    recorded_addressed_commit_sha(record) ||
+      current_workspace_follow_up_commit_sha(record)
   end
 
-  defp current_workspace_commit_sha(record) when is_map(record) do
+  defp recorded_addressed_commit_sha(record) do
+    case normalize_commit_sha(string_field(record, :addressed_commit_sha)) do
+      nil -> nil
+      sha -> follow_up_commit_sha(sha, reviewed_commit_sha(record))
+    end
+  end
+
+  defp current_workspace_follow_up_commit_sha(record) when is_map(record) do
     workspace = string_field(record, :workspace_path)
 
     cond do
@@ -1912,9 +1921,60 @@ defmodule SymphonyElixir.PrReviewPoller do
         nil
 
       true ->
-        read_workspace_head_sha(workspace)
+        workspace_follow_up_commit_sha(workspace, reviewed_commit_sha(record))
     end
   end
+
+  defp current_workspace_follow_up_commit_sha(_record), do: nil
+
+  defp workspace_follow_up_commit_sha(_workspace, nil), do: nil
+
+  defp workspace_follow_up_commit_sha(workspace, reviewed_sha) do
+    workspace
+    |> read_workspace_head_sha()
+    |> follow_up_commit_sha(reviewed_sha)
+  end
+
+  defp follow_up_commit_sha(nil, _reviewed_sha), do: nil
+
+  defp follow_up_commit_sha(candidate_sha, nil), do: candidate_sha
+
+  defp follow_up_commit_sha(candidate_sha, reviewed_sha) do
+    if same_commit_sha?(candidate_sha, reviewed_sha) do
+      nil
+    else
+      candidate_sha
+    end
+  end
+
+  defp reviewed_commit_sha(record) when is_map(record) do
+    reviewed_commit_sha_from_record(record) ||
+      reviewed_commit_sha_from_comments(Map.get(record, :pending_reviewer_comments, []))
+  end
+
+  defp reviewed_commit_sha(_record), do: nil
+
+  defp reviewed_commit_sha_from_record(record) do
+    [:reviewed_commit_sha, :reviewed_sha, :head_ref_oid]
+    |> Enum.find_value(&normalize_commit_sha(string_field(record, &1)))
+  end
+
+  defp reviewed_commit_sha_from_comments(comments) when is_list(comments) do
+    comments
+    |> normalize_comments()
+    |> Enum.find_value(&normalize_commit_sha(string_field(&1, :commit_id)))
+  end
+
+  defp reviewed_commit_sha_from_comments(_comments), do: nil
+
+  defp same_commit_sha?(left, right) when is_binary(left) and is_binary(right) do
+    left = String.downcase(left)
+    right = String.downcase(right)
+
+    String.starts_with?(left, right) or String.starts_with?(right, left)
+  end
+
+  defp same_commit_sha?(_left, _right), do: false
 
   defp remote_worker?(record) do
     case string_field(record, :worker_host) do

@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.WorkpadTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.AgentTools.Linear.CommentRegistry
   alias SymphonyElixir.Workpad
 
   defmodule FailingCreateCommentClient do
@@ -270,6 +271,95 @@ defmodule SymphonyElixir.WorkpadTest do
 
     assert [%{author: "Symphony", body: ^body}] = updated_issue.comments
     assert String.starts_with?(body, "## Symphony Workpad")
+  end
+
+  test "bootstrap records the created workpad comment in the comment registry" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", agent_kind: "claude")
+
+    {:ok, registry} = CommentRegistry.start_link([])
+
+    issue = %Issue{
+      id: "issue-registry-new-workpad",
+      identifier: "MT-REGISTRY-NEW",
+      title: "Registry new workpad",
+      state: "In Progress"
+    }
+
+    linear_client = fn query, variables, _opts ->
+      cond do
+        String.contains?(query, "SymphonyAgentIssueComments") ->
+          {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => []}}}}}
+
+        String.contains?(query, "SymphonyAgentAddComment") ->
+          {:ok,
+           %{
+             "data" => %{
+               "commentCreate" => %{
+                 "success" => true,
+                 "comment" => %{"id" => "comment-owned", "body" => variables.body, "url" => "https://linear.test/comment-owned"}
+               }
+             }
+           }}
+      end
+    end
+
+    assert {:ok, _updated_issue} =
+             Workpad.bootstrap(issue, System.tmp_dir!(),
+               settings: Config.settings!(),
+               linear_client: linear_client,
+               comment_registry: registry
+             )
+
+    assert CommentRegistry.owned?(registry, "comment-owned")
+  end
+
+  test "bootstrap records an existing workpad comment in the comment registry" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", agent_kind: "claude")
+
+    {:ok, registry} = CommentRegistry.start_link([])
+
+    issue = %Issue{
+      id: "issue-registry-existing-workpad",
+      identifier: "MT-REGISTRY-EXISTING",
+      title: "Registry existing workpad",
+      state: "In Progress"
+    }
+
+    linear_client = fn query, _variables, _opts ->
+      cond do
+        String.contains?(query, "SymphonyAgentIssueComments") ->
+          {:ok,
+           %{
+             "data" => %{
+               "issue" => %{
+                 "comments" => %{
+                   "nodes" => [
+                     %{
+                       "id" => "comment-existing-workpad",
+                       "body" => "## Symphony Workpad\nExisting",
+                       "createdAt" => "2026-05-21T04:00:00Z",
+                       "updatedAt" => "2026-05-21T04:00:00Z",
+                       "user" => %{"id" => "user-1", "name" => "Symphony"}
+                     }
+                   ]
+                 }
+               }
+             }
+           }}
+
+        String.contains?(query, "SymphonyAgentAddComment") ->
+          flunk("bootstrap must not create a duplicate workpad")
+      end
+    end
+
+    assert {:ok, _updated_issue} =
+             Workpad.bootstrap(issue, System.tmp_dir!(),
+               settings: Config.settings!(),
+               linear_client: linear_client,
+               comment_registry: registry
+             )
+
+    assert CommentRegistry.owned?(registry, "comment-existing-workpad")
   end
 
   test "bootstrap returns Linear comment creation failures" do

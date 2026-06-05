@@ -110,15 +110,24 @@ defmodule SymphonyElixir.Workpad do
          {:ok, issue} <- create_linear_workpad(issue, workspace, heading, opts) do
       {:ok, issue}
     else
-      workpad_comment when is_map(workpad_comment) -> {:ok, put_existing_workpad_comment(issue, workpad_comment)}
-      {:error, reason} -> {:error, {:workpad_bootstrap_comment_failed, reason}}
+      workpad_comment when is_map(workpad_comment) ->
+        record_workpad_comment(workpad_comment, opts)
+        {:ok, put_existing_workpad_comment(issue, workpad_comment)}
+
+      {:error, reason} ->
+        {:error, {:workpad_bootstrap_comment_failed, reason}}
     end
   end
 
+  # Record the workpad comment id into the run's comment registry at bootstrap
+  # time. Registry seeding in AgentRunner re-queries Linear moments after the
+  # comment is created and can miss it (read lag), leaving the run unable to
+  # update its own workpad (:comment_not_owned_by_run).
   defp create_linear_workpad(issue, workspace, heading, opts) do
     body = bootstrap_body(heading, workspace, opts)
+    context = %{issue: issue, workspace: workspace, comment_registry: Keyword.get(opts, :comment_registry)}
 
-    case AgentTools.Linear.add_comment(%{issue: issue, workspace: workspace}, body, linear_opts(opts)) do
+    case AgentTools.Linear.add_comment(context, body, linear_opts(opts)) do
       {:ok, _response} ->
         {:ok, put_bootstrap_comment(issue, heading, body, opts)}
 
@@ -126,6 +135,14 @@ defmodule SymphonyElixir.Workpad do
         {:error, reason}
     end
   end
+
+  defp record_workpad_comment(comment, opts) do
+    AgentTools.Linear.CommentRegistry.record(Keyword.get(opts, :comment_registry), comment_id(comment))
+  end
+
+  defp comment_id(%{"id" => id}) when is_binary(id), do: id
+  defp comment_id(%{id: id}) when is_binary(id), do: id
+  defp comment_id(_comment), do: nil
 
   defp create_tracker_workpad(%Issue{id: issue_id} = issue, workspace, heading, opts) when is_binary(issue_id) do
     body = bootstrap_body(heading, workspace, opts)

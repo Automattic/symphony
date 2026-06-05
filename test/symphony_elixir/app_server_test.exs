@@ -22,9 +22,15 @@ defmodule SymphonyElixir.AppServerTest do
 
     alias SymphonyElixir.ProcessTree
 
+    def terminate_descendants(root_pid) do
+      recipient = Application.fetch_env!(:symphony_elixir, :process_tree_probe_recipient)
+      send(recipient, {:process_tree_cleanup, root_pid})
+      ProcessTree.terminate_descendants(root_pid)
+    end
+
     def terminate_port_descendants(port) do
       recipient = Application.fetch_env!(:symphony_elixir, :process_tree_probe_recipient)
-      send(recipient, {:process_tree_cleanup, Port.info(port) != nil})
+      send(recipient, {:process_tree_cleanup_fallback, Port.info(port) != nil})
       # Delegate to the real cleanup so the spawned process tree is actually
       # terminated. Recording the call alone would leak the fake-codex busy
       # loop, leaving an orphaned process pinning a CPU core after the test.
@@ -1931,7 +1937,8 @@ defmodule SymphonyElixir.AppServerTest do
       assert {:error, :turn_timeout} =
                AppServer.run(workspace, "Validate turn timeout with side output", issue, process_tree_module: ProcessTreeProbe)
 
-      assert_received {:process_tree_cleanup, true}
+      assert_receive {:process_tree_cleanup, root_pid} when is_integer(root_pid) and root_pid > 0
+      assert_process_exits(root_pid)
     after
       Application.delete_env(:symphony_elixir, :process_tree_probe_recipient)
       File.rm_rf(test_root)
@@ -5354,5 +5361,18 @@ defmodule SymphonyElixir.AppServerTest do
       Process.sleep(50)
       eventually(fun, attempts - 1)
     end
+  end
+
+  defp assert_process_exits(os_pid) when is_integer(os_pid) and os_pid > 0 do
+    assert eventually(fn -> not os_pid_alive?(os_pid) end, 200)
+  end
+
+  defp os_pid_alive?(os_pid) when is_integer(os_pid) and os_pid > 0 do
+    case System.cmd("kill", ["-0", Integer.to_string(os_pid)], stderr_to_stdout: true) do
+      {_output, 0} -> true
+      {_output, _status} -> false
+    end
+  rescue
+    _exception -> false
   end
 end

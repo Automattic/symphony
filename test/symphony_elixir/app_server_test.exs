@@ -4654,6 +4654,76 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server falls back to redirected stderr tail for timeout transport failures" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-stderr-timeout-fallback-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-98-TIMEOUT")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-98-timeout"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-98-timeout","status":"inProgress","items":[]}}}'
+            printf '%s' '2026-05-20T09:14:16Z ERROR codex_app_server_transport::transport::stdio: Failed to write to stdout: Resource temporarily unavailable (os error 35)' >&2
+            sleep 1
+            ;;
+          *)
+            sleep 1
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        agent_turn_timeout_ms: 100
+      )
+
+      issue = %Issue{
+        id: "issue-stderr-timeout-fallback",
+        identifier: "MT-98-TIMEOUT",
+        title: "Redirected stderr timeout fallback",
+        description: "Ensure timeout fallback checks redirected stderr transport failures",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-98-TIMEOUT",
+        labels: ["backend"]
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
+      assert {:error, {:codex_stdio_write_failed, message}} =
+               AppServer.run(workspace, "Capture redirected stderr timeout fallback", issue, on_message: on_message)
+
+      assert message =~ "Failed to write to stdout"
+      assert message =~ "Resource temporarily unavailable"
+      assert_received {:app_server_message, %{event: :transport_failed, reason: :codex_stdio_write_failed}}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server treats ANSI-coded codex transport errors as stdout write failures" do
     test_root =
       Path.join(

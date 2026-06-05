@@ -143,6 +143,18 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert {:session_started, "sess-abc123"} = AppServer.parse_event(line)
     end
 
+    test "maps non-init system events to notifications instead of session_started" do
+      line = ~s({"type":"system","subtype":"compact_boundary","session_id":"sess-abc123"})
+
+      assert {:notification, "system compact_boundary"} = AppServer.parse_event(line)
+    end
+
+    test "maps system events without a subtype to a generic notification" do
+      line = ~s({"type":"system","session_id":"sess-abc123"})
+
+      assert {:notification, "system event"} = AppServer.parse_event(line)
+    end
+
     test "parses result/success event and returns turn_completed with token counts" do
       line =
         ~s({"type":"result","subtype":"success","duration_ms":1500,"duration_api_ms":1200,"is_error":false,"num_turns":1,"result":"done","session_id":"sess-abc","total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0}}})

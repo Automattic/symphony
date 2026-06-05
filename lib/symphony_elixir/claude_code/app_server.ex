@@ -203,8 +203,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     end
   end
 
-  defp parse_decoded_event(%{"type" => "system", "session_id" => session_id}, _line),
+  # Claude emits many `system` events (init, compact notices, hook output, …).
+  # Only `init` marks session start; mapping the rest to :session_started
+  # floods the transcript with duplicate "session started" entries.
+  defp parse_decoded_event(%{"type" => "system", "subtype" => "init", "session_id" => session_id}, _line),
     do: {:session_started, session_id}
+
+  defp parse_decoded_event(%{"type" => "system", "subtype" => subtype}, _line) when is_binary(subtype),
+    do: {:notification, "system #{subtype}"}
+
+  defp parse_decoded_event(%{"type" => "system"}, _line), do: {:notification, "system event"}
 
   defp parse_decoded_event(%{"type" => "assistant", "message" => message}, _line) do
     events = extract_assistant_events(message) ++ extract_assistant_usage_events(message)

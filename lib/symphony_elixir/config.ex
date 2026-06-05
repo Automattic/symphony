@@ -445,11 +445,27 @@ defmodule SymphonyElixir.Config do
   defp warn_if_budget_token_reporting_unavailable(%Schema{} = settings) do
     budget_keys = configured_budget_keys(settings.agent)
 
-    if budget_keys != [] and not codex_app_server_command?(settings.agent.command) do
-      Logger.warning("#{budget_warning_subject(budget_keys)} but agent.command may not report token usage command=#{inspect(settings.agent.command)}")
+    if budget_keys != [] and not token_usage_reporting_agent?(settings.agent) do
+      warn_once("#{budget_warning_subject(budget_keys)} but agent.command may not report token usage command=#{inspect(settings.agent.command)}")
     end
 
     :ok
+  end
+
+  # The Claude runtime runs in stream-json mode and reports usage on every
+  # assistant message; Codex reports usage only in app-server mode.
+  defp token_usage_reporting_agent?(%{kind: "claude"}), do: true
+  defp token_usage_reporting_agent?(agent), do: codex_app_server_command?(agent.command)
+
+  # Config.validate!/0 runs on every orchestrator poll tick; without dedup this
+  # warning is re-emitted every few seconds for the lifetime of the node.
+  defp warn_once(message) do
+    key = {__MODULE__, :warned_once, message}
+
+    unless :persistent_term.get(key, false) do
+      :persistent_term.put(key, true)
+      Logger.warning(message)
+    end
   end
 
   defp budget_warning_subject([budget_key]), do: "#{budget_key} is configured"

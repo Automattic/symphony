@@ -33,6 +33,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @max_stream_log_bytes 1_000
   @stderr_tail_line_count 5
   @stderr_tail_max_bytes 16_384
+  @codex_stdio_write_failed_pattern ~r/^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?(?:(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR)\s+)?codex_app_server_transport::transport::stdio:\s+Failed to write to stdout\b/
   # Soft cap on the size of any single string field (e.g. aggregatedOutput) we keep on a
   # notification payload before forwarding it to the orchestrator/transcript/audit log. Codex itself
   # is told to suppress streaming deltas, so this only kicks in for terminal item/completed payloads
@@ -3727,7 +3728,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> to_string()
     |> strip_ansi()
     |> String.trim_leading()
-    |> String.match?(~r/^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?(?:(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR)\s+)?codex_app_server_transport::transport::stdio:\s+Failed to write to stdout\b/)
+    |> String.match?(@codex_stdio_write_failed_pattern)
   end
 
   defp strip_ansi(data) do

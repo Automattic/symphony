@@ -80,7 +80,7 @@ defmodule SymphonyElixir.ProcessTreeTest do
     assert Agent.get(calls, & &1) == []
   end
 
-  test "ignores unexpected pgrep statuses" do
+  test "warns and ignores unexpected pgrep statuses" do
     {:ok, calls} = Agent.start_link(fn -> [] end)
 
     deps =
@@ -90,8 +90,13 @@ defmodule SymphonyElixir.ProcessTreeTest do
         "kill", ["-KILL", pid], _opts -> record_kill(calls, pid)
       end)
 
-    assert :ok = ProcessTree.terminate_descendants(100, deps)
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert :ok = ProcessTree.terminate_descendants(100, deps)
+      end)
+
     assert Agent.get(calls, & &1) == []
+    assert log =~ "Process tree descendant lookup failed pid=100 pgrep_status=2"
   end
 
   test "ignores malformed pgrep output tokens" do

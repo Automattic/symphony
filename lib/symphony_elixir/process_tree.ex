@@ -3,6 +3,8 @@ defmodule SymphonyElixir.ProcessTree do
   Best-effort helpers for cleaning up OS process trees started through Erlang ports.
   """
 
+  require Logger
+
   @type os_pid :: pos_integer()
   @type command_result :: {String.t(), non_neg_integer()}
   @type deps :: %{
@@ -78,8 +80,16 @@ defmodule SymphonyElixir.ProcessTree do
 
   defp run_pgrep_children(pgrep, pid, deps) do
     case run_cmd(pgrep, ["-P", to_string(pid)], [stderr_to_stdout: true], deps) do
-      {output, status} when status in [0, 1] -> parse_pgrep_output(output)
-      _result -> []
+      {output, status} when status in [0, 1] ->
+        parse_pgrep_output(output)
+
+      {output, status} ->
+        # Sandboxed runtimes (for example macOS Seatbelt under srt) deny
+        # process enumeration entirely; make the degraded cleanup visible
+        # instead of silently skipping descendants.
+        Logger.warning("Process tree descendant lookup failed pid=#{pid} pgrep_status=#{status} output=#{String.trim(to_string(output))}; skipping descendant cleanup")
+
+        []
     end
   end
 

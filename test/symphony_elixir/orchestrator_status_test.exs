@@ -5692,7 +5692,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     {:ok, pid} = Orchestrator.start_link()
 
     ExUnit.Callbacks.on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      # The orchestrator is linked to the test process, so it can exit
+      # between an alive? check and the stop call; tolerate :noproc.
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, _reason -> :ok
+      end
     end)
 
     pid

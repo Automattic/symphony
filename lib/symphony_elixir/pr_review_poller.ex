@@ -2004,8 +2004,6 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp current_workspace_follow_up_commit_sha(_record), do: nil
-
   defp workspace_follow_up_commit_sha(_workspace, nil), do: nil
 
   defp workspace_follow_up_commit_sha(workspace, reviewed_sha) do
@@ -2031,16 +2029,15 @@ defmodule SymphonyElixir.PrReviewPoller do
       reviewed_commit_sha_from_comments(Map.get(record, :pending_reviewer_comments, []))
   end
 
-  defp reviewed_commit_sha(_record), do: nil
-
   defp reviewed_commit_sha_from_record(record) do
-    [:reviewed_commit_sha, :reviewed_sha, :head_ref_oid]
+    [:reviewed_commit_sha, :reviewed_sha]
     |> Enum.find_value(&normalize_commit_sha(string_field(record, &1)))
   end
 
   defp reviewed_commit_sha_from_comments(comments) when is_list(comments) do
     comments
     |> normalize_comments()
+    |> Enum.reverse()
     |> Enum.find_value(&normalize_commit_sha(string_field(&1, :commit_id)))
   end
 

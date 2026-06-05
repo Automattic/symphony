@@ -594,6 +594,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       :symphony_elixir,
       :pr_review_test_activity,
       open_activity(latest_comment_at,
+        head_ref_oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         comments: [
           %{
             id: "comment-1",
@@ -616,6 +617,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [
              %{
                status: "rework_requested",
+               pending_reviewer_comments_reviewed_head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                pending_last_addressed_comment_id: "comment-1",
                pending_reviewer_comments: [
                  %{id: "comment-1", author: "human-reviewer", body: "Please refactor this before merge."}
@@ -1537,6 +1539,75 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert_receive {:github_request_review, "https://github.com/example/repo/pull/1780", ["human-reviewer", "maintainer"]}
 
     assert [%{last_addressed_comment_id: "comment-2", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
+  end
+
+  test "review comments remain pending until the remote PR head advances" do
+    now = ~U[2026-05-01 09:00:00Z]
+    reviewed_head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    follow_up_head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_ignored_users: ["agent-user"],
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        pending_reviewer_comments_reviewed_head_sha: reviewed_head_sha,
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+
+    Application.put_env(:symphony_elixir, :pr_review_test_activity, open_activity(now, head_ref_oid: reviewed_head_sha))
+
+    log =
+      capture_log([level: :warning], fn ->
+        assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+      end)
+
+    assert log =~ "Leaving PR review comments pending because PR head did not advance"
+    assert log =~ "issue_id=issue-1780"
+    assert log =~ "issue_identifier=ACME-1780"
+    refute_receive {:github_reply, _, _, _}
+
+    assert [
+             %{
+               status: "rework_requested",
+               pending_reviewer_comments_reviewed_head_sha: ^reviewed_head_sha,
+               pending_reviewer_comments: [%{id: "comment-1"}]
+             }
+           ] = RunStore.list_pr_reviews()
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(now, head_ref_oid: follow_up_head_sha)
+    )
+
+    assert :ok =
+             PrReviewPoller.complete_pending_reviewer_comments(
+               "issue-1780",
+               github: ActionGitHub,
+               now: DateTime.add(now, 1, :minute)
+             )
+
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, reply_body}
+    assert reply_body =~ "Follow-up commit: `#{follow_up_head_sha}`."
+
+    assert [
+             %{
+               last_addressed_comment_id: "comment-1",
+               pending_reviewer_comments_reviewed_head_sha: nil,
+               pending_reviewer_comments: []
+             }
+           ] = RunStore.list_pr_reviews()
   end
 
   test "PR-level auto reply summary includes readable references and body excerpts" do

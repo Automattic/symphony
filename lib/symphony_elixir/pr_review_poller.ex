@@ -243,10 +243,14 @@ defmodule SymphonyElixir.PrReviewPoller do
     with {:ok, settings} <- poll_settings(opts),
          :ok <- ensure_pending_comment_lookup_succeeded(record),
          {:ok, record} <- maybe_backfill_review_issue_details(record, opts, now),
+         {:ok, record} <- ensure_review_comments_have_follow_up_push(record, comments, github),
          {:ok, record} <- maybe_reply_to_comments(record, comments, settings, github, opts, now),
          {:ok, record} <- advance_reviewer_comment_cursor(record, cursor, opts, now) do
       maybe_request_review(record, comments, settings, github, opts, now)
       emit_rework_pushed(record, comments, cursor, now)
+    else
+      :unchanged_pr_head -> :ok
+      other -> other
     end
   end
 
@@ -257,12 +261,62 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  defp ensure_review_comments_have_follow_up_push(record, [], _github), do: {:ok, record}
+
+  defp ensure_review_comments_have_follow_up_push(record, _comments, github) do
+    case pending_reviewed_head_sha(record) do
+      nil ->
+        {:ok, record}
+
+      reviewed_head_sha ->
+        ensure_pr_head_advanced(record, github, reviewed_head_sha)
+    end
+  end
+
+  defp pending_reviewed_head_sha(record) do
+    string_field(record, :pending_reviewer_comments_reviewed_head_sha)
+  end
+
+  defp ensure_pr_head_advanced(record, github, reviewed_head_sha) do
+    case github.fetch_activity(Map.get(record, :pr_url), cwd: Map.get(record, :workspace_path)) do
+      {:ok, activity} ->
+        current_head_sha = string_field(activity, :head_ref_oid)
+
+        cond do
+          current_head_sha in [nil, ""] ->
+            {:error, {:reviewer_comment_pr_head_missing, Map.get(record, :pr_url)}}
+
+          current_head_sha == reviewed_head_sha ->
+            log_unchanged_pr_head(record, reviewed_head_sha, current_head_sha)
+            :unchanged_pr_head
+
+          true ->
+            {:ok, Map.put(record, :addressed_commit_sha, current_head_sha)}
+        end
+
+      {:error, reason} ->
+        {:error, {:reviewer_comment_pr_head_lookup_failed, reason}}
+    end
+  end
+
+  defp log_unchanged_pr_head(record, reviewed_head_sha, current_head_sha) do
+    Logger.warning(
+      "Leaving PR review comments pending because PR head did not advance " <>
+        "issue_id=#{Map.get(record, :issue_id)} " <>
+        "issue_identifier=#{Map.get(record, :issue_identifier)} " <>
+        "pr_url=#{Map.get(record, :pr_url)} " <>
+        "reviewed_head_sha=#{reviewed_head_sha} " <>
+        "current_head_sha=#{current_head_sha}"
+    )
+  end
+
   defp advance_reviewer_comment_cursor(record, cursor, opts, now) do
     attrs = %{
       last_addressed_comment_id: cursor,
       last_addressed_comment_at: now,
       pending_reviewer_comments: [],
       pending_last_addressed_comment_id: nil,
+      pending_reviewer_comments_reviewed_head_sha: nil,
       replied_comment_ids: [],
       pending_reviewer_comments_lookup_error: nil,
       pending_reviewer_comments_lookup_error_at: nil,
@@ -603,8 +657,8 @@ defmodule SymphonyElixir.PrReviewPoller do
         last_review_decision: Map.get(activity, :review_decision),
         updated_at: now
       }
-      |> maybe_put_pending_comments(record, unaddressed_comments)
       |> maybe_put_conflict_attrs(record, activity, now)
+      |> maybe_put_pending_comments(record, unaddressed_comments)
 
     {attrs, latest_activity_at, unaddressed_comments}
   end
@@ -1267,10 +1321,11 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp maybe_put_pending_comments(attrs, _record, comments) when is_list(comments) and comments != [] do
+  defp maybe_put_pending_comments(attrs, record, comments) when is_list(comments) and comments != [] do
     attrs
     |> Map.put(:pending_reviewer_comments, comments)
     |> Map.put(:pending_last_addressed_comment_id, latest_comment_id(comments))
+    |> maybe_put_pending_reviewed_head_sha(record)
   end
 
   defp maybe_put_pending_comments(attrs, record, []) do
@@ -1278,12 +1333,26 @@ defmodule SymphonyElixir.PrReviewPoller do
       attrs
       |> Map.put(:pending_reviewer_comments, [])
       |> Map.put(:pending_last_addressed_comment_id, nil)
+      |> Map.put(:pending_reviewer_comments_reviewed_head_sha, nil)
     else
       attrs
     end
   end
 
   defp maybe_put_pending_comments(attrs, _record, _comments), do: attrs
+
+  defp maybe_put_pending_reviewed_head_sha(attrs, record) do
+    reviewed_head_sha =
+      string_field(record, :pending_reviewer_comments_reviewed_head_sha) ||
+        string_field(attrs, :head_ref_oid) ||
+        string_field(record, :head_ref_oid)
+
+    if present?(reviewed_head_sha) do
+      Map.put(attrs, :pending_reviewer_comments_reviewed_head_sha, reviewed_head_sha)
+    else
+      attrs
+    end
+  end
 
   defp pending_comment_cursor_caught_up?(record) when is_map(record) do
     pending_comments = record |> Map.get(:pending_reviewer_comments, []) |> normalize_comments()

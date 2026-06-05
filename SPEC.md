@@ -2080,6 +2080,11 @@ Error mapping (RECOMMENDED normalized categories):
 - `port_exit`
   - Local Codex launch/stream exits SHOULD include a bounded tail of redirected stderr when available
     before temporary runtime-home cleanup removes the log.
+  - Remote Codex launch/stream exits SHOULD include a bounded tail fetched from redirected stderr on
+    the worker host when available before remote runtime-home cleanup removes the log.
+- `exit_status`
+  - Claude Code launch exits before a terminal stream-json result SHOULD include a bounded tail of
+    non-protocol output lines when available.
 - `response_error`
 - `turn_failed`
 - `turn_cancelled`

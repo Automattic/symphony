@@ -586,6 +586,11 @@ defmodule SymphonyElixir.Orchestrator do
     "port_exit #{status}; stderr: #{strip_ansi(stderr)}"
   end
 
+  defp agent_exit_reason_summary({:exit_status, status, %{stderr: stderr}})
+       when is_integer(status) and is_binary(stderr) do
+    "exit_status #{status}; stderr: #{strip_ansi(stderr)}"
+  end
+
   defp agent_exit_reason_summary({%{__exception__: true} = exception, _stacktrace}) do
     exception
     |> Exception.message()

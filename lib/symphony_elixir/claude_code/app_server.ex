@@ -21,6 +21,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   ]
   @handoff_required_mcp_server "symphony"
   @missing_required_mcp_tools_code "missing_required_mcp_tools"
+  @diagnostic_output_line_count 5
+  @diagnostic_output_line_max_bytes 4_096
   # Grace window after a terminal `result`/`turn_completed`/`turn_failed` event
   # during which the loop keeps reading late bookkeeping output while the
   # Claude CLI shuts down. If the OS process never exits (e.g. a lingering tool
@@ -1104,6 +1106,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       output_tokens: 0,
       turn_failed: nil,
       turn_completed: false,
+      diagnostic_output_lines: [],
       required_mcp_server: Keyword.get(opts, :required_mcp_server),
       required_mcp_server_checked: false
     }
@@ -1134,7 +1137,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
         finalize_read_result(acc)
 
       {^port, {:exit_status, status}} ->
-        handle_nonzero_exit(acc, status)
+        handle_nonzero_exit(acc, loop_state, status)
     after
       timeout ->
         handle_read_loop_timeout(acc, loop_state)
@@ -1173,13 +1176,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     read_loop(port, on_message, new_acc, new_loop_state)
   end
 
-  defp handle_nonzero_exit(acc, status) do
+  defp handle_nonzero_exit(acc, loop_state, status) do
     if terminal_event_observed?(acc) do
       Logger.info("Claude terminal result before non-zero exit status=#{status} session_id=#{inspect(Map.get(acc, :session_id))}")
 
       finalize_read_result(acc)
     else
-      {:error, {:exit_status, status}}
+      case diagnostic_output_text(acc, loop_state) do
+        nil -> {:error, {:exit_status, status}}
+        output -> {:error, {:exit_status, status, %{stderr: output}}}
+      end
     end
   end
 
@@ -1234,6 +1240,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
      acc
      |> Map.delete(:turn_failed)
      |> Map.delete(:turn_completed)
+     |> Map.delete(:diagnostic_output_lines)
      |> Map.delete(:required_mcp_server)
      |> Map.delete(:required_mcp_server_checked)}
   end
@@ -1470,7 +1477,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp apply_event({:malformed, raw}, _on_message, acc) do
     Logger.debug("ClaudeCode unparseable line: #{inspect(raw)}")
-    acc
+    record_diagnostic_output(acc, raw)
   end
 
   defp apply_event({kind, _payload} = event, on_message, acc)
@@ -1478,6 +1485,61 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     on_message.(event)
     acc
   end
+
+  defp record_diagnostic_output(acc, raw) when is_binary(raw) do
+    line = normalize_diagnostic_output_line(raw)
+
+    if line == "" do
+      acc
+    else
+      lines =
+        acc
+        |> Map.get(:diagnostic_output_lines, [])
+        |> Kernel.++([line])
+        |> Enum.take(-@diagnostic_output_line_count)
+
+      Map.put(acc, :diagnostic_output_lines, lines)
+    end
+  end
+
+  defp diagnostic_output_text(acc, loop_state) do
+    pending_line = normalize_diagnostic_output_line(Map.get(loop_state, :pending_line, ""))
+
+    lines =
+      acc
+      |> Map.get(:diagnostic_output_lines, [])
+      |> maybe_append_pending_diagnostic_line(pending_line)
+      |> Enum.take(-@diagnostic_output_line_count)
+
+    case Enum.join(lines, "\n") do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp maybe_append_pending_diagnostic_line(lines, ""), do: lines
+  defp maybe_append_pending_diagnostic_line(lines, pending_line), do: lines ++ [pending_line]
+
+  defp normalize_diagnostic_output_line(raw) when is_binary(raw) do
+    raw
+    |> strip_ansi()
+    |> String.trim()
+    |> truncate_diagnostic_output_line()
+  end
+
+  defp truncate_diagnostic_output_line(line) when byte_size(line) <= @diagnostic_output_line_max_bytes, do: line
+
+  defp truncate_diagnostic_output_line(line) do
+    truncated = binary_part(line, 0, @diagnostic_output_line_max_bytes)
+
+    if String.valid?(truncated) do
+      truncated
+    else
+      String.slice(line, 0, @diagnostic_output_line_max_bytes)
+    end
+  end
+
+  defp strip_ansi(text) when is_binary(text), do: String.replace(text, ~r/\x1b\[[0-9;]*m/, "")
 
   defp safe_close_port(port) do
     terminate_port_descendants(port)

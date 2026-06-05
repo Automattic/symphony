@@ -3110,6 +3110,54 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            ] = snapshot.retrying
   end
 
+  test "orchestrator retry error includes claude diagnostic output from exit statuses" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    issue = %Issue{
+      id: "issue-exit-status-stderr",
+      identifier: "MT-CLAUDE-STDERR",
+      title: "Claude exit stderr",
+      description: "Surface Claude stderr on early exits",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-CLAUDE-STDERR"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ExitStatusStderrOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-exit-status-stderr"
+
+    on_exit(fn ->
+      send(worker_pid, :finish)
+
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    running_entry = running_entry(issue, worker_pid, worker_ref, run_id, started_at)
+    put_running_run!(issue, run_id, started_at)
+    put_running_entry(pid, issue, running_entry)
+
+    send(pid, {:DOWN, worker_ref, :process, worker_pid, {:exit_status, 7, %{stderr: "fatal: bad claude flag"}}})
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{retrying: [%{issue_id: "issue-exit-status-stderr"}]} -> true
+        _ -> false
+      end)
+
+    assert [
+             %{
+               issue_id: "issue-exit-status-stderr",
+               identifier: "MT-CLAUDE-STDERR",
+               error: "agent exited: exit_status 7; stderr: fatal: bad claude flag"
+             }
+           ] = snapshot.retrying
+  end
+
   test "orchestrator watches completed issues in non-active non-terminal states" do
     issue_id = "issue-watch"
     last_ran_at = DateTime.add(DateTime.utc_now(), -7_200, :second)

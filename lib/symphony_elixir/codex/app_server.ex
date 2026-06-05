@@ -61,7 +61,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   @srt_default_ssl_cert_file "/etc/ssl/cert.pem"
 
   @type stdout_pump :: %{pid: pid(), ref: reference(), os_pid: pos_integer() | nil} | nil
-  @type stderr_tail :: %{pid: pid(), ref: reference(), path: Path.t()} | nil
+  @type stderr_tail ::
+          %{pid: pid(), ref: reference(), path: Path.t()}
+          | %{worker_host: String.t(), path: Path.t()}
+          | nil
 
   @type session :: %{
           port: port(),
@@ -519,7 +522,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_port(workspace, worker_host, settings, mcp_session, remote_socket_path, remote_shim_path)
        when is_binary(worker_host) do
-    with {:ok, remote_command, remote_codex_home} <-
+    with {:ok, remote_command, remote_codex_home, remote_stderr_path} <-
            remote_launch_command(workspace, settings, mcp_session, remote_socket_path, remote_shim_path),
          {:ok, port} <-
            SSH.start_port(
@@ -531,7 +534,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            ) do
       case start_stdout_pump(port) do
         {:ok, stdout_pump} ->
-          {:ok, port, stdout_pump, nil, [], remote_codex_home, nil}
+          stderr_tail = %{worker_host: worker_host, path: remote_stderr_path}
+          {:ok, port, stdout_pump, nil, [], remote_codex_home, stderr_tail}
 
         {:error, reason} ->
           stop_port(port)
@@ -577,6 +581,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp remote_launch_command(workspace, settings, mcp_session, remote_socket_path, remote_shim_path) when is_binary(workspace) do
     codex_home = Path.join("/tmp", "symphony-codex-home-#{mcp_session.id}")
+    stderr_log_path = Path.join(codex_home, "codex.stderr.log")
 
     with {:ok, command, []} <-
            command_with_sandbox_config(settings.agent.command, settings, workspace,
@@ -589,11 +594,14 @@ defmodule SymphonyElixir.Codex.AppServer do
         [
           setup_command,
           "cd #{shell_escape(workspace)}",
-          "CODEX_HOME=#{shell_escape(codex_home)} #{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command}"
+          wrap_command_with_stderr_redirect(
+            "CODEX_HOME=#{shell_escape(codex_home)} #{@agent_runtime_env}=#{@agent_runtime_env_value} exec #{command}",
+            stderr_log_path
+          )
         ]
         |> Enum.join(" && ")
 
-      {:ok, script, codex_home}
+      {:ok, script, codex_home, stderr_log_path}
     end
   end
 
@@ -3757,24 +3765,42 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp stderr_tail_text(%{worker_host: worker_host, path: path})
+       when is_binary(worker_host) and is_binary(path) do
+    command = remote_stderr_tail_command(path)
+
+    case SSH.run(worker_host, command, stderr_to_stdout: true) do
+      {:ok, {data, 0}} -> stderr_tail_data_text(data)
+      _result -> nil
+    end
+  end
+
   defp stderr_tail_text(%{path: path}) when is_binary(path) do
     with {:ok, %{size: size}} when size > 0 <- File.stat(path),
          offset = max(size - @stderr_tail_max_bytes, 0),
          {:ok, data} <- read_range(path, offset, size - offset) do
-      data
-      |> strip_ansi()
-      |> String.split(~r/\R/u, trim: true)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.take(-@stderr_tail_line_count)
-      |> Enum.join("\n")
-      |> blank_to_nil()
+      stderr_tail_data_text(data)
     else
       _ -> nil
     end
   end
 
   defp stderr_tail_text(_stderr_tail), do: nil
+
+  defp remote_stderr_tail_command(path) when is_binary(path) do
+    "if [ -s #{shell_escape(path)} ]; then tail -c #{@stderr_tail_max_bytes} #{shell_escape(path)}; fi"
+  end
+
+  defp stderr_tail_data_text(data) when is_binary(data) do
+    data
+    |> strip_ansi()
+    |> String.split(~r/\R/u, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.take(-@stderr_tail_line_count)
+    |> Enum.join("\n")
+    |> blank_to_nil()
+  end
 
   defp with_timeout_response(port, request_id, timeout_ms, pending_line, stderr_tail) do
     receive do
@@ -4211,6 +4237,8 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     :ok
   end
+
+  defp stop_stderr_tail(_stderr_tail), do: :ok
 
   defp stderr_tail_loop(state) do
     state = drain_stderr_lines(state)

@@ -540,6 +540,18 @@ defmodule SymphonyElixir.Orchestrator do
         emit_run_failed(running_entry, error, nil)
         state
 
+      terminal_tool_failure_circuit_breaker?(reason) ->
+        Logger.error(
+          "Agent task exited for issue_id=#{issue_id} session_id=#{session_id} " <>
+            "reason=#{inspect(reason)}; repeated tool failure circuit breaker is not retried"
+        )
+
+        blocked_state = review_agent_blocked_state(state, running_entry)
+        maybe_comment_tool_failure_circuit_breaker(issue_id, running_entry, reason, blocked_state)
+        state = maybe_transition_review_agent_blocked_issue(state, issue_id, running_entry, blocked_state)
+        emit_run_failed(running_entry, error, nil)
+        state
+
       true ->
         Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
@@ -563,6 +575,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp agent_exit_reason_summary({:review_agent_blocked, payload}) do
     "review_agent blocked: #{review_agent_block_reason(payload)}"
+  end
+
+  defp agent_exit_reason_summary({:tool_failure_circuit_breaker, payload}) do
+    "tool failure circuit breaker tripped: #{tool_failure_circuit_breaker_summary(payload)}"
   end
 
   defp agent_exit_reason_summary({:port_exit, status, %{stderr: stderr}})
@@ -595,6 +611,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp terminal_review_agent_block?({:review_agent_blocked, _reason}), do: true
   defp terminal_review_agent_block?(_reason), do: false
 
+  defp terminal_tool_failure_circuit_breaker?({:tool_failure_circuit_breaker, _payload}), do: true
+  defp terminal_tool_failure_circuit_breaker?(_reason), do: false
+
   defp maybe_comment_review_agent_block(issue_id, running_entry, reason, blocked_state)
        when is_binary(issue_id) and is_map(running_entry) and is_binary(blocked_state) do
     body = review_agent_block_comment(reason, blocked_state)
@@ -618,6 +637,30 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_comment_review_agent_block(_issue_id, _running_entry, _reason, _blocked_state), do: :ok
+
+  defp maybe_comment_tool_failure_circuit_breaker(issue_id, running_entry, reason, blocked_state)
+       when is_binary(issue_id) and is_map(running_entry) and is_binary(blocked_state) do
+    body = tool_failure_circuit_breaker_comment(reason, blocked_state)
+
+    case Tracker.create_comment(issue_id, body) do
+      :ok ->
+        :ok
+
+      {:error, comment_reason} ->
+        Logger.warning(
+          "Failed to post tool-failure circuit-breaker comment for issue_id=#{issue_id}: " <>
+            "#{inspect(comment_reason)}"
+        )
+    end
+  rescue
+    exception ->
+      Logger.warning(
+        "Failed to post tool-failure circuit-breaker comment for issue_id=#{issue_id}: " <>
+          "#{Exception.message(exception)}"
+      )
+  end
+
+  defp maybe_comment_tool_failure_circuit_breaker(_issue_id, _running_entry, _reason, _blocked_state), do: :ok
 
   defp maybe_transition_review_agent_blocked_issue(%State{} = state, issue_id, running_entry, blocked_state)
        when is_binary(issue_id) and is_map(running_entry) and is_binary(blocked_state) do
@@ -672,6 +715,16 @@ defmodule SymphonyElixir.Orchestrator do
     """
   end
 
+  defp tool_failure_circuit_breaker_comment(reason, blocked_state) do
+    """
+    Symphony stopped this run without retrying because the agent repeated the same failing tool execution until the circuit breaker tripped.
+
+    #{tool_failure_circuit_breaker_details(reason)}
+
+    Target human-review state: #{blocked_state}.
+    """
+  end
+
   defp review_agent_blocked_state(%State{} = state, running_entry) do
     state
     |> running_repo_key(running_entry)
@@ -682,6 +735,43 @@ defmodule SymphonyElixir.Orchestrator do
   defp review_agent_block_reason(%{reason: reason}) when is_binary(reason) and reason != "", do: reason
   defp review_agent_block_reason(reason) when is_binary(reason) and reason != "", do: reason
   defp review_agent_block_reason(_reason), do: "review_agent blocked the run"
+
+  defp tool_failure_circuit_breaker_details({:tool_failure_circuit_breaker, payload}),
+    do: tool_failure_circuit_breaker_details(payload)
+
+  defp tool_failure_circuit_breaker_details(payload) when is_map(payload) do
+    signature = Map.get(payload, :signature) || Map.get(payload, "signature") || %{}
+    count = Map.get(payload, :count) || Map.get(payload, "count") || "unknown"
+    threshold = Map.get(payload, :threshold) || Map.get(payload, "threshold") || "unknown"
+
+    """
+    Failing signature: #{tool_failure_signature_text(signature)}
+    Consecutive failures: #{count}
+    Configured threshold: #{threshold}
+    """
+  end
+
+  defp tool_failure_circuit_breaker_details(_payload), do: "Failing signature: unknown"
+
+  defp tool_failure_circuit_breaker_summary(payload) when is_map(payload) do
+    signature = Map.get(payload, :signature) || Map.get(payload, "signature") || %{}
+    count = Map.get(payload, :count) || Map.get(payload, "count") || "unknown"
+    threshold = Map.get(payload, :threshold) || Map.get(payload, "threshold") || "unknown"
+
+    "#{tool_failure_signature_text(signature)} count=#{count} threshold=#{threshold}"
+  end
+
+  defp tool_failure_circuit_breaker_summary(_payload), do: "signature=unknown"
+
+  defp tool_failure_signature_text(signature) when is_map(signature) do
+    kind = Map.get(signature, :kind) || Map.get(signature, "kind") || "unknown"
+    name = Map.get(signature, :name) || Map.get(signature, "name") || "unknown"
+    args_hash = Map.get(signature, :args_hash) || Map.get(signature, "args_hash") || "unknown"
+
+    "kind=#{kind} name=#{inspect(name)} args_hash=#{args_hash}"
+  end
+
+  defp tool_failure_signature_text(_signature), do: "unknown"
 
   defp review_agent_block_findings_section({:review_agent_blocked, payload}), do: review_agent_block_findings_section(payload)
 
@@ -4465,6 +4555,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp terminal_status_for_reason(:timeout), do: "timeout"
   defp terminal_status_for_reason({:timeout, _reason}), do: "timeout"
   defp terminal_status_for_reason({:review_agent_blocked, _reason}), do: "blocked"
+  defp terminal_status_for_reason({:tool_failure_circuit_breaker, _payload}), do: "blocked"
   defp terminal_status_for_reason(_reason), do: "failure"
 
   defp ignore_missing_run({:error, :run_not_found}), do: :ok

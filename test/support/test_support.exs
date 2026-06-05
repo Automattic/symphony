@@ -541,6 +541,7 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
+          max_consecutive_identical_tool_failures: 5,
           max_tokens_per_issue: nil,
           max_tokens_per_day: nil,
           agent_kind: "codex",
@@ -615,6 +616,7 @@ defmodule SymphonyElixir.TestSupport do
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    max_consecutive_identical_tool_failures = Keyword.get(config, :max_consecutive_identical_tool_failures)
     max_tokens_per_issue = Keyword.get(config, :max_tokens_per_issue)
     max_tokens_per_day = Keyword.get(config, :max_tokens_per_day)
     agent_kind = Keyword.get(config, :agent_kind)
@@ -693,6 +695,7 @@ defmodule SymphonyElixir.TestSupport do
           max_concurrent_agents_by_state: max_concurrent_agents_by_state,
           max_turns: max_turns,
           max_retry_backoff_ms: max_retry_backoff_ms,
+          max_consecutive_identical_tool_failures: max_consecutive_identical_tool_failures,
           max_tokens_per_issue: max_tokens_per_issue,
           max_tokens_per_day: max_tokens_per_day,
           turn_timeout_ms: agent_turn_timeout_ms,
@@ -870,6 +873,7 @@ defmodule SymphonyElixir.TestSupport do
       "  limits:",
       "    max_turns: #{yaml_value(config.max_turns)}",
       "    retry_backoff_max_ms: #{yaml_value(config.max_retry_backoff_ms)}",
+      "    max_consecutive_identical_tool_failures: #{yaml_value(config.max_consecutive_identical_tool_failures)}",
       "    tokens_per_issue: #{yaml_value(config.max_tokens_per_issue)}",
       "    tokens_per_day: #{yaml_value(config.max_tokens_per_day)}",
       "  timeouts:",

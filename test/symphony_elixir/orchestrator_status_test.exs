@@ -5397,6 +5397,68 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(worker_pid, :finish)
   end
 
+  test "tool failure circuit breaker exit escalates without scheduling retry" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_api_token: nil,
+      ci: %{escalation_state: "Needs Human"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "issue-tool-failure-breaker",
+      identifier: "MT-TOOL-BREAKER",
+      title: "Repeated tool failure",
+      state: "In Progress"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ToolFailureBreakerOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: stop_process(pid)
+    end)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-tool-failure-breaker"
+
+    running_entry =
+      running_entry(issue, worker_pid, worker_ref, run_id, started_at, %{
+        session_id: "thread-tool-failure-breaker"
+      })
+
+    put_running_run!(issue, run_id, started_at, %{session_id: "thread-tool-failure-breaker"})
+    put_running_entry(pid, issue, running_entry)
+
+    reason =
+      {:tool_failure_circuit_breaker,
+       %{
+         signature: %{kind: :dynamic_tool, name: "github_get_pull_request", args_hash: "abc123"},
+         count: 5,
+         threshold: 5
+       }}
+
+    send(pid, {:DOWN, worker_ref, :process, worker_pid, reason})
+
+    assert_receive {:memory_tracker_comment, "issue-tool-failure-breaker", body}, 1_000
+    assert body =~ "same failing tool execution"
+    assert body =~ "kind=dynamic_tool name=\"github_get_pull_request\" args_hash=abc123"
+    assert body =~ "Consecutive failures: 5"
+    assert body =~ "Configured threshold: 5"
+    assert body =~ "Target human-review state: Needs Human."
+
+    assert_receive {:memory_tracker_state_update, "issue-tool-failure-breaker", "Needs Human"}, 1_000
+
+    completed_state = wait_for_orchestrator_state(pid, &(map_size(&1.running) == 0), 1_000)
+    refute Map.has_key?(completed_state.retry_attempts, issue.id)
+    refute MapSet.member?(completed_state.claimed, issue.id)
+    assert %{state: "Needs Human"} = completed_state.watching[issue.id]
+
+    send(worker_pid, :finish)
+  end
+
   defp put_budget_exhausted_run(attrs) do
     total_tokens = Map.fetch!(attrs, :total_tokens)
 

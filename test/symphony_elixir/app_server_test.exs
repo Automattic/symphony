@@ -4942,6 +4942,234 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server trips circuit breaker after repeated identical failed command executions" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-command-failure-breaker-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-COMMAND-BREAKER")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-command-breaker"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-command-breaker","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-1","type":"commandExecution","status":"failed","command":"mix test --failed"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-2","type":"commandExecution","status":"failed","command":"mix test --failed"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-3","type":"commandExecution","status":"failed","command":"mix test --failed"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        max_consecutive_identical_tool_failures: 3
+      )
+
+      assert {:error, {:tool_failure_circuit_breaker, payload}} =
+               AppServer.run(workspace, "Retry command", issue!("MT-COMMAND-BREAKER"))
+
+      assert payload.count == 3
+      assert payload.threshold == 3
+      assert payload.signature.kind == :command_execution
+      assert payload.signature.name == "mix test --failed"
+      assert is_binary(payload.signature.args_hash)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server command failure circuit breaker resets on different execution and success" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-command-failure-reset-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-COMMAND-RESET")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-command-reset"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-command-reset","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-1","type":"commandExecution","status":"failed","command":"mix test test/a_test.exs"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-2","type":"commandExecution","status":"failed","command":"mix test test/b_test.exs"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-3","type":"commandExecution","status":"failed","command":"mix test test/a_test.exs"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-4","type":"commandExecution","status":"completed","command":"mix test test/a_test.exs"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-5","type":"commandExecution","status":"failed","command":"mix test test/a_test.exs"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        max_consecutive_identical_tool_failures: 2
+      )
+
+      assert {:ok, _result} = AppServer.run(workspace, "Retry command", issue!("MT-COMMAND-RESET"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server trips circuit breaker after repeated identical failed dynamic tool calls" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-dynamic-tool-breaker-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-DYNAMIC-BREAKER")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-dynamic-breaker"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-dynamic-breaker","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"id":88,"method":"item/tool/call","params":{"name":"linear_add_comment","callId":"call-1","threadId":"thread-dynamic-breaker","turnId":"turn-dynamic-breaker","arguments":{"body":"same"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":89,"method":"item/tool/call","params":{"name":"linear_add_comment","callId":"call-2","threadId":"thread-dynamic-breaker","turnId":"turn-dynamic-breaker","arguments":{"body":"same"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        max_consecutive_identical_tool_failures: 2
+      )
+
+      tool_executor = fn _tool, _arguments -> %{"success" => false, "output" => "blocked"} end
+
+      assert {:error, {:tool_failure_circuit_breaker, payload}} =
+               AppServer.run(workspace, "Retry tool", issue!("MT-DYNAMIC-BREAKER"), tool_executor: tool_executor)
+
+      assert payload.count == 2
+      assert payload.threshold == 2
+      assert payload.signature.kind == :dynamic_tool
+      assert payload.signature.name == "linear_add_comment"
+      assert is_binary(payload.signature.args_hash)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "max_consecutive_identical_tool_failures zero disables app server circuit breaker" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-command-failure-breaker-disabled-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-COMMAND-BREAKER-DISABLED")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-command-breaker-disabled"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-command-breaker-disabled","status":"inProgress","items":[]}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-1","type":"commandExecution","status":"failed","command":"mix test --failed"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-2","type":"commandExecution","status":"failed","command":"mix test --failed"}}}'
+            printf '%s\\n' '{"method":"item/completed","params":{"item":{"id":"cmd-3","type":"commandExecution","status":"failed","command":"mix test --failed"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server",
+        max_consecutive_identical_tool_failures: 0
+      )
+
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Retry command", issue!("MT-COMMAND-BREAKER-DISABLED"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server launches over ssh for remote workers" do
     test_root =
       Path.join(

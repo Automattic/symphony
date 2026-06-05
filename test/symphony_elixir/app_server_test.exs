@@ -1292,6 +1292,10 @@ defmodule SymphonyElixir.AppServerTest do
       trace_file = Path.join(test_root, "codex-srt-wrapper.trace")
       settings_copy = Path.join(test_root, "srt-settings-copy.json")
       codex_config_copy = Path.join(test_root, "codex-config-copy.toml")
+      previous_ssl_cert_file = System.get_env("SSL_CERT_FILE")
+      on_exit(fn -> restore_env("SSL_CERT_FILE", previous_ssl_cert_file) end)
+      System.put_env("SSL_CERT_FILE", "/custom/operator.pem")
+
       File.mkdir_p!(workspace_root)
       File.mkdir_p!(primary_repo)
 
@@ -1335,6 +1339,11 @@ defmodule SymphonyElixir.AppServerTest do
 
       printf 'SRT_SETTINGS:%s\\n' "$settings_path" >> "$trace_file"
       cp "$settings_path" "$settings_copy"
+      HTTP_PROXY=http://localhost:1111
+      HTTPS_PROXY=http://localhost:2222
+      http_proxy=https://localhost:3333
+      https_proxy=https://localhost:4444
+      export HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
       exec "$@"
       """)
 
@@ -1343,6 +1352,11 @@ defmodule SymphonyElixir.AppServerTest do
       trace_file="#{trace_file}"
       config_copy="#{codex_config_copy}"
       printf 'CODEX_ARGV:%s\\n' "$*" >> "$trace_file"
+      printf 'ENV_HTTP_PROXY:%s\\n' "${HTTP_PROXY-}" >> "$trace_file"
+      printf 'ENV_HTTPS_PROXY:%s\\n' "${HTTPS_PROXY-}" >> "$trace_file"
+      printf 'ENV_http_proxy:%s\\n' "${http_proxy-}" >> "$trace_file"
+      printf 'ENV_https_proxy:%s\\n' "${https_proxy-}" >> "$trace_file"
+      printf 'ENV_SSL_CERT_FILE:%s\\n' "${SSL_CERT_FILE-}" >> "$trace_file"
 
       if [ -n "${CODEX_HOME:-}" ] && [ -f "$CODEX_HOME/config.toml" ]; then
         cp "$CODEX_HOME/config.toml" "$config_copy"
@@ -1407,7 +1421,14 @@ defmodule SymphonyElixir.AppServerTest do
 
       trace = File.read!(trace_file)
       assert trace =~ "SRT_ARGV:--settings "
+      assert trace =~ " sh -c "
+      assert trace =~ "SSL_CERT_FILE=/etc/ssl/cert.pem"
       assert trace =~ "CODEX_ARGV:--config tool_output_token_limit=4096"
+      assert trace =~ "ENV_HTTP_PROXY:http://127.0.0.1:1111"
+      assert trace =~ "ENV_HTTPS_PROXY:http://127.0.0.1:2222"
+      assert trace =~ "ENV_http_proxy:https://127.0.0.1:3333"
+      assert trace =~ "ENV_https_proxy:https://127.0.0.1:4444"
+      assert trace =~ "ENV_SSL_CERT_FILE:/custom/operator.pem"
       assert trace =~ "--config default_permissions=\"workspace_write\""
       assert trace =~ "--config permissions.workspace_write.filesystem="
       refute trace =~ "\":project_roots\""

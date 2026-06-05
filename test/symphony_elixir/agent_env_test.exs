@@ -9,7 +9,8 @@ defmodule SymphonyElixir.AgentEnvTest do
         "PATH" => "/usr/bin:/bin",
         "HOME" => "/home/symphony",
         "USER" => "symphony",
-        "LANG" => "en_US.UTF-8"
+        "LANG" => "en_US.UTF-8",
+        "SSL_CERT_FILE" => "/custom/operator.pem"
       }
 
       result = AgentEnv.build(env)
@@ -18,6 +19,7 @@ defmodule SymphonyElixir.AgentEnvTest do
       assert {~c"HOME", ~c"/home/symphony"} in result
       assert {~c"USER", ~c"symphony"} in result
       assert {~c"LANG", ~c"en_US.UTF-8"} in result
+      assert {~c"SSL_CERT_FILE", ~c"/custom/operator.pem"} in result
     end
 
     test "always sets SYMPHONY_AGENT_RUNTIME=1" do

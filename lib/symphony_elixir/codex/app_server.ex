@@ -54,6 +54,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   @agent_runtime_env AgentEnv.runtime_marker_name()
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
+  @srt_proxy_env_vars ~w(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy)
+  @srt_default_ssl_cert_file "/etc/ssl/cert.pem"
 
   @type stdout_pump :: %{pid: pid(), ref: reference(), os_pid: pos_integer() | nil} | nil
   @type stderr_tail :: %{pid: pid(), ref: reference()} | nil
@@ -814,12 +816,48 @@ defmodule SymphonyElixir.Codex.AppServer do
     with {:ok, srt_words} <- srt_command_words(runtime.command),
          {:ok, settings_dir, settings_path} <- write_srt_settings(settings, workspace, runtime, opts) do
       wrapped_command =
-        (srt_words ++ ["--settings", settings_path])
+        (srt_words ++ ["--settings", settings_path, "sh", "-c", srt_inner_command(command)])
         |> Enum.map_join(" ", &shell_escape/1)
-        |> Kernel.<>(" #{command}")
 
       {:ok, wrapped_command, [settings_dir]}
     end
+  end
+
+  defp srt_inner_command(command) when is_binary(command) do
+    [
+      srt_proxy_rewrite_prelude(),
+      srt_ssl_cert_file_prelude(),
+      "exec #{command}"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp srt_proxy_rewrite_prelude do
+    Enum.map_join(@srt_proxy_env_vars, "\n", &srt_proxy_env_rewrite/1)
+  end
+
+  defp srt_proxy_env_rewrite(name) do
+    """
+    case "${#{name}:-}" in
+      http://localhost|http://localhost:*|http://localhost/*)
+        #{name}="http://127.0.0.1${#{name}#http://localhost}"
+        export #{name}
+        ;;
+      https://localhost|https://localhost:*|https://localhost/*)
+        #{name}="https://127.0.0.1${#{name}#https://localhost}"
+        export #{name}
+        ;;
+    esac
+    """
+  end
+
+  defp srt_ssl_cert_file_prelude do
+    """
+    if [ -z "${SSL_CERT_FILE+x}" ]; then
+      SSL_CERT_FILE=#{@srt_default_ssl_cert_file}
+      export SSL_CERT_FILE
+    fi
+    """
   end
 
   defp srt_command_words(command) when is_binary(command) do

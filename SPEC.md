@@ -1776,9 +1776,11 @@ Notes:
 - The Elixir implementation requires explicit `agent.runtime` and `agent.command`.
 - Codex local launch invokes `bash -lc <agent.command>` in the workspace. When
   `agent.permissions.outer_sandbox.runtime: srt`, the local command is wrapped as
-  `<srt command> --settings <temporary-settings.json> <agent.command>` and launched with
-  `bash --noprofile --norc -c` so operator shell startup files are not read under SRT. Codex remote
-  launch runs the configured command after `cd <workspace>` over SSH stdio.
+  `<srt command> --settings <temporary-settings.json> sh -c <prelude-and-agent.command>` and
+  launched with `bash --noprofile --norc -c` so operator shell startup files are not read under SRT.
+  The SRT prelude rewrites localhost HTTP(S) proxy environment values to `127.0.0.1` and sets
+  `SSL_CERT_FILE=/etc/ssl/cert.pem` only when the variable is unset. Codex remote launch runs the
+  configured command after `cd <workspace>` over SSH stdio.
 - Codex local SRT launch prefers the managed Unix socket for Symphony's implicit MCP server and
   writes that per-session socket directory into SRT `network.allowUnixSockets`. The MCP server
   remains token-authenticated.

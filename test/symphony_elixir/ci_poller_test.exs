@@ -452,6 +452,108 @@ defmodule SymphonyElixir.CiPollerTest do
            ] = RunStore.list_ci_checks()
   end
 
+  test "green ci defers retry reset while rework run is active" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_status, green_status("def456"))
+    put_run(issue, now, "running")
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "dispatch_requested",
+               ci_retry_count: 2,
+               dispatched_shas: ["abc123"],
+               rerun_attempted_shas: ["abc123"],
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:green_deferred, "issue-2401", :rework_in_progress}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    refute_receive {:issue_state_update, _, _}
+
+    assert [
+             %{
+               status: "dispatch_requested",
+               ci_retry_count: 2,
+               dispatched_shas: ["abc123"],
+               rerun_attempted_shas: ["abc123"],
+               last_action: "green_deferred",
+               last_observed_conclusion: "SUCCESS"
+             }
+           ] = RunStore.list_ci_checks()
+  end
+
+  test "green ci defers while PR rework comments are pending then resets after completion" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_status, green_status("def456"))
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "dispatch_requested",
+               ci_retry_count: 2,
+               dispatched_shas: ["abc123"],
+               rerun_attempted_shas: ["abc123"],
+               updated_at: now
+             })
+
+    assert :ok =
+             RunStore.put_pr_review(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "rework_requested",
+               pending_reviewer_comments: [%{id: "comment-1", body: "Please adjust."}],
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:green_deferred, "issue-2401", :rework_in_progress}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    assert [%{status: "dispatch_requested", ci_retry_count: 2, last_action: "green_deferred"}] =
+             RunStore.list_ci_checks()
+
+    assert :ok =
+             RunStore.put_pr_review(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "rework_requested",
+               pending_reviewer_comments: [],
+               updated_at: DateTime.add(now, 2, :minute)
+             })
+
+    assert {:ok, %{actions: [{:green, "issue-2401"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 3, :minute))
+
+    assert [
+             %{
+               status: "green",
+               ci_retry_count: 0,
+               dispatched_shas: [],
+               rerun_attempted_shas: [],
+               last_action: "green"
+             }
+           ] = RunStore.list_ci_checks()
+  end
+
   test "Linear transition errors use CI poll backoff" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()
@@ -808,19 +910,22 @@ defmodule SymphonyElixir.CiPollerTest do
     }
   end
 
-  defp put_run(issue, now) do
+  defp put_run(issue, now, status \\ "success") do
     RunStore.put_run(%{
       repo_key: @repo_key,
       run_id: "run-1",
       issue_id: issue.id,
       issue_identifier: issue.identifier,
-      status: "success",
+      status: status,
       workspace_path: "/tmp/workspaces/ACME-2401",
       worker_host: nil,
       started_at: DateTime.add(now, -2, :minute),
-      ended_at: DateTime.add(now, -1, :minute)
+      ended_at: run_ended_at(status, now)
     })
   end
+
+  defp run_ended_at("running", _now), do: nil
+  defp run_ended_at(_status, now), do: DateTime.add(now, -1, :minute)
 
   defp multi_repo_config do
     [

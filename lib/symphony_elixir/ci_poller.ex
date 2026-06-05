@@ -208,6 +208,7 @@ defmodule SymphonyElixir.CiPoller do
 
     with {:ok, discovered} <- discover_ci_checks(run_store, tracker, repo_key, now),
          {:ok, checks} <- list_ci_checks(run_store, repo_key) do
+      opts = put_prefetched_rework_sources(opts, run_store, repo_key, checks)
       actions = Enum.map(checks, &process_ci_check(&1, settings, opts, now))
 
       {:ok, %{mode: :polling, discovered: discovered, processed: length(checks), actions: actions}}
@@ -975,10 +976,44 @@ defmodule SymphonyElixir.CiPoller do
     active_agent_run?(issue_id, repo_key, opts) or pending_rework_review?(issue_id, repo_key, opts)
   end
 
-  defp active_agent_run?(issue_id, repo_key, opts) when is_binary(issue_id) and is_binary(repo_key) do
-    run_store = Keyword.get(opts, :run_store, RunStore)
+  # Runs and PR reviews are prefetched once per poll cycle so the green path
+  # does not rescan storage for every CI check (see rework_in_progress?/2).
+  defp put_prefetched_rework_sources(opts, _run_store, _repo_key, []), do: opts
 
-    case list_runs(run_store, repo_key) do
+  defp put_prefetched_rework_sources(opts, run_store, repo_key, _checks) do
+    sources = %{
+      repo_key: repo_key,
+      runs: ok_list_or_nil(list_runs(run_store, repo_key)),
+      reviews: ok_list_or_nil(list_pr_reviews(run_store, repo_key))
+    }
+
+    Keyword.put(opts, :prefetched_rework_sources, sources)
+  end
+
+  defp ok_list_or_nil({:ok, list}) when is_list(list), do: list
+  defp ok_list_or_nil(_other), do: nil
+
+  defp prefetched_rework_source(opts, key, repo_key) do
+    case Keyword.get(opts, :prefetched_rework_sources) do
+      %{repo_key: ^repo_key} = sources ->
+        case Map.get(sources, key) do
+          list when is_list(list) -> {:ok, list}
+          _ -> :miss
+        end
+
+      _ ->
+        :miss
+    end
+  end
+
+  defp active_agent_run?(issue_id, repo_key, opts) when is_binary(issue_id) and is_binary(repo_key) do
+    runs_result =
+      case prefetched_rework_source(opts, :runs, repo_key) do
+        {:ok, runs} -> {:ok, runs}
+        :miss -> list_runs(Keyword.get(opts, :run_store, RunStore), repo_key)
+      end
+
+    case runs_result do
       {:ok, runs} -> Enum.any?(runs, &(Map.get(&1, :issue_id) == issue_id and Map.get(&1, :status) == "running"))
       {:error, _reason} -> false
     end
@@ -987,9 +1022,13 @@ defmodule SymphonyElixir.CiPoller do
   defp active_agent_run?(_issue_id, _repo_key, _opts), do: false
 
   defp pending_rework_review?(issue_id, repo_key, opts) when is_binary(issue_id) and is_binary(repo_key) do
-    run_store = Keyword.get(opts, :run_store, RunStore)
+    reviews_result =
+      case prefetched_rework_source(opts, :reviews, repo_key) do
+        {:ok, reviews} -> {:ok, reviews}
+        :miss -> list_pr_reviews(Keyword.get(opts, :run_store, RunStore), repo_key)
+      end
 
-    case list_pr_reviews(run_store, repo_key) do
+    case reviews_result do
       {:ok, reviews} ->
         Enum.any?(reviews, fn review ->
           Map.get(review, :issue_id) == issue_id and

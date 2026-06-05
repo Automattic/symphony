@@ -98,6 +98,32 @@ defmodule SymphonyElixir.CiPollerTest do
     def list_ci_checks, do: []
   end
 
+  defmodule CountingRunStore do
+    def list_runs(repo_key, scope) do
+      bump(:list_runs)
+      SymphonyElixir.RunStore.list_runs(repo_key, scope)
+    end
+
+    def list_ci_checks(repo_key), do: SymphonyElixir.RunStore.list_ci_checks(repo_key)
+
+    def list_pr_reviews(repo_key) do
+      bump(:list_pr_reviews)
+      SymphonyElixir.RunStore.list_pr_reviews(repo_key)
+    end
+
+    def put_ci_check(record), do: SymphonyElixir.RunStore.put_ci_check(record)
+
+    def update_ci_check(repo_key, issue_id, attrs),
+      do: SymphonyElixir.RunStore.update_ci_check(repo_key, issue_id, attrs)
+
+    def delete_ci_check(repo_key, issue_id), do: SymphonyElixir.RunStore.delete_ci_check(repo_key, issue_id)
+
+    defp bump(key) do
+      counts = Application.get_env(:symphony_elixir, :ci_test_store_counts, %{})
+      Application.put_env(:symphony_elixir, :ci_test_store_counts, Map.update(counts, key, 1, &(&1 + 1)))
+    end
+  end
+
   defmodule FailingTransitionTracker do
     def fetch_issues_by_states(_states), do: {:ok, []}
 
@@ -448,6 +474,172 @@ defmodule SymphonyElixir.CiPollerTest do
                dispatched_shas: [],
                rerun_attempted_shas: [],
                ci_failure: nil
+             }
+           ] = RunStore.list_ci_checks()
+  end
+
+  test "green ci defers retry reset while rework run is active" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_status, green_status("def456"))
+    put_run(issue, now, "running")
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "dispatch_requested",
+               ci_retry_count: 2,
+               dispatched_shas: ["abc123"],
+               rerun_attempted_shas: ["abc123"],
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:green_deferred, "issue-2401", :rework_in_progress}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    refute_receive {:issue_state_update, _, _}
+
+    assert [
+             %{
+               status: "dispatch_requested",
+               ci_retry_count: 2,
+               dispatched_shas: ["abc123"],
+               rerun_attempted_shas: ["abc123"],
+               last_action: "green_deferred",
+               last_observed_conclusion: "SUCCESS"
+             }
+           ] = RunStore.list_ci_checks()
+  end
+
+  test "green ci poll prefetches runs and reviews once per cycle across checks" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue_a = in_review_issue()
+
+    issue_b = %{
+      issue_a
+      | id: "issue-2402",
+        identifier: "ACME-2402",
+        url: "https://linear.test/ACME-2402",
+        pr_urls: ["https://github.com/example/repo/pull/2402"]
+    }
+
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue_a, issue_b])
+    Application.put_env(:symphony_elixir, :ci_test_status, green_status("def456"))
+    Application.put_env(:symphony_elixir, :ci_test_store_counts, %{})
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :ci_test_store_counts) end)
+
+    put_run(issue_a, now, "running")
+
+    RunStore.put_run(%{
+      repo_key: @repo_key,
+      run_id: "run-2",
+      issue_id: issue_b.id,
+      issue_identifier: issue_b.identifier,
+      status: "running",
+      workspace_path: "/tmp/workspaces/ACME-2402",
+      worker_host: nil,
+      started_at: DateTime.add(now, -2, :minute),
+      ended_at: nil
+    })
+
+    for issue <- [issue_a, issue_b] do
+      assert :ok =
+               RunStore.put_ci_check(%{
+                 repo_key: @repo_key,
+                 issue_id: issue.id,
+                 issue_identifier: issue.identifier,
+                 issue_url: issue.url,
+                 pr_url: List.first(issue.pr_urls),
+                 workspace_path: "/tmp/workspaces/#{issue.identifier}",
+                 status: "dispatch_requested",
+                 ci_retry_count: 2,
+                 dispatched_shas: ["abc123"],
+                 rerun_attempted_shas: ["abc123"],
+                 updated_at: now
+               })
+    end
+
+    assert {:ok, %{processed: 2, actions: actions}} =
+             CiPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               run_store: CountingRunStore,
+               now: DateTime.add(now, 1, :minute)
+             )
+
+    assert Enum.all?(actions, &match?({:green_deferred, _, :rework_in_progress}, &1))
+
+    # One list_runs for discovery plus one prefetch, and a single
+    # list_pr_reviews prefetch — independent of the number of CI checks.
+    assert %{list_runs: 2, list_pr_reviews: 1} =
+             Application.fetch_env!(:symphony_elixir, :ci_test_store_counts)
+  end
+
+  test "green ci defers while PR rework comments are pending then resets after completion" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_status, green_status("def456"))
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "dispatch_requested",
+               ci_retry_count: 2,
+               dispatched_shas: ["abc123"],
+               rerun_attempted_shas: ["abc123"],
+               updated_at: now
+             })
+
+    assert :ok =
+             RunStore.put_pr_review(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "rework_requested",
+               pending_reviewer_comments: [%{id: "comment-1", body: "Please adjust."}],
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:green_deferred, "issue-2401", :rework_in_progress}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    assert [%{status: "dispatch_requested", ci_retry_count: 2, last_action: "green_deferred"}] =
+             RunStore.list_ci_checks()
+
+    assert :ok =
+             RunStore.put_pr_review(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "rework_requested",
+               pending_reviewer_comments: [],
+               updated_at: DateTime.add(now, 2, :minute)
+             })
+
+    assert {:ok, %{actions: [{:green, "issue-2401"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 3, :minute))
+
+    assert [
+             %{
+               status: "green",
+               ci_retry_count: 0,
+               dispatched_shas: [],
+               rerun_attempted_shas: [],
+               last_action: "green"
              }
            ] = RunStore.list_ci_checks()
   end
@@ -808,19 +1000,22 @@ defmodule SymphonyElixir.CiPollerTest do
     }
   end
 
-  defp put_run(issue, now) do
+  defp put_run(issue, now, status \\ "success") do
     RunStore.put_run(%{
       repo_key: @repo_key,
       run_id: "run-1",
       issue_id: issue.id,
       issue_identifier: issue.identifier,
-      status: "success",
+      status: status,
       workspace_path: "/tmp/workspaces/ACME-2401",
       worker_host: nil,
       started_at: DateTime.add(now, -2, :minute),
-      ended_at: DateTime.add(now, -1, :minute)
+      ended_at: run_ended_at(status, now)
     })
   end
+
+  defp run_ended_at("running", _now), do: nil
+  defp run_ended_at(_status, now), do: DateTime.add(now, -1, :minute)
 
   defp multi_repo_config do
     [

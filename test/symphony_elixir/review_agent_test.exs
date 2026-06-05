@@ -220,6 +220,31 @@ defmodule SymphonyElixir.ReviewAgentTest do
       end
     end
 
+    test "accepts a quoted snippet formatted as a full git diff" do
+      test_root = unique_tmp("symphony-elixir-review-agent-validate-full-diff")
+      repo = git_repo_with_change!(test_root)
+
+      try do
+        source = source_for_repo!(repo)
+
+        snippet = """
+        diff --git a/feature.txt b/feature.txt
+        index 0123456..789abcd 100644
+        --- a/feature.txt
+        +++ b/feature.txt
+        @@ -0,0 +1 @@
+        +grounded evidence line
+        """
+
+        result = %{verdict: :block, comments: [], findings: [finding(snippet)], reason: "Unsafe to continue."}
+
+        assert {:ok, %{findings: [kept]}} = ReviewAgent.validate_findings(result, source)
+        assert kept.quoted_snippet == snippet
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "rejects a block finding whose quoted snippet does not match the cited range" do
       test_root = unique_tmp("symphony-elixir-review-agent-validate-bad-snippet")
       repo = git_repo_with_change!(test_root)

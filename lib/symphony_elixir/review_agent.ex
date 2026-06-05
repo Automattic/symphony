@@ -165,7 +165,7 @@ defmodule SymphonyElixir.ReviewAgent do
     text
     |> String.replace("\r\n", "\n")
     |> String.split("\n", trim: false)
-    |> Enum.reject(&(reviewer_annotation_header?(&1) or diff_hunk_header?(&1)))
+    |> Enum.reject(&(reviewer_annotation_header?(&1) or diff_hunk_header?(&1) or diff_file_header?(&1)))
     |> Enum.map(&strip_diff_line_prefix/1)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
@@ -185,6 +185,14 @@ defmodule SymphonyElixir.ReviewAgent do
   end
 
   defp diff_hunk_header?(line), do: line |> String.trim_leading() |> String.starts_with?("@@")
+
+  defp diff_file_header?(line) do
+    trimmed = String.trim_leading(line)
+
+    String.starts_with?(trimmed, "diff --git ") or
+      Regex.match?(~r/\Aindex [0-9a-f]{7,64}\.\.[0-9a-f]{7,64}( |\z)/, trimmed) or
+      Regex.match?(~r/\A(---|\+\+\+) (a\/|b\/|\/dev\/null)/, trimmed)
+  end
 
   defp strip_diff_line_prefix(line) do
     cond do

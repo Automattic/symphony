@@ -4060,6 +4060,56 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server bounds redirected stderr tails on local launch exits" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-launch-stderr-tail-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-LAUNCH-STDERR-TAIL")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      printf '%s\\n' 'stderr line 1' >&2
+      printf '%s\\n' 'stderr line 2' >&2
+      printf '%s\\n' 'stderr line 3' >&2
+      printf '%s\\n' 'stderr line 4' >&2
+      printf '%s\\n' 'stderr line 5' >&2
+      printf '%s\\n' 'stderr line 6' >&2
+      exit 1
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-launch-stderr-tail",
+        identifier: "MT-LAUNCH-STDERR-TAIL",
+        title: "Launch stderr tail",
+        description: "Ensure launch failures carry a bounded stderr tail",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-LAUNCH-STDERR-TAIL",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:port_exit, 1, %{stderr: stderr}}} =
+               AppServer.run(workspace, "Capture launch stderr tail", issue)
+
+      assert stderr == Enum.map_join(2..6, "\n", &"stderr line #{&1}")
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server emits malformed events for JSON-like protocol lines that fail to decode" do
     test_root =
       Path.join(

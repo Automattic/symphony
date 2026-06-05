@@ -537,6 +537,66 @@ defmodule SymphonyElixir.PromptBuilderTest do
     refute prompt =~ "HEX_HOME"
   end
 
+  test "compact prompt appends CI failure context" do
+    prompt =
+      PromptBuilder.build_compact_prompt(
+        %{identifier: "ACME-3801", title: "Fix CI", state: "In Progress", repo_key: "default"},
+        ci_failure: %{
+          failed_checks: [%{name: "dialyzer"}, %{name: "make-all"}],
+          commit_sha: "abc123",
+          log_excerpt: "pattern_match_cov The pattern variable can never match"
+        }
+      )
+
+    assert prompt =~ "CI failure:"
+    assert prompt =~ "Failed checks: dialyzer, make-all"
+    assert prompt =~ "Commit SHA: abc123"
+    assert prompt =~ "Failed log excerpt:\nBEGIN UNTRUSTED CI LOG\n<ci_failure_log_excerpt>"
+    assert prompt =~ "pattern_match_cov The pattern variable can never match"
+    assert prompt =~ "</ci_failure_log_excerpt>\nEND UNTRUSTED CI LOG"
+  end
+
+  test "compact prompt keeps only the tail of an oversized CI log excerpt" do
+    lines = for n <- 1..400, do: "line #{n} " <> String.duplicate("x", 40)
+    log_excerpt = Enum.join(lines, "\n")
+
+    prompt =
+      PromptBuilder.build_compact_prompt(
+        %{identifier: "ACME-3802", title: "Fix CI", repo_key: "default"},
+        ci_failure: %{
+          failed_checks: [%{name: "coverage"}],
+          commit_sha: "def456",
+          log_excerpt: log_excerpt
+        }
+      )
+
+    assert prompt =~ "line 400"
+    refute prompt =~ "line 1 x"
+    assert prompt =~ "[Symphony truncated earlier CI log lines to fit the compact prompt]"
+    assert byte_size(prompt) < 12_000
+  end
+
+  test "compact prompt appends reviewer comments" do
+    prompt =
+      PromptBuilder.build_compact_prompt(
+        %{identifier: "ACME-3803", title: "Rework", repo_key: "default"},
+        reviewer_comments: [
+          %{
+            id: "r1",
+            author: "alice",
+            body: "Please rename this function.",
+            path: "lib/example.ex",
+            line: 7,
+            url: "https://github.com/example/repo/pull/1#discussion_r1"
+          }
+        ]
+      )
+
+    assert prompt =~ "Unaddressed reviewer comments:"
+    assert prompt =~ "[id=r1]"
+    assert prompt =~ "Please rename this function."
+  end
+
   test "compact prompt appends merge conflict instructions and metadata" do
     prompt =
       PromptBuilder.build_compact_prompt(

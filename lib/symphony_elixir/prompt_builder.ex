@@ -11,6 +11,11 @@ defmodule SymphonyElixir.PromptBuilder do
     file_system: {SymphonyElixir.Playbook.FileSystem, nil}
   ]
   @compact_comment_limit 5
+  # CI log excerpts can reach 20k sanitized bytes, larger than the stdio soft
+  # limit that forced the compact prompt in the first place. Keep only the tail
+  # (failures land at the end of CI logs) so the compact prompt stays compact.
+  @compact_ci_log_excerpt_bytes 4_000
+  @compact_ci_log_truncation_marker "[Symphony truncated earlier CI log lines to fit the compact prompt]"
   @codex_transport_output_guard """
   Codex transport output guard:
 
@@ -95,7 +100,9 @@ defmodule SymphonyElixir.PromptBuilder do
   @spec build_compact_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_compact_prompt(issue, opts \\ []) do
     raw_reviewer_comments = normalize_reviewer_comments(Keyword.get(opts, :reviewer_comments, []))
+    reviewer_comments = sanitize_reviewer_comments(raw_reviewer_comments)
     raw_ci_failure = Keyword.get(opts, :ci_failure)
+    ci_failure = raw_ci_failure |> compact_raw_ci_failure() |> normalize_ci_failure()
     pr_conflict = normalize_pr_conflict(Keyword.get(opts, :pr_conflict))
     linear_input_warnings = linear_input_warnings(issue, raw_reviewer_comments, raw_ci_failure)
     {repo_key, workflow_source} = repo_context_for_prompt(issue, opts)
@@ -141,6 +148,8 @@ defmodule SymphonyElixir.PromptBuilder do
     |> List.flatten()
     |> Enum.join("\n")
     |> append_extra_prompt(Keyword.get(opts, :extra_prompt) || Keyword.get(opts, :prompt_context))
+    |> append_reviewer_comments(reviewer_comments)
+    |> append_ci_failure(ci_failure)
     |> append_pr_conflict(pr_conflict)
     |> append_review_agent_instructions(Keyword.get(opts, :settings), opts)
     |> append_feedback_protocol(Keyword.get(opts, :settings))
@@ -785,6 +794,51 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp normalize_ci_failure(_ci_failure), do: nil
+
+  # Trims the raw CI log excerpt to its tail before normalization so the
+  # compact prompt keeps the failing-check context without regrowing past the
+  # stdio soft limit that triggered compaction.
+  defp compact_raw_ci_failure(ci_failure) when is_map(ci_failure) do
+    case string_field(ci_failure, :log_excerpt) do
+      excerpt when is_binary(excerpt) ->
+        ci_failure
+        |> Map.delete("log_excerpt")
+        |> Map.put(:log_excerpt, compact_ci_log_excerpt(excerpt))
+
+      _missing ->
+        ci_failure
+    end
+  end
+
+  defp compact_raw_ci_failure(ci_failure), do: ci_failure
+
+  defp compact_ci_log_excerpt(excerpt) when byte_size(excerpt) <= @compact_ci_log_excerpt_bytes do
+    excerpt
+  end
+
+  defp compact_ci_log_excerpt(excerpt) do
+    {_bytes, lines} =
+      excerpt
+      |> String.split("\n")
+      |> Enum.reverse()
+      |> Enum.reduce_while({0, []}, fn line, {bytes, lines} ->
+        line_bytes = byte_size(line) + 1
+
+        if bytes + line_bytes > @compact_ci_log_excerpt_bytes do
+          {:halt, {bytes, lines}}
+        else
+          {:cont, {bytes + line_bytes, [line | lines]}}
+        end
+      end)
+
+    tail =
+      case Enum.join(lines, "\n") do
+        "" -> String.slice(excerpt, -@compact_ci_log_excerpt_bytes, @compact_ci_log_excerpt_bytes)
+        joined -> joined
+      end
+
+    @compact_ci_log_truncation_marker <> "\n" <> tail
+  end
 
   defp normalize_ci_checks(checks) when is_list(checks) do
     checks

@@ -223,7 +223,11 @@ agent:
 ```
 
 - `runtime`: `codex` or `claude`.
-- `command`: command used to start the runtime adapter.
+- `command`: command used to start the runtime adapter. For the Claude runtime,
+  prefer pinning a Sonnet model (e.g. `claude --model sonnet`) over Opus when
+  available — Opus burns Agent-SDK credit much faster and Sonnet is usually
+  sufficient for orchestration turns. Treat this as guidance; revisit when
+  Anthropic's model lineup or credit policy changes.
 - `concurrency.max_total`: maximum concurrent issue workers.
 - `limits.tokens_per_issue` and `limits.tokens_per_day`: explicit `null` disables that cap.
 - `permissions.filesystem.allow_read_paths`: extra read-only host paths rendered into Codex

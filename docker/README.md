@@ -87,6 +87,10 @@ versions (see `Dockerfile` build args).
   for ChatGPT auth, or set `OPENAI_API_KEY` in `.env`.
 - **Claude Code**: `agent.kind: claude`, `agent.command: claude` (plus any flags). Reuses
   `~/.claude/.credentials.json` for Anthropic Console auth, or set `ANTHROPIC_API_KEY` in `.env`.
+  Prefer pinning a Sonnet model (e.g. `agent.command: claude --model sonnet`) over Opus when
+  available — Opus burns Agent-SDK credit much faster and Sonnet is usually sufficient for
+  orchestration turns. Guidance only; revisit when Anthropic's model lineup or credit policy
+  changes.
 
 ## Dashboard binding
 

@@ -30,7 +30,11 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
 if config_env() == :test do
   config :symphony_elixir,
     symphony_file_path: Path.expand("../test/fixtures/runtime/symphony.yml", __DIR__),
-    state_root: Path.join(System.tmp_dir!(), "symphony-elixir-test-state-#{System.unique_integer([:positive])}"),
-    logs_root: Path.join(System.tmp_dir!(), "symphony-elixir-test-logs-#{System.unique_integer([:positive])}"),
-    run_store_dir: Path.join(System.tmp_dir!(), "symphony-elixir-test-run-store-#{System.unique_integer([:positive])}")
+    # Include the OS pid: System.unique_integer/1 is only unique within one VM,
+    # so concurrent `mix test` runs sharing TMPDIR would otherwise collide on
+    # the same Mnesia run store directory (RunStore startup timeouts and
+    # :no_such_log aborts when one run's after_suite removes the shared dir).
+    state_root: Path.join(System.tmp_dir!(), "symphony-elixir-test-state-#{System.pid()}-#{System.unique_integer([:positive])}"),
+    logs_root: Path.join(System.tmp_dir!(), "symphony-elixir-test-logs-#{System.pid()}-#{System.unique_integer([:positive])}"),
+    run_store_dir: Path.join(System.tmp_dir!(), "symphony-elixir-test-run-store-#{System.pid()}-#{System.unique_integer([:positive])}")
 end

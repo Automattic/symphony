@@ -7,9 +7,12 @@ System.put_env(
   System.get_env("SYMPHONY_SECRET_KEY_BASE", String.duplicate("s", 64))
 )
 
-audit_dir = Path.join(System.tmp_dir!(), "symphony-elixir-test-audit-#{System.unique_integer([:positive])}")
-state_root = Path.join(System.tmp_dir!(), "symphony-elixir-test-state-#{System.unique_integer([:positive])}")
-logs_root = Path.join(System.tmp_dir!(), "symphony-elixir-test-logs-#{System.unique_integer([:positive])}")
+# Include the OS pid so concurrent `mix test` runs sharing TMPDIR cannot
+# collide on the same suite-global directories (unique_integer/1 sequences are
+# nearly identical across separate VM boots).
+audit_dir = Path.join(System.tmp_dir!(), "symphony-elixir-test-audit-#{System.pid()}-#{System.unique_integer([:positive])}")
+state_root = Path.join(System.tmp_dir!(), "symphony-elixir-test-state-#{System.pid()}-#{System.unique_integer([:positive])}")
+logs_root = Path.join(System.tmp_dir!(), "symphony-elixir-test-logs-#{System.pid()}-#{System.unique_integer([:positive])}")
 run_store_dir = Application.fetch_env!(:symphony_elixir, :run_store_dir)
 Application.put_env(:symphony_elixir, :state_root, state_root)
 Application.put_env(:symphony_elixir, :logs_root, logs_root)

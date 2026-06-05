@@ -69,11 +69,14 @@ defmodule SymphonyElixir.OneShotTest do
 
     deps =
       deps(%{
-        start_agent_task: fn issue, recipient, _opts ->
+        start_agent_task: fn _issue, _recipient, _opts ->
           Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
-            send(recipient, {:worker_runtime_info, issue.id, %{workspace_path: workspace}})
             Process.sleep(:infinity)
           end)
+        end,
+        shutdown_task: fn task, timeout ->
+          send(self(), {:worker_runtime_info, issue.id, %{workspace_path: workspace}})
+          Task.shutdown(task, timeout)
         end
       })
 

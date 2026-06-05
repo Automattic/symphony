@@ -193,10 +193,7 @@ defmodule SymphonyElixir.OneShot do
 
     receive do
       {:worker_runtime_info, issue_id, runtime_info} when issue_id == issue.id and is_map(runtime_info) ->
-        entry =
-          entry
-          |> Map.merge(Map.take(runtime_info, [:worker_host, :workspace_path, :agent_module, :agent_session]))
-          |> Map.put(:last_event_at, entry.last_event_at || DateTime.utc_now())
+        entry = merge_runtime_info(entry, runtime_info)
 
         persist_run_update(deps.run_store, entry, run_update(entry))
         receive_attempt(task, issue, deps, entry, deadline_ms)
@@ -231,10 +228,33 @@ defmodule SymphonyElixir.OneShot do
     after
       timeout ->
         deps.shutdown_task.(task, @task_shutdown_timeout_ms)
+        entry = drain_worker_messages(entry, issue)
         cleanup_workspace(entry)
         complete_entry(deps.run_store, entry, "timeout", "one-shot timeout exceeded")
         {:timeout, :timeout_exceeded}
     end
+  end
+
+  defp drain_worker_messages(entry, issue) do
+    receive do
+      {:worker_runtime_info, issue_id, runtime_info} when issue_id == issue.id and is_map(runtime_info) ->
+        entry
+        |> merge_runtime_info(runtime_info)
+        |> drain_worker_messages(issue)
+
+      {:codex_worker_update, issue_id, update} when issue_id == issue.id ->
+        entry
+        |> integrate_worker_update(update)
+        |> drain_worker_messages(issue)
+    after
+      0 -> entry
+    end
+  end
+
+  defp merge_runtime_info(entry, runtime_info) do
+    entry
+    |> Map.merge(Map.take(runtime_info, [:worker_host, :workspace_path, :agent_module, :agent_session]))
+    |> Map.put(:last_event_at, entry.last_event_at || DateTime.utc_now())
   end
 
   defp max_attempts(opts) do

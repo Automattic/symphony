@@ -42,7 +42,7 @@ workspaces:
 
 agent:
   runtime: claude
-  command: claude --model claude-opus-4-7 --dangerously-skip-permissions
+  command: claude --model claude-opus-4-7 --dangerously-skip-permissions --verbose
   concurrency:
     max_total: 10
   limits:

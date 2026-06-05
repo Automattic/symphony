@@ -83,7 +83,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert get_in(result, ["sandbox", "network", "allowLocalBinding"]) == true
     end
 
-    test "open mode does not include network key in sandbox" do
+    test "open mode allows local binding without domain narrowing" do
       network_access = %Agent.NetworkAccess{
         mode: "open",
         allowed_domains: [],
@@ -93,7 +93,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       result = AppServer.build_sandbox_settings(network_access)
 
       assert get_in(result, ["sandbox", "enabled"]) == true
-      refute Map.has_key?(result["sandbox"], "network")
+      assert get_in(result, ["sandbox", "network"]) == %{"allowLocalBinding" => true}
     end
 
     test "operator allow_read_paths drops entries from sandbox denyRead" do
@@ -1718,6 +1718,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
                  "--strict-mcp-config",
                  "--plugin-dir",
                  session.plugin_dir,
+                 "--verbose",
                  "--output-format",
                  "stream-json",
                  "--print"
@@ -2303,6 +2304,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert traced_command =~ "--strict-mcp-config"
         assert traced_command =~ "--plugin-dir"
         assert traced_command =~ session.plugin_dir
+        assert traced_command =~ "--verbose"
         assert traced_command =~ "--output-format"
         assert traced_command =~ "stream-json"
         assert traced_command =~ "--print"

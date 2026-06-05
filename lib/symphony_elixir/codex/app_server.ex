@@ -57,7 +57,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @agent_runtime_env_value AgentEnv.runtime_marker_value()
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
-  @type stdout_pump :: %{pid: pid(), ref: reference()} | nil
+  @type stdout_pump :: %{pid: pid(), ref: reference(), os_pid: pos_integer() | nil} | nil
   @type stderr_tail :: %{pid: pid(), ref: reference(), path: Path.t()} | nil
 
   @type session :: %{
@@ -3738,9 +3738,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp stop_port(port, stdout_pump \\ nil, process_tree_module \\ ProcessTree)
 
-  defp stop_port(port, %{pid: pid, ref: ref}, process_tree_module)
+  defp stop_port(port, %{pid: pid, ref: ref} = stdout_pump, process_tree_module)
        when is_port(port) and is_pid(pid) and is_reference(ref) do
-    process_tree_module.terminate_port_descendants(port)
+    terminate_port_descendants(port, stdout_pump, process_tree_module)
 
     if Process.alive?(pid) do
       send(pid, {:close_stdout_port, self(), ref})
@@ -3766,6 +3766,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_stdout_pump(port) when is_port(port) do
     owner = self()
     ref = make_ref()
+    # Port.connect/2 moves ownership to the pump; cache the OS PID while this
+    # process can still inspect it so shutdown can reap subprocesses later.
+    os_pid = port_os_pid(port)
 
     pid =
       spawn(fn ->
@@ -3784,13 +3787,43 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     try do
       true = Port.connect(port, pid)
-      {:ok, %{pid: pid, ref: ref}}
+      {:ok, %{pid: pid, ref: ref, os_pid: os_pid}}
     rescue
       exception ->
         Logger.error("Failed to start Codex stdout pump: #{Exception.message(exception)}")
         Process.exit(pid, :kill)
         {:error, {:stdout_pump_connect_failed, Exception.message(exception)}}
     end
+  end
+
+  defp terminate_port_descendants(port, %{os_pid: os_pid}, process_tree_module)
+       when is_port(port) and is_integer(os_pid) and os_pid > 0 do
+    if function_exported?(process_tree_module, :terminate_descendants, 1) do
+      process_tree_module.terminate_descendants(os_pid)
+      terminate_root_process(os_pid)
+    else
+      process_tree_module.terminate_port_descendants(port)
+    end
+  end
+
+  defp terminate_port_descendants(port, _stdout_pump, process_tree_module) when is_port(port) do
+    process_tree_module.terminate_port_descendants(port)
+  end
+
+  defp port_os_pid(port) when is_port(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} when is_integer(os_pid) and os_pid > 0 -> os_pid
+      _info -> nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp terminate_root_process(os_pid) when is_integer(os_pid) and os_pid > 0 do
+    _result = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    :ok
+  rescue
+    _exception -> :ok
   end
 
   defp stdout_pump_loop(%{port: port, owner: owner, owner_monitor_ref: owner_ref, ref: ref} = state) do

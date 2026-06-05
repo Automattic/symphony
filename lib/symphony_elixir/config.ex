@@ -446,9 +446,7 @@ defmodule SymphonyElixir.Config do
     budget_keys = configured_budget_keys(settings.agent)
 
     if budget_keys != [] and not token_usage_reporting_agent?(settings.agent) do
-      warn_once(
-        "#{budget_warning_subject(budget_keys)} but agent.command may not report token usage command=#{inspect(settings.agent.command)}"
-      )
+      warn_once("#{budget_warning_subject(budget_keys)} but agent.command may not report token usage command=#{inspect(settings.agent.command)}")
     end
 
     :ok

@@ -1610,6 +1610,64 @@ defmodule SymphonyElixir.PrReviewPollerTest do
            ] = RunStore.list_pr_reviews()
   end
 
+  test "new pending reviewer comment refreshes the reviewed head sha to the current PR head" do
+    now = ~U[2026-05-01 09:00:00Z]
+    earlier_comment_at = DateTime.add(now, -90, :minute)
+    latest_comment_at = DateTime.add(now, -31, :minute)
+    stale_reviewed_head_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    advanced_head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        pending_reviewer_comments_reviewed_head_sha: stale_reviewed_head_sha,
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "comment", author: "human-reviewer", body: "Please refactor this before merge."}
+        ]
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        head_ref_oid: advanced_head_sha,
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Please refactor this before merge.",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-1",
+            created_at: earlier_comment_at,
+            updated_at: earlier_comment_at
+          },
+          %{
+            id: "comment-2",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Also rename this module.",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-2",
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, _result} = PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert [
+             %{
+               pending_reviewer_comments_reviewed_head_sha: ^advanced_head_sha,
+               pending_last_addressed_comment_id: "comment-2",
+               pending_reviewer_comments: [%{id: "comment-1"}, %{id: "comment-2"}]
+             }
+           ] = RunStore.list_pr_reviews()
+  end
+
   test "PR-level auto reply summary includes readable references and body excerpts" do
     now = ~U[2026-05-01 09:00:00Z]
 

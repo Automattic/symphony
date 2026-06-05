@@ -143,11 +143,14 @@ defmodule SymphonyElixir.ReviewAgent do
   defp snippet_matches?(snippet, evidence) do
     normalized_snippet = normalize_evidence_text(snippet)
     normalized_evidence = normalize_evidence_text(evidence)
+    snippet_lines = normalized_snippet_lines(snippet)
+    evidence_lines = normalized_match_lines(evidence)
 
     normalized_snippet != "" and
       (String.contains?(normalized_evidence, normalized_snippet) or
          compact_evidence_text(normalized_evidence) == compact_evidence_text(normalized_snippet) or
-         String.contains?(compact_evidence_text(normalized_evidence), compact_evidence_text(normalized_snippet)))
+         String.contains?(compact_evidence_text(normalized_evidence), compact_evidence_text(normalized_snippet)) or
+         line_subsequence?(snippet_lines, evidence_lines))
   end
 
   defp normalize_evidence_text(text) do
@@ -156,6 +159,57 @@ defmodule SymphonyElixir.ReviewAgent do
     |> String.split("\n", trim: false)
     |> Enum.map_join("\n", &String.trim_trailing/1)
     |> String.trim()
+  end
+
+  defp normalized_snippet_lines(text) do
+    text
+    |> String.replace("\r\n", "\n")
+    |> String.split("\n", trim: false)
+    |> Enum.reject(&(reviewer_annotation_header?(&1) or diff_hunk_header?(&1)))
+    |> Enum.map(&strip_diff_line_prefix/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalized_match_lines(text) do
+    text
+    |> String.replace("\r\n", "\n")
+    |> String.split("\n", trim: false)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp reviewer_annotation_header?(line) do
+    trimmed = String.trim_leading(line)
+    String.starts_with?(trimmed, "#") and Regex.match?(~r/\b\S+:\d+(?:-\d+)?\b/, trimmed)
+  end
+
+  defp diff_hunk_header?(line), do: line |> String.trim_leading() |> String.starts_with?("@@")
+
+  defp strip_diff_line_prefix(line) do
+    cond do
+      Regex.match?(~r/^\s*\+(?!\+\+)/, line) -> Regex.replace(~r/^(\s*)\+/, line, "\\1", global: false)
+      Regex.match?(~r/^\s*-(?!--)/, line) -> Regex.replace(~r/^(\s*)-/, line, "\\1", global: false)
+      true -> line
+    end
+  end
+
+  defp line_subsequence?([], _evidence_lines), do: false
+  defp line_subsequence?(_snippet_lines, []), do: false
+
+  defp line_subsequence?(snippet_lines, evidence_lines) do
+    do_line_subsequence?(snippet_lines, evidence_lines)
+  end
+
+  defp do_line_subsequence?([], _evidence_lines), do: true
+  defp do_line_subsequence?(_snippet_lines, []), do: false
+
+  defp do_line_subsequence?([line | remaining_snippet], [line | remaining_evidence]) do
+    do_line_subsequence?(remaining_snippet, remaining_evidence)
+  end
+
+  defp do_line_subsequence?(snippet_lines, [_line | remaining_evidence]) do
+    do_line_subsequence?(snippet_lines, remaining_evidence)
   end
 
   defp compact_evidence_text(text) do

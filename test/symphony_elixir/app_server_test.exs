@@ -5330,6 +5330,141 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server attaches remote redirected stderr tail to remote launch exits" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-remote-launch-stderr-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    on_exit(fn -> restore_env("PATH", previous_path) end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh-remote-stderr.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      remote_workspace = "/remote/workspaces/MT-REMOTE-STDERR"
+
+      File.mkdir_p!(test_root)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+
+      case "$*" in
+        *"tail -c "*"codex.stderr.log"*)
+          printf '%s\\n' 'remote stderr line 1'
+          printf '%s\\n' 'remote stderr line 2'
+          printf '%s\\n' 'remote stderr line 3'
+          printf '%s\\n' 'remote stderr line 4'
+          printf '%s\\n' 'remote stderr line 5'
+          printf '%s\\n' 'remote stderr line 6'
+          exit 0
+          ;;
+        *"fake-remote-codex"*)
+          exit 1
+          ;;
+        *"remote"*"get-url"*"origin"*|*"branch"*"--show-current"*)
+          exit 0
+          ;;
+        *"symphony-mcp-shim"*|*"rm -f "*|*"rm -rf "*"symphony-codex-home"*)
+          exit 0
+          ;;
+      esac
+
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "/remote/workspaces",
+        agent_command: "fake-remote-codex app-server"
+      )
+
+      assert {:error, {:port_exit, 1, %{stderr: stderr}}} =
+               AppServer.run(remote_workspace, "Capture remote launch stderr", issue!("MT-REMOTE-STDERR"), worker_host: "worker-01")
+
+      assert stderr == Enum.map_join(2..6, "\n", &"remote stderr line #{&1}")
+
+      trace = File.read!(trace_file)
+      assert trace =~ "codex.stderr.log"
+      assert trace =~ "2>>"
+      assert trace =~ "tail -c 16384"
+      assert trace =~ ~r/ARGV:.*rm -rf.*symphony-codex-home/
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server does not block remote launch exits on stalled stderr tail fetch" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-remote-launch-stderr-timeout-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    on_exit(fn -> restore_env("PATH", previous_path) end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh-remote-stderr-timeout.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      remote_workspace = "/remote/workspaces/MT-REMOTE-STDERR-TIMEOUT"
+
+      File.mkdir_p!(test_root)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+
+      case "$*" in
+        *"tail -c "*"codex.stderr.log"*)
+          sleep 3
+          printf '%s\\n' 'late remote stderr'
+          exit 0
+          ;;
+        *"fake-remote-codex"*)
+          exit 1
+          ;;
+        *"remote"*"get-url"*"origin"*|*"branch"*"--show-current"*)
+          exit 0
+          ;;
+        *"symphony-mcp-shim"*|*"rm -f "*|*"rm -rf "*"symphony-codex-home"*)
+          exit 0
+          ;;
+      esac
+
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: "/remote/workspaces",
+        agent_command: "fake-remote-codex app-server"
+      )
+
+      started_at = System.monotonic_time(:millisecond)
+
+      assert {:error, {:port_exit, 1}} =
+               AppServer.run(remote_workspace, "Capture remote launch stderr", issue!("MT-REMOTE-STDERR-TIMEOUT"), worker_host: "worker-01")
+
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+      assert elapsed_ms < 2_500
+
+      trace = File.read!(trace_file)
+      assert trace =~ "codex.stderr.log"
+      assert trace =~ "tail -c 16384"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server discovers remote github context over ssh for dynamic tools" do
     test_root =
       Path.join(

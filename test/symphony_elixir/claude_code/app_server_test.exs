@@ -1435,6 +1435,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         assert {:ok, result} = AppServer.run_turn(session, "do the thing", %{}, on_message: on_message)
         assert result.input_tokens == 10
         assert result.output_tokens == 5
+        refute Map.has_key?(result, :diagnostic_output_lines)
 
         assert_received {:turn_msg, {:agent_text, _}}
         assert_received {:turn_msg, {:token_usage, %{input_tokens: 10, output_tokens: 5, total_tokens: 15}}}
@@ -2060,7 +2061,10 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         {:ok, session} = AppServer.start_session(workspace)
 
-        assert {:error, {:exit_status, 1}} = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert {:error, {:exit_status, 1, %{stderr: stderr}}} =
+                 AppServer.run_turn(session, "do the thing", %{}, [])
+
+        assert stderr == "some error output"
       after
         File.rm_rf(test_root)
       end
@@ -2677,7 +2681,51 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         session = local_session(workspace, test_root)
 
-        assert {:error, {:exit_status, 7}} = AppServer.run_turn(session, "do the thing", %{}, [])
+        assert {:error, {:exit_status, 7, %{stderr: stderr}}} =
+                 AppServer.run_turn(session, "do the thing", %{}, [])
+
+        assert stderr == "some error output"
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
+    test "bounds multi-byte diagnostic output by bytes when claude exits non-zero" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-multibyte-diagnostic-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "ACME-MULTIBYTE-DIAGNOSTIC")
+        fake_claude = Path.join(test_root, "fake-claude")
+        diagnostic_line = String.duplicate(<<0xE7, 0x95, 0x8C>>, 2_000)
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '#{diagnostic_line}'
+        exit 7
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        session = local_session(workspace, test_root)
+
+        assert {:error, {:exit_status, 7, %{stderr: stderr}}} =
+                 AppServer.run_turn(session, "do the thing", %{}, [])
+
+        assert String.valid?(stderr)
+        assert byte_size(stderr) <= 4_096
+        assert byte_size(stderr) > 0
       after
         File.rm_rf(test_root)
       end

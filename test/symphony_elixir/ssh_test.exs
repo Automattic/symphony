@@ -102,6 +102,67 @@ defmodule SymphonyElixir.SSHTest do
     assert {:error, :ssh_not_found} = SSH.run("localhost", "printf ok")
   end
 
+  test "run/3 returns a timeout error when the ssh command stalls past timeout_ms" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-timeout-test-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    install_fake_ssh!(test_root, trace_file, """
+    #!/bin/sh
+    printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+    sleep 2
+    exit 0
+    """)
+
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:error, {:timeout, 25}} =
+             SSH.run("localhost", "printf ok", stderr_to_stdout: true, timeout_ms: 25)
+
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+    assert elapsed_ms < 1_000
+    wait_for_trace!(trace_file)
+  end
+
+  test "run/3 returns task exit errors when the timed ssh command raises" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-task-exit-test-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+    previous_trap_exit = Process.flag(:trap_exit, true)
+
+    on_exit(fn ->
+      Process.flag(:trap_exit, previous_trap_exit)
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    install_fake_ssh!(test_root, trace_file)
+
+    assert {:error, {%ArgumentError{}, _stacktrace}} =
+             SSH.run("localhost", "printf ok", stderr_to_stdout: :invalid, timeout_ms: 1_000)
+  end
+
+  test "run/3 rejects invalid timeout_ms values" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-invalid-timeout-test-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    install_fake_ssh!(test_root, trace_file)
+
+    assert {:error, {:invalid_timeout_ms, -1}} = SSH.run("localhost", "printf ok", timeout_ms: -1)
+    refute File.exists?(trace_file)
+  end
+
   test "start_port/3 supports binary output without line mode" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-port-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")

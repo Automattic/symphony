@@ -208,6 +208,7 @@ defmodule SymphonyElixir.CiPoller do
 
     with {:ok, discovered} <- discover_ci_checks(run_store, tracker, repo_key, now),
          {:ok, checks} <- list_ci_checks(run_store, repo_key) do
+      opts = put_prefetched_rework_sources(opts, run_store, repo_key, checks)
       actions = Enum.map(checks, &process_ci_check(&1, settings, opts, now))
 
       {:ok, %{mode: :polling, discovered: discovered, processed: length(checks), actions: actions}}
@@ -552,25 +553,41 @@ defmodule SymphonyElixir.CiPoller do
   defp mark_ci_green(record, ci_status, opts, now) do
     issue_id = Map.get(record, :issue_id)
 
-    attrs =
-      ci_status_attrs(
-        record,
-        ci_status,
-        %{
-          status: "green",
-          ci_retry_count: 0,
-          failed_checks: [],
-          log_excerpt: nil,
-          ci_failure: nil,
-          rerun_attempted_shas: [],
-          dispatched_shas: [],
-          last_action: "green",
-          last_action_at: now
-        },
-        now
-      )
+    if rework_in_progress?(record, opts) do
+      attrs =
+        ci_status_attrs(
+          record,
+          ci_status,
+          %{
+            status: Map.get(record, :status, "watching"),
+            last_action: "green_deferred",
+            last_action_at: now
+          },
+          now
+        )
 
-    complete_ci_update(opts, record, attrs, {:green, issue_id})
+      complete_ci_update(opts, record, attrs, {:green_deferred, issue_id, :rework_in_progress})
+    else
+      attrs =
+        ci_status_attrs(
+          record,
+          ci_status,
+          %{
+            status: "green",
+            ci_retry_count: 0,
+            failed_checks: [],
+            log_excerpt: nil,
+            ci_failure: nil,
+            rerun_attempted_shas: [],
+            dispatched_shas: [],
+            last_action: "green",
+            last_action_at: now
+          },
+          now
+        )
+
+      complete_ci_update(opts, record, attrs, {:green, issue_id})
+    end
   end
 
   defp cleanup_ci(record, opts, now, reason) do
@@ -952,6 +969,83 @@ defmodule SymphonyElixir.CiPoller do
     ci_retry_count(record) > 0 or Map.get(record, :status) in ["dispatch_requested", "escalated", "state_transition_error"]
   end
 
+  defp rework_in_progress?(record, opts) do
+    issue_id = Map.get(record, :issue_id)
+    repo_key = Map.get(record, :repo_key) || repo_key_from_opts(opts)
+
+    active_agent_run?(issue_id, repo_key, opts) or pending_rework_review?(issue_id, repo_key, opts)
+  end
+
+  # Runs and PR reviews are prefetched once per poll cycle so the green path
+  # does not rescan storage for every CI check (see rework_in_progress?/2).
+  defp put_prefetched_rework_sources(opts, _run_store, _repo_key, []), do: opts
+
+  defp put_prefetched_rework_sources(opts, run_store, repo_key, _checks) do
+    sources = %{
+      repo_key: repo_key,
+      runs: ok_list_or_nil(list_runs(run_store, repo_key)),
+      reviews: ok_list_or_nil(list_pr_reviews(run_store, repo_key))
+    }
+
+    Keyword.put(opts, :prefetched_rework_sources, sources)
+  end
+
+  defp ok_list_or_nil({:ok, list}) when is_list(list), do: list
+  defp ok_list_or_nil(_other), do: nil
+
+  defp prefetched_rework_source(opts, key, repo_key) do
+    case Keyword.get(opts, :prefetched_rework_sources) do
+      %{repo_key: ^repo_key} = sources ->
+        case Map.get(sources, key) do
+          list when is_list(list) -> {:ok, list}
+          _ -> :miss
+        end
+
+      _ ->
+        :miss
+    end
+  end
+
+  defp active_agent_run?(issue_id, repo_key, opts) when is_binary(issue_id) and is_binary(repo_key) do
+    runs_result =
+      case prefetched_rework_source(opts, :runs, repo_key) do
+        {:ok, runs} -> {:ok, runs}
+        :miss -> list_runs(Keyword.get(opts, :run_store, RunStore), repo_key)
+      end
+
+    case runs_result do
+      {:ok, runs} -> Enum.any?(runs, &(Map.get(&1, :issue_id) == issue_id and Map.get(&1, :status) == "running"))
+      {:error, _reason} -> false
+    end
+  end
+
+  defp active_agent_run?(_issue_id, _repo_key, _opts), do: false
+
+  defp pending_rework_review?(issue_id, repo_key, opts) when is_binary(issue_id) and is_binary(repo_key) do
+    reviews_result =
+      case prefetched_rework_source(opts, :reviews, repo_key) do
+        {:ok, reviews} -> {:ok, reviews}
+        :miss -> list_pr_reviews(Keyword.get(opts, :run_store, RunStore), repo_key)
+      end
+
+    case reviews_result do
+      {:ok, reviews} ->
+        Enum.any?(reviews, fn review ->
+          Map.get(review, :issue_id) == issue_id and
+            Map.get(review, :status) == "rework_requested" and
+            pending_reviewer_comments?(Map.get(review, :pending_reviewer_comments))
+        end)
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp pending_rework_review?(_issue_id, _repo_key, _opts), do: false
+
+  defp pending_reviewer_comments?(comments) when is_list(comments), do: comments != []
+  defp pending_reviewer_comments?(_comments), do: false
+
   defp ci_retry_count(record) when is_map(record) do
     case Map.get(record, :ci_retry_count) do
       value when is_integer(value) and value >= 0 -> value
@@ -1004,6 +1098,25 @@ defmodule SymphonyElixir.CiPoller do
 
       true ->
         {:error, :ci_checks_unsupported}
+    end
+  end
+
+  defp list_pr_reviews(run_store, repo_key) do
+    cond do
+      function_exported?(run_store, :list_pr_reviews, 1) ->
+        case run_store.list_pr_reviews(repo_key) do
+          reviews when is_list(reviews) -> {:ok, reviews}
+          {:error, reason} -> {:error, reason}
+        end
+
+      function_exported?(run_store, :list_pr_reviews, 0) ->
+        case run_store.list_pr_reviews() do
+          reviews when is_list(reviews) -> {:ok, reviews}
+          {:error, reason} -> {:error, reason}
+        end
+
+      true ->
+        {:error, :pr_reviews_unsupported}
     end
   end
 

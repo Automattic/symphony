@@ -2216,6 +2216,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Make each reply read as an automated Symphony AI response."
     assert prompt =~ "Symphony AI handled this in `<commit>`"
     assert prompt =~ "generated PR overview, not an actionable request"
+    assert prompt =~ "Never paste internal comment ids"
     assert prompt =~ "[id=comment-1] Reviewer: [inline_comment] lib/example.ex:42"
     assert prompt =~ "<linear_reviewer_comment_body>\nPlease split this function.\n</linear_reviewer_comment_body>"
     assert prompt =~ "Please split this function."

@@ -1535,7 +1535,19 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     if String.valid?(truncated) do
       truncated
     else
-      String.slice(line, 0, @diagnostic_output_line_max_bytes)
+      truncate_valid_utf8_prefix(line, @diagnostic_output_line_max_bytes - 1)
+    end
+  end
+
+  defp truncate_valid_utf8_prefix(_line, byte_count) when byte_count <= 0, do: ""
+
+  defp truncate_valid_utf8_prefix(line, byte_count) do
+    truncated = binary_part(line, 0, byte_count)
+
+    if String.valid?(truncated) do
+      truncated
+    else
+      truncate_valid_utf8_prefix(line, byte_count - 1)
     end
   end
 

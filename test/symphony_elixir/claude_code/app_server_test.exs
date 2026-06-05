@@ -2690,6 +2690,47 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       end
     end
 
+    test "bounds multi-byte diagnostic output by bytes when claude exits non-zero" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-claude-code-multibyte-diagnostic-#{System.unique_integer([:positive])}"
+        )
+
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        workspace = Path.join(workspace_root, "ACME-MULTIBYTE-DIAGNOSTIC")
+        fake_claude = Path.join(test_root, "fake-claude")
+        diagnostic_line = String.duplicate(<<0xE7, 0x95, 0x8C>>, 2_000)
+        File.mkdir_p!(workspace)
+
+        File.write!(fake_claude, """
+        #!/bin/sh
+        printf '%s\\n' '#{diagnostic_line}'
+        exit 7
+        """)
+
+        File.chmod!(fake_claude, 0o755)
+
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          agent_kind: "claude",
+          agent_command: fake_claude
+        )
+
+        session = local_session(workspace, test_root)
+
+        assert {:error, {:exit_status, 7, %{stderr: stderr}}} =
+                 AppServer.run_turn(session, "do the thing", %{}, [])
+
+        assert String.valid?(stderr)
+        assert byte_size(stderr) <= 4_096
+        assert byte_size(stderr) > 0
+      after
+        File.rm_rf(test_root)
+      end
+    end
+
     test "returns turn_failed when terminal error result is emitted while a tool subprocess keeps the cli alive" do
       Application.put_env(:symphony_elixir, :claude_post_completion_grace_ms, 50)
       on_exit(fn -> Application.delete_env(:symphony_elixir, :claude_post_completion_grace_ms) end)

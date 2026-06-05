@@ -4,7 +4,9 @@ defmodule SymphonyElixir.SSH do
   @spec run(String.t(), String.t(), keyword()) :: {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
   def run(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
     with {:ok, executable} <- ssh_executable() do
-      {:ok, System.cmd(executable, ssh_args(host, command), opts)}
+      {timeout_ms, cmd_opts} = Keyword.pop(opts, :timeout_ms)
+
+      run_ssh_command(executable, ssh_args(host, command, opts), cmd_opts, timeout_ms)
     end
   end
 
@@ -44,6 +46,22 @@ defmodule SymphonyElixir.SSH do
     end
   end
 
+  defp run_ssh_command(executable, args, opts, nil) do
+    {:ok, System.cmd(executable, args, opts)}
+  end
+
+  defp run_ssh_command(executable, args, opts, timeout_ms) when is_integer(timeout_ms) and timeout_ms >= 0 do
+    task = Task.async(fn -> System.cmd(executable, args, opts) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> {:ok, result}
+      {:exit, reason} -> {:error, reason}
+      nil -> {:error, {:timeout, timeout_ms}}
+    end
+  end
+
+  defp run_ssh_command(_executable, _args, _opts, timeout_ms), do: {:error, {:invalid_timeout_ms, timeout_ms}}
+
   defp shell_executable do
     case System.find_executable("sh") do
       nil -> {:error, :shell_not_found}
@@ -67,7 +85,7 @@ defmodule SymphonyElixir.SSH do
     ]
   end
 
-  defp ssh_args(host, command, opts \\ []) do
+  defp ssh_args(host, command, opts) do
     %{destination: destination, port: port} = parse_target(host)
 
     []

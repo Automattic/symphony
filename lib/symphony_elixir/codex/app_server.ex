@@ -33,6 +33,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @max_stream_log_bytes 1_000
   @stderr_tail_line_count 5
   @stderr_tail_max_bytes 16_384
+  @remote_stderr_tail_timeout_ms 1_000
   @codex_stdio_write_failed_pattern ~r/^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?(?:(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR)\s+)?codex_app_server_transport::transport::stdio:\s+Failed to write to stdout\b/
   # Soft cap on the size of any single string field (e.g. aggregatedOutput) we keep on a
   # notification payload before forwarding it to the orchestrator/transcript/audit log. Codex itself
@@ -3769,7 +3770,7 @@ defmodule SymphonyElixir.Codex.AppServer do
        when is_binary(worker_host) and is_binary(path) do
     command = remote_stderr_tail_command(path)
 
-    case SSH.run(worker_host, command, stderr_to_stdout: true) do
+    case SSH.run(worker_host, command, stderr_to_stdout: true, timeout_ms: @remote_stderr_tail_timeout_ms) do
       {:ok, {data, 0}} -> stderr_tail_data_text(data)
       _result -> nil
     end

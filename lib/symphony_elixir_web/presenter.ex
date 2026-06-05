@@ -995,11 +995,9 @@ defmodule SymphonyElixirWeb.Presenter do
     repo_key_matches?(entry, repo_key) and Map.get(entry, :identifier) == issue_identifier
   end
 
-  defp transcript_events(entry) when is_map(entry) do
+  defp transcript_events(entry) do
     Quality.transcript_file_events(Map.get(entry, :transcript_path)) ++ buffered_transcript_events(entry)
   end
-
-  defp transcript_events(_entry), do: []
 
   defp buffered_transcript_events(%{transcript_buffer: queue}) do
     cond do

@@ -1440,6 +1440,8 @@ The poller:
 - polls GitHub for review decisions and PR closure;
 - waits `pull_requests.review_comments.rework_delay_minutes` after requested-change activity before moving the issue
   back to `In Progress` for orchestrator-owned rework handling;
+- records the PR head observed when review comments enter pending rework, and only marks those
+  comments addressed after the remote PR head advances past that recorded head;
 - detects GitHub merge conflict signals (`mergeable == "CONFLICTING"` or
   `mergeStateStatus == "DIRTY"`), deduplicates by head/base identity, stores conflict context,
   and moves the issue back to `In Progress` for agent-owned conflict resolution;

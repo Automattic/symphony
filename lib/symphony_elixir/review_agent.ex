@@ -39,6 +39,29 @@ defmodule SymphonyElixir.ReviewAgent do
   def enabled?(%Schema.ReviewAgent{enabled: true}), do: true
   def enabled?(_config), do: false
 
+  @doc """
+  Returns true when the configured `run_on` mode excludes this run from the
+  pre-push reviewer. Under `first_push`, follow-up runs on an existing PR are
+  skipped: explicit PR dispatches (`prompt_mode: :pr`) and rework runs carrying
+  reviewer comments, a CI failure, or a PR conflict in the run options.
+  """
+  @spec skip_for_run?(Schema.ReviewAgent.t() | map() | nil, keyword()) :: boolean()
+  def skip_for_run?(%{run_on: "first_push"}, opts) when is_list(opts) do
+    pr_prompt_mode?(opts) or follow_up_context?(opts)
+  end
+
+  def skip_for_run?(_config, _opts), do: false
+
+  defp pr_prompt_mode?(opts), do: Keyword.get(opts, :prompt_mode, :issue) in [:pr, "pr"]
+
+  defp follow_up_context?(opts) do
+    reviewer_comments = Keyword.get(opts, :reviewer_comments)
+
+    (is_list(reviewer_comments) and reviewer_comments != []) or
+      not is_nil(Keyword.get(opts, :ci_failure)) or
+      not is_nil(Keyword.get(opts, :pr_conflict))
+  end
+
   @spec evaluate(Issue.t(), Path.t(), Schema.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def evaluate(%Issue{} = issue, workspace, %Schema{} = settings, opts \\ []) when is_binary(workspace) do
     config = settings.review_agent

@@ -242,11 +242,22 @@ defmodule SymphonyElixir.AgentRunner do
            ) do
       send_agent_session_info(codex_update_recipient, issue, agent_module, session)
 
+      # Capture pending rework context (reviewer comments, CI failure, PR
+      # conflict) up front so the review-agent skip decision after the turn
+      # sees the same snapshot as the first-turn prompt, even if the pending
+      # records get completed mid-run.
+      run_opts =
+        opts
+        |> Keyword.put(:linear_comment_registry, linear_comment_registry)
+        |> put_reviewer_comments(issue)
+        |> put_ci_failure(issue)
+        |> put_pr_conflict(issue)
+
       run_context = %{
         workspace: workspace,
         issue: issue,
         codex_update_recipient: codex_update_recipient,
-        opts: Keyword.put(opts, :linear_comment_registry, linear_comment_registry),
+        opts: run_opts,
         issue_state_fetcher: issue_state_fetcher,
         worker_host: worker_host,
         review_agent: initial_review_agent_state(),
@@ -430,19 +441,13 @@ defmodule SymphonyElixir.AgentRunner do
       not ReviewAgent.enabled?(config) ->
         :normal_continuation
 
-      skip_review_agent_for_run?(config, run_context.opts) ->
+      ReviewAgent.skip_for_run?(config, run_context.opts) ->
         :normal_continuation
 
       true ->
         review_agent_next_turn(run_context, config)
     end
   end
-
-  defp skip_review_agent_for_run?(%{run_on: "first_push"}, opts) do
-    Keyword.get(opts, :prompt_mode, :issue) == :pr
-  end
-
-  defp skip_review_agent_for_run?(_config, _opts), do: false
 
   defp review_agent_next_turn(%{review_agent: %{phase: :complete}}, _config), do: :normal_continuation
 
@@ -757,7 +762,7 @@ defmodule SymphonyElixir.AgentRunner do
     case Keyword.get(opts, :settings) do
       %{review_agent: %{enabled: true} = config} ->
         cond do
-          skip_review_agent_for_run?(config, opts) ->
+          ReviewAgent.skip_for_run?(config, opts) ->
             ""
 
           review_agent_state.phase == :complete ->

@@ -57,6 +57,9 @@ defmodule SymphonyElixir.AgentRunner do
           terminal_review_agent_block?(reason) ->
             exit(reason)
 
+          terminal_tool_failure_circuit_breaker?(reason) ->
+            exit(reason)
+
           true ->
             raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
         end
@@ -65,6 +68,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp terminal_review_agent_block?({:review_agent_blocked, _reason}), do: true
   defp terminal_review_agent_block?(_reason), do: false
+
+  defp terminal_tool_failure_circuit_breaker?({:tool_failure_circuit_breaker, _payload}), do: true
+  defp terminal_tool_failure_circuit_breaker?(_reason), do: false
 
   defp terminal_agent_setup_error?(reason) do
     reason

@@ -49,6 +49,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     "agent.kind" => "agent.runtime",
     "agent.max_concurrent_agents" => "agent.concurrency.max_total",
     "agent.max_concurrent_agents_by_state" => "agent.concurrency.max_by_issue_state",
+    "agent.max_consecutive_identical_tool_failures" => "agent.limits.max_consecutive_identical_tool_failures",
     "agent.max_retry_backoff_ms" => "agent.limits.retry_backoff_max_ms",
     "agent.max_tokens_per_day" => "agent.limits.tokens_per_day",
     "agent.max_tokens_per_issue" => "agent.limits.tokens_per_issue",
@@ -564,7 +565,12 @@ defmodule SymphonyElixir.Config.SystemSchema do
          {:ok, concurrency} <- section_map(Map.get(config, "concurrency", %{}), "agent.concurrency"),
          :ok <- reject_unknown_section_keys(concurrency, ~w(max_total max_by_issue_state), "agent.concurrency"),
          {:ok, limits} <- section_map(Map.get(config, "limits", %{}), "agent.limits"),
-         :ok <- reject_unknown_section_keys(limits, ~w(max_turns retry_backoff_max_ms tokens_per_issue tokens_per_day), "agent.limits"),
+         :ok <-
+           reject_unknown_section_keys(
+             limits,
+             ~w(max_turns retry_backoff_max_ms tokens_per_issue tokens_per_day max_consecutive_identical_tool_failures),
+             "agent.limits"
+           ),
          {:ok, timeouts} <- section_map(Map.get(config, "timeouts", %{}), "agent.timeouts"),
          :ok <- reject_unknown_section_keys(timeouts, ~w(turn_ms read_ms stall_ms command_ms), "agent.timeouts"),
          {:ok, prompts} <- section_map(Map.get(config, "prompts", %{}), "agent.prompts"),
@@ -593,6 +599,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
         |> maybe_put("max_concurrent_agents_by_state", Map.get(concurrency, "max_by_issue_state"))
         |> maybe_put("max_turns", Map.get(limits, "max_turns"))
         |> maybe_put("max_retry_backoff_ms", Map.get(limits, "retry_backoff_max_ms"))
+        |> maybe_put("max_consecutive_identical_tool_failures", Map.get(limits, "max_consecutive_identical_tool_failures"))
         |> maybe_put_configured("max_tokens_per_issue", Map.get(limits, "tokens_per_issue"), Map.has_key?(limits, "tokens_per_issue"))
         |> maybe_put_configured("max_tokens_per_day", Map.get(limits, "tokens_per_day"), Map.has_key?(limits, "tokens_per_day"))
         |> maybe_put("turn_timeout_ms", Map.get(timeouts, "turn_ms"))

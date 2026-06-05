@@ -1203,7 +1203,12 @@ defmodule SymphonyElixir.Codex.AppServer do
         tool_executor: tool_executor,
         auto_approve_requests: auto_approve_requests,
         approval_context: approval_context,
-        turn_stream_state: initial_turn_stream_state(config.command_timeout_ms, sandbox_startup),
+        turn_stream_state:
+          initial_turn_stream_state(
+            config.command_timeout_ms,
+            sandbox_startup,
+            config.max_consecutive_identical_tool_failures
+          ),
         stderr_tail: stderr_tail
       }
     )
@@ -1395,7 +1400,8 @@ defmodule SymphonyElixir.Codex.AppServer do
             tool_executor: stream_context.tool_executor,
             auto_approve_requests: stream_context.auto_approve_requests,
             approval_context: stream_context.approval_context,
-            turn_stream_state: updated_turn_stream_state
+            turn_stream_state: updated_turn_stream_state,
+            stderr_tail: stream_context.stderr_tail
           }
         )
     end
@@ -1483,6 +1489,9 @@ defmodule SymphonyElixir.Codex.AppServer do
         )
 
         {:error, {:turn_input_required, payload}}
+
+      {:approved, turn_stream_state} ->
+        continue_turn_stream(port, on_message, %{stream_context | turn_stream_state: turn_stream_state})
 
       :approved ->
         continue_or_timeout(port, on_message, stream_context, method, payload)
@@ -1581,7 +1590,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       context.metadata
     )
 
-    :approved
+    {:approved, record_dynamic_tool_result(context.turn_stream_state, tool_name, arguments, result)}
   end
 
   defp maybe_handle_approval_request(
@@ -3163,17 +3172,24 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp initial_turn_stream_state(command_timeout_ms, sandbox_startup) do
+  defp initial_turn_stream_state(command_timeout_ms, sandbox_startup, max_consecutive_identical_tool_failures) do
     %{
       command_timeout_ms: normalize_command_timeout_ms(command_timeout_ms),
       turn_started_at_ms: System.monotonic_time(:millisecond),
       active_command: nil,
-      sandbox_startup: sandbox_startup
+      sandbox_startup: sandbox_startup,
+      tool_failure_circuit_breaker: initial_tool_failure_circuit_breaker(max_consecutive_identical_tool_failures)
     }
   end
 
   defp normalize_command_timeout_ms(timeout_ms) when is_integer(timeout_ms), do: timeout_ms
   defp normalize_command_timeout_ms(_timeout_ms), do: 0
+
+  defp initial_tool_failure_circuit_breaker(threshold) when is_integer(threshold) and threshold >= 0 do
+    %{threshold: threshold, chain: nil, tripped: nil}
+  end
+
+  defp initial_tool_failure_circuit_breaker(_threshold), do: initial_tool_failure_circuit_breaker(5)
 
   # Codex 0.130 acknowledges a live turn with either an in-progress turn/start
   # response or a turn/started notification. Keep explicit sandbox events for
@@ -3297,11 +3313,23 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp min_timeout(left_ms, right_ms), do: min(left_ms, right_ms)
 
   defp stream_timeout_error(turn_timeout_ms, turn_stream_state) do
-    case command_timeout_error(turn_stream_state) do
-      {:error, reason} -> {:error, reason}
-      :ok -> turn_timeout_error(turn_timeout_ms, turn_stream_state)
+    case tool_failure_circuit_breaker_error(turn_stream_state) do
+      {:error, reason} ->
+        {:error, reason}
+
+      :ok ->
+        case command_timeout_error(turn_stream_state) do
+          {:error, reason} -> {:error, reason}
+          :ok -> turn_timeout_error(turn_timeout_ms, turn_stream_state)
+        end
     end
   end
+
+  defp tool_failure_circuit_breaker_error(%{tool_failure_circuit_breaker: %{tripped: reason}})
+       when not is_nil(reason),
+       do: {:error, reason}
+
+  defp tool_failure_circuit_breaker_error(_turn_stream_state), do: :ok
 
   defp turn_timeout_error(turn_timeout_ms, %{turn_started_at_ms: started_at_ms})
        when is_integer(started_at_ms) and is_integer(turn_timeout_ms) and turn_timeout_ms > 0 do
@@ -3357,7 +3385,9 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp update_command_tracking(turn_stream_state, "item/completed", payload) do
     if command_execution_item?(payload) do
-      complete_command_tracking(turn_stream_state)
+      turn_stream_state
+      |> record_command_execution_result(payload)
+      |> complete_command_tracking()
     else
       turn_stream_state
     end
@@ -3375,7 +3405,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp update_command_tracking_from_malformed(turn_stream_state, data) do
     if malformed_command_execution_completed?(data) do
-      {complete_command_tracking(turn_stream_state), :command_completed}
+      {turn_stream_state |> record_tool_execution_success() |> complete_command_tracking(), :command_completed}
     else
       {turn_stream_state, nil}
     end
@@ -3415,6 +3445,116 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp complete_command_tracking(turn_stream_state),
     do: Map.put(turn_stream_state, :active_command, nil)
+
+  defp record_command_execution_result(turn_stream_state, payload) do
+    case command_execution_status(payload) do
+      "failed" ->
+        command = command_from_payload(payload) || get_in(turn_stream_state, [:active_command, :command])
+        record_tool_execution_failure(turn_stream_state, tool_failure_signature(:command_execution, command, command))
+
+      "completed" ->
+        record_tool_execution_success(turn_stream_state)
+
+      _status ->
+        turn_stream_state
+    end
+  end
+
+  defp record_dynamic_tool_result(turn_stream_state, _tool_name, _arguments, %{"success" => true}) do
+    record_tool_execution_success(turn_stream_state)
+  end
+
+  defp record_dynamic_tool_result(turn_stream_state, tool_name, arguments, _result) do
+    record_tool_execution_failure(turn_stream_state, tool_failure_signature(:dynamic_tool, tool_name, arguments))
+  end
+
+  defp record_tool_execution_success(%{tool_failure_circuit_breaker: breaker} = turn_stream_state) do
+    Map.put(turn_stream_state, :tool_failure_circuit_breaker, %{breaker | chain: nil})
+  end
+
+  defp record_tool_execution_failure(
+         %{tool_failure_circuit_breaker: %{threshold: threshold} = breaker} = turn_stream_state,
+         signature
+       )
+       when is_integer(threshold) and threshold > 0 do
+    count =
+      case breaker.chain do
+        %{signature: ^signature, count: previous_count} when is_integer(previous_count) ->
+          previous_count + 1
+
+        _other ->
+          1
+      end
+
+    updated_breaker = %{breaker | chain: %{signature: signature, count: count}}
+
+    updated_breaker =
+      if count >= threshold do
+        reason =
+          {:tool_failure_circuit_breaker, %{signature: signature, count: count, threshold: threshold}}
+
+        %{updated_breaker | tripped: reason}
+      else
+        updated_breaker
+      end
+
+    Map.put(turn_stream_state, :tool_failure_circuit_breaker, updated_breaker)
+  end
+
+  defp record_tool_execution_failure(turn_stream_state, _signature), do: turn_stream_state
+
+  defp tool_failure_signature(kind, name, arguments) do
+    %{
+      kind: kind,
+      name: normalize_tool_failure_name(name),
+      args_hash: hash_tool_failure_args(arguments)
+    }
+  end
+
+  defp normalize_tool_failure_name(name) when is_binary(name) do
+    case String.trim(name) do
+      "" -> "unknown"
+      value -> value
+    end
+  end
+
+  defp normalize_tool_failure_name(_name), do: "unknown"
+
+  defp hash_tool_failure_args(arguments) do
+    arguments
+    |> canonical_tool_failure_args()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp canonical_tool_failure_args(arguments) do
+    Jason.encode!(normalize_tool_failure_args(arguments))
+  rescue
+    _exception -> inspect(arguments)
+  end
+
+  defp normalize_tool_failure_args(%{} = map) do
+    map
+    |> Enum.map(fn {key, value} -> {to_string(key), normalize_tool_failure_args(value)} end)
+    |> Enum.sort_by(fn {key, _value} -> key end)
+    |> Map.new()
+  end
+
+  defp normalize_tool_failure_args(list) when is_list(list), do: Enum.map(list, &normalize_tool_failure_args/1)
+  defp normalize_tool_failure_args(value), do: value
+
+  defp command_execution_status(payload) do
+    [
+      ["params", "item", "status"],
+      ["params", "msg", "payload", "status"],
+      ["params", "status"]
+    ]
+    |> Enum.find_value(&get_in(payload, &1))
+    |> case do
+      status when is_binary(status) -> status |> String.trim() |> String.downcase()
+      _status -> nil
+    end
+  end
 
   defp command_execution_item?(payload) do
     payload

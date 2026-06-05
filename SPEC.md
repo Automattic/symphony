@@ -749,6 +749,13 @@ Fields:
 - `limits.retry_backoff_max_ms` (integer)
   - Default: `300000` (5 minutes)
   - Changes SHOULD be re-applied at runtime and affect future retry scheduling.
+- `limits.max_consecutive_identical_tool_failures` (integer)
+  - Default: `5`.
+  - `0` disables consecutive identical tool failure detection.
+  - Codex app-server turns SHOULD abort when the same command execution or dynamic tool call fails
+    this many times consecutively within one turn. The signature MUST include execution kind,
+    command/tool name, and a stable hash of arguments. Any successful execution or different
+    execution signature resets the count.
 - `concurrency.max_by_issue_state` (map `state_name -> positive integer`)
   - Default: empty map.
   - State keys are normalized (`lowercase`) for lookup.
@@ -1246,6 +1253,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.concurrency.max_by_issue_state`: map of positive integers, default `{}`
 - `agent.limits.max_turns`: integer, default `20`
 - `agent.limits.retry_backoff_max_ms`: integer, default `300000` (5m)
+- `agent.limits.max_consecutive_identical_tool_failures`: integer, default `5`; `0` disables
 - `agent.limits.tokens_per_issue`: integer or null, default `500000`; explicit null disables the cap
 - `agent.limits.tokens_per_day`: integer or null, default `5000000`; explicit null disables the cap
 - `agent.runtime`: `codex` or `claude`, REQUIRED
@@ -1889,6 +1897,7 @@ Completion conditions:
 - Targeted-protocol turn failure signal -> failure
 - Targeted-protocol turn cancellation signal -> failure
 - turn timeout (`turn_timeout_ms`) -> failure
+- repeated identical failed Codex tool/command execution threshold -> terminal human-attention block
 - subprocess exit -> failure
 
 Continuation processing:
@@ -2043,6 +2052,11 @@ Timeouts:
 - `agent.timeouts.stall_ms`: enforced by orchestrator for runs that have not emitted a first event
 - `agent.timeouts.command_ms`: Claude command/tool-use timeout after a streamed tool-use event
 - `watchdog.no_progress_threshold_ms`: enforced by orchestrator based on last transcript event time
+
+Codex app-server implementations SHOULD classify repeated consecutive identical failed
+`commandExecution` completions and dynamic tool results as a terminal human-attention block rather
+than a retryable run failure when `agent.limits.max_consecutive_identical_tool_failures` is greater
+than zero.
 
 Error mapping (RECOMMENDED normalized categories):
 

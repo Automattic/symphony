@@ -748,6 +748,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_concurrent_agents_by_state, :map, default: %{})
       field(:max_tokens_per_issue, :integer, default: @default_max_tokens_per_issue)
       field(:max_tokens_per_day, :integer, default: @default_max_tokens_per_day)
+      field(:max_consecutive_identical_tool_failures, :integer, default: 5)
       field(:command, :string)
 
       field(:approval_policy, StringOrMap)
@@ -778,6 +779,7 @@ defmodule SymphonyElixir.Config.Schema do
           :max_concurrent_agents_by_state,
           :max_tokens_per_issue,
           :max_tokens_per_day,
+          :max_consecutive_identical_tool_failures,
           :command,
           :approval_policy,
           :include_project_guides,
@@ -798,6 +800,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> validate_number(:max_tokens_per_issue, greater_than: 0)
       |> validate_number(:max_tokens_per_day, greater_than: 0)
+      |> validate_number(:max_consecutive_identical_tool_failures, greater_than_or_equal_to: 0)
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)

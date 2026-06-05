@@ -2465,6 +2465,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     config = Config.settings!()
     assert config.agent.max_tokens_per_issue == 500_000
     assert config.agent.max_tokens_per_day == 5_000_000
+    assert config.agent.max_consecutive_identical_tool_failures == 5
 
     write_workflow_file!(Workflow.workflow_file_path(), server_port: 4123)
     assert Config.server_port() == 4123
@@ -2565,6 +2566,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), max_tokens_per_day: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
     assert message =~ "agent.limits.tokens_per_day"
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_consecutive_identical_tool_failures: -1)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
+    assert message =~ "agent.limits.max_consecutive_identical_tool_failures"
 
     write_workflow_file!(Workflow.workflow_file_path(), worker_max_concurrent_agents_per_host: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate_repo_workflows()
@@ -3764,6 +3769,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     config = Config.settings!()
     assert config.agent.max_tokens_per_issue == nil
     assert config.agent.max_tokens_per_day == nil
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_consecutive_identical_tool_failures: 0
+    )
+
+    config = Config.settings!()
+    assert config.agent.max_consecutive_identical_tool_failures == 0
   end
 
   test "workflow prompt is used when building base prompt" do

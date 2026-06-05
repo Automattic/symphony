@@ -1218,7 +1218,11 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp stderr_transport_failure_reason(stderr_tail) do
     case stderr_tail_text(stderr_tail) do
       detail when is_binary(detail) ->
-        if codex_stdio_write_failed?(detail), do: {:codex_stdio_write_failed, detail}
+        if codex_stdio_write_failed?(detail) do
+          {:codex_stdio_write_failed, detail}
+        else
+          nil
+        end
 
       nil ->
         nil

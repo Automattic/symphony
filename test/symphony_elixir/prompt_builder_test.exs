@@ -576,6 +576,35 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert byte_size(prompt) < 12_000
   end
 
+  test "compact prompt keeps CI failure context without a log excerpt" do
+    prompt =
+      PromptBuilder.build_compact_prompt(
+        %{identifier: "ACME-3804", title: "Fix CI", repo_key: "default"},
+        ci_failure: %{failed_checks: [%{name: "lint"}], commit_sha: "0ddba11"}
+      )
+
+    assert prompt =~ "CI failure:"
+    assert prompt =~ "Failed checks: lint"
+    assert prompt =~ "No failed log output was available."
+  end
+
+  test "compact prompt byte-slices a single oversized CI log line" do
+    prompt =
+      PromptBuilder.build_compact_prompt(
+        %{identifier: "ACME-3805", title: "Fix CI", repo_key: "default"},
+        ci_failure: %{
+          failed_checks: [%{name: "build"}],
+          commit_sha: "beefcafe",
+          log_excerpt: String.duplicate("z", 9_000)
+        }
+      )
+
+    assert prompt =~ "[Symphony truncated earlier CI log lines to fit the compact prompt]"
+    assert prompt =~ String.duplicate("z", 4_000)
+    refute prompt =~ String.duplicate("z", 4_001)
+    assert byte_size(prompt) < 12_000
+  end
+
   test "compact prompt appends reviewer comments" do
     prompt =
       PromptBuilder.build_compact_prompt(

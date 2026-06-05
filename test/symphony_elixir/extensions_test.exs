@@ -646,6 +646,96 @@ defmodule SymphonyElixir.ExtensionsTest do
              json_response(conn, 202)
   end
 
+  test "phoenix observability api returns transcript JSON for running and retrying issues" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-transcript-api-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(test_root)
+
+    on_exit(fn ->
+      File.rm_rf(test_root)
+    end)
+
+    running_transcript_path = Path.join(test_root, "running-transcript.jsonl")
+
+    File.write!(running_transcript_path, """
+    {"event":"session_started","payload":{"session_id":"thread-http"}}
+    {"event":"notification","payload":{"params":{"delta":"from file"}}}
+    """)
+
+    buffered_event = %{
+      event: :notification,
+      payload: %{"params" => %{"delta" => "from buffer"}},
+      timestamp: DateTime.utc_now()
+    }
+
+    retry_event = %{
+      event: :turn_ended_with_error,
+      reason: "agent exited: port_exit 1",
+      timestamp: DateTime.utc_now()
+    }
+
+    snapshot =
+      static_snapshot()
+      |> update_in([:running], fn [running] ->
+        [
+          running
+          |> Map.put(:transcript_path, running_transcript_path)
+          |> Map.put(:transcript_buffer, [buffered_event]),
+          running
+          |> Map.put(:repo_key, "other")
+          |> Map.put(:issue_id, "issue-other-retry")
+          |> Map.put(:identifier, "MT-RETRY")
+          |> Map.put(:session_id, "thread-other")
+          |> Map.put(:transcript_buffer, [])
+        ]
+      end)
+      |> update_in([:retrying], fn [retry] ->
+        [
+          retry
+          |> Map.put(:session_id, "thread-retry")
+          |> Map.put(:transcript_buffer, [retry_event])
+        ]
+      end)
+
+    orchestrator_name = Module.concat(__MODULE__, :TranscriptApiOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    running_payload =
+      build_conn()
+      |> get("/api/v1/repos/default/issues/MT-HTTP/transcript")
+      |> json_response(200)
+
+    assert running_payload["issue_identifier"] == "MT-HTTP"
+    assert running_payload["session_id"] == "thread-http"
+    assert Enum.map(running_payload["events"], & &1["event"]) == ["session_started", "notification", "notification"]
+    assert List.last(running_payload["events"])["payload"]["params"]["delta"] == "from buffer"
+
+    retry_payload =
+      build_conn()
+      |> get("/api/v1/issues/MT-RETRY/transcript")
+      |> json_response(200)
+
+    assert retry_payload["issue_identifier"] == "MT-RETRY"
+    assert retry_payload["state"] == "retrying"
+    assert [%{"event" => "turn_ended_with_error"}] = retry_payload["events"]
+
+    assert json_response(get(build_conn(), "/api/v1/repos/default/issues/MT-MISSING/transcript"), 404) == %{
+             "error" => %{"code" => "transcript_not_found", "message" => "Transcript not found"}
+           }
+  end
+
   test "phoenix observability api rejects cross-origin refresh before orchestration" do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :CrossOriginRefreshOrchestrator)
@@ -907,6 +997,9 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/api/v1/audit", %{}), 405) ==
+             %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
+
+    assert json_response(post(build_conn(), "/api/v1/repos/default/issues/MT-1/transcript", %{}), 405) ==
              %{"error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}}
 
     assert json_response(post(build_conn(), "/", %{}), 405) ==

@@ -111,6 +111,24 @@ defmodule SymphonyElixir.Quality do
     end
   end
 
+  @spec transcript_file_events(Path.t() | nil) :: [map() | String.t()]
+  def transcript_file_events(path) when is_binary(path) and path != "" do
+    with true <- File.regular?(path),
+         {:ok, contents} <- File.read(path) do
+      contents
+      |> String.split("\n", trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.map(&decode_transcript_line/1)
+    else
+      _ -> []
+    end
+  rescue
+    _exception -> []
+  end
+
+  def transcript_file_events(_path), do: []
+
   @spec parse_filters(map(), keyword()) :: {:ok, keyword()} | {:error, term()}
   def parse_filters(params, opts \\ []) when is_map(params) do
     with {:ok, date_from} <- parse_date_param(params["date_from"] || params["from"]),
@@ -318,23 +336,6 @@ defmodule SymphonyElixir.Quality do
   end
 
   defp buffered_transcript_events(_running_entry), do: []
-
-  defp transcript_file_events(path) when is_binary(path) and path != "" do
-    with true <- File.regular?(path),
-         {:ok, contents} <- File.read(path) do
-      contents
-      |> String.split("\n", trim: true)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.map(&decode_transcript_line/1)
-    else
-      _ -> []
-    end
-  rescue
-    _exception -> []
-  end
-
-  defp transcript_file_events(_path), do: []
 
   defp decode_transcript_line(line) do
     case Jason.decode(line) do

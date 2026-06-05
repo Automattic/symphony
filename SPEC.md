@@ -2055,6 +2055,8 @@ Error mapping (RECOMMENDED normalized categories):
 - `response_timeout`
 - `turn_timeout`
 - `port_exit`
+  - Local Codex launch/stream exits SHOULD include a bounded tail of redirected stderr when available
+    before temporary runtime-home cleanup removes the log.
 - `response_error`
 - `turn_failed`
 - `turn_cancelled`
@@ -2579,6 +2581,15 @@ Minimum endpoints:
 
   - If the issue is unknown to the current in-memory state, return `404` with an error response (for
     example `{\"error\":{\"code\":\"issue_not_found\",\"message\":\"...\"}}`).
+
+- `GET /api/v1/repos/<repo_key>/issues/<issue_identifier>/transcript`
+  - Returns transcript metadata and events for a running, retrying, or watched issue in the selected
+    repository.
+  - Implementations SHOULD include persisted transcript-file events plus any retained in-memory
+    transcript buffer, in chronological order where possible.
+  - `GET /api/v1/issues/<issue_identifier>/transcript` MAY be supported as a current/default-repository
+    shortcut.
+  - If no matching issue/transcript is known to the current state, return `404` with an error response.
 
 - `POST /api/v1/refresh`
   - Queues an immediate tracker poll + reconciliation cycle (best-effort trigger; implementations

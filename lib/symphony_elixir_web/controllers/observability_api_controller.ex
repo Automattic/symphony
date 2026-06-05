@@ -52,6 +52,29 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec transcript(Conn.t(), map()) :: Conn.t()
+  def transcript(conn, %{"identifier" => issue_identifier} = params) do
+    transcript_result =
+      case Map.fetch(params, "repo_key") do
+        {:ok, repo_key} ->
+          Presenter.transcript_payload(repo_key, issue_identifier, orchestrator(), snapshot_timeout_ms())
+
+        :error ->
+          Presenter.transcript_payload(issue_identifier, orchestrator(), snapshot_timeout_ms())
+      end
+
+    case transcript_result do
+      {:ok, payload} ->
+        json(conn, payload)
+
+      {:error, :issue_not_found} ->
+        error_response(conn, 404, "transcript_not_found", "Transcript not found")
+
+      {:error, :snapshot_unavailable} ->
+        error_response(conn, 503, "snapshot_unavailable", "Snapshot unavailable")
+    end
+  end
+
   @spec refresh(Conn.t(), map()) :: Conn.t()
   def refresh(conn, _params) do
     case Presenter.refresh_payload(orchestrator()) do

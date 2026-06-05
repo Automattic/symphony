@@ -3062,6 +3062,54 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert due_in_ms > 0
   end
 
+  test "orchestrator retry error includes local codex stderr from port exits" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    issue = %Issue{
+      id: "issue-port-exit-stderr",
+      identifier: "MT-STDERR",
+      title: "Port exit stderr",
+      description: "Surface stderr on port exits",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-STDERR"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :PortExitStderrOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    {worker_pid, worker_ref} = start_blocked_worker()
+    started_at = DateTime.utc_now()
+    run_id = "run-port-exit-stderr"
+
+    on_exit(fn ->
+      send(worker_pid, :finish)
+
+      if Process.alive?(pid) do
+        stop_process(pid)
+      end
+    end)
+
+    running_entry = running_entry(issue, worker_pid, worker_ref, run_id, started_at)
+    put_running_run!(issue, run_id, started_at)
+    put_running_entry(pid, issue, running_entry)
+
+    send(pid, {:DOWN, worker_ref, :process, worker_pid, {:port_exit, 1, %{stderr: "fatal: missing --verbose flag"}}})
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{retrying: [%{issue_id: "issue-port-exit-stderr"}]} -> true
+        _ -> false
+      end)
+
+    assert [
+             %{
+               issue_id: "issue-port-exit-stderr",
+               identifier: "MT-STDERR",
+               error: "agent exited: port_exit 1; stderr: fatal: missing --verbose flag"
+             }
+           ] = snapshot.retrying
+  end
+
   test "orchestrator watches completed issues in non-active non-terminal states" do
     issue_id = "issue-watch"
     last_ran_at = DateTime.add(DateTime.utc_now(), -7_200, :second)

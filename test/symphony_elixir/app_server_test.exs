@@ -4006,6 +4006,53 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server attaches redirected stderr tail to local launch exits" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-launch-stderr-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-LAUNCH-STDERR")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      printf '%s\\n' 'launch warning before exit' >&2
+      printf '%s\\n' 'fatal: missing --verbose flag' >&2
+      exit 1
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        agent_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-launch-stderr",
+        identifier: "MT-LAUNCH-STDERR",
+        title: "Launch stderr",
+        description: "Ensure launch failures carry stderr context",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-LAUNCH-STDERR",
+        labels: ["backend"]
+      }
+
+      assert {:error, {:port_exit, 1, %{stderr: stderr}}} =
+               AppServer.run(workspace, "Capture launch stderr", issue)
+
+      assert stderr =~ "launch warning before exit"
+      assert stderr =~ "fatal: missing --verbose flag"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server emits malformed events for JSON-like protocol lines that fail to decode" do
     test_root =
       Path.join(

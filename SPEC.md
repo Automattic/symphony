@@ -1355,6 +1355,9 @@ Important nuance:
   bootstrap prompt when the target agent transport cannot safely carry the full rendered prompt as a
   single startup message, provided the compact prompt preserves hard security rules and directs the
   agent to load scoped issue details through trusted tools.
+- A compact bootstrap prompt MUST also preserve the dispatch context that triggered the run
+  (reviewer comments, CI failure details, or PR conflict metadata), truncating bulky payloads such
+  as CI log excerpts instead of dropping them.
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
 - Once the worker exits normally, the orchestrator still schedules a short continuation retry
@@ -1855,7 +1858,9 @@ Startup MUST follow the configured adapter contract. Symphony additionally requi
 - If the rendered first-turn prompt exceeds an implementation-defined safe transport size, the
   implementation MAY send a compact bootstrap prompt that preserves hard security instructions,
   references the current issue identifier, and instructs the agent to fetch issue description and
-  comments through scoped tracker tools before planning.
+  comments through scoped tracker tools before planning. The compact prompt MUST keep the dispatch
+  context that triggered the run (reviewer comments, CI failure details, or PR conflict metadata),
+  truncating bulky payloads such as CI log excerpts instead of dropping them.
 - Before the first issue-mode turn, the runtime MUST perform deterministic tracker bootstrap outside
   the model turn: move `Todo` issues to `In Progress`, then ensure a single workpad comment exists
   using `agent.workpad_heading`. If a `## Codex Workpad` or `## Claude Workpad` comment already

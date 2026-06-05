@@ -83,7 +83,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       assert get_in(result, ["sandbox", "network", "allowLocalBinding"]) == true
     end
 
-    test "open mode does not include network key in sandbox" do
+    test "open mode allows local binding without domain narrowing" do
       network_access = %Agent.NetworkAccess{
         mode: "open",
         allowed_domains: [],
@@ -93,7 +93,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
       result = AppServer.build_sandbox_settings(network_access)
 
       assert get_in(result, ["sandbox", "enabled"]) == true
-      refute Map.has_key?(result["sandbox"], "network")
+      assert get_in(result, ["sandbox", "network"]) == %{"allowLocalBinding" => true}
     end
 
     test "operator allow_read_paths drops entries from sandbox denyRead" do

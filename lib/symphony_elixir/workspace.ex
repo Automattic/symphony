@@ -168,7 +168,9 @@ defmodule SymphonyElixir.Workspace do
          :ok <- maybe_fetch_worktree_repo(repo, settings),
          branch = worktree_branch(issue_context),
          base_ref = worktree_base_ref(issue_context),
-         {:ok, created?} <- add_or_reuse_local_worktree(repo, workspace, branch, base_ref) do
+         create_base_ref = worktree_create_base_ref(repo, issue_context, base_ref),
+         {:ok, created?} <-
+           add_or_reuse_local_worktree(repo, workspace, branch, base_ref, create_base_ref) do
       {:ok, workspace, created?}
     else
       {:error, reason, output} ->
@@ -183,6 +185,7 @@ defmodule SymphonyElixir.Workspace do
   defp ensure_worktree_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
     branch = worktree_branch(issue_context)
     base_ref = worktree_base_ref(issue_context)
+    create_base_ref = remote_worktree_create_base_ref(issue_context, base_ref)
 
     script =
       [
@@ -191,7 +194,7 @@ defmodule SymphonyElixir.Workspace do
         remote_shell_assign("repo", settings.workspace.repo || ""),
         remote_shell_assign("workspace", workspace),
         "branch=#{shell_escape(branch)}",
-        "base_ref=#{shell_escape(base_ref || "HEAD")}",
+        "base_ref=#{shell_escape(create_base_ref || "HEAD")}",
         "if [ -z \"$repo\" ]; then",
         "  echo \"workspace_repo_missing: workspace.repo is required for worktree strategy\"",
         "  exit 41",
@@ -268,17 +271,21 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp add_or_reuse_local_worktree(repo, workspace, branch, base_ref) do
+  # `base_ref` drives the reuse path's `git reset --hard` (nil for issue runs so an
+  # in-progress worktree is preserved; set by PR runs to the PR head). `create_base_ref`
+  # drives fresh worktree creation, defaulting to the configured base branch so a new
+  # worktree branches off clean trunk rather than whatever the source repo HEAD is on.
+  defp add_or_reuse_local_worktree(repo, workspace, branch, base_ref, create_base_ref) do
     cond do
       File.dir?(workspace) ->
         reuse_local_worktree(repo, workspace, base_ref)
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
-        add_local_worktree(repo, workspace, branch, base_ref)
+        add_local_worktree(repo, workspace, branch, create_base_ref)
 
       true ->
-        add_local_worktree(repo, workspace, branch, base_ref)
+        add_local_worktree(repo, workspace, branch, create_base_ref)
     end
   end
 
@@ -1018,6 +1025,63 @@ defmodule SymphonyElixir.Workspace do
 
   defp worktree_base_ref(%{workspace_base_ref: base_ref}) when is_binary(base_ref) and base_ref != "", do: base_ref
   defp worktree_base_ref(_issue_context), do: nil
+
+  # Base ref a fresh local worktree branches off. An explicit base_ref (PR runs)
+  # wins. Otherwise default to the configured repo base branch, preferring the
+  # fetched remote-tracking ref (`origin/<branch>`) and falling back to a local
+  # branch of the same name. Returns nil when no base branch is configured or the
+  # ref can't be resolved, so creation falls back to the prior HEAD behavior.
+  defp worktree_create_base_ref(_repo, _issue_context, base_ref)
+       when is_binary(base_ref) and base_ref != "",
+       do: base_ref
+
+  defp worktree_create_base_ref(repo, issue_context, _base_ref) do
+    case configured_base_branch(issue_context) do
+      nil -> nil
+      branch -> Enum.find(["origin/#{branch}", branch], &git_ref_exists?(repo, &1))
+    end
+  end
+
+  # Remote worker variant: the dispatch script runs `git fetch origin` itself, so
+  # the remote-tracking ref is resolved on the worker rather than checked here.
+  defp remote_worktree_create_base_ref(_issue_context, base_ref)
+       when is_binary(base_ref) and base_ref != "",
+       do: base_ref
+
+  defp remote_worktree_create_base_ref(issue_context, _base_ref) do
+    case configured_base_branch(issue_context) do
+      nil -> nil
+      branch -> "origin/#{branch}"
+    end
+  end
+
+  defp configured_base_branch(issue_context) do
+    case Config.repo_base_branch(Map.get(issue_context, :repo_key)) do
+      {:ok, base_branch} -> sanitize_base_branch(base_branch)
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp sanitize_base_branch(base_branch) when is_binary(base_branch) do
+    case String.trim(base_branch) do
+      "" -> nil
+      "origin/" <> branch -> blank_to_nil(String.trim(branch))
+      "refs/heads/" <> branch -> blank_to_nil(String.trim(branch))
+      branch -> blank_to_nil(branch)
+    end
+  end
+
+  defp sanitize_base_branch(_base_branch), do: nil
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
+
+  defp git_ref_exists?(repo, ref) do
+    case git_output(repo, ["rev-parse", "--verify", "--quiet", "#{ref}^{commit}"]) do
+      {:ok, _output} -> true
+      _ -> false
+    end
+  end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
     hooks = hooks_for_issue_context(issue_context)

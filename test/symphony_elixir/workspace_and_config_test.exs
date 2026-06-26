@@ -4183,6 +4183,65 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end)
   end
 
+  test "new worktree branches off configured base_branch instead of the source repo HEAD" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-base-branch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      origin_repo = Path.join(test_root, "origin.git")
+      workflow_dir = Path.join(test_root, "workflow")
+      workflow_path = Path.join(workflow_dir, "WORKFLOW.md")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      # Source clone tracks origin/main, but its HEAD sits on a divergent feature
+      # branch carrying an unrelated commit (mirrors a contaminated local checkout).
+      create_primary_repo!(primary_repo, origin_repo)
+      base_commit = git!(primary_repo, ["rev-parse", "HEAD"])
+      git!(primary_repo, ["checkout", "-b", "feature/unrelated"])
+      File.write!(Path.join(primary_repo, "unrelated.txt"), "noise\n")
+      git!(primary_repo, ["add", "unrelated.txt"])
+      git!(primary_repo, ["commit", "-m", "unrelated work"])
+
+      File.mkdir_p!(workflow_dir)
+      File.write!(workflow_path, "---\n---\nprompt\n")
+
+      File.write!(Workflow.symphony_file_path(), """
+      issues:
+        provider: memory
+      workspaces:
+        root: #{workspace_root}
+      agent:
+        runtime: codex
+        command: codex app-server
+      repositories:
+        - key: api
+          base_branch: main
+          workflow: #{workflow_path}
+          route:
+            team: Test
+          workspace:
+            strategy: worktree
+            repo: #{primary_repo}
+            fetch_before_dispatch: false
+      """)
+
+      issue = %Issue{id: "api-issue", identifier: "API-BASE", repo_key: "api"}
+
+      assert :ok = Config.validate!()
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+
+      # Worktree must start from origin/main, not the feature HEAD.
+      assert git!(workspace, ["rev-parse", "HEAD"]) == base_commit
+      refute File.exists?(Path.join(workspace, "unrelated.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   # Runs `fun` with a fake `ssh` on PATH that actually executes the remote
   # `bash -lc <script>` payload against the local filesystem, so the
   # workspace.ex containment script is exercised rather than stubbed out.

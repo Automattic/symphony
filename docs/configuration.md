@@ -114,7 +114,9 @@ repositories:
 - `key`: unique repo key used in dashboards, run records, and prompt context.
 - `workflow`: path to that repo's `WORKFLOW.md`; defaults to `WORKFLOW.md`.
 - `default`: at most one repo can be the fallback route.
-- `base_branch`: optional branch used for review-agent diff context.
+- `base_branch`: optional branch used for review-agent diff context and as the base a
+  new worktree branches off (preferring `origin/<base_branch>`); when unset, a new
+  worktree branches off the source repo's current HEAD.
 - `route`: Linear team, project, label, or assignee selectors.
 - `workspace`: per-repo override for workspace population.
 

@@ -27,7 +27,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   @dev_server_pid_key {__MODULE__, :verification_dev_server_pid}
   @dependency_review_state "In Review"
-  @codex_stdio_prompt_soft_limit 12_000
+  # Fallback when settings are unavailable; the effective value comes from
+  # `agent.codex_stdio_prompt_soft_limit` (see Config.Schema.Agent).
+  @codex_stdio_prompt_soft_limit_fallback 65_536
   @terminal_agent_setup_error_marker "missing_required_mcp_tools"
 
   @type worker_host :: String.t() | nil
@@ -928,14 +930,21 @@ defmodule SymphonyElixir.AgentRunner do
   defp agent_kind_from_settings(_settings), do: nil
 
   defp maybe_compact_codex_initial_prompt(prompt, issue, opts) when is_binary(prompt) do
-    if codex_agent?(opts) and byte_size(prompt) > @codex_stdio_prompt_soft_limit do
-      Logger.warning(
-        "Codex initial prompt exceeded stdio soft limit; using compact bootstrap prompt issue_identifier=#{issue_identifier(issue)} bytes=#{byte_size(prompt)} limit=#{@codex_stdio_prompt_soft_limit}"
-      )
+    limit = codex_stdio_prompt_soft_limit(opts)
+
+    if codex_agent?(opts) and byte_size(prompt) > limit do
+      Logger.warning("Codex initial prompt exceeded stdio soft limit; using compact bootstrap prompt issue_identifier=#{issue_identifier(issue)} bytes=#{byte_size(prompt)} limit=#{limit}")
 
       PromptBuilder.build_compact_prompt(issue, opts)
     else
       prompt
+    end
+  end
+
+  defp codex_stdio_prompt_soft_limit(opts) do
+    case Keyword.get(opts, :settings) do
+      %{agent: %{codex_stdio_prompt_soft_limit: limit}} when is_integer(limit) and limit > 0 -> limit
+      _settings -> @codex_stdio_prompt_soft_limit_fallback
     end
   end
 

@@ -574,7 +574,12 @@ defmodule SymphonyElixir.Config.SystemSchema do
          {:ok, timeouts} <- section_map(Map.get(config, "timeouts", %{}), "agent.timeouts"),
          :ok <- reject_unknown_section_keys(timeouts, ~w(turn_ms read_ms stall_ms command_ms), "agent.timeouts"),
          {:ok, prompts} <- section_map(Map.get(config, "prompts", %{}), "agent.prompts"),
-         :ok <- reject_unknown_section_keys(prompts, ~w(include_project_guides project_guide_files), "agent.prompts"),
+         :ok <-
+           reject_unknown_section_keys(
+             prompts,
+             ~w(include_project_guides project_guide_files codex_stdio_soft_limit_bytes),
+             "agent.prompts"
+           ),
          {:ok, permissions} <- section_map(Map.get(config, "permissions", %{}), "agent.permissions"),
          :ok <- reject_unknown_section_keys(permissions, ~w(approval_policy filesystem network outer_sandbox), "agent.permissions"),
          {:ok, filesystem} <- section_map(Map.get(permissions, "filesystem", %{}), "agent.permissions.filesystem"),
@@ -608,6 +613,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
         |> maybe_put("command_timeout_ms", Map.get(timeouts, "command_ms"))
         |> maybe_put("include_project_guides", Map.get(prompts, "include_project_guides"))
         |> maybe_put("project_guide_files", Map.get(prompts, "project_guide_files"))
+        |> maybe_put("codex_stdio_prompt_soft_limit", Map.get(prompts, "codex_stdio_soft_limit_bytes"))
         |> maybe_put("approval_policy", Map.get(permissions, "approval_policy"))
         |> maybe_put("thread_sandbox", Map.get(filesystem, "sandbox"))
         |> maybe_put("turn_sandbox_policy", Map.get(filesystem, "turn_policy"))

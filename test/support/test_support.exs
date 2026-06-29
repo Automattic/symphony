@@ -549,6 +549,7 @@ defmodule SymphonyElixir.TestSupport do
           agent_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           agent_include_project_guides: true,
           agent_project_guide_files: nil,
+          agent_codex_stdio_soft_limit_bytes: nil,
           agent_thread_sandbox: "workspace-write",
           agent_turn_sandbox_policy: nil,
           agent_mcp: nil,
@@ -624,6 +625,7 @@ defmodule SymphonyElixir.TestSupport do
     agent_approval_policy = Keyword.get(config, :agent_approval_policy)
     agent_include_project_guides = Keyword.get(config, :agent_include_project_guides)
     agent_project_guide_files = Keyword.get(config, :agent_project_guide_files)
+    agent_codex_stdio_soft_limit_bytes = Keyword.get(config, :agent_codex_stdio_soft_limit_bytes)
     agent_thread_sandbox = Keyword.get(config, :agent_thread_sandbox)
     agent_turn_sandbox_policy = Keyword.get(config, :agent_turn_sandbox_policy)
     agent_network_access = Keyword.get(config, :agent_network_access)
@@ -704,6 +706,7 @@ defmodule SymphonyElixir.TestSupport do
           command_timeout_ms: agent_command_timeout_ms,
           include_project_guides: agent_include_project_guides,
           project_guide_files: agent_project_guide_files,
+          codex_stdio_soft_limit_bytes: agent_codex_stdio_soft_limit_bytes,
           approval_policy: agent_approval_policy,
           thread_sandbox: agent_thread_sandbox,
           turn_sandbox_policy: agent_turn_sandbox_policy,
@@ -884,6 +887,8 @@ defmodule SymphonyElixir.TestSupport do
       "  prompts:",
       "    include_project_guides: #{yaml_value(config.include_project_guides)}",
       "    project_guide_files: #{yaml_value(config.project_guide_files)}",
+      config.codex_stdio_soft_limit_bytes &&
+        "    codex_stdio_soft_limit_bytes: #{yaml_value(config.codex_stdio_soft_limit_bytes)}",
       "  permissions:",
       "    approval_policy: #{yaml_value(config.approval_policy)}",
       "    filesystem: #{yaml_value(filesystem)}",

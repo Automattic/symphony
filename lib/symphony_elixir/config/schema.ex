@@ -463,6 +463,12 @@ defmodule SymphonyElixir.Config.Schema do
 
     @default_max_tokens_per_issue 500_000
     @default_max_tokens_per_day 5_000_000
+    # Codex first-turn prompts larger than this (bytes) are replaced by a compact
+    # bootstrap prompt. The cap exists because, under the SRT sandbox, very large
+    # echoed `userMessage` events can wedge the app-server stdout stream. Raised
+    # from the original 12_000; SRT users who still hit stdout transport failures
+    # can lower it. See docs/configuration.md.
+    @default_codex_stdio_prompt_soft_limit 65_536
     @codex_default_approval_policy %{
       "reject" => %{
         "sandbox_approval" => true,
@@ -765,6 +771,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:read_timeout_ms, :integer, default: 30_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
       field(:command_timeout_ms, :integer, default: 600_000)
+      field(:codex_stdio_prompt_soft_limit, :integer, default: @default_codex_stdio_prompt_soft_limit)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -790,7 +797,8 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_timeout_ms,
           :read_timeout_ms,
           :stall_timeout_ms,
-          :command_timeout_ms
+          :command_timeout_ms,
+          :codex_stdio_prompt_soft_limit
         ],
         empty_values: []
       )
@@ -806,6 +814,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:command_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:codex_stdio_prompt_soft_limit, greater_than: 0)
       |> validate_project_guide_files()
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)

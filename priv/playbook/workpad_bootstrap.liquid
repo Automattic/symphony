@@ -7,24 +7,19 @@ vars: [agent]
 Use exactly one persistent Linear comment per issue as the single source of truth
 for plan, acceptance criteria, validation, and handoff notes.
 
-1. Search the issue's active (unresolved) comments for a marker header:
-   `{{ agent.workpad_heading }}`.
+1. Search the issue's active (unresolved) comments for the marker header
+   `{{ agent.workpad_heading }}` — ignore resolved comments.
    - For compatibility, also reuse an existing `## Codex Workpad` or
-     `## Claude Workpad` comment if present, and rewrite its header to
-     `{{ agent.workpad_heading }}` while preserving the rest of the comment.
-   - Ignore resolved comments while searching; only active/unresolved comments are
-     eligible to be reused as the live workpad.
-   - If found, reuse that comment; do not create a new workpad comment.
-   - If not found, create one workpad comment and use it for all updates.
-   - Persist the workpad comment ID and only write progress updates to that ID.
-2. Reconcile the workpad before new edits:
-   - Check off items that are already done.
-   - Expand/fix the plan so it is comprehensive for current scope.
-   - Ensure `Acceptance Criteria` and `Validation` are current and still make
-     sense for the task.
-3. Ensure the workpad includes a compact environment stamp at the top as a code
-   fence line: `<host>:<abs-workdir>@<short-sha>`. Do not include metadata already
-   inferable from Linear issue fields (issue ID, status, branch, PR link).
-4. Keep the workpad updated after every meaningful milestone (reproduction
-   captured, plan revised, code landed, validation run, feedback addressed). Never
-   leave completed work unchecked.
+     `## Claude Workpad` comment, rewriting its header to
+     `{{ agent.workpad_heading }}` while preserving the rest.
+   - If found, reuse it; otherwise create exactly one. Persist its comment ID and
+     write all progress updates only to that ID. Never create a second workpad.
+2. Reconcile before new edits: check off done items, expand/fix the plan to be
+   comprehensive for current scope, and ensure `Acceptance Criteria` and
+   `Validation` still make sense.
+3. Include a compact environment stamp at the top as a code-fence line
+   `<host>:<abs-workdir>@<short-sha>`. Omit metadata already inferable from Linear
+   fields (issue ID, status, branch, PR link).
+4. Update the workpad after every meaningful milestone (reproduction captured, plan
+   revised, code landed, validation run, feedback addressed). Never leave completed
+   work unchecked.

@@ -7,20 +7,17 @@ vars: []
 Before the first code edit, record both in the workpad `Notes` section:
 
 1. Reproduction or acceptance signal:
-   - Bug fixes / behavior changes: a reproduction signal — the exact command plus
-     the failing output, a screenshot, or a deterministic UI path that
-     demonstrates the current broken behavior. Without this, the fix target is
-     implicit and validation is unfalsifiable.
-   - Pure additions (new UI element, new data, new route): an acceptance signal —
-     the exact selector, screenshot region, or assertion that will prove the new
-     thing is present after the edit.
-2. Blast-radius analysis — for each file/function you intend to change:
-   - files and functions to be changed,
-   - all known callers of those functions, using grep/search results where
-     applicable,
-   - existing test coverage for the affected code,
-   - estimated blast radius (`narrow`, `moderate`, or `wide`) with justification,
-   - new branches and error/edge paths introduced by the change, and the exact
-     test that will exercise each.
+   - Bug fixes / behavior changes: a reproduction signal — exact command plus
+     failing output, a screenshot, or a deterministic UI path showing the current
+     broken behavior. Without this the fix target is implicit and validation is
+     unfalsifiable.
+   - Pure additions (new UI element, data, route): an acceptance signal — the exact
+     selector, screenshot region, or assertion proving the new thing is present
+     after the edit.
+2. Blast-radius analysis — for each file/function you intend to change: the files
+   and functions changed; all known callers (cite grep/search results); existing
+   test coverage; estimated blast radius (`narrow`/`moderate`/`wide`) with
+   justification; and the new branches/error paths introduced plus the exact test
+   that exercises each.
 
 This is gating: do not write the first code edit until both are recorded.

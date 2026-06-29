@@ -4032,12 +4032,35 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                Workspace.create_for_issue("MT-OUT", "worker-01")
 
       assert output =~ "workspace_outside_root:"
-      assert output =~ Path.join(outside_root, "MT-OUT")
+      assert output =~ outside_root
       assert output =~ "not under #{workspace_root}"
+      refute File.exists?(Path.join(outside_root, "MT-OUT"))
+    end)
+  end
 
-      # The script may create the directory under the symlinked parent before the
-      # containment check fires; that's fine. The important thing is the script
-      # refuses to return the escaping path.
+  test "remote workspace setup does not delete an existing non-directory through a parent symlink" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      outside_root = Path.join(ctx.test_root, "outside")
+      parent_link = Path.join(workspace_root, "default")
+      escaped_file = Path.join(outside_root, "MT-STALE")
+
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(outside_root)
+      File.write!(escaped_file, "keep\n")
+      File.ln_s!(outside_root, parent_link)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:error, {:workspace_prepare_failed, "worker-01", 53, output}} =
+               Workspace.create_for_issue("MT-STALE", "worker-01")
+
+      assert output =~ "workspace_outside_root:"
+      assert output =~ outside_root
+      assert File.read!(escaped_file) == "keep\n"
     end)
   end
 
@@ -4166,8 +4189,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                Workspace.create_for_issue("MT-WT-OUT", "worker-01")
 
       assert output =~ "workspace_outside_root:"
-      assert output =~ Path.join(outside_root, "MT-WT-OUT")
+      assert output =~ outside_root
       assert output =~ "not under #{workspace_root}"
+      refute File.exists?(Path.join(outside_root, "MT-WT-OUT"))
     end)
   end
 
@@ -4191,8 +4215,86 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert File.read!(Path.join(workspace_path, "README.md")) == "initial\n"
       assert String.trim(git!(workspace_path, ["branch", "--show-current"])) == "auto/MT-WT-OK"
 
+      File.write!(Path.join(workspace_path, "README.md"), "local progress\n")
+
       assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-WT-OK", "worker-01")
+      assert File.read!(Path.join(workspace_path, "README.md")) == "local progress\n"
       assert git_branch_exists?(primary_repo, "auto/MT-WT-OK")
+    end)
+  end
+
+  test "remote worktree reuse resets an existing PR worktree to explicit base ref" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      primary_repo = Path.join(ctx.test_root, "primary")
+      origin_repo = Path.join(ctx.test_root, "origin.git")
+      peer_repo = Path.join(ctx.test_root, "peer")
+      workspace_path = Path.join([workspace_root, "default", "PR-REMOTE-RESET"])
+
+      create_primary_repo!(primary_repo, origin_repo)
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+      git!(peer_repo, ["checkout", "-b", "feature/pr-remote-reset"])
+      File.write!(Path.join(peer_repo, "pr.txt"), "initial remote head\n")
+      git!(peer_repo, ["add", "pr.txt"])
+      git!(peer_repo, ["commit", "-m", "initial remote head"])
+      git!(peer_repo, ["push", "origin", "feature/pr-remote-reset"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      issue = %Issue{
+        identifier: "PR-REMOTE-RESET",
+        workspace_branch: "feature/pr-remote-reset",
+        workspace_base_ref: "origin/feature/pr-remote-reset"
+      }
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(issue, "worker-01")
+      assert File.read!(Path.join(workspace_path, "pr.txt")) == "initial remote head\n"
+
+      File.write!(Path.join(workspace_path, "pr.txt"), "dirty local edit\n")
+      File.write!(Path.join(peer_repo, "pr.txt"), "advanced remote head\n")
+      git!(peer_repo, ["add", "pr.txt"])
+      git!(peer_repo, ["commit", "-m", "advance remote head"])
+      git!(peer_repo, ["push", "origin", "feature/pr-remote-reset"])
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(issue, "worker-01")
+      assert File.read!(Path.join(workspace_path, "pr.txt")) == "advanced remote head\n"
+      assert String.trim(git!(workspace_path, ["branch", "--show-current"])) == "feature/pr-remote-reset"
+    end)
+  end
+
+  test "remote workspace remove rejects parent symlink escape before hook or delete" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      outside_root = Path.join(ctx.test_root, "outside")
+      parent_link = Path.join(workspace_root, "default")
+      requested_workspace = Path.join([workspace_root, "default", "MT-RM-OUT"])
+      escaped_workspace = Path.join(outside_root, "MT-RM-OUT")
+      hook_marker = Path.join(ctx.test_root, "before-remove-ran")
+
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(escaped_workspace)
+      File.write!(Path.join(escaped_workspace, "keep.txt"), "keep\n")
+      File.ln_s!(outside_root, parent_link)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"],
+        hook_before_remove: "printf ran > #{hook_marker}"
+      )
+
+      assert {:error, {:workspace_remove_failed, "worker-01", 53, output}, ""} =
+               Workspace.remove(requested_workspace, "worker-01")
+
+      assert output =~ "workspace_outside_root:"
+      assert output =~ outside_root
+      refute File.exists?(hook_marker)
+      assert File.read!(Path.join(escaped_workspace, "keep.txt")) == "keep\n"
     end)
   end
 

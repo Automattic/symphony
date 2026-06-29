@@ -1961,7 +1961,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp reject_skipped_comments(comments, skip_ids, record) do
     {skipped, kept} =
       Enum.split_with(comments, fn comment ->
-        MapSet.member?(skip_ids, Map.get(comment, :id)) and bot_author?(comment)
+        Map.get(comment, :id) in skip_ids and bot_author?(comment)
       end)
 
     log_skipped_comments(skipped, record)

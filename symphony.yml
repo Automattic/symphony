@@ -111,7 +111,13 @@ pull_requests:
   review_comments:
     rework_delay_minutes: 1
     # stale_after_days: 7
-    # ignored_reviewers: []
+    # Accounts whose PR comments are skipped (no rework, no reply). Scope this to
+    # bots that post automated, non-actionable status (coverage, CI, template
+    # reminders). Do NOT add review bots like copilot-pull-request-reviewer[bot]
+    # or coderabbitai[bot] here -- their comments are genuine, actionable reviews.
+    ignored_reviewers:
+      - github-actions[bot]
+      - jp-launch-control[bot]
     reply_after_addressing: true
     # request_review_after_push: false
   checks:

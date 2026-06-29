@@ -155,6 +155,39 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  # The PR head branch the workspace should track when a reviewer-comment rework
+  # is pending for the issue, so the rework agent resets onto the latest remote
+  # head instead of stale local worktree state. Returns nil unless reviewer
+  # comments are actually pending (the conflict head is resolved separately via
+  # pending_pr_conflict/2) or the record never captured the head branch name.
+  @doc false
+  @spec pending_pr_head_ref(String.t(), keyword()) :: String.t() | nil
+  def pending_pr_head_ref(issue_id, opts \\ []) do
+    run_store = Keyword.get(opts, :run_store, RunStore)
+    repo_keys = repo_keys_from_opts(opts)
+
+    if is_binary(issue_id) do
+      Enum.find_value(repo_keys, &pending_pr_head_ref_for_repo(&1, issue_id, run_store))
+    end
+  end
+
+  defp pending_pr_head_ref_for_repo(repo_key, issue_id, run_store) do
+    with {:ok, reviews} <- list_pr_reviews(run_store, repo_key),
+         %{} = record <- Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)),
+         true <- reviewer_comments_pending?(record) do
+      string_field(record, :head_ref_name)
+    else
+      _ -> nil
+    end
+  end
+
+  defp reviewer_comments_pending?(record) do
+    record
+    |> Map.get(:pending_reviewer_comments, [])
+    |> normalize_comments()
+    |> Kernel.!=([])
+  end
+
   defp comments_from_review_record(reviews, issue_id, run_store, now) do
     case Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)) do
       %{} = record ->

@@ -185,9 +185,63 @@ defmodule SymphonyElixir.AgentRunner do
         end
 
       _ ->
-        Workspace.create_for_issue(issue, worker_host, Keyword.get(opts, :repo_key))
+        issue
+        |> sync_workspace_to_pr_head(opts)
+        |> Workspace.create_for_issue(worker_host, Keyword.get(opts, :repo_key))
     end
   end
+
+  # When an issue is dispatched to rework an existing PR (resolve a merge
+  # conflict or address reviewer comments), the workspace must reflect the
+  # latest remote PR head before the worktree is created or reused. Otherwise a
+  # reused worktree keeps its stale state (base_ref nil => no `git reset --hard`)
+  # and a fresh worktree branches off configured trunk, so commits pushed to the
+  # PR head after the run (e.g. via the GitHub UI) stay invisible to the agent.
+  # Mirror the explicit PR-run wiring (`SymphonyElixir.PrRun`) by pointing the
+  # workspace branch/base ref at the PR head. An explicit base ref already on the
+  # issue (PR runs) is left untouched. CI-failure reworks are not covered yet:
+  # the CI record carries only a commit SHA, not the PR head branch name.
+  defp sync_workspace_to_pr_head(%Issue{workspace_base_ref: ref} = issue, _opts)
+       when is_binary(ref) and ref != "",
+       do: issue
+
+  defp sync_workspace_to_pr_head(%Issue{} = issue, opts) do
+    case resolve_pr_head_ref(issue, opts) do
+      head_ref when is_binary(head_ref) and head_ref != "" ->
+        %Issue{issue | workspace_branch: head_ref, workspace_base_ref: "origin/#{head_ref}"}
+
+      _ ->
+        issue
+    end
+  end
+
+  # A pending merge conflict wins (its snapshot pins the exact head); otherwise a
+  # pending reviewer-comment rework targets the same PR head branch.
+  defp resolve_pr_head_ref(issue, opts) do
+    case resolve_pr_conflict(issue, opts) do
+      %{head_ref: head_ref} when is_binary(head_ref) and head_ref != "" ->
+        head_ref
+
+      _ ->
+        pending_reviewer_rework_head_ref(issue, opts)
+    end
+  end
+
+  # Reuse an already-resolved conflict snapshot when the caller supplied one
+  # (same precedence as put_pr_conflict/2), otherwise look it up in the store.
+  defp resolve_pr_conflict(issue, opts) do
+    if Keyword.has_key?(opts, :pr_conflict) do
+      Keyword.get(opts, :pr_conflict)
+    else
+      pending_pr_conflict(issue, opts)
+    end
+  end
+
+  defp pending_reviewer_rework_head_ref(%Issue{id: issue_id} = issue, opts) when is_binary(issue_id) do
+    PrReviewPoller.pending_pr_head_ref(issue_id, pending_lookup_opts(issue, opts))
+  end
+
+  defp pending_reviewer_rework_head_ref(_issue, _opts), do: nil
 
   defp codex_message_handler(recipient, issue) do
     fn message ->

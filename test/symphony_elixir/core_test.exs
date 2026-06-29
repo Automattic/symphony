@@ -1779,6 +1779,78 @@ defmodule SymphonyElixir.CoreTest do
     fn issue -> {:ok, issue} end
   end
 
+  defp git!(repo, args) do
+    case System.cmd("git", ["-C", repo | args], stderr_to_stdout: true) do
+      {output, 0} -> String.trim(output)
+      {output, status} -> flunk("git #{Enum.join(args, " ")} failed with #{status}: #{output}")
+    end
+  end
+
+  # Builds an upstream whose `feature-head` branch carries a commit (PR_HEAD.md)
+  # that trunk lacks — standing in for commits pushed to the PR head after a run.
+  # Returns the worktree-strategy workspace root and the PR head commit SHA the
+  # dispatched agent must land on. Also writes a one-turn fake codex + workflow.
+  defp setup_worktree_pr_head!(test_root) do
+    origin_repo = Path.join(test_root, "origin")
+    primary_repo = Path.join(test_root, "primary")
+    workspace_root = Path.join(test_root, "workspaces")
+    codex_binary = Path.join(test_root, "fake-codex")
+
+    File.mkdir_p!(origin_repo)
+    git!(origin_repo, ["init", "-b", "main"])
+    git!(origin_repo, ["config", "user.name", "Test User"])
+    git!(origin_repo, ["config", "user.email", "test@example.com"])
+    File.write!(Path.join(origin_repo, "README.md"), "initial\n")
+    git!(origin_repo, ["add", "README.md"])
+    git!(origin_repo, ["commit", "-m", "initial"])
+    git!(origin_repo, ["checkout", "-b", "feature-head"])
+    File.write!(Path.join(origin_repo, "PR_HEAD.md"), "pushed to PR head\n")
+    git!(origin_repo, ["add", "PR_HEAD.md"])
+    git!(origin_repo, ["commit", "-m", "pr head commit"])
+    pr_head_sha = git!(origin_repo, ["rev-parse", "HEAD"])
+    git!(origin_repo, ["checkout", "main"])
+
+    # Worktree strategy operates on a clone that tracks origin.
+    assert {_output, 0} = System.cmd("git", ["clone", origin_repo, primary_repo])
+    git!(primary_repo, ["config", "user.name", "Test User"])
+    git!(primary_repo, ["config", "user.email", "test@example.com"])
+
+    File.write!(codex_binary, """
+    #!/bin/sh
+    count=0
+    while IFS= read -r line; do
+      count=$((count + 1))
+      case "$count" in
+        1)
+          printf '%s\\n' '{"id":1,"result":{}}'
+          ;;
+        2)
+          printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-pr-head"}}}'
+          ;;
+        3)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-pr-head","status":"inProgress","items":[]}}}'
+          printf '%s\\n' '{"method":"turn/completed"}'
+          ;;
+        *)
+          ;;
+      esac
+    done
+    """)
+
+    File.chmod!(codex_binary, 0o755)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      workspace_strategy: "worktree",
+      workspace_repo: primary_repo,
+      workspace_fetch_before_dispatch: true,
+      agent_command: "#{codex_binary} app-server"
+    )
+
+    %{workspace_root: workspace_root, pr_head_sha: pr_head_sha}
+  end
+
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
@@ -3024,6 +3096,152 @@ defmodule SymphonyElixir.CoreTest do
                         issue_identifier: "MT-99"
                       }},
                      50
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner syncs the worktree to the remote PR head when a conflict is pending" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-conflict-sync-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      %{workspace_root: workspace_root, pr_head_sha: pr_head_sha} = setup_worktree_pr_head!(test_root)
+
+      issue = %Issue{
+        id: "issue-conflict-sync",
+        identifier: "RSM-CONFLICT",
+        title: "Resolve the merge conflict",
+        description: "PR has merge conflicts",
+        state: "In Progress",
+        pull_request_url: "https://github.test/org/repo/pull/7",
+        pr_urls: ["https://github.test/org/repo/pull/7"]
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_enricher: no_op_issue_enricher(),
+                 pr_conflict: %{head_ref: "feature-head", head_sha: pr_head_sha, base_ref: "main"}
+               )
+
+      assert {:ok, workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "RSM-CONFLICT"]))
+
+      # The worktree branched off origin/feature-head rather than trunk, so the
+      # commit only present on the PR head is visible to the agent.
+      assert File.exists?(Path.join(workspace, "PR_HEAD.md"))
+      assert git!(workspace, ["rev-parse", "HEAD"]) == pr_head_sha
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner syncs the worktree to the remote PR head for a reviewer-comment rework" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-rework-sync-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      %{workspace_root: workspace_root, pr_head_sha: pr_head_sha} = setup_worktree_pr_head!(test_root)
+
+      # The PR review record carries the cached head branch name and the pending
+      # reviewer comments that trigger the rework dispatch — no conflict involved.
+      assert :ok =
+               RunStore.put_pr_review(%{
+                 repo_key: "default",
+                 issue_id: "issue-rework-sync",
+                 issue_identifier: "RSM-REWORK",
+                 pr_url: "https://github.test/org/repo/pull/8",
+                 head_ref_name: "feature-head",
+                 status: "rework_requested",
+                 pending_last_addressed_comment_id: "comment-8",
+                 pending_reviewer_comments: [
+                   %{
+                     id: "comment-8",
+                     kind: "inline_comment",
+                     author: "Reviewer",
+                     body: "Please address this.",
+                     path: "lib/example.ex",
+                     line: 7
+                   }
+                 ],
+                 updated_at: ~U[2026-05-05 02:00:00Z]
+               })
+
+      issue = %Issue{
+        id: "issue-rework-sync",
+        identifier: "RSM-REWORK",
+        title: "Address reviewer comments",
+        description: "PR has reviewer feedback",
+        state: "In Progress",
+        pull_request_url: "https://github.test/org/repo/pull/8",
+        pr_urls: ["https://github.test/org/repo/pull/8"]
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_enricher: no_op_issue_enricher()
+               )
+
+      assert {:ok, workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "RSM-REWORK"]))
+
+      # The reviewer-comment rework lands on origin/feature-head, not trunk.
+      assert File.exists?(Path.join(workspace, "PR_HEAD.md"))
+      assert git!(workspace, ["rev-parse", "HEAD"]) == pr_head_sha
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner resets a reused stale worktree onto the remote PR head for a rework" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-reuse-sync-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      %{workspace_root: workspace_root, pr_head_sha: pr_head_sha} = setup_worktree_pr_head!(test_root)
+      primary_repo = Path.join(test_root, "primary")
+
+      # Pre-create a registered worktree pinned to stale trunk (no PR head commit),
+      # mimicking a worktree left over from a prior run before the PR head advanced.
+      {:ok, stale_workspace} =
+        SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "RSM-REUSE"]))
+
+      File.mkdir_p!(Path.dirname(stale_workspace))
+      git!(primary_repo, ["worktree", "add", "-b", "auto/RSM-REUSE", stale_workspace, "origin/main"])
+      refute File.exists?(Path.join(stale_workspace, "PR_HEAD.md"))
+
+      issue = %Issue{
+        id: "issue-reuse-sync",
+        identifier: "RSM-REUSE",
+        title: "Resolve the merge conflict",
+        description: "PR has merge conflicts",
+        state: "In Progress",
+        pull_request_url: "https://github.test/org/repo/pull/9",
+        pr_urls: ["https://github.test/org/repo/pull/9"]
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_enricher: no_op_issue_enricher(),
+                 pr_conflict: %{head_ref: "feature-head", head_sha: pr_head_sha, base_ref: "main"}
+               )
+
+      # The reused worktree was hard-reset onto origin/feature-head rather than
+      # left on its stale trunk state.
+      assert File.exists?(Path.join(stale_workspace, "PR_HEAD.md"))
+      assert git!(stale_workspace, ["rev-parse", "HEAD"]) == pr_head_sha
     after
       File.rm_rf(test_root)
     end

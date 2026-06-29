@@ -670,10 +670,15 @@ Fields:
   - Applies only in `polling` mode before reclaiming idle tracked PR workspaces.
 - `review_comments.ignored_reviewers` (list of strings)
   - Polling-mode default: `[]`.
-  - Extra GitHub users whose comments do not trigger PR review rework dispatch.
-  - The effective ignored set in `polling` mode is the union of `ignored_users`, the
-    auto-detected current `gh` user (when `gh api user` succeeds), and the PR author returned
-    by `gh pr view`. Operators do not need to configure their own identity here.
+  - Extra GitHub accounts whose comments are skipped entirely — they trigger neither
+    PR review rework dispatch nor an auto-reply. Use it to silence bots that post
+    automated, non-actionable status (e.g. `github-actions[bot]`, `jp-launch-control[bot]`).
+    Do not list review bots such as `copilot-pull-request-reviewer[bot]`, whose comments
+    are actionable reviews.
+  - The effective ignored set in `polling` mode is the union of the configured
+    `ignored_reviewers`, the auto-detected current `gh` user (when `gh api user` succeeds),
+    and the PR author returned by `gh pr view`. Operators do not need to configure their
+    own identity here.
 - `review_comments.reply_after_addressing` (boolean)
   - Polling-mode default: `false`.
 - `review_comments.request_review_after_push` (boolean)

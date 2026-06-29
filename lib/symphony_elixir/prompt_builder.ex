@@ -667,16 +667,17 @@ defmodule SymphonyElixir.PromptBuilder do
 
   defp reviewer_comments_ledger_instructions do
     """
+    Comments are genuine review feedback: human reviewers plus review bots such as `copilot-pull-request-reviewer[bot]` and `coderabbitai[bot]`. Status bots that post automated, non-actionable notices (coverage summaries, CI results, PR-template reminders) are filtered out upstream via `ignored_reviewers`, so default to treating every comment below as actionable.
     For each comment below, do EXACTLY ONE of the following before you stop:
       a) Commit a fix that resolves the comment, reference the comment id in the commit message body, then reply with the commit hash and concrete change.
       b) Reply with explicit pushback explaining why no code change is being made.
       c) Reply deferring the change with concrete reasoning (e.g., out of scope for this PR plus a follow-up reference).
-      d) Reply that the comment is non-actionable when it is only a generated summary, duplicate, or informational note.
+      d) Reply that the comment is non-actionable only when it is a genuine duplicate of another comment, or a purely informational note (including an automated summary that slipped past `ignored_reviewers`) that requests no change.
     Make each reply read as an automated Symphony AI response. Prefer specific wording like:
       - "Symphony AI handled this in `<commit>`: removed the duplicate fallback while keeping the lookup order unchanged."
       - "Symphony AI is leaving this unchanged because `<reason>`."
       - "Symphony AI is deferring this because `<reason>`; follow-up: `<issue>`."
-      - "Symphony AI is not making a code change here because this is a generated PR overview, not an actionable request."
+      - "Symphony AI is treating this as informational and made no change because `<reason>`."
     Never paste internal comment ids (for example `PRR_...` node ids or raw numeric ids) into reply text posted to GitHub; readers cannot interpret them. Refer to the comment naturally (for example "this review" or "this comment"). Comment ids belong only in commit message bodies.
     Do not silently skip a comment, and do not rely on Symphony's generic auto-reply fallback as the primary response. The review agent verifies each comment id has either an associated commit or an outbound reply; that check is internal and does not require quoting the id in the reply text.
 

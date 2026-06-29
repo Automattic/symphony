@@ -2107,7 +2107,7 @@ defmodule SymphonyElixir.PrReviewPoller do
       |> Enum.reject(&(&1 == ""))
 
     attrs = %{
-      replied_comment_ids: Enum.uniq(replied_comment_ids(record) ++ ids),
+      replied_comment_ids: cap_replied_comment_ids(Enum.uniq(replied_comment_ids(record) ++ ids)),
       updated_at: now
     }
 
@@ -2153,8 +2153,12 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp retained_replied_comment_ids(record) when is_map(record) do
     record
     |> replied_comment_ids()
-    |> Enum.take(-@max_replied_comment_ids)
+    |> cap_replied_comment_ids()
   end
+
+  # Keep only the most recent @max_replied_comment_ids entries so the per-PR ledger
+  # stays bounded everywhere it is written, not just at cursor advance.
+  defp cap_replied_comment_ids(ids), do: Enum.take(ids, -@max_replied_comment_ids)
 
   defp maybe_request_review(_record, [], _settings, _github, _opts, _now), do: :ok
 

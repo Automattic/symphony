@@ -2453,11 +2453,15 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp gh_pr_create_repo(tokens) do
     tokens
-    |> command_windows("gh")
+    |> github_cli_command_windows()
     |> Enum.find_value(fn gh_tokens ->
       if gh_pr_create?(gh_tokens), do: option_argument(gh_tokens, ["--repo", "-R"]), else: nil
     end)
     |> normalize_repo_target()
+  end
+
+  defp github_cli_command_windows(tokens) do
+    command_windows(tokens, "gh") ++ command_windows(tokens, "ghe")
   end
 
   defp gh_pr_create?(tokens) do

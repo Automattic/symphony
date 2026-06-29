@@ -25,9 +25,9 @@ defmodule SymphonyElixir.PrRun do
 
     with {:ok, settings} <- Config.settings_for_repo(repo_key),
          {:ok, primary_repo} <- primary_repo(settings),
-         {:ok, origin_repo} <- origin_github_repo(primary_repo, opts),
-         {:ok, pr} <- fetch_pr(target, origin_repo, opts),
-         :ok <- validate_same_repo_pr(pr, origin_repo),
+         {:ok, origin_repos} <- origin_github_repos(primary_repo, settings, opts),
+         {:ok, pr} <- fetch_pr(target, origin_repos.gh_repo, opts),
+         :ok <- validate_same_repo_pr(pr, origin_repos.repo),
          {:ok, issue} <- issue_for_pr(pr, repo_key, Keyword.get(opts, :intent)) do
       {:ok, %{issue: issue, pr: pr, repo_key: repo_key}}
     end
@@ -41,10 +41,13 @@ defmodule SymphonyElixir.PrRun do
 
   defp primary_repo(_settings), do: {:error, :missing_workspace_repo}
 
-  defp origin_github_repo(primary_repo, opts) do
+  defp origin_github_repos(primary_repo, settings, opts) do
+    github_opts = [github_enterprise_hosts: settings.github.enterprise_hosts]
+
     with {:ok, origin_url} <- origin_url(primary_repo, opts),
-         repo when is_binary(repo) <- Repo.from_url(origin_url) do
-      {:ok, repo}
+         repo when is_binary(repo) <- Repo.from_url(origin_url, github_opts),
+         gh_repo when is_binary(gh_repo) <- Repo.gh_repo_from_url(origin_url, github_opts) do
+      {:ok, %{repo: repo, gh_repo: gh_repo}}
     else
       _reason -> {:error, :missing_github_origin_repo}
     end

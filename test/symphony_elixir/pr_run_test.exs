@@ -41,6 +41,51 @@ defmodule SymphonyElixir.PrRunTest do
     end
   end
 
+  test "resolves same-repo pull requests from configured enterprise origins" do
+    {root, primary_repo} = init_primary_repo!(origin: "git@github.a8c.com:Automattic/symphony.git")
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        github: %{enterprise_hosts: ["github.a8c.com"]}
+      )
+
+      gh_runner = fn
+        ["pr", "view", "123", "--repo", "github.a8c.com/Automattic/symphony", "--json", _fields], _opts ->
+          {Jason.encode!(
+             valid_pr(%{
+               "url" => "https://github.a8c.com/Automattic/symphony/pull/123",
+               "headRepository" => %{"nameWithOwner" => "Automattic/symphony"}
+             })
+           ), 0}
+      end
+
+      assert {:ok, %{issue: issue, repo_key: "default"}} =
+               PrRun.resolve("123", intent: "fix failing checks", gh_runner: gh_runner)
+
+      assert issue.pull_request_url == "https://github.a8c.com/Automattic/symphony/pull/123"
+      assert issue.workspace_branch == "feature/fix-ci"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "rejects unconfigured enterprise origins" do
+    {root, primary_repo} = init_primary_repo!(origin: "git@github.a8c.com:Automattic/symphony.git")
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo
+      )
+
+      assert {:error, :missing_github_origin_repo} = PrRun.resolve("123", gh_runner: fn _args, _opts -> flunk("unexpected gh call") end)
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "rejects invalid targets before configuration lookup" do
     assert {:error, :invalid_pr_target} = PrRun.resolve(123)
   end
@@ -199,13 +244,14 @@ defmodule SymphonyElixir.PrRunTest do
     end
   end
 
-  defp init_primary_repo! do
+  defp init_primary_repo!(opts \\ []) do
     root = Path.join(System.tmp_dir!(), "symphony-pr-run-test-#{System.unique_integer([:positive])}")
     primary_repo = Path.join(root, "primary")
+    origin = Keyword.get(opts, :origin, "git@github.com:example/repo.git")
 
     File.mkdir_p!(primary_repo)
     git!(primary_repo, ["init", "-b", "main"])
-    git!(primary_repo, ["remote", "add", "origin", "git@github.com:example/repo.git"])
+    git!(primary_repo, ["remote", "add", "origin", origin])
 
     {root, primary_repo}
   end

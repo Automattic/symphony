@@ -222,6 +222,30 @@ defmodule SymphonyElixir.WorkspaceTest do
     end
   end
 
+  test "worktree excludes the agent skip-comments file from version control" do
+    test_root = unique_tmp("workspace-skip-exclude")
+    primary_repo = Path.join(test_root, "primary")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      create_primary_repo!(primary_repo)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: false
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue("RSM-SKIP")
+
+      assert {_output, 0} =
+               Workspace.safe_git(["-C", workspace, "check-ignore", ".symphony-skip-comments.json"])
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   defp unique_tmp(name) do
     Path.join(System.tmp_dir!(), "symphony-elixir-#{name}-#{System.unique_integer([:positive])}")
   end

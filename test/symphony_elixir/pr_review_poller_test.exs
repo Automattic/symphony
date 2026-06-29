@@ -1589,6 +1589,81 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert [%{last_addressed_comment_id: "comment-2", pending_reviewer_comments: []}] = RunStore.list_pr_reviews()
   end
 
+  test "auto reply skips bot comment ids the agent recorded in the workspace skip file" do
+    now = ~U[2026-05-01 09:00:00Z]
+    {workspace_path, reviewed_sha} = git_workspace_with_commit!()
+    _commit_sha = add_git_commit!(workspace_path, "fix: address review")
+
+    skip_file = Path.join(workspace_path, ".symphony-skip-comments.json")
+    File.write!(skip_file, Jason.encode!(%{"skip_comment_ids" => ["bot-noise"]}))
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        workspace_path: workspace_path,
+        reviewed_commit_sha: reviewed_sha,
+        pending_last_addressed_comment_id: "bot-noise",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42},
+          %{id: "bot-noise", kind: "comment", author: "coderabbitai[bot]", body: "Summary of changes."}
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    # The human comment is still replied to.
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, _body}
+    # The skipped bot comment gets no reply (neither inline nor summary).
+    refute_receive {:github_reply, _, %{id: "bot-noise"}, _}
+    refute_receive {:github_reply, _, %{id: "pr-review-summary"}, _}
+
+    # The skip file is consumed (deleted) after the run.
+    refute File.exists?(skip_file)
+  end
+
+  test "auto reply ignores skip entries for human (non-bot) comments" do
+    now = ~U[2026-05-01 09:00:00Z]
+    {workspace_path, reviewed_sha} = git_workspace_with_commit!()
+    _commit_sha = add_git_commit!(workspace_path, "fix: address review")
+
+    File.write!(
+      Path.join(workspace_path, ".symphony-skip-comments.json"),
+      Jason.encode!(%{"skip_comment_ids" => ["comment-1"]})
+    )
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      pr_review_cooldown_minutes: 30,
+      pr_review_stale_days: 7,
+      pr_review_auto_reply: true
+    )
+
+    :ok =
+      put_review(now, %{
+        status: "rework_requested",
+        workspace_path: workspace_path,
+        reviewed_commit_sha: reviewed_sha,
+        pending_last_addressed_comment_id: "comment-1",
+        pending_reviewer_comments: [
+          %{id: "comment-1", kind: "inline_comment", author: "human-reviewer", body: "Please split this.", path: "lib/example.ex", line: 42}
+        ]
+      })
+
+    assert :ok = PrReviewPoller.complete_pending_reviewer_comments("issue-1780", github: ActionGitHub, now: now)
+
+    # A human comment is replied to even if the agent (wrongly) listed it to skip.
+    assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-1"}, _body}
+  end
+
   test "auto reply uses a recorded follow-up sha that differs from the reviewed sha" do
     now = ~U[2026-05-01 09:00:00Z]
 

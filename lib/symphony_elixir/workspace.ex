@@ -163,6 +163,10 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  # File the rework agent writes to mark clearly non-actionable bot review comments
+  # so they are skipped by the auto-reply. Excluded from git so it is never tracked.
+  @skip_comments_filename ".symphony-skip-comments.json"
+
   defp ensure_worktree_workspace(workspace, issue_context, nil, settings) do
     with {:ok, repo} <- local_worktree_repo(settings),
          :ok <- maybe_fetch_worktree_repo(repo, settings),
@@ -171,6 +175,7 @@ defmodule SymphonyElixir.Workspace do
          create_base_ref = worktree_create_base_ref(repo, issue_context, base_ref),
          {:ok, created?} <-
            add_or_reuse_local_worktree(repo, workspace, branch, base_ref, create_base_ref) do
+      ensure_skip_comments_excluded(workspace)
       {:ok, workspace, created?}
     else
       {:error, reason, output} ->
@@ -308,6 +313,48 @@ defmodule SymphonyElixir.Workspace do
 
   defp reset_worktree_to_base_ref(workspace, base_ref) when is_binary(base_ref) do
     run_git(workspace, ["reset", "--hard", base_ref])
+  end
+
+  # Adds the skip-comments file to the worktree's git exclude so the agent can write
+  # it without it ever being tracked or accidentally committed. Best-effort: any
+  # failure here must not block workspace creation.
+  defp ensure_skip_comments_excluded(workspace) do
+    with {:ok, common_dir} <- git_output(workspace, ["rev-parse", "--git-common-dir"]) do
+      exclude_path =
+        common_dir
+        |> IO.iodata_to_binary()
+        |> String.trim()
+        |> resolve_workspace_relative(workspace)
+        |> Path.join("info/exclude")
+
+      ensure_exclude_entry(exclude_path, "/#{@skip_comments_filename}")
+    end
+
+    :ok
+  end
+
+  defp resolve_workspace_relative(path, workspace) do
+    case Path.type(path) do
+      :absolute -> path
+      _ -> Path.join(workspace, path)
+    end
+  end
+
+  defp ensure_exclude_entry(exclude_path, entry) do
+    existing =
+      case File.read(exclude_path) do
+        {:ok, contents} -> contents
+        _ -> ""
+      end
+
+    if entry in String.split(existing, "\n") do
+      :ok
+    else
+      _ = File.mkdir_p(Path.dirname(exclude_path))
+      prefix = if String.trim_trailing(existing, "\n") == "", do: "", else: String.trim_trailing(existing, "\n") <> "\n"
+      _ = File.write(exclude_path, prefix <> entry <> "\n")
+      :ok
+    end
   end
 
   defp add_local_worktree(repo, workspace, branch, base_ref) do

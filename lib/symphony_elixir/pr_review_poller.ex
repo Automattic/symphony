@@ -1931,12 +1931,16 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
+  @skip_comments_filename ".symphony-skip-comments.json"
+
   defp reply_to_comments(record, comments, github, opts, now) do
     record = put_addressed_commit_sha(record)
+    skip_ids = consume_skip_comment_ids(record)
 
     {inline_comments, pr_level_comments} =
       comments
       |> reject_replied_comments(record)
+      |> reject_skipped_comments(skip_ids, record)
       |> Enum.split_with(&inline_comment?/1)
 
     case reply_to_inline_comments(record, inline_comments, github, opts, now) do
@@ -1948,6 +1952,67 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp reject_replied_comments(comments, record) do
     replied_ids = MapSet.new(replied_comment_ids(record))
     Enum.reject(comments, &(Map.get(&1, :id) in replied_ids))
+  end
+
+  # The rework agent can mark clearly non-actionable bot comments in a workspace
+  # skip file so they don't receive the auto-reply note. We only honor the skip for
+  # bot-authored comments (the agent can never silence a human reviewer this way),
+  # and the file is consumed per run so a reused worktree carries no stale entries.
+  defp reject_skipped_comments(comments, skip_ids, record) do
+    {skipped, kept} =
+      Enum.split_with(comments, fn comment ->
+        MapSet.member?(skip_ids, Map.get(comment, :id)) and bot_author?(comment)
+      end)
+
+    log_skipped_comments(skipped, record)
+    kept
+  end
+
+  defp bot_author?(comment) do
+    author = Map.get(comment, :author)
+    is_binary(author) and String.ends_with?(author, "[bot]")
+  end
+
+  # Reads the agent-written skip list (local workspaces only) and deletes the file.
+  # Any missing/unreadable/malformed file yields an empty set so behavior degrades
+  # to "reply as usual" rather than silently dropping replies.
+  defp consume_skip_comment_ids(record) do
+    case skip_comments_path(record) do
+      nil ->
+        MapSet.new()
+
+      path ->
+        ids = read_skip_comment_ids(path)
+        _ = File.rm(path)
+        MapSet.new(ids)
+    end
+  end
+
+  defp skip_comments_path(record) do
+    case Map.get(record, :workspace_path) do
+      path when is_binary(path) and path != "" -> Path.join(path, @skip_comments_filename)
+      _ -> nil
+    end
+  end
+
+  defp read_skip_comment_ids(path) do
+    with {:ok, body} <- File.read(path),
+         {:ok, %{"skip_comment_ids" => ids}} when is_list(ids) <- Jason.decode(body) do
+      Enum.filter(ids, &is_binary/1)
+    else
+      _ -> []
+    end
+  end
+
+  defp log_skipped_comments([], _record), do: :ok
+
+  defp log_skipped_comments(skipped, record) do
+    ids = Enum.map_join(skipped, ",", &to_string(Map.get(&1, :id)))
+
+    Logger.info(
+      "PR review auto-reply skipped non-actionable bot comments " <>
+        "issue_id=#{Map.get(record, :issue_id)} count=#{length(skipped)} ids=#{ids}"
+    )
   end
 
   defp inline_comment?(%{kind: "inline_comment"}), do: true

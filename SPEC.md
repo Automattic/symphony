@@ -681,6 +681,10 @@ Fields:
     own identity here.
 - `review_comments.reply_after_addressing` (boolean)
   - Polling-mode default: `false`.
+  - When enabled, the rework agent may mark clearly non-actionable bot comments (author
+    ending in `[bot]`) as skip by writing their ids to `.symphony-skip-comments.json` at
+    the workspace root; the poller suppresses the auto-reply for those ids (bot authors
+    only) and removes the file. The file is git-excluded so it is never committed.
 - `review_comments.request_review_after_push` (boolean)
   - Polling-mode default: `false`.
 - `checks.enabled` (boolean)

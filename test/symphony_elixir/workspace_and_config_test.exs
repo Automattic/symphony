@@ -485,6 +485,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert message =~ "must be greater than 0"
   end
 
+  test "agent codex stdio prompt soft limit defaults high and is configurable via YAML" do
+    assert Config.settings!().agent.codex_stdio_prompt_soft_limit == 65_536
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_codex_stdio_soft_limit_bytes: 24_000
+    )
+
+    assert Config.settings!().agent.codex_stdio_prompt_soft_limit == 24_000
+  end
+
   test "github opens pull requests as draft by default and parses the opt-out" do
     assert Config.settings!().github.open_pull_requests_as_draft == true
 

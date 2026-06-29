@@ -793,6 +793,14 @@ Fields:
     missing files are skipped.
   - Implementations that resolve `@path` import lines MUST reject absolute, home-relative, and
     workspace-escaping imports and enforce bounded size/depth/file-count limits.
+- `prompts.codex_stdio_soft_limit_bytes` (integer)
+  - Default: `65536`.
+  - Maps to the implementation-defined safe transport size in §"Codex first-turn prompt". When the
+    rendered Codex first-turn prompt exceeds this many bytes, the implementation sends a compact
+    bootstrap prompt instead (preserving hard security rules and directing the agent to load issue
+    details through scoped tools).
+  - The cap guards against large echoed `userMessage` events wedging the app-server stdout stream
+    under the SRT sandbox; runtimes not using SRT MAY raise it. Applies to Codex only.
 
 #### 5.4.9 Agent Protocol Fields
 
@@ -1275,6 +1283,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.command`: shell command string, REQUIRED
 - `agent.prompts.include_project_guides`: boolean, default `true`
 - `agent.prompts.project_guide_files`: list of relative paths or null, default `null`
+- `agent.prompts.codex_stdio_soft_limit_bytes`: integer, default `65536` (Codex compaction threshold)
 - `agent.permissions.approval_policy`: agent approval policy, default depends on `agent.runtime`
 - `agent.permissions.filesystem.sandbox`: Codex `SandboxMode` value, default `workspace-write`
 - `agent.permissions.filesystem.turn_policy`: Codex `SandboxPolicy` value, default implementation-defined

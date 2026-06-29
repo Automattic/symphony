@@ -193,6 +193,7 @@ agent:
   prompts:
     include_project_guides: true
     project_guide_files: [AGENTS.md]
+    codex_stdio_soft_limit_bytes: 65536
   permissions:
     approval_policy:
       reject:
@@ -272,6 +273,13 @@ agent:
 - Explicit entries must be relative workspace paths and cannot contain `..`. Missing files are
   skipped. `@path` import lines are resolved recursively inside the workspace with size, depth, and
   file-count caps.
+- `prompts.codex_stdio_soft_limit_bytes` defaults to `65536`. Codex first-turn prompts larger than
+  this are replaced by a compact bootstrap prompt (which preserves the hard security rules and
+  directs the agent to load issue details through scoped tools). The cap exists because, under the
+  SRT sandbox, very large echoed `userMessage` events can wedge the app-server stdout stream. If an
+  SRT-sandboxed runtime hits `Failed to write to stdout` transport errors on large prompts, lower
+  this value; runtimes not using SRT can safely raise it. Applies to Codex only — Claude keeps the
+  full rendered prompt regardless.
 
 **Network access:**
 

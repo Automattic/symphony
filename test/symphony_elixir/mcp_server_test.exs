@@ -648,7 +648,8 @@ defmodule SymphonyElixir.McpServerTest do
                "--title",
                "ACME-3052",
                "--body",
-               pr_body
+               pr_body,
+               "--draft"
              ]
     after
       close_socket(socket)

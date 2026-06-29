@@ -746,7 +746,7 @@ defmodule SymphonyElixir.PromptBuilderTest do
     prompt = PromptBuilder.build_prompt(issue)
 
     assert prompt =~ "## Workpad bootstrap and reconciliation"
-    assert prompt =~ "Search the issue's active (unresolved) comments for a marker header:\n   `## Symphony Workpad`"
+    assert prompt =~ "Search the issue's active (unresolved) comments for the marker header\n   `## Symphony Workpad`"
   end
 
   test "prompt builder fails loud when a workflow references an unknown partial" do

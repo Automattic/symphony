@@ -667,7 +667,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "--title",
           "Add tools",
           "--body",
-          "Body"
+          "Body",
+          "--draft"
         ],
         opts ->
           assert opts[:cd] == workspace

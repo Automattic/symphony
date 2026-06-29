@@ -1442,6 +1442,10 @@ The poller:
   back to `In Progress` for orchestrator-owned rework handling;
 - records the PR head observed when review comments enter pending rework, and only marks those
   comments addressed after the remote PR head advances past that recorded head;
+- tracks the last addressed reviewer comment by id; if that comment is later deleted (its id is no
+  longer present), falls back to the recorded addressed-at timestamp so already-addressed comments
+  are not re-surfaced as fresh rework, and retains a bounded ledger of replied comment ids so an
+  already-answered comment is not replied to twice;
 - detects GitHub merge conflict signals (`mergeable == "CONFLICTING"` or
   `mergeStateStatus == "DIRTY"`), deduplicates by head/base identity, stores conflict context,
   and moves the issue back to `In Progress` for agent-owned conflict resolution;

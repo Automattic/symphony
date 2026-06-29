@@ -973,6 +973,52 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     refute_receive {:issue_state_update, _, _}
   end
 
+  test "deleting the cursor comment does not re-trigger rework for already-addressed comments" do
+    now = ~U[2026-05-01 09:00:00Z]
+    addressed_at = DateTime.add(now, -60, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+
+    # Settled record: Symphony already addressed the reviewer comments, the cursor
+    # advanced to the latest one (comment-2), and the per-cycle reply ledger was cleared.
+    :ok =
+      put_review(now, %{
+        status: "watching",
+        last_addressed_comment_id: "comment-2",
+        last_addressed_comment_at: addressed_at
+      })
+
+    # The reviewer deletes the cursor comment (comment-2); only the older,
+    # already-addressed comment-1 remains in the PR.
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(addressed_at,
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "inline_comment",
+            author: "human-reviewer",
+            body: "Please split this function.",
+            path: "lib/example.ex",
+            line: 42,
+            created_at: DateTime.add(addressed_at, -5, :minute),
+            updated_at: DateTime.add(addressed_at, -5, :minute)
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               now: DateTime.add(now, 10, :minute)
+             )
+
+    refute_receive {:issue_state_update, _, _}
+  end
+
   test "moves an approved issue back to an active state for orchestrator-owned merge handling" do
     now = ~U[2026-05-01 09:00:00Z]
     issue = in_review_issue(updated_at: now)
@@ -1983,7 +2029,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
                last_addressed_comment_id: "comment-2",
                pending_reviewer_comments: [],
                pending_last_addressed_comment_id: nil,
-               replied_comment_ids: [],
+               replied_comment_ids: ["comment-1", "comment-2"],
                auto_request_review_error: "{:auto_request_review_failed, :gh_transient}"
              }
            ] = RunStore.list_pr_reviews()
@@ -2050,7 +2096,11 @@ defmodule SymphonyElixir.PrReviewPollerTest do
     assert_receive {:github_reply, "https://github.com/example/repo/pull/1780", %{id: "comment-2"}, _reply_body}
 
     assert [
-             %{last_addressed_comment_id: "comment-2", pending_reviewer_comments: [], replied_comment_ids: []}
+             %{
+               last_addressed_comment_id: "comment-2",
+               pending_reviewer_comments: [],
+               replied_comment_ids: ["comment-1", "comment-2"]
+             }
            ] = RunStore.list_pr_reviews()
   end
 

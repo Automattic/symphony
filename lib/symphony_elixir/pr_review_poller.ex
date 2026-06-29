@@ -22,6 +22,11 @@ defmodule SymphonyElixir.PrReviewPoller do
   @conflict_max_retries 3
   @github_error_backoff_threshold 3
   @max_github_error_backoff_ms 300_000
+  # Upper bound on the per-PR reply ledger we carry across cursor advances. The
+  # ledger is an id-level idempotency guard against re-replying to a comment we
+  # already answered (e.g. if the id cursor is ever lost); cap it so a long-lived
+  # PR cannot grow the record without bound.
+  @max_replied_comment_ids 500
   @status_table :pr_review_poller_status
 
   defmodule State do
@@ -317,7 +322,7 @@ defmodule SymphonyElixir.PrReviewPoller do
       pending_reviewer_comments: [],
       pending_last_addressed_comment_id: nil,
       pending_reviewer_comments_reviewed_head_sha: nil,
-      replied_comment_ids: [],
+      replied_comment_ids: retained_replied_comment_ids(record),
       pending_reviewer_comments_lookup_error: nil,
       pending_reviewer_comments_lookup_error_at: nil,
       auto_reply_state_update_error: nil,
@@ -1392,7 +1397,7 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp unaddressed_reviewer_comments(record, reviewer_comments) when is_list(reviewer_comments) do
     reviewer_comments
-    |> comments_after_cursor(Map.get(record, :last_addressed_comment_id))
+    |> comments_after_cursor(record)
     |> comments_after_last_action(record)
   end
 
@@ -1460,23 +1465,48 @@ defmodule SymphonyElixir.PrReviewPoller do
     end)
   end
 
-  defp comments_after_cursor(comments, cursor) when is_binary(cursor) and cursor != "" do
-    case Enum.split_while(comments, &(Map.get(&1, :id) != cursor)) do
-      {_before, [_cursor | after_cursor]} -> after_cursor
-      {_all, []} -> comments
-    end
-  end
+  defp comments_after_cursor(comments, record) do
+    case Map.get(record, :last_addressed_comment_id) do
+      cursor when is_binary(cursor) and cursor != "" ->
+        case Enum.split_while(comments, &(Map.get(&1, :id) != cursor)) do
+          {_before, [_cursor | after_cursor]} ->
+            after_cursor
 
-  defp comments_after_cursor(comments, _cursor), do: comments
-
-  defp comments_after_last_action(comments, record) do
-    case Map.get(record, :last_action_at) do
-      %DateTime{} = last_action_at ->
-        Enum.reject(comments, &comment_handled_by_action?(&1, last_action_at))
+          # The cursor comment is gone (deleted or its id changed), so we cannot
+          # locate our position by id. Fall back to the timestamp of the last
+          # addressed comment so already-handled comments are not re-surfaced and
+          # re-dispatched as fresh rework. Edited comments (newer activity) still
+          # resurface, and genuinely new comments are still picked up.
+          {_all, []} ->
+            comments_after_addressed_at(comments, record)
+        end
 
       _ ->
         comments
     end
+  end
+
+  defp comments_after_addressed_at(comments, record) do
+    case Map.get(record, :last_addressed_comment_at) do
+      %DateTime{} = addressed_at -> reject_comments_at_or_before(comments, addressed_at)
+      _ -> comments
+    end
+  end
+
+  defp comments_after_last_action(comments, record) do
+    case Map.get(record, :last_action_at) do
+      %DateTime{} = last_action_at -> reject_comments_at_or_before(comments, last_action_at)
+      _ -> comments
+    end
+  end
+
+  defp reject_comments_at_or_before(comments, %DateTime{} = boundary) do
+    Enum.reject(comments, fn comment ->
+      case comment_activity_at(comment) do
+        %DateTime{} = activity_at -> DateTime.compare(activity_at, boundary) in [:lt, :eq]
+        _ -> false
+      end
+    end)
   end
 
   defp latest_comment_id([]), do: nil
@@ -1500,13 +1530,6 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp comment_activity_at(comment) when is_map(comment), do: Map.get(comment, :updated_at) || Map.get(comment, :created_at)
   defp comment_activity_at(_comment), do: nil
-
-  defp comment_handled_by_action?(comment, last_action_at) do
-    case comment_activity_at(comment) do
-      %DateTime{} = activity_at -> DateTime.compare(activity_at, last_action_at) in [:lt, :eq]
-      _ -> false
-    end
-  end
 
   defp comment_sort_timestamp(comment) do
     case comment_activity_at(comment) do
@@ -2084,7 +2107,7 @@ defmodule SymphonyElixir.PrReviewPoller do
       |> Enum.reject(&(&1 == ""))
 
     attrs = %{
-      replied_comment_ids: Enum.uniq(replied_comment_ids(record) ++ ids),
+      replied_comment_ids: cap_replied_comment_ids(Enum.uniq(replied_comment_ids(record) ++ ids)),
       updated_at: now
     }
 
@@ -2123,6 +2146,19 @@ defmodule SymphonyElixir.PrReviewPoller do
     |> Enum.filter(&is_binary/1)
     |> Enum.reject(&(&1 == ""))
   end
+
+  # Carry the reply ledger forward across cursor advances (most recently replied
+  # ids last) so already-answered comments are not re-replied, bounded to the most
+  # recent @max_replied_comment_ids entries.
+  defp retained_replied_comment_ids(record) when is_map(record) do
+    record
+    |> replied_comment_ids()
+    |> cap_replied_comment_ids()
+  end
+
+  # Keep only the most recent @max_replied_comment_ids entries so the per-PR ledger
+  # stays bounded everywhere it is written, not just at cursor advance.
+  defp cap_replied_comment_ids(ids), do: Enum.take(ids, -@max_replied_comment_ids)
 
   defp maybe_request_review(_record, [], _settings, _github, _opts, _now), do: :ok
 

@@ -44,7 +44,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
   end
 
   @spec create_pull_request(context(), term(), term(), term(), keyword()) :: {:ok, map()} | {:error, term()}
-  def create_pull_request(context, title, body, draft \\ false, opts \\ []) do
+  def create_pull_request(context, title, body, draft \\ nil, opts \\ []) do
     with {:ok, title} <- require_string(title, :invalid_title),
          {:ok, body} <- require_string(body, :invalid_body),
          :ok <-
@@ -54,7 +54,7 @@ defmodule SymphonyElixir.AgentTools.GitHub do
              "github_create_pull_request",
              opts
            ),
-         {:ok, draft?} <- normalize_draft(draft),
+         {:ok, draft?} <- resolve_draft(draft, opts),
          {:ok, origin_repo} <- origin_repo(context),
          {:ok, branch} <- current_branch(context, opts),
          {:ok, output} <-
@@ -337,9 +337,20 @@ defmodule SymphonyElixir.AgentTools.GitHub do
 
   defp require_comment_id(_value), do: {:error, :invalid_comment_id}
 
-  defp normalize_draft(value) when is_boolean(value), do: {:ok, value}
-  defp normalize_draft(nil), do: {:ok, false}
-  defp normalize_draft(_value), do: {:error, :invalid_draft}
+  # An explicit boolean from the caller always wins. When the caller omits `draft`
+  # (nil) — e.g. the agent's prompt was compacted and never carried the draft
+  # directive — fall back to the repo's configured default so PR review-state does
+  # not silently depend on prompt survival.
+  defp resolve_draft(value, _opts) when is_boolean(value), do: {:ok, value}
+  defp resolve_draft(nil, opts), do: {:ok, default_open_pr_as_draft(opts)}
+  defp resolve_draft(_value, _opts), do: {:error, :invalid_draft}
+
+  defp default_open_pr_as_draft(opts) do
+    case Keyword.get(opts, :settings) do
+      %Schema{} = settings -> settings.github.open_pull_requests_as_draft
+      _settings -> Config.settings!().github.open_pull_requests_as_draft
+    end
+  end
 
   defp draft_args(true), do: ["--draft"]
   defp draft_args(false), do: []

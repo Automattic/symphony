@@ -4,8 +4,7 @@ description: Cross-cutting safety and process guardrails for an issue run; repos
 vars: []
 {% endcomment %}## Guardrails
 
-- If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from the repo's default branch and restart from reproduction/planning as if starting fresh.
+- If the branch PR is already closed/merged, do not reuse that branch or its prior state; create a new branch from the repo's default branch and restart from reproduction/planning as if fresh.
 - Do not edit the issue body/description for planning or progress tracking.
 - If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.

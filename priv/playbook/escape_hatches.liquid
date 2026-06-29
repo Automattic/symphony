@@ -4,30 +4,29 @@ description: Blocked-access and in-execution clarification escape hatches; both 
 vars: []
 {% endcomment %}## Blocked-access escape hatch (required behavior)
 
-Use this only when completion is blocked by missing required tools or missing
+Use this only when completion is blocked by missing required tools or
 auth/permissions that cannot be resolved in-session.
 
-- GitHub is **not** a valid blocker by default. Always try fallback strategies
-  first (alternate remote/auth mode, then continue publish/review flow), and
-  document the attempts in the workpad before invoking this hatch.
-- If a non-GitHub required tool is missing, required non-GitHub auth/permission is
-  unavailable, or sandbox/tooling startup blocks all required local work, post one
-  short Linear blocker comment. This is an exception to the single-workpad rule.
-- The blocker comment and workpad brief must include: what is missing, why it
-  blocks required acceptance/validation, and the exact human action needed to
-  unblock.
-- Record the blocker comment URL in the workpad, then move the ticket to `Backlog`
-  so it does not look like a validated PR review. Stop.
+- GitHub is **not** a valid blocker by default: try fallbacks first (alternate
+  remote/auth mode, then continue the publish/review flow) and document the
+  attempts in the workpad before invoking this hatch.
+- Otherwise — a non-GitHub required tool/auth/permission is unavailable, or
+  sandbox/tooling startup blocks all required local work — post one short Linear
+  blocker comment (an exception to the single-workpad rule) stating what is
+  missing, why it blocks required acceptance/validation, and the exact human
+  action needed to unblock.
+- Record the blocker comment URL in the workpad, move the ticket to `Backlog` (so
+  it does not look like a validated PR review), and stop.
 
 ## In-execution clarification escape hatch (required behavior)
 
 Use this only when planning reaches a fundamentally unclear specification and the
-issue description plus comments do not provide unambiguous acceptance criteria.
+issue description plus comments give no unambiguous acceptance criteria.
 
-1. Post a short Linear comment with the specific unanswered questions. This is an
-   exception to the single-workpad rule; do not create a second workpad.
-2. Record in the workpad: the unanswered questions, the reason planning could not
-   proceed, and the URL of the Linear comment posted in step 1.
-3. Move the issue to `Backlog`. This is the documented exception to the status
-   map's `do not modify` rule for `Backlog`.
+1. Post a short Linear comment with the specific unanswered questions (an exception
+   to the single-workpad rule; do not create a second workpad).
+2. Record in the workpad: the unanswered questions, why planning could not proceed,
+   and the URL of the comment from step 1.
+3. Move the issue to `Backlog` — the documented exception to the status map's
+   `do not modify` rule for `Backlog`.
 4. Stop. Do not guess or implement against a half-spec.

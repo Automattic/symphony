@@ -215,8 +215,6 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp sync_workspace_to_pr_head(issue, _opts), do: issue
-
   # A pending merge conflict wins (its snapshot pins the exact head); otherwise a
   # pending reviewer-comment rework targets the same PR head branch.
   defp resolve_pr_head_ref(issue, opts) do

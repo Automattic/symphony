@@ -3201,6 +3201,52 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner resets a reused stale worktree onto the remote PR head for a rework" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-reuse-sync-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      %{workspace_root: workspace_root, pr_head_sha: pr_head_sha} = setup_worktree_pr_head!(test_root)
+      primary_repo = Path.join(test_root, "primary")
+
+      # Pre-create a registered worktree pinned to stale trunk (no PR head commit),
+      # mimicking a worktree left over from a prior run before the PR head advanced.
+      {:ok, stale_workspace} =
+        SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "RSM-REUSE"]))
+
+      File.mkdir_p!(Path.dirname(stale_workspace))
+      git!(primary_repo, ["worktree", "add", "-b", "auto/RSM-REUSE", stale_workspace, "origin/main"])
+      refute File.exists?(Path.join(stale_workspace, "PR_HEAD.md"))
+
+      issue = %Issue{
+        id: "issue-reuse-sync",
+        identifier: "RSM-REUSE",
+        title: "Resolve the merge conflict",
+        description: "PR has merge conflicts",
+        state: "In Progress",
+        pull_request_url: "https://github.test/org/repo/pull/9",
+        pr_urls: ["https://github.test/org/repo/pull/9"]
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_enricher: no_op_issue_enricher(),
+                 pr_conflict: %{head_ref: "feature-head", head_sha: pr_head_sha, base_ref: "main"}
+               )
+
+      # The reused worktree was hard-reset onto origin/feature-head rather than
+      # left on its stale trunk state.
+      assert File.exists?(Path.join(stale_workspace, "PR_HEAD.md"))
+      assert git!(stale_workspace, ["rev-parse", "HEAD"]) == pr_head_sha
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner surfaces ssh startup failures instead of silently hopping hosts" do
     test_root =
       Path.join(

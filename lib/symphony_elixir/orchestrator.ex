@@ -526,7 +526,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         maybe_comment_terminal_agent_setup_failure(issue_id, running_entry, reason)
         emit_run_failed(running_entry, error, nil)
-        state
+        release_issue_claim(state, issue_id)
 
       terminal_review_agent_block?(reason) ->
         Logger.error(
@@ -3095,7 +3095,7 @@ defmodule SymphonyElixir.Orchestrator do
        %{
          now_ms: now_ms,
          orphan_sweep_result: startup_orphan_sweep_result(repo_key),
-         age_gc_result: workspace_age_gc_result(repo_key, []),
+         age_gc_result: :deferred,
          quota: workspace_quota_status_from_config()
        }}
     end)
@@ -3109,7 +3109,7 @@ defmodule SymphonyElixir.Orchestrator do
        }) do
     state
     |> apply_startup_orphan_sweep_result(orphan_sweep_result)
-    |> apply_workspace_age_gc_result({:ran, age_gc_result}, now_ms)
+    |> apply_startup_workspace_age_gc_result(age_gc_result, now_ms)
     |> Map.put(:workspace_lifecycle_last_check_at_ms, now_ms)
     |> apply_workspace_quota_result(quota)
   end
@@ -3146,6 +3146,15 @@ defmodule SymphonyElixir.Orchestrator do
   defp apply_startup_orphan_sweep_result(%State{} = state, result) do
     Logger.warning("Ignoring invalid startup orphan sweep result: #{inspect(result)}")
     state
+  end
+
+  defp apply_startup_workspace_age_gc_result(%State{} = state, :deferred, now_ms) do
+    age_gc_result = workspace_age_gc_result(state.repo_key, active_workspace_identifiers(state))
+    apply_workspace_age_gc_result(state, {:ran, age_gc_result}, now_ms)
+  end
+
+  defp apply_startup_workspace_age_gc_result(%State{} = state, age_gc_result, now_ms) do
+    apply_workspace_age_gc_result(state, {:ran, age_gc_result}, now_ms)
   end
 
   defp startup_tracked_workspace_identifiers(repo_key) do

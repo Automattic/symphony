@@ -1582,7 +1582,7 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Map.has_key?(state.retry_attempts, issue_id)
     refute Map.has_key?(state.running, issue_id)
-    assert MapSet.member?(state.claimed, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
   end
 
   test "first abnormal worker exit waits before retrying" do

@@ -218,6 +218,23 @@ defmodule SymphonyElixir.CiPollerTest do
              RunStore.list_ci_checks()
   end
 
+  test "startup failure conclusion follows failure path instead of pending" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :ci_test_status, startup_failure_status("abc123"))
+    put_run(issue, now)
+
+    assert {:ok, %{actions: [{:rerun_requested, "issue-2401", "987"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    assert_receive {:rerun_failed, "987"}
+    refute_receive {:issue_state_update, _, _}
+
+    assert [%{status: "rerun_requested", rerun_attempted_shas: ["abc123"], failed_checks: [%{conclusion: "STARTUP_FAILURE"}]}] =
+             RunStore.list_ci_checks()
+  end
+
   test "first failure reruns every distinct failed workflow run before dispatching" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()
@@ -1044,6 +1061,18 @@ defmodule SymphonyElixir.CiPollerTest do
       commit_sha: sha,
       checks: [
         %{name: "specs", status: "COMPLETED", conclusion: "FAILURE", run_id: "987"}
+      ]
+    }
+  end
+
+  defp startup_failure_status(sha) do
+    %{
+      pr_url: "https://github.com/example/repo/pull/2401",
+      pr_title: "Handle CI",
+      state: "OPEN",
+      commit_sha: sha,
+      checks: [
+        %{name: "specs", status: "COMPLETED", conclusion: "STARTUP_FAILURE", run_id: "987"}
       ]
     }
   end

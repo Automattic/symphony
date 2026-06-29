@@ -176,6 +176,34 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert [%{name: "test", conclusion: "FAILURE", run_id: "987"}] = status.checks
   end
 
+  test "fetch_ci_status maps status context state into status and conclusion" do
+    pr_url = "https://github.com/org/repo/pull/17"
+
+    runner = fn ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+      {Jason.encode!(%{
+         "state" => "OPEN",
+         "title" => "Fix legacy contexts",
+         "url" => pr_url,
+         "headRefOid" => "abc123",
+         "statusCheckRollup" => [
+           %{"context" => "ci/failure", "state" => "FAILURE", "targetUrl" => "https://ci.example.test/failure"},
+           %{"context" => "ci/error", "state" => "ERROR", "targetUrl" => "https://ci.example.test/error"},
+           %{"context" => "ci/pending", "state" => "PENDING", "targetUrl" => "https://ci.example.test/pending"},
+           %{"context" => "ci/success", "state" => "SUCCESS", "targetUrl" => "https://ci.example.test/success"}
+         ]
+       }), 0}
+    end
+
+    assert {:ok, status} = PullRequest.fetch_ci_status(pr_url, gh_runner: runner)
+
+    assert [
+             %{name: "ci/failure", status: "FAILURE", conclusion: "FAILURE", details_url: "https://ci.example.test/failure"},
+             %{name: "ci/error", status: "ERROR", conclusion: "ERROR", details_url: "https://ci.example.test/error"},
+             %{name: "ci/pending", status: "PENDING", conclusion: "PENDING", details_url: "https://ci.example.test/pending"},
+             %{name: "ci/success", status: "SUCCESS", conclusion: "SUCCESS", details_url: "https://ci.example.test/success"}
+           ] = status.checks
+  end
+
   test "fetch_failed_log and rerun_failed use gh run commands" do
     runner = fn
       ["run", "view", "987", "--log-failed"], opts ->

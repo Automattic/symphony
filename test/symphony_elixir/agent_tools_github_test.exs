@@ -116,7 +116,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
     end
   end
 
-  test "create_pull_request passes draft flag when requested" do
+  test "create_pull_request resolves draft from explicit arg, then configured default" do
     workspace = tmp_workspace!("github-agent-create-draft")
 
     try do
@@ -126,51 +126,61 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
           {"auto/ACME-3051\n", 0}
       end
 
-      gh_runner = fn
-        [
-          "pr",
-          "create",
-          "--repo",
-          "acme/symphony",
-          "--head",
-          "auto/ACME-3051",
-          "--title",
-          "Title",
-          "--body",
-          "Body",
-          "--draft"
-        ],
-        opts ->
-          assert opts[:cd] == workspace
-          {"https://github.com/acme/symphony/pull/3051\n", 0}
+      # Assert on the trailing arg (`--draft` or its absence). The body is unique
+      # per case so a missing/extra `--draft` fails to match loudly.
+      gh_runner = fn args, opts ->
+        assert opts[:cd] == workspace
+        drafted? = List.last(args) == "--draft"
+        body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
 
-        [
-          "pr",
-          "create",
-          "--repo",
-          "acme/symphony",
-          "--head",
-          "auto/ACME-3051",
-          "--title",
-          "Title",
-          "--body",
-          "Body with nil draft"
-        ],
-        opts ->
-          assert opts[:cd] == workspace
-          {"https://github.com/acme/symphony/pull/3051\n", 0}
+        case {body, drafted?} do
+          {"explicit true", true} -> {"https://github.com/acme/symphony/pull/3051\n", 0}
+          {"explicit false", false} -> {"https://github.com/acme/symphony/pull/3051\n", 0}
+          {"nil + no settings", true} -> {"https://github.com/acme/symphony/pull/3051\n", 0}
+          {"nil + default settings", true} -> {"https://github.com/acme/symphony/pull/3051\n", 0}
+          {"nil + opt-out settings", false} -> {"https://github.com/acme/symphony/pull/3051\n", 0}
+        end
       end
 
+      base_opts = [git_runner: git_runner, gh_runner: gh_runner]
+      draft_off = put_in(%Schema{}.github.open_pull_requests_as_draft, false)
+
+      # Explicit boolean always wins, regardless of config.
       assert {:ok, %{"draft" => true, "head" => "auto/ACME-3051"}} =
-               GitHub.create_pull_request(scoped_context(workspace), "Title", "Body", true,
-                 git_runner: git_runner,
-                 gh_runner: gh_runner
-               )
+               GitHub.create_pull_request(scoped_context(workspace), "Title", "explicit true", true, base_opts)
 
       assert {:ok, %{"draft" => false, "head" => "auto/ACME-3051"}} =
-               GitHub.create_pull_request(scoped_context(workspace), "Title", "Body with nil draft", nil,
-                 git_runner: git_runner,
-                 gh_runner: gh_runner
+               GitHub.create_pull_request(
+                 scoped_context(workspace),
+                 "Title",
+                 "explicit false",
+                 false,
+                 [settings: draft_off] ++ base_opts
+               )
+
+      # Omitted draft with no settings in opts falls back to global Config defaults
+      # (draft-on out of the box).
+      assert {:ok, %{"draft" => true, "head" => "auto/ACME-3051"}} =
+               GitHub.create_pull_request(scoped_context(workspace), "Title", "nil + no settings", nil, base_opts)
+
+      # Omitted draft with settings present uses the configured default.
+      assert {:ok, %{"draft" => true, "head" => "auto/ACME-3051"}} =
+               GitHub.create_pull_request(
+                 scoped_context(workspace),
+                 "Title",
+                 "nil + default settings",
+                 nil,
+                 [settings: %Schema{}] ++ base_opts
+               )
+
+      # ...and a repo can opt out via github.open_pull_requests_as_draft: false.
+      assert {:ok, %{"draft" => false, "head" => "auto/ACME-3051"}} =
+               GitHub.create_pull_request(
+                 scoped_context(workspace),
+                 "Title",
+                 "nil + opt-out settings",
+                 nil,
+                 [settings: draft_off] ++ base_opts
                )
     after
       File.rm_rf(workspace)

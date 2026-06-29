@@ -710,6 +710,12 @@ Fields:
   - Default: `[]`.
   - Exact host allowlist for GitHub Enterprise PR and repository URLs.
   - `github.com` and `www.github.com` are always accepted.
+- `open_pull_requests_as_draft` (boolean)
+  - Default: `true`.
+  - Draft state applied when the PR-creation tool is called without an explicit
+    draft argument. An explicit argument from the agent always takes precedence.
+  - Keeps PR review-state independent of whether the first-turn prompt carried a
+    draft directive (which a compacted bootstrap prompt would not).
 
 #### 5.4.8 `hooks` (object)
 

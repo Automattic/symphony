@@ -485,6 +485,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert message =~ "must be greater than 0"
   end
 
+  test "github opens pull requests as draft by default and parses the opt-out" do
+    assert Config.settings!().github.open_pull_requests_as_draft == true
+
+    assert {:ok, settings} =
+             Schema.parse(%{
+               "github" => %{
+                 "open_pull_requests_as_draft" => false
+               }
+             })
+
+    assert settings.github.open_pull_requests_as_draft == false
+  end
+
   test "dependency allow-list config defaults and normalizes entries" do
     assert Config.settings!().dependencies.allow_registries == []
     assert Config.settings!().dependencies.allow_git_sources == []

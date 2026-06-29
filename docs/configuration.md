@@ -573,6 +573,10 @@ GitHub integration defaults.
 github:
   enterprise_hosts: []
   failed_run_log_max_bytes: 65536
+  # When the agent opens a PR without specifying a draft state, open it as a
+  # draft. A human reviewer marks it ready. Set to false to open PRs ready for
+  # review by default. An explicit draft argument from the agent always wins.
+  open_pull_requests_as_draft: true
 ```
 
 ### `notifications`

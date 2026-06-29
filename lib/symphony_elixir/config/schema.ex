@@ -442,12 +442,13 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:enterprise_hosts, {:array, :string}, default: [])
       field(:failed_run_log_max_bytes, :integer, default: 65_536)
+      field(:open_pull_requests_as_draft, :boolean, default: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:enterprise_hosts, :failed_run_log_max_bytes], empty_values: [])
+      |> cast(attrs, [:enterprise_hosts, :failed_run_log_max_bytes, :open_pull_requests_as_draft], empty_values: [])
       |> update_change(:enterprise_hosts, &Schema.normalize_domain_list/1)
       |> validate_number(:failed_run_log_max_bytes, greater_than: 0)
     end

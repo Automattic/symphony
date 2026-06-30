@@ -3206,6 +3206,120 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "agent runner syncs the worktree to the remote PR head for a same-repo ci rework" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-ci-sync-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      %{workspace_root: workspace_root, pr_head_sha: pr_head_sha} = setup_worktree_pr_head!(test_root)
+
+      assert :ok =
+               RunStore.put_ci_check(%{
+                 repo_key: "default",
+                 issue_id: "issue-ci-sync",
+                 issue_identifier: "RSM-CI",
+                 pr_url: "https://github.test/org/repo/pull/10",
+                 workspace_path: "/tmp/workspaces/RSM-CI",
+                 status: "dispatch_requested",
+                 ci_retry_count: 1,
+                 ci_failure: %{
+                   commit_sha: pr_head_sha,
+                   head_ref_name: "feature-head",
+                   is_cross_repository: false,
+                   head_repository: %{name_with_owner: "org/repo"},
+                   failed_checks: [%{name: "specs"}],
+                   log_excerpt: "specs failed"
+                 },
+                 updated_at: ~U[2026-05-05 02:00:00Z]
+               })
+
+      issue = %Issue{
+        id: "issue-ci-sync",
+        identifier: "RSM-CI",
+        title: "Fix CI",
+        description: "PR has failing checks",
+        state: "In Progress",
+        pull_request_url: "https://github.test/org/repo/pull/10",
+        pr_urls: ["https://github.test/org/repo/pull/10"]
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_enricher: no_op_issue_enricher()
+               )
+
+      assert {:ok, workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "RSM-CI"]))
+
+      assert File.exists?(Path.join(workspace, "PR_HEAD.md"))
+      assert git!(workspace, ["branch", "--show-current"]) == "feature-head"
+      assert git!(workspace, ["rev-parse", "HEAD"]) == pr_head_sha
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner does not pin cross-repo ci reworks to an origin head ref" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-ci-fork-sync-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      %{workspace_root: workspace_root, pr_head_sha: pr_head_sha} = setup_worktree_pr_head!(test_root)
+
+      assert :ok =
+               RunStore.put_ci_check(%{
+                 repo_key: "default",
+                 issue_id: "issue-ci-fork",
+                 issue_identifier: "RSM-CI-FORK",
+                 pr_url: "https://github.test/org/repo/pull/11",
+                 workspace_path: "/tmp/workspaces/RSM-CI-FORK",
+                 status: "dispatch_requested",
+                 ci_retry_count: 1,
+                 ci_failure: %{
+                   commit_sha: pr_head_sha,
+                   head_ref_name: "feature-head",
+                   is_cross_repository: true,
+                   head_repository: %{name_with_owner: "contributor/repo"},
+                   failed_checks: [%{name: "specs"}],
+                   log_excerpt: "specs failed"
+                 },
+                 updated_at: ~U[2026-05-05 02:00:00Z]
+               })
+
+      issue = %Issue{
+        id: "issue-ci-fork",
+        identifier: "RSM-CI-FORK",
+        title: "Fix fork CI",
+        description: "Fork PR has failing checks",
+        state: "In Progress",
+        pull_request_url: "https://github.test/org/repo/pull/11",
+        pr_urls: ["https://github.test/org/repo/pull/11"]
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end,
+                 issue_enricher: no_op_issue_enricher()
+               )
+
+      assert {:ok, workspace} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join([workspace_root, "default", "RSM-CI-FORK"]))
+
+      refute File.exists?(Path.join(workspace, "PR_HEAD.md"))
+      refute git!(workspace, ["branch", "--show-current"]) == "feature-head"
+      refute git!(workspace, ["rev-parse", "HEAD"]) == pr_head_sha
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "agent runner resets a reused stale worktree onto the remote PR head for a rework" do
     test_root =
       Path.join(

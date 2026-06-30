@@ -521,7 +521,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         send(test_pid, :commented_remote_pr)
         {"", 0}
 
-      ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], opts ->
+      ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"], opts ->
         refute Keyword.has_key?(opts, :cd)
         send(test_pid, :checked_remote_pr)
 
@@ -620,7 +620,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
              "baseRefName" => "main"
            }), 0}
 
-        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"], _opts ->
           {Jason.encode!(%{
              "state" => "OPEN",
              "title" => "Add tools",
@@ -667,7 +667,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
-        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"], _opts ->
           {Jason.encode!(%{
              "url" => pr_url,
              "statusCheckRollup" => [
@@ -708,7 +708,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
-        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"], _opts ->
           {Jason.encode!(%{
              "url" => pr_url,
              "statusCheckRollup" => [
@@ -751,7 +751,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
-        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"], _opts ->
           {Jason.encode!(%{
              "url" => pr_url,
              "statusCheckRollup" => [
@@ -789,7 +789,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
-        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"], _opts ->
           {Jason.encode!(%{
              "url" => pr_url,
              "statusCheckRollup" => [
@@ -827,7 +827,7 @@ defmodule SymphonyElixir.AgentTools.GitHubTest do
         ["pr", "view", "auto/ACME-3051", "--repo", "acme/symphony", "--json", _fields], _opts ->
           {Jason.encode!(%{"number" => 3051, "url" => pr_url}), 0}
 
-        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+        ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"], _opts ->
           {Jason.encode!(%{
              "url" => pr_url,
              "statusCheckRollup" => [

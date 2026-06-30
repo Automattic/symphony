@@ -268,7 +268,15 @@ defmodule SymphonyElixir.CiPollerTest do
     assert {:ok, %{actions: [{:state_transitioned, "issue-2401", :ci_failure, "In Progress"}]}} =
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
 
-    assert_receive {:ci_failure_at_transition, "issue-2401", %{commit_sha: "abc123", log_excerpt: transition_log_excerpt}}
+    assert_receive {:ci_failure_at_transition, "issue-2401",
+                    %{
+                      commit_sha: "abc123",
+                      head_ref_name: "feature/fix-ci",
+                      is_cross_repository: false,
+                      head_repository: %{"nameWithOwner" => "example/repo"},
+                      log_excerpt: transition_log_excerpt
+                    }}
+
     assert_receive {:issue_state_update, "issue-2401", "In Progress"}
     assert_receive {:fetch_failed_log, "987"}
     assert_receive {:notification_event, %{event: "ci_failed", state: "In Progress", metadata: %{retry_count: 1}}}
@@ -276,6 +284,9 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert %{
              commit_sha: "abc123",
+             head_ref_name: "feature/fix-ci",
+             is_cross_repository: false,
+             head_repository: %{"nameWithOwner" => "example/repo"},
              failed_checks: [%{name: "specs"}],
              log_excerpt: log_excerpt
            } = CiPoller.pending_ci_failure("issue-2401")
@@ -293,6 +304,35 @@ defmodule SymphonyElixir.CiPollerTest do
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 2, :minute))
 
     refute_receive {:issue_state_update, _, _}
+  end
+
+  test "pending ci failure normalizes persisted string-key metadata" do
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: "default",
+               issue_id: "issue-ci-strings",
+               issue_identifier: "RSM-CI-STRINGS",
+               status: "dispatch_requested",
+               ci_retry_count: 1,
+               ci_failure: %{
+                 "commit_sha" => "abc123",
+                 "head_ref_name" => "feature/string-ci",
+                 "is_cross_repository" => false,
+                 "head_repository" => %{"nameWithOwner" => "example/repo"},
+                 "failed_checks" => [%{"name" => "specs"}],
+                 "log_excerpt" => "specs failed"
+               },
+               updated_at: ~U[2026-05-06 09:00:00Z]
+             })
+
+    assert %{
+             commit_sha: "abc123",
+             head_ref_name: "feature/string-ci",
+             is_cross_repository: false,
+             head_repository: %{"nameWithOwner" => "example/repo"},
+             failed_checks: [%{"name" => "specs"}],
+             log_excerpt: "specs failed"
+           } = CiPoller.pending_ci_failure("issue-ci-strings")
   end
 
   test "polls ci lifecycle records for non-default repos" do
@@ -348,6 +388,9 @@ defmodule SymphonyElixir.CiPollerTest do
                repo_key: "secondary",
                issue_id: "issue-pin-84",
                status: "dispatch_requested",
+               head_ref_name: "feature/fix-ci",
+               is_cross_repository: false,
+               head_repository: %{"nameWithOwner" => "example/repo"},
                ci_retry_count: 1,
                ci_failure: %{commit_sha: "abc123"}
              }
@@ -1046,6 +1089,9 @@ defmodule SymphonyElixir.CiPollerTest do
       pr_url: "https://github.com/example/repo/pull/2401",
       pr_title: "Handle CI",
       state: "OPEN",
+      head_ref_name: "feature/fix-ci",
+      is_cross_repository: false,
+      head_repository: %{"nameWithOwner" => "example/repo"},
       commit_sha: sha,
       checks: [
         %{name: "specs", status: "COMPLETED", conclusion: "SUCCESS", run_id: "987"}
@@ -1058,6 +1104,9 @@ defmodule SymphonyElixir.CiPollerTest do
       pr_url: "https://github.com/example/repo/pull/2401",
       pr_title: "Handle CI",
       state: "OPEN",
+      head_ref_name: "feature/fix-ci",
+      is_cross_repository: false,
+      head_repository: %{"nameWithOwner" => "example/repo"},
       commit_sha: sha,
       checks: [
         %{name: "specs", status: "COMPLETED", conclusion: "FAILURE", run_id: "987"}
@@ -1070,6 +1119,9 @@ defmodule SymphonyElixir.CiPollerTest do
       pr_url: "https://github.com/example/repo/pull/2401",
       pr_title: "Handle CI",
       state: "OPEN",
+      head_ref_name: "feature/fix-ci",
+      is_cross_repository: false,
+      head_repository: %{"nameWithOwner" => "example/repo"},
       commit_sha: sha,
       checks: [
         %{name: "specs", status: "COMPLETED", conclusion: "STARTUP_FAILURE", run_id: "987"}
@@ -1082,6 +1134,9 @@ defmodule SymphonyElixir.CiPollerTest do
       pr_url: "https://github.com/example/repo/pull/2401",
       pr_title: "Handle CI",
       state: "OPEN",
+      head_ref_name: "feature/fix-ci",
+      is_cross_repository: false,
+      head_repository: %{"nameWithOwner" => "example/repo"},
       commit_sha: sha,
       checks: [
         %{name: "specs", status: "COMPLETED", conclusion: "FAILURE", run_id: "987"},

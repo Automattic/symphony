@@ -201,8 +201,9 @@ defmodule SymphonyElixir.AgentRunner do
   # PR head after the run (e.g. via the GitHub UI) stay invisible to the agent.
   # Mirror the explicit PR-run wiring (`SymphonyElixir.PrRun`) by pointing the
   # workspace branch/base ref at the PR head. An explicit base ref already on the
-  # issue (PR runs) is left untouched. CI-failure reworks are not covered yet:
-  # the CI record carries only a commit SHA, not the PR head branch name.
+  # issue (PR runs) is left untouched. Fork/cross-repo CI reworks deliberately do
+  # not pin to origin/<head_ref>, because that ref is not guaranteed to exist in
+  # the local origin remote.
   defp sync_workspace_to_pr_head(%Issue{workspace_base_ref: ref} = issue, _opts)
        when is_binary(ref) and ref != "",
        do: issue
@@ -217,15 +218,15 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  # A pending merge conflict wins (its snapshot pins the exact head); otherwise a
-  # pending reviewer-comment rework targets the same PR head branch.
+  # A pending merge conflict wins (its snapshot pins the exact head); otherwise
+  # reviewer-comment and same-repo CI reworks target the same PR head branch.
   defp resolve_pr_head_ref(issue, opts) do
     case resolve_pr_conflict(issue, opts) do
       %{head_ref: head_ref} when is_binary(head_ref) and head_ref != "" ->
         head_ref
 
       _ ->
-        pending_reviewer_rework_head_ref(issue, opts)
+        pending_reviewer_rework_head_ref(issue, opts) || pending_ci_rework_head_ref(issue, opts)
     end
   end
 
@@ -244,6 +245,18 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp pending_reviewer_rework_head_ref(_issue, _opts), do: nil
+
+  defp pending_ci_rework_head_ref(%Issue{id: issue_id} = issue, opts) when is_binary(issue_id) do
+    case CiPoller.pending_ci_failure(issue_id, pending_lookup_opts(issue, opts)) do
+      %{is_cross_repository: false, head_ref_name: head_ref} when is_binary(head_ref) and head_ref != "" ->
+        head_ref
+
+      _ci_failure ->
+        nil
+    end
+  end
+
+  defp pending_ci_rework_head_ref(_issue, _opts), do: nil
 
   defp codex_message_handler(recipient, issue) do
     fn message ->

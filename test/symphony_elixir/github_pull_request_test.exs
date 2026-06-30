@@ -149,14 +149,17 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
 
     runner = fn
       ["pr", "view", ^pr_url, "--json", fields], opts ->
-        assert fields == "number,state,title,url,headRefOid,statusCheckRollup"
+        assert fields == "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"
         assert opts[:stderr_to_stdout]
 
         {Jason.encode!(%{
            "state" => "OPEN",
            "title" => "Fix CI",
            "url" => pr_url,
+           "headRefName" => "feature/fix-ci",
            "headRefOid" => "abc123",
+           "isCrossRepository" => false,
+           "headRepository" => %{"nameWithOwner" => "org/repo"},
            "statusCheckRollup" => [
              %{
                "name" => "test",
@@ -172,14 +175,17 @@ defmodule SymphonyElixir.GitHub.PullRequestTest do
     assert {:ok, status} = PullRequest.fetch_ci_status(pr_url, gh_runner: runner)
     assert status.pr_url == pr_url
     assert status.pr_title == "Fix CI"
+    assert status.head_ref_name == "feature/fix-ci"
     assert status.commit_sha == "abc123"
+    assert status.is_cross_repository == false
+    assert status.head_repository == %{"nameWithOwner" => "org/repo"}
     assert [%{name: "test", conclusion: "FAILURE", run_id: "987"}] = status.checks
   end
 
   test "fetch_ci_status maps status context state into status and conclusion" do
     pr_url = "https://github.com/org/repo/pull/17"
 
-    runner = fn ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefOid,statusCheckRollup"], _opts ->
+    runner = fn ["pr", "view", ^pr_url, "--json", "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"], _opts ->
       {Jason.encode!(%{
          "state" => "OPEN",
          "title" => "Fix legacy contexts",

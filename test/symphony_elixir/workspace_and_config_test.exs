@@ -370,7 +370,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  test "redispatch refuses to reset a dirty reused PR worktree" do
+  test "redispatch backs up a dirty reused PR worktree and resets to head" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -414,20 +414,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       git!(peer_repo, ["commit", "-m", "advance pr head"])
       git!(peer_repo, ["push", "origin", "feature/pr-dirty-reset"])
 
-      assert {:error, {:unsafe_worktree_reset, :dirty_worktree, details}} =
-               Workspace.create_for_issue(issue)
+      assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
 
-      assert details[:workspace] == workspace
-      assert details[:base_ref] == "origin/feature/pr-dirty-reset"
-      assert Enum.any?(details[:status], &String.contains?(&1, "pr.txt"))
-      assert String.trim(git!(workspace, ["rev-parse", "HEAD"])) == first_sha
-      assert File.read!(Path.join(workspace, "pr.txt")) == "dirty local edit\n"
+      # The reset adopts the advanced remote head instead of failing.
+      assert File.read!(Path.join(workspace, "pr.txt")) == "advanced pr head\n"
+
+      assert String.trim(git!(workspace, ["rev-parse", "HEAD"])) ==
+               String.trim(git!(workspace, ["rev-parse", "origin/feature/pr-dirty-reset"]))
+
+      # The dropped dirty edit is recoverable from the orphan backup snapshot.
+      backup_ref = "refs/symphony/orphaned/#{first_sha}"
+      assert String.trim(git!(workspace, ["rev-parse", "#{backup_ref}^"])) == first_sha
+      assert String.trim(git!(workspace, ["show", "#{backup_ref}:pr.txt"])) == "dirty local edit"
     after
       File.rm_rf(test_root)
     end
   end
 
-  test "redispatch refuses to reset unpushed commits from a reused PR worktree" do
+  test "redispatch backs up unpushed commits from a reused PR worktree and resets to head" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -468,20 +472,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       git!(workspace, ["commit", "-m", "local commit"])
       local_commit = String.trim(git!(workspace, ["rev-parse", "HEAD"]))
 
-      assert {:error, {:unsafe_worktree_reset, :unpushed_commits, details}} =
-               Workspace.create_for_issue(issue)
+      assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
 
-      assert details[:workspace] == workspace
-      assert details[:base_ref] == "origin/feature/pr-local-commits"
-      assert local_commit in details[:commits]
-      assert String.trim(git!(workspace, ["rev-parse", "HEAD"])) == local_commit
-      assert File.read!(Path.join(workspace, "local.txt")) == "local commit\n"
+      # The branch is reset to the remote head, dropping the unpushed commit.
+      assert String.trim(git!(workspace, ["rev-parse", "HEAD"])) ==
+               String.trim(git!(workspace, ["rev-parse", "origin/feature/pr-local-commits"]))
+
+      refute File.exists?(Path.join(workspace, "local.txt"))
+
+      # The unpushed commit is recoverable from the orphan backup snapshot.
+      backup_ref = "refs/symphony/orphaned/#{local_commit}"
+      assert String.trim(git!(workspace, ["rev-parse", "#{backup_ref}^"])) == local_commit
+      assert String.trim(git!(workspace, ["show", "#{backup_ref}:local.txt"])) == "local commit"
     after
       File.rm_rf(test_root)
     end
   end
 
-  test "redispatch refuses to reset untracked files that collide with requested PR head" do
+  test "redispatch backs up colliding untracked files before resetting a reused PR worktree" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -536,16 +544,22 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert git!(workspace, ["status", "--short", "collision.txt"]) == "?? collision.txt\n"
 
-      assert {:error, {:unsafe_worktree_reset, :dirty_worktree, details}} =
-               Workspace.create_for_issue(issue)
+      assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
 
-      assert details[:workspace] == workspace
-      assert details[:base_ref] == "origin/feature/pr-untracked-collision"
-      assert Enum.any?(details[:status], &String.contains?(&1, "collision.txt"))
-      assert File.read!(Path.join(workspace, "collision.txt")) == "stale untracked file\n"
-      assert File.exists?(Path.join(workspace, "stale.txt"))
-      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "feature/stale-untracked"
-      assert String.trim(git!(workspace, ["rev-parse", "HEAD"])) == stale_sha
+      # The reset switches to the requested head and overwrites the colliding
+      # untracked file with the tracked PR-head version.
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) ==
+               "feature/pr-untracked-collision"
+
+      assert File.read!(Path.join(workspace, "collision.txt")) == "requested pr head\n"
+
+      # The clobbered untracked content is recoverable from the orphan backup.
+      backup_ref = "refs/symphony/orphaned/#{stale_sha}"
+
+      assert String.trim(git!(workspace, ["show", "#{backup_ref}:collision.txt"])) ==
+               "stale untracked file"
+
+      assert String.trim(git!(workspace, ["show", "#{backup_ref}:stale.txt"])) == "stale branch"
     after
       File.rm_rf(test_root)
     end
@@ -4646,7 +4660,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end)
   end
 
-  test "remote worktree reuse refuses to reset a dirty explicit-base worktree" do
+  test "remote worktree reuse backs up a dirty explicit-base worktree and resets to head" do
     with_real_exec_fake_ssh(fn ctx ->
       workspace_root = Path.join(ctx.test_root, "wsroot")
       primary_repo = Path.join(ctx.test_root, "primary")
@@ -4686,18 +4700,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       git!(peer_repo, ["commit", "-m", "advance remote head"])
       git!(peer_repo, ["push", "origin", "feature/pr-remote-dirty"])
 
-      assert {:error, {:unsafe_worktree_reset, :dirty_worktree, details}} =
-               Workspace.create_for_issue(issue, "worker-01")
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(issue, "worker-01")
 
-      assert details[:workspace] == workspace_path
-      assert details[:base_ref] == "origin/feature/pr-remote-dirty"
-      assert Enum.any?(details[:output], &String.contains?(&1, "pr.txt"))
-      assert String.trim(git!(workspace_path, ["rev-parse", "HEAD"])) == first_sha
-      assert File.read!(Path.join(workspace_path, "pr.txt")) == "dirty remote edit\n"
+      # The reset adopts the advanced remote head instead of failing.
+      assert File.read!(Path.join(workspace_path, "pr.txt")) == "advanced remote head\n"
+
+      assert String.trim(git!(workspace_path, ["rev-parse", "HEAD"])) ==
+               String.trim(git!(workspace_path, ["rev-parse", "origin/feature/pr-remote-dirty"]))
+
+      # The dropped dirty edit is recoverable from the orphan backup snapshot.
+      backup_ref = "refs/symphony/orphaned/#{first_sha}"
+      assert String.trim(git!(workspace_path, ["rev-parse", "#{backup_ref}^"])) == first_sha
+
+      assert String.trim(git!(workspace_path, ["show", "#{backup_ref}:pr.txt"])) ==
+               "dirty remote edit"
     end)
   end
 
-  test "remote worktree reuse refuses to reset unpushed commits from an explicit-base worktree" do
+  test "remote worktree reuse backs up unpushed commits from an explicit-base worktree and resets to head" do
     with_real_exec_fake_ssh(fn ctx ->
       workspace_root = Path.join(ctx.test_root, "wsroot")
       primary_repo = Path.join(ctx.test_root, "primary")
@@ -4734,18 +4754,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       git!(workspace_path, ["commit", "-m", "remote local commit"])
       local_commit = String.trim(git!(workspace_path, ["rev-parse", "HEAD"]))
 
-      assert {:error, {:unsafe_worktree_reset, :unpushed_commits, details}} =
-               Workspace.create_for_issue(issue, "worker-01")
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(issue, "worker-01")
 
-      assert details[:workspace] == workspace_path
-      assert details[:base_ref] == "origin/feature/pr-remote-local-commits"
-      assert local_commit in details[:output]
-      assert String.trim(git!(workspace_path, ["rev-parse", "HEAD"])) == local_commit
-      assert File.read!(Path.join(workspace_path, "local.txt")) == "remote local commit\n"
+      # The branch is reset to the remote head, dropping the unpushed commit.
+      assert String.trim(git!(workspace_path, ["rev-parse", "HEAD"])) ==
+               String.trim(git!(workspace_path, ["rev-parse", "origin/feature/pr-remote-local-commits"]))
+
+      refute File.exists?(Path.join(workspace_path, "local.txt"))
+
+      # The unpushed commit is recoverable from the orphan backup snapshot.
+      backup_ref = "refs/symphony/orphaned/#{local_commit}"
+      assert String.trim(git!(workspace_path, ["rev-parse", "#{backup_ref}^"])) == local_commit
+
+      assert String.trim(git!(workspace_path, ["show", "#{backup_ref}:local.txt"])) ==
+               "remote local commit"
     end)
   end
 
-  test "remote worktree reuse refuses to reset untracked files that collide with requested PR head" do
+  test "remote worktree reuse backs up colliding untracked files before resetting an explicit-base worktree" do
     with_real_exec_fake_ssh(fn ctx ->
       workspace_root = Path.join(ctx.test_root, "wsroot")
       primary_repo = Path.join(ctx.test_root, "primary")
@@ -4796,19 +4822,23 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert git!(workspace_path, ["status", "--short", "collision.txt"]) == "?? collision.txt\n"
 
-      assert {:error, {:unsafe_worktree_reset, :dirty_worktree, details}} =
-               Workspace.create_for_issue(issue, "worker-01")
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(issue, "worker-01")
 
-      assert details[:workspace] == workspace_path
-      assert details[:base_ref] == "origin/feature/remote-untracked-collision"
-      assert Enum.any?(details[:output], &String.contains?(&1, "collision.txt"))
-      assert File.read!(Path.join(workspace_path, "collision.txt")) == "stale untracked file\n"
-      assert File.exists?(Path.join(workspace_path, "stale.txt"))
-
+      # The reset switches to the requested head and overwrites the colliding
+      # untracked file with the tracked PR-head version.
       assert String.trim(git!(workspace_path, ["branch", "--show-current"])) ==
-               "feature/remote-stale-untracked"
+               "feature/remote-untracked-collision"
 
-      assert String.trim(git!(workspace_path, ["rev-parse", "HEAD"])) == stale_sha
+      assert File.read!(Path.join(workspace_path, "collision.txt")) == "requested remote head\n"
+
+      # The clobbered untracked content is recoverable from the orphan backup.
+      backup_ref = "refs/symphony/orphaned/#{stale_sha}"
+
+      assert String.trim(git!(workspace_path, ["show", "#{backup_ref}:collision.txt"])) ==
+               "stale untracked file"
+
+      assert String.trim(git!(workspace_path, ["show", "#{backup_ref}:stale.txt"])) ==
+               "stale remote branch"
     end)
   end
 

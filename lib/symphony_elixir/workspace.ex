@@ -132,7 +132,7 @@ defmodule SymphonyElixir.Workspace do
         "set -eu",
         remote_shell_assign("root", settings.workspace.root),
         remote_shell_assign("workspace", workspace),
-        remote_workspace_containment_preamble(),
+        remote_workspace_parent_containment_preamble(),
         "if [ -d \"$workspace\" ]; then",
         "  created=0",
         "elif [ -e \"$workspace\" ]; then",
@@ -191,6 +191,7 @@ defmodule SymphonyElixir.Workspace do
     branch = worktree_branch(issue_context)
     base_ref = worktree_base_ref(issue_context)
     create_base_ref = remote_worktree_create_base_ref(issue_context, base_ref)
+    reset_base_ref = base_ref || ""
 
     script =
       [
@@ -200,6 +201,7 @@ defmodule SymphonyElixir.Workspace do
         remote_shell_assign("workspace", workspace),
         "branch=#{shell_escape(branch)}",
         "base_ref=#{shell_escape(create_base_ref || "HEAD")}",
+        "reset_base_ref=#{shell_escape(reset_base_ref)}",
         "if [ -z \"$repo\" ]; then",
         "  echo \"workspace_repo_missing: workspace.repo is required for worktree strategy\"",
         "  exit 41",
@@ -210,7 +212,7 @@ defmodule SymphonyElixir.Workspace do
         "fi",
         "git -C \"$repo\" rev-parse --git-dir >/dev/null",
         settings.workspace.fetch_before_dispatch && "git -C \"$repo\" fetch origin",
-        remote_workspace_containment_preamble(),
+        remote_workspace_parent_containment_preamble(),
         "if [ -d \"$workspace\" ]; then",
         "  if ! worktrees=$(git -C \"$repo\" worktree list --porcelain); then",
         "    echo \"workspace_worktree_list_failed: $repo\"",
@@ -220,6 +222,10 @@ defmodule SymphonyElixir.Workspace do
         "  if [ -z \"$registered\" ]; then",
         "    echo \"workspace_not_registered_worktree: $workspace\"",
         "    exit 42",
+        "  fi",
+        "  if [ -n \"$reset_base_ref\" ]; then",
+        "    reset_base_sha=$(git -C \"$repo\" rev-parse --verify --end-of-options \"$reset_base_ref^{commit}\")",
+        "    git -C \"$workspace\" reset --hard \"$reset_base_sha\"",
         "  fi",
         "  created=0",
         "elif [ -e \"$workspace\" ]; then",
@@ -312,7 +318,9 @@ defmodule SymphonyElixir.Workspace do
   defp reset_worktree_to_base_ref(_workspace, ""), do: :ok
 
   defp reset_worktree_to_base_ref(workspace, base_ref) when is_binary(base_ref) do
-    run_git(workspace, ["reset", "--hard", base_ref])
+    with {:ok, commit_sha} <- resolve_git_commit(workspace, base_ref) do
+      run_git(workspace, ["reset", "--hard", commit_sha])
+    end
   end
 
   # Adds the skip-comments file to the worktree's git exclude so the agent can write
@@ -443,12 +451,10 @@ defmodule SymphonyElixir.Workspace do
     "branch_owner=$(git -C \"$repo\" worktree list --porcelain | awk -v b=\"$branch\" 'BEGIN { wt = \"\" } /^worktree / { wt = substr($0, 10); next } $0 == \"branch refs/heads/\" b { print wt; exit }'); if [ -n \"$branch_owner\" ] && [ \"$branch_owner\" != \"$workspace\" ]; then printf 'workspace_branch_already_checked_out_elsewhere\\t%s\\t%s\\t%s\\n' \"$branch\" \"$branch_owner\" \"$workspace\"; exit 45; fi; if [ \"$base_ref\" != \"HEAD\" ]; then git -C \"$repo\" worktree add -B \"$branch\" \"$workspace\" \"$base_ref\"; elif git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
   end
 
-  # Builds the shell preamble that canonicalizes the remote workspace root
-  # ($physical_root) and rejects any pre-existing symlink at $workspace before
-  # the script touches it. Mirrors the local containment model from
-  # validate_workspace_path/2 (nil worker_host), but runs on the remote host so
-  # symlinks under the remote filesystem can be resolved.
-  defp remote_workspace_containment_preamble do
+  # Builds the shell preamble that canonicalizes the remote workspace root and
+  # proves the existing workspace, or the nearest existing parent for a new
+  # workspace, stays under that physical root before the script mutates it.
+  defp remote_workspace_parent_containment_preamble do
     """
     mkdir -p "$root" || {
       echo "workspace_root_unreadable: $root"
@@ -465,6 +471,47 @@ defmodule SymphonyElixir.Workspace do
     if [ -L "$workspace" ]; then
       echo "workspace_symlink_rejected: $workspace"
       exit 51
+    fi
+    workspace_parent=${workspace%/*}
+    if [ -z "$workspace_parent" ] || [ "$workspace_parent" = "$workspace" ]; then
+      echo "workspace_path_unreadable: $workspace"
+      exit 50
+    fi
+    if [ -e "$workspace" ]; then
+      if [ -d "$workspace" ]; then
+        physical_workspace=$(cd "$workspace" 2>/dev/null && pwd -P) || {
+          echo "workspace_path_unreadable: $workspace"
+          exit 50
+        }
+        #{remote_workspace_containment_check()}
+      else
+        physical_parent=$(cd "$workspace_parent" 2>/dev/null && pwd -P) || {
+          echo "workspace_path_unreadable: $workspace_parent"
+          exit 50
+        }
+        #{remote_workspace_parent_containment_check()}
+      fi
+    else
+      existing_parent="$workspace_parent"
+      while [ ! -e "$existing_parent" ]; do
+        next_parent=${existing_parent%/*}
+        if [ -z "$next_parent" ] || [ "$next_parent" = "$existing_parent" ]; then
+          echo "workspace_path_unreadable: $workspace_parent"
+          exit 50
+        fi
+        existing_parent="$next_parent"
+      done
+      physical_parent=$(cd "$existing_parent" 2>/dev/null && pwd -P) || {
+        echo "workspace_path_unreadable: $existing_parent"
+        exit 50
+      }
+      #{remote_workspace_parent_containment_check()}
+      mkdir -p "$workspace_parent"
+      physical_parent=$(cd "$workspace_parent" 2>/dev/null && pwd -P) || {
+        echo "workspace_path_unreadable: $workspace_parent"
+        exit 50
+      }
+      #{remote_workspace_parent_containment_check()}
     fi\
     """
   end
@@ -479,6 +526,75 @@ defmodule SymphonyElixir.Workspace do
       "$physical_root"/*) ;;
       *) echo "workspace_outside_root: $physical_workspace not under $physical_root"; exit 53 ;;
     esac\
+    """
+  end
+
+  defp remote_workspace_parent_containment_check do
+    """
+    case "$physical_parent/" in
+      "$physical_root"/) ;;
+      "$physical_root"/*) ;;
+      *) echo "workspace_outside_root: $physical_parent not under $physical_root"; exit 53 ;;
+    esac\
+    """
+  end
+
+  # Removal and hooks must not create parent directories as a side effect of
+  # validation; they only prove the existing path, or nearest existing parent for
+  # a missing path, is physically contained before a mutation happens.
+  defp remote_workspace_mutation_containment_preamble do
+    """
+    mkdir -p "$root" || {
+      echo "workspace_root_unreadable: $root"
+      exit 50
+    }
+    physical_root=$(cd "$root" 2>/dev/null && pwd -P) || {
+      echo "workspace_root_unreadable: $root"
+      exit 50
+    }
+    if [ -z "$physical_root" ]; then
+      echo "workspace_root_unreadable: $root"
+      exit 50
+    fi
+    if [ -L "$workspace" ]; then
+      echo "workspace_symlink_rejected: $workspace"
+      exit 51
+    fi
+    workspace_parent=${workspace%/*}
+    if [ -z "$workspace_parent" ] || [ "$workspace_parent" = "$workspace" ]; then
+      echo "workspace_path_unreadable: $workspace"
+      exit 50
+    fi
+    if [ -e "$workspace" ]; then
+      if [ -d "$workspace" ]; then
+        physical_workspace=$(cd "$workspace" 2>/dev/null && pwd -P) || {
+          echo "workspace_path_unreadable: $workspace"
+          exit 50
+        }
+        #{remote_workspace_containment_check()}
+      else
+        physical_parent=$(cd "$workspace_parent" 2>/dev/null && pwd -P) || {
+          echo "workspace_path_unreadable: $workspace_parent"
+          exit 50
+        }
+        #{remote_workspace_parent_containment_check()}
+      fi
+    else
+      existing_parent="$workspace_parent"
+      while [ ! -e "$existing_parent" ]; do
+        next_parent=${existing_parent%/*}
+        if [ -z "$next_parent" ] || [ "$next_parent" = "$existing_parent" ]; then
+          echo "workspace_path_unreadable: $workspace_parent"
+          exit 50
+        fi
+        existing_parent="$next_parent"
+      done
+      physical_parent=$(cd "$existing_parent" 2>/dev/null && pwd -P) || {
+        echo "workspace_path_unreadable: $existing_parent"
+        exit 50
+      }
+      #{remote_workspace_parent_containment_check()}
+    fi\
     """
   end
 
@@ -536,28 +652,29 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp remove_directory_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
-    case validate_workspace_path(workspace, worker_host) do
-      :ok ->
-        maybe_run_before_remove_hook(workspace, issue_context, worker_host)
+    with :ok <- validate_workspace_path(workspace, worker_host),
+         :ok <- maybe_run_before_remove_hook(workspace, issue_context, worker_host) do
+      script =
+        [
+          "set -eu",
+          remote_shell_assign("root", settings.workspace.root),
+          remote_shell_assign("workspace", workspace),
+          remote_workspace_mutation_containment_preamble(),
+          "rm -rf \"$workspace\""
+        ]
+        |> Enum.join("\n")
 
-        script =
-          [
-            remote_shell_assign("workspace", workspace),
-            "rm -rf \"$workspace\""
-          ]
-          |> Enum.join("\n")
+      case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
+        {:ok, {_output, 0}} ->
+          {:ok, []}
 
-        case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
-          {:ok, {_output, 0}} ->
-            {:ok, []}
+        {:ok, {output, status}} ->
+          {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
 
-          {:ok, {output, status}} ->
-            {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
-
-          {:error, reason} ->
-            {:error, reason, ""}
-        end
-
+        {:error, reason} ->
+          {:error, reason, ""}
+      end
+    else
       {:error, reason} ->
         {:error, reason, ""}
     end
@@ -577,63 +694,63 @@ defmodule SymphonyElixir.Workspace do
   defp remove_worktree_workspace(workspace, issue_context, worker_host, settings) when is_binary(worker_host) do
     branch = worktree_branch(issue_context)
 
-    case validate_workspace_path(workspace, worker_host) do
-      :ok ->
-        maybe_run_before_remove_hook(workspace, issue_context, worker_host)
+    with :ok <- validate_workspace_path(workspace, worker_host),
+         :ok <- maybe_run_before_remove_hook(workspace, issue_context, worker_host) do
+      script =
+        [
+          "set -eu",
+          remote_shell_assign("root", settings.workspace.root),
+          remote_shell_assign("repo", settings.workspace.repo || ""),
+          remote_shell_assign("workspace", workspace),
+          "branch=#{shell_escape(branch)}",
+          "if [ -z \"$repo\" ]; then",
+          "  echo \"workspace_repo_missing: workspace.repo is required for worktree strategy\"",
+          "  exit 41",
+          "fi",
+          "if [ ! -d \"$repo\" ]; then",
+          "  echo \"workspace_repo_missing: $repo\"",
+          "  exit 41",
+          "fi",
+          "git -C \"$repo\" rev-parse --git-dir >/dev/null",
+          remote_workspace_mutation_containment_preamble(),
+          "if ! worktrees=$(git -C \"$repo\" worktree list --porcelain); then",
+          "  echo \"workspace_worktree_list_failed: $repo\"",
+          "  exit 43",
+          "fi",
+          "registered=$(printf '%s\\n' \"$worktrees\" | awk '/^worktree / {print substr($0, 10)}' | grep -Fx \"$workspace\" || true)",
+          "if [ -n \"$registered\" ]; then",
+          "  git -C \"$repo\" worktree remove --force \"$workspace\"",
+          "elif [ -e \"$workspace\" ]; then",
+          "  echo \"workspace_not_registered_worktree: $workspace\"",
+          "  exit 42",
+          "fi",
+          "if git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then",
+          "  if ! branch_delete_output=$(git -C \"$repo\" branch -D \"$branch\" 2>&1); then",
+          "    case \"$branch_delete_output\" in",
+          "      *\"checked out at\"*|*\"is checked out\"*)",
+          "        printf '%s\\n' \"workspace_branch_delete_skipped: $branch checked out elsewhere\"",
+          "        ;;",
+          "      *)",
+          "        printf '%s\\n' \"$branch_delete_output\"",
+          "        exit 44",
+          "        ;;",
+          "    esac",
+          "  fi",
+          "fi"
+        ]
+        |> Enum.join("\n")
 
-        script =
-          [
-            "set -eu",
-            remote_shell_assign("repo", settings.workspace.repo || ""),
-            remote_shell_assign("workspace", workspace),
-            "branch=#{shell_escape(branch)}",
-            "if [ -z \"$repo\" ]; then",
-            "  echo \"workspace_repo_missing: workspace.repo is required for worktree strategy\"",
-            "  exit 41",
-            "fi",
-            "if [ ! -d \"$repo\" ]; then",
-            "  echo \"workspace_repo_missing: $repo\"",
-            "  exit 41",
-            "fi",
-            "git -C \"$repo\" rev-parse --git-dir >/dev/null",
-            "if ! worktrees=$(git -C \"$repo\" worktree list --porcelain); then",
-            "  echo \"workspace_worktree_list_failed: $repo\"",
-            "  exit 43",
-            "fi",
-            "registered=$(printf '%s\\n' \"$worktrees\" | awk '/^worktree / {print substr($0, 10)}' | grep -Fx \"$workspace\" || true)",
-            "if [ -n \"$registered\" ]; then",
-            "  git -C \"$repo\" worktree remove --force \"$workspace\"",
-            "elif [ -e \"$workspace\" ]; then",
-            "  echo \"workspace_not_registered_worktree: $workspace\"",
-            "  exit 42",
-            "fi",
-            "if git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then",
-            "  if ! branch_delete_output=$(git -C \"$repo\" branch -D \"$branch\" 2>&1); then",
-            "    case \"$branch_delete_output\" in",
-            "      *\"checked out at\"*|*\"is checked out\"*)",
-            "        printf '%s\\n' \"workspace_branch_delete_skipped: $branch checked out elsewhere\"",
-            "        ;;",
-            "      *)",
-            "        printf '%s\\n' \"$branch_delete_output\"",
-            "        exit 44",
-            "        ;;",
-            "    esac",
-            "  fi",
-            "fi"
-          ]
-          |> Enum.join("\n")
+      case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
+        {:ok, {_output, 0}} ->
+          {:ok, []}
 
-        case run_remote_command(worker_host, script, settings.hooks.timeout_ms) do
-          {:ok, {_output, 0}} ->
-            {:ok, []}
+        {:ok, {output, status}} ->
+          {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
 
-          {:ok, {output, status}} ->
-            {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
-
-          {:error, reason} ->
-            {:error, reason, ""}
-        end
-
+        {:error, reason} ->
+          {:error, reason, ""}
+      end
+    else
       {:error, reason} ->
         {:error, reason, ""}
     end
@@ -1124,9 +1241,16 @@ defmodule SymphonyElixir.Workspace do
   defp blank_to_nil(value), do: value
 
   defp git_ref_exists?(repo, ref) do
-    case git_output(repo, ["rev-parse", "--verify", "--quiet", "#{ref}^{commit}"]) do
+    case resolve_git_commit(repo, ref) do
       {:ok, _output} -> true
       _ -> false
+    end
+  end
+
+  defp resolve_git_commit(repo, ref) do
+    case git_output(repo, ["rev-parse", "--verify", "--end-of-options", "#{ref}^{commit}"]) do
+      {:ok, output} -> {:ok, String.trim(output)}
+      error -> error
     end
   end
 
@@ -1200,7 +1324,10 @@ defmodule SymphonyElixir.Workspace do
 
         script =
           [
+            "set -eu",
+            remote_shell_assign("root", settings.workspace.root),
             remote_shell_assign("workspace", workspace),
+            remote_workspace_mutation_containment_preamble(),
             "if [ -d \"$workspace\" ]; then",
             remote_before_remove_env_assignments(env, settings),
             "  cd \"$workspace\"",
@@ -1209,15 +1336,9 @@ defmodule SymphonyElixir.Workspace do
           ]
           |> Enum.join("\n")
 
-        run_remote_command(worker_host, script, hooks.timeout_ms)
-        |> case do
+        case run_remote_command(worker_host, script, hooks.timeout_ms) do
           {:ok, {output, status}} ->
-            handle_hook_command_result(
-              {output, status},
-              workspace,
-              issue_context,
-              "before_remove"
-            )
+            handle_remote_before_remove_result({output, status}, workspace, issue_context, worker_host)
 
           {:error, {:workspace_hook_timeout, "before_remove", _timeout_ms} = reason} ->
             {:error, reason}
@@ -1225,7 +1346,17 @@ defmodule SymphonyElixir.Workspace do
           {:error, reason} ->
             {:error, reason}
         end
-        |> ignore_hook_failure()
+        |> ignore_non_containment_hook_failure()
+    end
+  end
+
+  defp handle_remote_before_remove_result({output, status}, workspace, issue_context, worker_host) do
+    case remote_workspace_containment_failure?(status, output) do
+      true ->
+        {:error, {:workspace_remove_failed, worker_host, status, output}}
+
+      false ->
+        handle_hook_command_result({output, status}, workspace, issue_context, "before_remove")
     end
   end
 
@@ -1259,6 +1390,18 @@ defmodule SymphonyElixir.Workspace do
 
   defp ignore_hook_failure(:ok), do: :ok
   defp ignore_hook_failure({:error, _reason}), do: :ok
+
+  defp ignore_non_containment_hook_failure({:error, {:workspace_remove_failed, _worker_host, status, _output}} = error)
+       when status in 50..53,
+       do: error
+
+  defp ignore_non_containment_hook_failure(result), do: ignore_hook_failure(result)
+
+  defp remote_workspace_containment_failure?(status, output) when status in 50..53 and is_binary(output) do
+    String.contains?(output, ["workspace_root_unreadable:", "workspace_path_unreadable:", "workspace_symlink_rejected:", "workspace_equals_root:", "workspace_outside_root:"])
+  end
+
+  defp remote_workspace_containment_failure?(_status, _output), do: false
 
   defp workspace_ref_hook_env(issue_context) do
     settings = settings_for_issue_context(issue_context)

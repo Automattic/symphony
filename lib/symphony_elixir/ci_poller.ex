@@ -15,6 +15,11 @@ defmodule SymphonyElixir.CiPoller do
   @closed_pr_states ["CLOSED", "MERGED"]
   @github_error_backoff_threshold 3
   @max_github_error_backoff_ms 300_000
+  # Grace window after a CI-failure dispatch during which escalation is held off,
+  # giving the orchestrator time to pick up the In Progress issue and mark the
+  # rework run "running". Without it, the poll immediately following the final
+  # retry's dispatch could escalate before the agent starts and abandon it.
+  @dispatch_start_grace_ms 120_000
   @status_table :ci_poller_status
 
   defmodule State do
@@ -329,7 +334,7 @@ defmodule SymphonyElixir.CiPoller do
         rerun_failed_ci(record, ci_status, failed_checks, settings, opts, now)
 
       ci_retry_count(record) >= settings.ci.max_retries and Map.get(record, :status) != "escalated" and
-          not rework_in_progress?(record, opts) ->
+        not rework_in_progress?(record, opts) and not recently_dispatched?(record, commit_sha, now) ->
         escalate_ci_failure(record, ci_status, failed_checks, settings, opts, now)
 
       Map.get(record, :status) == "escalated" ->
@@ -992,6 +997,22 @@ defmodule SymphonyElixir.CiPoller do
   defp rerun_attempted_for_sha?(record, sha), do: sha in string_list(Map.get(record, :rerun_attempted_shas, []))
   defp dispatched_for_sha?(record, sha), do: sha in string_list(Map.get(record, :dispatched_shas, []))
 
+  # A dispatch for this SHA landed within the start-grace window, so the rework
+  # agent may not have reached "running" yet. Hold off escalation until either it
+  # does (covered by rework_in_progress?/2) or the grace window lapses, so the
+  # final retry's just-dispatched agent is not escalated out from under itself.
+  defp recently_dispatched?(record, commit_sha, now) do
+    dispatched_for_sha?(record, commit_sha) and
+      Map.get(record, :last_action) == "dispatch" and
+      within_dispatch_grace?(Map.get(record, :last_action_at), now)
+  end
+
+  defp within_dispatch_grace?(%DateTime{} = last_action_at, %DateTime{} = now) do
+    DateTime.diff(now, last_action_at, :millisecond) < @dispatch_start_grace_ms
+  end
+
+  defp within_dispatch_grace?(_last_action_at, _now), do: false
+
   defp ci_owned_record?(record) do
     ci_retry_count(record) > 0 or Map.get(record, :status) in ["dispatch_requested", "escalated", "state_transition_error"]
   end
@@ -1003,8 +1024,9 @@ defmodule SymphonyElixir.CiPoller do
     active_agent_run?(issue_id, repo_key, opts) or pending_rework_review?(issue_id, repo_key, opts)
   end
 
-  # Runs and PR reviews are prefetched once per poll cycle so the green path
-  # does not rescan storage for every CI check (see rework_in_progress?/2).
+  # Runs and PR reviews are prefetched once per poll cycle so the green-deferral
+  # and escalation paths do not rescan storage for every CI check (see
+  # rework_in_progress?/2).
   defp put_prefetched_rework_sources(opts, _run_store, _repo_key, []), do: opts
 
   defp put_prefetched_rework_sources(opts, run_store, repo_key, _checks) do

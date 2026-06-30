@@ -3453,6 +3453,76 @@ defmodule SymphonyElixir.PrReviewPollerTest do
              StatefulRunStore.list_pr_reviews()
   end
 
+  test "failed Linear transition keeps pending reviewer comments durable and retryable" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+    issue = in_review_issue(updated_at: now)
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Please refactor this before merge.",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-1",
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    Application.put_env(:symphony_elixir, :pr_review_test_review_records, %{
+      issue.id => review_record(now)
+    })
+
+    # Fail the Linear transition itself (after the pending context is persisted).
+    Application.put_env(:symphony_elixir, :pr_review_test_state_update_failures, ["issue-1780"])
+
+    assert {:ok, %{actions: [{:state_transition_error, "issue-1780", :rework, :linear_unavailable}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               now: now
+             )
+
+    # The Linear transition never landed, so no issue state update is emitted.
+    refute_receive {:issue_state_update, _, _}, 50
+
+    assert [
+             %{
+               status: "state_transition_error",
+               error: ":linear_unavailable",
+               last_action: "rework",
+               last_action_at: nil,
+               pending_reviewer_comments: [%{id: "comment-1"}]
+             }
+           ] = StatefulRunStore.list_pr_reviews()
+
+    assert [%{id: "comment-1"}] =
+             PrReviewPoller.pending_reviewer_comments("issue-1780", run_store: StatefulRunStore)
+
+    # A subsequent poll retries the transition; with Linear recovered it lands.
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :rework, "In Progress"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               run_store: StatefulRunStore,
+               github: FakeGitHub,
+               now: DateTime.add(now, 5, :second)
+             )
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert [%{last_action: "rework", last_action_at: %DateTime{}, pending_reviewer_comments: [%{id: "comment-1"}]}] =
+             StatefulRunStore.list_pr_reviews()
+  end
+
   defp put_review(now, attrs \\ %{}) do
     now
     |> review_record(attrs)

@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Workflow
+  alias SymphonyElixir.Workspace
 
   @primary_key false
   @allowed_keys ~w(
@@ -811,7 +812,9 @@ defmodule SymphonyElixir.Config.SystemSchema do
 
   defp truthy_change?(changeset, field), do: get_field(changeset, field) == true
 
-  defp repo_workspace_key(name), do: String.replace(name, ~r/[^a-zA-Z0-9._-]/, "_")
+  # Mirror the real workspace path normalization so validation predicts the same
+  # collisions that Workspace.safe_identifier/1 would produce on disk.
+  defp repo_workspace_key(name), do: Workspace.safe_identifier(name)
 
   defp repo_names(changeset) do
     changeset

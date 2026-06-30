@@ -1007,6 +1007,55 @@ defmodule SymphonyElixir.CiPollerTest do
     assert [%{status: "failure_already_handled", ci_retry_count: 1}] = RunStore.list_ci_checks()
   end
 
+  test "freshly dispatched SHA is protected from escalation until the start-grace window lapses" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :ci_test_status, failed_status("abc123"))
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      ci: %{enabled: true, log_excerpt_lines: 3, max_retries: 1, escalation_state: "In Review"}
+    )
+
+    # No running agent yet: the orchestrator has not picked up the In Progress
+    # issue, so the rework run is not "running" in the dispatch->running gap.
+    put_run(issue, now)
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "dispatch_requested",
+               ci_retry_count: 1,
+               rerun_attempted_shas: ["abc123"],
+               dispatched_shas: ["abc123"],
+               last_observed_sha: "abc123",
+               last_action: "dispatch",
+               last_action_at: now,
+               updated_at: now
+             })
+
+    # Within the grace window the just-dispatched agent must not be escalated.
+    assert {:ok, %{actions: [{:already_handled, "issue-2401", "abc123"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    refute_receive {:issue_state_update, _, _}
+    assert [%{status: "failure_already_handled", ci_retry_count: 1}] = RunStore.list_ci_checks()
+
+    # Past the grace window with still no running agent, escalation proceeds.
+    assert {:ok, %{actions: [{:escalated, "issue-2401", "In Review"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 3, :minute))
+
+    assert_receive {:issue_state_update, "issue-2401", "In Review"}
+    assert [%{status: "escalated", ci_retry_count: 1}] = RunStore.list_ci_checks()
+  end
+
   test "escalated status survives a transient poll error" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()

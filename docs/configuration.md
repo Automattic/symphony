@@ -193,6 +193,7 @@ agent:
   prompts:
     include_project_guides: true
     project_guide_files: [AGENTS.md]
+    codex_stdio_soft_limit_bytes: 65536
   permissions:
     approval_policy:
       reject:
@@ -272,6 +273,10 @@ agent:
 - Explicit entries must be relative workspace paths and cannot contain `..`. Missing files are
   skipped. `@path` import lines are resolved recursively inside the workspace with size, depth, and
   file-count caps.
+- `prompts.codex_stdio_soft_limit_bytes` defaults to `65536`. Codex first-turn prompts larger than
+  this (in bytes) are replaced by a compact bootstrap prompt (see **Codex prompt transport** below).
+  Lower it if SRT-sandboxed Codex sessions still hit app-server stdout transport failures; the value
+  must be greater than `0`.
 
 **Network access:**
 
@@ -389,7 +394,8 @@ A set var substitutes the value; an empty var drops the entry; a missing var kee
   `auth.json`/`config.toml`/`AGENTS.md`/cloud requirements cache. Remote workers also receive a
   per-session `/tmp/symphony-codex-home-<id>` directory; Symphony tears both down at session stop.
 - **Codex prompt transport:** when the fully rendered first-turn prompt is larger than Symphony's
-  app-server stdio soft limit, Symphony sends a compact bootstrap prompt instead. The compact
+  app-server stdio soft limit (`agent.prompts.codex_stdio_soft_limit_bytes`, default 65536),
+  Symphony sends a compact bootstrap prompt instead. The compact
   prompt keeps the hard security rules and directs Codex to load issue details through scoped
   `linear_*` tools, preventing large echoed `userMessage` events from wedging the app-server
   stdout stream. Symphony also injects Codex-only guidance to run noisy validation commands

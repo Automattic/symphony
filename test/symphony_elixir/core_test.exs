@@ -2912,6 +2912,7 @@ defmodule SymphonyElixir.CoreTest do
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         agent_command: "#{codex_binary} app-server",
+        agent_codex_stdio_soft_limit_bytes: 12_000,
         prompt: String.duplicate("workflow detail\n", 1_000)
       )
 
@@ -2959,7 +2960,8 @@ defmodule SymphonyElixir.CoreTest do
       Schema.parse(%{
         agent: %{
           kind: "codex",
-          command: "codex app-server"
+          command: "codex app-server",
+          codex_stdio_prompt_soft_limit: 12_000
         }
       })
 

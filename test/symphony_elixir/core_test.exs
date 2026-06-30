@@ -1583,6 +1583,9 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(state.retry_attempts, issue_id)
     refute Map.has_key?(state.running, issue_id)
     refute MapSet.member?(state.claimed, issue_id)
+    # Claim is released, but the failed state is recorded so the next poll does
+    # not immediately re-dispatch into the same setup failure (tight loop).
+    assert Map.get(state.setup_failed, issue_id) == "In Progress"
   end
 
   test "first abnormal worker exit waits before retrying" do

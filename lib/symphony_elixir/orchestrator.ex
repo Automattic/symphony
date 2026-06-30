@@ -87,6 +87,7 @@ defmodule SymphonyElixir.Orchestrator do
       budget_daily_used: 0,
       budget_daily_paused_logged: false,
       budget_exhausted: MapSet.new(),
+      setup_failed: %{},
       pause: %{paused: false, reason: nil, paused_at: nil},
       operator_pause_logged: false,
       workspace_lifecycle_last_check_at_ms: nil,
@@ -526,7 +527,10 @@ defmodule SymphonyElixir.Orchestrator do
 
         maybe_comment_terminal_agent_setup_failure(issue_id, running_entry, reason)
         emit_run_failed(running_entry, error, nil)
-        release_issue_claim(state, issue_id)
+
+        state
+        |> release_issue_claim(issue_id)
+        |> mark_setup_failed(issue_id, running_entry)
 
       terminal_review_agent_block?(reason) ->
         Logger.error(
@@ -2350,7 +2354,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_dispatch_chosen_issue(issue, state, active_states, terminal_states) do
     if should_dispatch_issue?(issue, state, active_states, terminal_states) do
-      dispatch_issue(state, issue)
+      state
+      |> clear_setup_failed(issue.id)
+      |> dispatch_issue(issue)
     else
       state
     end
@@ -2376,24 +2382,24 @@ defmodule SymphonyElixir.Orchestrator do
   defp issue_created_at_sort_key(%Issue{}), do: 9_223_372_036_854_775_807
   defp issue_created_at_sort_key(_issue), do: 9_223_372_036_854_775_807
 
-  defp should_dispatch_issue?(
-         %Issue{} = issue,
-         %State{running: running, claimed: claimed, budget_exhausted: budget_exhausted} = state,
-         active_states,
-         terminal_states
-       ) do
+  defp should_dispatch_issue?(%Issue{} = issue, %State{} = state, active_states, terminal_states) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !post_pr_quiet_active_issue?(issue, state) and
-      !MapSet.member?(claimed, issue.id) and
-      !MapSet.member?(budget_exhausted, issue.id) and
-      !Map.has_key?(running, issue.id) and
-      available_slots(state) > 0 and
-      state_slots_available?(issue, running) and
-      worker_slots_available?(state)
+      issue_dispatch_slot_available?(issue, state)
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp issue_dispatch_slot_available?(%Issue{} = issue, %State{} = state) do
+    !MapSet.member?(state.claimed, issue.id) and
+      !MapSet.member?(state.budget_exhausted, issue.id) and
+      !setup_failed_suppressed?(state.setup_failed, issue) and
+      !Map.has_key?(state.running, issue.id) and
+      available_slots(state) > 0 and
+      state_slots_available?(issue, state.running) and
+      worker_slots_available?(state)
+  end
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)
@@ -2834,6 +2840,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp complete_issue(%State{} = state, issue_id, running_entry) do
     state = delete_persisted_retry(state, issue_id, running_repo_key(state, running_entry))
     state = remember_completed_run(state, issue_id, running_entry)
+    state = clear_setup_failed(state, issue_id)
 
     %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}
   end
@@ -3095,7 +3102,7 @@ defmodule SymphonyElixir.Orchestrator do
        %{
          now_ms: now_ms,
          orphan_sweep_result: startup_orphan_sweep_result(repo_key),
-         age_gc_result: :deferred,
+         age_gc_scan: Workspace.scan_stale_workspaces(repo_key, DateTime.utc_now()),
          quota: workspace_quota_status_from_config()
        }}
     end)
@@ -3104,12 +3111,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp apply_startup_workspace_lifecycle_result(%State{} = state, %{
          now_ms: now_ms,
          orphan_sweep_result: orphan_sweep_result,
-         age_gc_result: age_gc_result,
+         age_gc_scan: age_gc_scan,
          quota: quota
        }) do
     state
     |> apply_startup_orphan_sweep_result(orphan_sweep_result)
-    |> apply_startup_workspace_age_gc_result(age_gc_result, now_ms)
+    |> apply_startup_workspace_age_gc_scan(age_gc_scan, now_ms)
     |> Map.put(:workspace_lifecycle_last_check_at_ms, now_ms)
     |> apply_workspace_quota_result(quota)
   end
@@ -3148,13 +3155,20 @@ defmodule SymphonyElixir.Orchestrator do
     state
   end
 
-  defp apply_startup_workspace_age_gc_result(%State{} = state, :deferred, now_ms) do
-    age_gc_result = workspace_age_gc_result(state.repo_key, active_workspace_identifiers(state))
-    apply_workspace_age_gc_result(state, {:ran, age_gc_result}, now_ms)
+  # The scan ran in the async startup task; only the cheap protected-identifier
+  # filter and the bounded deletes run here, against the current active set, so
+  # workspaces that became active during startup are never reclaimed.
+  defp apply_startup_workspace_age_gc_scan(%State{} = state, {:ok, stale_entries}, now_ms) do
+    actions = Workspace.delete_stale_workspaces(stale_entries, active_workspace_identifiers(state))
+    apply_workspace_age_gc_result(state, {:ran, {:ok, actions}}, now_ms)
   end
 
-  defp apply_startup_workspace_age_gc_result(%State{} = state, age_gc_result, now_ms) do
-    apply_workspace_age_gc_result(state, {:ran, age_gc_result}, now_ms)
+  defp apply_startup_workspace_age_gc_scan(%State{} = state, {:error, reason}, now_ms) do
+    apply_workspace_age_gc_result(state, {:ran, {:error, reason}}, now_ms)
+  end
+
+  defp apply_startup_workspace_age_gc_scan(%State{} = state, other, now_ms) do
+    apply_workspace_age_gc_result(state, {:ran, other}, now_ms)
   end
 
   defp startup_tracked_workspace_identifiers(repo_key) do
@@ -3552,6 +3566,31 @@ defmodule SymphonyElixir.Orchestrator do
     state = delete_persisted_retry(state, issue_id)
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
+
+  # Terminal setup failures release the claim so the issue can recover without an
+  # orchestrator restart, but record the state it failed in so the next poll does
+  # not immediately re-dispatch it into the same failure (tight loop + repeated
+  # comments). The suppression lifts once the issue moves to a different tracker
+  # state (an explicit operator action) or the orchestrator restarts.
+  defp mark_setup_failed(%State{} = state, issue_id, running_entry) when is_binary(issue_id) do
+    %{state | setup_failed: Map.put(state.setup_failed, issue_id, setup_failed_issue_state(running_entry))}
+  end
+
+  defp setup_failed_issue_state(%{issue: %Issue{state: state_name}}) when is_binary(state_name), do: state_name
+  defp setup_failed_issue_state(_running_entry), do: nil
+
+  defp clear_setup_failed(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | setup_failed: Map.delete(state.setup_failed, issue_id)}
+  end
+
+  defp setup_failed_suppressed?(setup_failed, %Issue{id: id, state: state_name}) when is_map(setup_failed) do
+    case Map.fetch(setup_failed, id) do
+      {:ok, failed_state} -> failed_state == state_name
+      :error -> false
+    end
+  end
+
+  defp setup_failed_suppressed?(_setup_failed, _issue), do: false
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
     if retry_delay_type(metadata) == :continuation and attempt == 1 do

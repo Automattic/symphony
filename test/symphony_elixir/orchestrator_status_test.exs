@@ -2168,7 +2168,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     active_workspace = Path.join([workspace_root, "default", "MT-ACTIVE-STARTUP"])
     File.mkdir_p!(active_workspace)
-    File.touch!(active_workspace, {{2026, 1, 1}, {0, 0, 0}})
+    # Stale relative to now so the test never depends on the wall clock being at
+    # or past a hard-coded date (max_age_days is 1 in this workflow).
+    File.touch!(active_workspace, System.os_time(:second) - 30 * 86_400)
 
     issue = %Issue{
       id: "issue-active-startup-gc",

@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.GitHub.Repo, as: GitHubRepo
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @unsafe_worktree_reset_marker "unsafe_worktree_reset"
   @safe_git_config_overrides [
     "core.sshCommand=ssh",
     "core.fsmonitor=",
@@ -211,7 +212,7 @@ defmodule SymphonyElixir.Workspace do
         "  exit 41",
         "fi",
         "git -C \"$repo\" rev-parse --git-dir >/dev/null",
-        settings.workspace.fetch_before_dispatch && "git -C \"$repo\" fetch origin",
+        remote_fetch_before_dispatch_command(settings),
         remote_workspace_parent_containment_preamble(),
         "if [ -d \"$workspace\" ]; then",
         "  if ! worktrees=$(git -C \"$repo\" worktree list --porcelain); then",
@@ -225,6 +226,7 @@ defmodule SymphonyElixir.Workspace do
         "  fi",
         "  if [ -n \"$reset_base_ref\" ]; then",
         "    reset_base_sha=$(git -C \"$repo\" rev-parse --verify --end-of-options \"$reset_base_ref^{commit}\")",
+        remote_worktree_reset_safety_lines(),
         "    git -C \"$workspace\" reset --hard \"$reset_base_sha\"",
         "  fi",
         "  created=0",
@@ -241,6 +243,7 @@ defmodule SymphonyElixir.Workspace do
         remote_workspace_containment_check(),
         "printf '%s\\t%s\\t%s\\n' '#{@remote_workspace_marker}' \"$created\" \"$physical_workspace\""
       ]
+      |> List.flatten()
       |> Enum.reject(&(&1 in ["", nil, false]))
       |> Enum.join("\n")
 
@@ -250,6 +253,9 @@ defmodule SymphonyElixir.Workspace do
 
       {:ok, {output, 45}} ->
         {:error, parse_remote_branch_collision(output, workspace)}
+
+      {:ok, {output, 46}} ->
+        {:error, parse_remote_unsafe_worktree_reset(output, workspace)}
 
       {:ok, {output, status}} ->
         {:error, {:workspace_prepare_failed, worker_host, status, output}}
@@ -279,6 +285,12 @@ defmodule SymphonyElixir.Workspace do
     case settings.workspace.fetch_before_dispatch do
       true -> run_git(repo, ["fetch", "origin"])
       false -> :ok
+    end
+  end
+
+  defp remote_fetch_before_dispatch_command(settings) do
+    if settings.workspace.fetch_before_dispatch do
+      "git -C \"$repo\" fetch origin"
     end
   end
 
@@ -318,9 +330,59 @@ defmodule SymphonyElixir.Workspace do
   defp reset_worktree_to_base_ref(_workspace, ""), do: :ok
 
   defp reset_worktree_to_base_ref(workspace, base_ref) when is_binary(base_ref) do
-    with {:ok, commit_sha} <- resolve_git_commit(workspace, base_ref) do
+    with {:ok, commit_sha} <- resolve_git_commit(workspace, base_ref),
+         :ok <- ensure_worktree_reset_safe(workspace, base_ref, commit_sha) do
       run_git(workspace, ["reset", "--hard", commit_sha])
     end
+  end
+
+  defp ensure_worktree_reset_safe(workspace, base_ref, target_sha) do
+    with :ok <- ensure_worktree_clean_for_reset(workspace, base_ref, target_sha) do
+      ensure_no_unpushed_commits_lost_by_reset(workspace, base_ref, target_sha)
+    end
+  end
+
+  defp ensure_worktree_clean_for_reset(workspace, base_ref, target_sha) do
+    case git_output(workspace, ["status", "--porcelain=v1", "--untracked-files=all"]) do
+      {:ok, ""} ->
+        :ok
+
+      {:ok, status} ->
+        extra = [status: summarize_git_lines(status)]
+        error = unsafe_worktree_reset_error(:dirty_worktree, workspace, base_ref, target_sha, extra)
+
+        {:error, error}
+
+      {:error, reason, output} ->
+        {:error, reason, output}
+    end
+  end
+
+  defp ensure_no_unpushed_commits_lost_by_reset(workspace, base_ref, target_sha) do
+    case git_output(workspace, ["rev-list", "--max-count=20", "HEAD", "--not", "--remotes"]) do
+      {:ok, ""} ->
+        :ok
+
+      {:ok, commits} ->
+        extra = [commits: summarize_git_lines(commits)]
+        error = unsafe_worktree_reset_error(:unpushed_commits, workspace, base_ref, target_sha, extra)
+
+        {:error, error}
+
+      {:error, reason, output} ->
+        {:error, reason, output}
+    end
+  end
+
+  defp unsafe_worktree_reset_error(reason, workspace, base_ref, target_sha, extra) do
+    {:unsafe_worktree_reset, reason, [workspace: workspace, base_ref: base_ref, target: target_sha] ++ extra}
+  end
+
+  defp summarize_git_lines(output) do
+    output
+    |> IO.iodata_to_binary()
+    |> String.split("\n", trim: true)
+    |> Enum.take(20)
   end
 
   # Adds the skip-comments file to the worktree's git exclude so the agent can write
@@ -449,6 +511,27 @@ defmodule SymphonyElixir.Workspace do
 
   defp remote_worktree_add_command do
     "branch_owner=$(git -C \"$repo\" worktree list --porcelain | awk -v b=\"$branch\" 'BEGIN { wt = \"\" } /^worktree / { wt = substr($0, 10); next } $0 == \"branch refs/heads/\" b { print wt; exit }'); if [ -n \"$branch_owner\" ] && [ \"$branch_owner\" != \"$workspace\" ]; then printf 'workspace_branch_already_checked_out_elsewhere\\t%s\\t%s\\t%s\\n' \"$branch\" \"$branch_owner\" \"$workspace\"; exit 45; fi; if [ \"$base_ref\" != \"HEAD\" ]; then git -C \"$repo\" worktree add -B \"$branch\" \"$workspace\" \"$base_ref\"; elif git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
+  end
+
+  defp remote_worktree_reset_safety_lines do
+    [
+      "    reset_status=$(git -C \"$workspace\" status --porcelain=v1 --untracked-files=all)",
+      "    if [ -n \"$reset_status\" ]; then",
+      "      printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \\",
+      "        '#{@unsafe_worktree_reset_marker}' 'dirty_worktree' \"$workspace\" \\",
+      "        \"$reset_base_ref\" \"$reset_base_sha\"",
+      "      printf '%s\\n' \"$reset_status\"",
+      "      exit 46",
+      "    fi",
+      "    reset_lost_commits=$(git -C \"$workspace\" rev-list --max-count=20 HEAD --not --remotes)",
+      "    if [ -n \"$reset_lost_commits\" ]; then",
+      "      printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \\",
+      "        '#{@unsafe_worktree_reset_marker}' 'unpushed_commits' \"$workspace\" \\",
+      "        \"$reset_base_ref\" \"$reset_base_sha\"",
+      "      printf '%s\\n' \"$reset_lost_commits\"",
+      "      exit 46",
+      "    fi"
+    ]
   end
 
   # Builds the shell preamble that canonicalizes the remote workspace root and
@@ -1730,6 +1813,39 @@ defmodule SymphonyElixir.Workspace do
         reason
     end
   end
+
+  defp parse_remote_unsafe_worktree_reset(output, requested_workspace) do
+    output = IO.iodata_to_binary(output)
+
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.find_value(fn line ->
+      case String.split(line, "\t", parts: 5) do
+        [@unsafe_worktree_reset_marker, reason, workspace, base_ref, target] ->
+          unsafe_worktree_reset_error(
+            parse_unsafe_worktree_reset_reason(reason),
+            workspace,
+            base_ref,
+            target,
+            output: summarize_git_lines(output)
+          )
+
+        _ ->
+          nil
+      end
+    end)
+    |> case do
+      nil ->
+        unsafe_worktree_reset_error(:unknown, requested_workspace, nil, nil, output: summarize_git_lines(output))
+
+      reason ->
+        reason
+    end
+  end
+
+  defp parse_unsafe_worktree_reset_reason("dirty_worktree"), do: :dirty_worktree
+  defp parse_unsafe_worktree_reset_reason("unpushed_commits"), do: :unpushed_commits
+  defp parse_unsafe_worktree_reset_reason(_reason), do: :unknown
 
   defp parse_remote_workspace_output(output) do
     lines = String.split(IO.iodata_to_binary(output), "\n", trim: true)

@@ -403,6 +403,7 @@ defmodule SymphonyElixir.Config.SystemSchema do
     |> cast_embed(:repos, with: &Repo.changeset/2, required: true)
     |> validate_length(:repos, min: 1)
     |> validate_unique_repo_names()
+    |> validate_unique_repo_workspace_keys()
     |> validate_single_default_repo()
   end
 
@@ -773,18 +774,25 @@ defmodule SymphonyElixir.Config.SystemSchema do
   defp validate_unique_repo_names(changeset) do
     duplicate_names =
       changeset
-      |> get_change(:repos, [])
-      |> Enum.flat_map(fn repo_changeset ->
-        case get_field(repo_changeset, :name) do
-          name when is_binary(name) and name != "" -> [name]
-          _name -> []
-        end
-      end)
+      |> repo_names()
       |> duplicate_values()
 
     case duplicate_names do
       [] -> changeset
       _duplicates -> add_error(changeset, :repos, "keys must be unique")
+    end
+  end
+
+  defp validate_unique_repo_workspace_keys(changeset) do
+    duplicate_workspace_keys =
+      changeset
+      |> repo_names()
+      |> Enum.map(&repo_workspace_key/1)
+      |> duplicate_values()
+
+    case duplicate_workspace_keys do
+      [] -> changeset
+      _duplicates -> add_error(changeset, :repos, "keys must not collide after workspace normalization")
     end
   end
 
@@ -802,6 +810,19 @@ defmodule SymphonyElixir.Config.SystemSchema do
   end
 
   defp truthy_change?(changeset, field), do: get_field(changeset, field) == true
+
+  defp repo_workspace_key(name), do: String.replace(name, ~r/[^a-zA-Z0-9._-]/, "_")
+
+  defp repo_names(changeset) do
+    changeset
+    |> get_change(:repos, [])
+    |> Enum.flat_map(fn repo_changeset ->
+      case get_field(repo_changeset, :name) do
+        name when is_binary(name) and name != "" -> [name]
+        _name -> []
+      end
+    end)
+  end
 
   defp duplicate_values(values) do
     {_seen, duplicates} =

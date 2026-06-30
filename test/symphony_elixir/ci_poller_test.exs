@@ -667,7 +667,7 @@ defmodule SymphonyElixir.CiPollerTest do
                issue_identifier: issue.identifier,
                pr_url: List.first(issue.pr_urls),
                workspace_path: "/tmp/workspaces/ACME-2401",
-               status: "rework_requested",
+               status: "rework_transition_pending",
                pending_reviewer_comments: [%{id: "comment-1", body: "Please adjust."}],
                updated_at: now
              })
@@ -817,7 +817,7 @@ defmodule SymphonyElixir.CiPollerTest do
     assert CiPoller.log_excerpt_for_test(log, 5) == "ERROR: broken\n??\nlast"
   end
 
-  test "Linear transition failure leaves dispatch state recorded so the SHA is not redispatched" do
+  test "Linear transition failure clears dispatch marker so the SHA can be redispatched" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()
     Application.put_env(:symphony_elixir, :ci_test_issues, [])
@@ -853,8 +853,8 @@ defmodule SymphonyElixir.CiPollerTest do
     assert [
              %{
                status: "state_transition_error",
-               ci_retry_count: 1,
-               dispatched_shas: ["abc123"],
+               ci_retry_count: 0,
+               dispatched_shas: [],
                ci_failure: %{commit_sha: "abc123"},
                log_excerpt: log_excerpt
              }
@@ -862,10 +862,11 @@ defmodule SymphonyElixir.CiPollerTest do
 
     assert is_binary(log_excerpt) and log_excerpt != ""
 
-    # A subsequent poll past the backoff window must not re-dispatch the same SHA.
+    # A subsequent poll past the backoff window should re-dispatch the same SHA
+    # because the previous Linear transition never landed.
     later = DateTime.add(poll_time, 2, :minute)
 
-    assert {:ok, %{actions: [{:already_handled, "issue-2401", "abc123"}]}} =
+    assert {:ok, %{actions: [{:state_transitioned, "issue-2401", :ci_failure, "In Progress"}]}} =
              CiPoller.poll_once(
                tracker: FakeTracker,
                github: FakeGitHub,
@@ -873,7 +874,11 @@ defmodule SymphonyElixir.CiPollerTest do
                now: later
              )
 
-    refute_receive {:issue_state_update, _, _}
+    assert_receive {:ci_failure_at_transition, "issue-2401", %{commit_sha: "abc123"}}
+    assert_receive {:issue_state_update, "issue-2401", "In Progress"}
+
+    assert [%{status: "dispatch_requested", ci_retry_count: 1, dispatched_shas: ["abc123"]}] =
+             RunStore.list_ci_checks()
   end
 
   test "transient GitHub errors are recorded without dispatching" do
@@ -928,9 +933,7 @@ defmodule SymphonyElixir.CiPollerTest do
            ] = RunStore.list_ci_checks()
   end
 
-  test "dispatched SHA is protected from escalation on the next poll" do
-    # Race-protection: after a dispatch lands, the next poll for the same SHA
-    # must not escalate (and kill the in-flight agent run).
+  test "dispatched SHA escalates after max retries once no agent is running" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()
     Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
@@ -943,6 +946,43 @@ defmodule SymphonyElixir.CiPollerTest do
     )
 
     put_run(issue, now)
+
+    assert :ok =
+             RunStore.put_ci_check(%{
+               repo_key: @repo_key,
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               issue_url: issue.url,
+               pr_url: List.first(issue.pr_urls),
+               workspace_path: "/tmp/workspaces/ACME-2401",
+               status: "dispatch_requested",
+               ci_retry_count: 1,
+               rerun_attempted_shas: ["abc123"],
+               dispatched_shas: ["abc123"],
+               last_observed_sha: "abc123",
+               updated_at: now
+             })
+
+    assert {:ok, %{actions: [{:escalated, "issue-2401", "In Review"}]}} =
+             CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
+
+    assert_receive {:issue_state_update, "issue-2401", "In Review"}
+    assert [%{status: "escalated", ci_retry_count: 1}] = RunStore.list_ci_checks()
+  end
+
+  test "dispatched SHA is protected from escalation while an agent is running" do
+    now = ~U[2026-05-06 09:00:00Z]
+    issue = in_review_issue()
+    Application.put_env(:symphony_elixir, :ci_test_issues, [issue])
+    Application.put_env(:symphony_elixir, :ci_test_status, failed_status("abc123"))
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      pr_review_mode: "polling",
+      ci: %{enabled: true, log_excerpt_lines: 3, max_retries: 1, escalation_state: "In Review"}
+    )
+
+    put_run(issue, now, "running")
 
     assert :ok =
              RunStore.put_ci_check(%{

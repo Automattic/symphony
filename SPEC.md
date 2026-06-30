@@ -501,7 +501,7 @@ Fields:
 
 Validation:
 
-- Repo names MUST be unique.
+- Repo names MUST be unique, including after workspace path sanitization.
 - `repositories:` MUST contain at least one entry.
 - At most one repo may set `default: true`.
 - With multiple repos, unscoped non-default repos are rejected.

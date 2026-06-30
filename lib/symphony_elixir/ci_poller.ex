@@ -328,18 +328,19 @@ defmodule SymphonyElixir.CiPoller do
       flaky_retry?(settings) and not rerun_attempted_for_sha?(record, commit_sha) ->
         rerun_failed_ci(record, ci_status, failed_checks, settings, opts, now)
 
-      dispatched_for_sha?(record, commit_sha) ->
-        attrs =
-          ci_status_attrs(record, ci_status, %{status: "failure_already_handled", failed_checks: failed_checks}, now)
-
-        complete_ci_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), commit_sha})
-
-      ci_retry_count(record) >= settings.ci.max_retries and Map.get(record, :status) != "escalated" ->
+      ci_retry_count(record) >= settings.ci.max_retries and Map.get(record, :status) != "escalated" and
+          not rework_in_progress?(record, opts) ->
         escalate_ci_failure(record, ci_status, failed_checks, settings, opts, now)
 
       Map.get(record, :status) == "escalated" ->
         attrs =
           ci_status_attrs(record, ci_status, %{status: "escalated", failed_checks: failed_checks}, now)
+
+        complete_ci_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), commit_sha})
+
+      dispatched_for_sha?(record, commit_sha) ->
+        attrs =
+          ci_status_attrs(record, ci_status, %{status: "failure_already_handled", failed_checks: failed_checks}, now)
 
         complete_ci_update(opts, record, attrs, {:already_handled, Map.get(record, :issue_id), commit_sha})
 
@@ -686,6 +687,8 @@ defmodule SymphonyElixir.CiPoller do
         ci_status,
         %{
           status: "state_transition_error",
+          ci_retry_count: ci_retry_count(record),
+          dispatched_shas: string_list(Map.get(record, :dispatched_shas, [])),
           failed_checks: failed_checks,
           last_action: action,
           last_action_at: nil
@@ -1056,7 +1059,6 @@ defmodule SymphonyElixir.CiPoller do
       {:ok, reviews} ->
         Enum.any?(reviews, fn review ->
           Map.get(review, :issue_id) == issue_id and
-            Map.get(review, :status) == "rework_requested" and
             pending_reviewer_comments?(Map.get(review, :pending_reviewer_comments))
         end)
 

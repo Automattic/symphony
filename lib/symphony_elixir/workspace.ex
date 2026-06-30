@@ -225,7 +225,14 @@ defmodule SymphonyElixir.Workspace do
         "  fi",
         "  if [ -n \"$reset_base_ref\" ]; then",
         "    reset_base_sha=$(git -C \"$repo\" rev-parse --verify --end-of-options \"$reset_base_ref^{commit}\")",
-        "    git -C \"$workspace\" reset --hard \"$reset_base_sha\"",
+        remote_worktree_branch_owner_command(),
+        "    if [ -n \"$branch_owner\" ] && [ \"$branch_owner\" != \"$workspace\" ]; then",
+        "      printf '%s\\t%s\\t%s\\t%s\\n' 'workspace_branch_already_checked_out_elsewhere' \\",
+        "        \"$branch\" \"$branch_owner\" \"$workspace\"",
+        "      exit 45",
+        "    fi",
+        "    git -C \"$workspace\" reset --hard",
+        "    git -C \"$workspace\" checkout -f -B \"$branch\" \"$reset_base_sha\"",
         "  fi",
         "  created=0",
         "elif [ -e \"$workspace\" ]; then",
@@ -289,7 +296,7 @@ defmodule SymphonyElixir.Workspace do
   defp add_or_reuse_local_worktree(repo, workspace, branch, base_ref, create_base_ref) do
     cond do
       File.dir?(workspace) ->
-        reuse_local_worktree(repo, workspace, base_ref)
+        reuse_local_worktree(repo, workspace, branch, base_ref)
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
@@ -300,10 +307,10 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp reuse_local_worktree(repo, workspace, base_ref) do
+  defp reuse_local_worktree(repo, workspace, branch, base_ref) do
     case registered_worktree?(repo, workspace) do
       true ->
-        with :ok <- reset_worktree_to_base_ref(workspace, base_ref) do
+        with :ok <- reset_worktree_to_base_ref(repo, workspace, branch, base_ref) do
           {:ok, false}
         end
 
@@ -313,13 +320,16 @@ defmodule SymphonyElixir.Workspace do
   end
 
   # PR runs pass an explicit base_ref (e.g. "origin/<head>") so a redispatch sees
-  # the latest PR head. Issue runs pass nil and keep the existing worktree state.
-  defp reset_worktree_to_base_ref(_workspace, nil), do: :ok
-  defp reset_worktree_to_base_ref(_workspace, ""), do: :ok
+  # the latest PR head on the requested branch. Issue runs pass nil and keep the
+  # existing worktree state.
+  defp reset_worktree_to_base_ref(_repo, _workspace, _branch, nil), do: :ok
+  defp reset_worktree_to_base_ref(_repo, _workspace, _branch, ""), do: :ok
 
-  defp reset_worktree_to_base_ref(workspace, base_ref) when is_binary(base_ref) do
-    with {:ok, commit_sha} <- resolve_git_commit(workspace, base_ref) do
-      run_git(workspace, ["reset", "--hard", commit_sha])
+  defp reset_worktree_to_base_ref(repo, workspace, branch, base_ref) when is_binary(base_ref) do
+    with :ok <- check_branch_not_checked_out_elsewhere(repo, workspace, branch),
+         {:ok, commit_sha} <- resolve_git_commit(workspace, base_ref),
+         :ok <- run_git(workspace, ["reset", "--hard"]) do
+      run_git(workspace, ["checkout", "-f", "-B", branch, commit_sha])
     end
   end
 
@@ -449,6 +459,16 @@ defmodule SymphonyElixir.Workspace do
 
   defp remote_worktree_add_command do
     "branch_owner=$(git -C \"$repo\" worktree list --porcelain | awk -v b=\"$branch\" 'BEGIN { wt = \"\" } /^worktree / { wt = substr($0, 10); next } $0 == \"branch refs/heads/\" b { print wt; exit }'); if [ -n \"$branch_owner\" ] && [ \"$branch_owner\" != \"$workspace\" ]; then printf 'workspace_branch_already_checked_out_elsewhere\\t%s\\t%s\\t%s\\n' \"$branch\" \"$branch_owner\" \"$workspace\"; exit 45; fi; if [ \"$base_ref\" != \"HEAD\" ]; then git -C \"$repo\" worktree add -B \"$branch\" \"$workspace\" \"$base_ref\"; elif git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
+  end
+
+  defp remote_worktree_branch_owner_command do
+    [
+      "branch_owner=$(printf '%s\\n' \"$worktrees\" | ",
+      "awk -v b=\"$branch\" 'BEGIN { wt = \"\" } ",
+      "/^worktree / { wt = substr($0, 10); next } ",
+      "$0 == \"branch refs/heads/\" b { print wt; exit }')"
+    ]
+    |> Enum.join("")
   end
 
   # Builds the shell preamble that canonicalizes the remote workspace root and

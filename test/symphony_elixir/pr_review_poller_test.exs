@@ -594,6 +594,7 @@ defmodule SymphonyElixir.PrReviewPollerTest do
       :symphony_elixir,
       :pr_review_test_activity,
       open_activity(latest_comment_at,
+        head_ref_name: "auto/ACME-1780",
         head_ref_oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         comments: [
           %{
@@ -626,6 +627,56 @@ defmodule SymphonyElixir.PrReviewPollerTest do
            ] = RunStore.list_pr_reviews()
 
     refute Map.has_key?(record, :last_addressed_comment_id)
+    assert PrReviewPoller.pending_pr_head_ref("issue-1780") == "auto/ACME-1780"
+  end
+
+  test "cross-repo reviewer comments remain watching and do not expose a PR head ref" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [in_review_issue(updated_at: now)])
+    :ok = put_review(now)
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        is_cross_repository: true,
+        head_ref_name: "contributor/fork-fix",
+        head_ref_oid: "fork-head-sha",
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Please refactor this before merge.",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-1",
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    assert {:ok, %{actions: [{:watching, "issue-1780"}]}} =
+             PrReviewPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: now)
+
+    refute_receive {:issue_state_update, _, _}
+
+    assert [
+             %{
+               status: "watching",
+               is_cross_repository: true,
+               head_ref_name: "contributor/fork-fix",
+               pending_reviewer_comments_reviewed_head_sha: "fork-head-sha",
+               pending_last_addressed_comment_id: "comment-1",
+               pending_reviewer_comments: [
+                 %{id: "comment-1", author: "human-reviewer", body: "Please refactor this before merge."}
+               ]
+             }
+           ] = RunStore.list_pr_reviews()
+
+    assert PrReviewPoller.pending_pr_head_ref("issue-1780") == nil
   end
 
   test "emits reviewer_commented once when actionable reviewer comments trigger rework" do
@@ -1037,6 +1088,59 @@ defmodule SymphonyElixir.PrReviewPollerTest do
 
     assert [%{status: "merge_requested", target_issue_state: "In Progress", last_action: "merge"}] =
              RunStore.list_pr_reviews()
+  end
+
+  test "moves an approved cross-repo issue to merge even when reviewer comments remain" do
+    now = ~U[2026-05-01 09:00:00Z]
+    latest_comment_at = DateTime.add(now, -31, :minute)
+    issue = in_review_issue(updated_at: now)
+
+    Application.put_env(:symphony_elixir, :pr_review_test_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :pr_review_test_activity,
+      open_activity(latest_comment_at,
+        is_cross_repository: true,
+        head_ref_name: "contributor/fork-fix",
+        head_ref_oid: "fork-head-sha",
+        review_decision: "APPROVED",
+        comments: [
+          %{
+            id: "comment-1",
+            kind: "comment",
+            author: "human-reviewer",
+            body: "Please refactor this before merge.",
+            url: "https://github.com/example/repo/pull/1780#issuecomment-1",
+            created_at: latest_comment_at,
+            updated_at: latest_comment_at
+          }
+        ]
+      )
+    )
+
+    :ok = put_review(now)
+
+    assert {:ok, %{actions: [{:state_transitioned, "issue-1780", :merge, "In Progress"}]}} =
+             PrReviewPoller.poll_once(
+               tracker: FakeTracker,
+               github: FakeGitHub,
+               now: now
+             )
+
+    assert_receive {:issue_state_update, "issue-1780", "In Progress"}
+
+    assert [
+             %{
+               status: "merge_requested",
+               target_issue_state: "In Progress",
+               last_action: "merge",
+               is_cross_repository: true,
+               pending_reviewer_comments: [%{id: "comment-1"}]
+             }
+           ] = RunStore.list_pr_reviews()
+
+    assert PrReviewPoller.pending_pr_head_ref("issue-1780") == nil
   end
 
   test "dispatches merge conflicts with PR metadata for the next prompt" do

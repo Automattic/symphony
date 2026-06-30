@@ -547,6 +547,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
 
         assert get_in(contents, ["permissions", "deny"]) == [
                  "Bash(gh:*)",
+                 "Bash(ghe:*)",
                  "Bash(git push:*)",
                  "Bash(git remote add:*)",
                  "Bash(git remote set-url:*)"

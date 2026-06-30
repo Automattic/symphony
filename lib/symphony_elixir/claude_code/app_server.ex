@@ -154,6 +154,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Map.put("permissions", %{
       "deny" => [
         "Bash(gh:*)",
+        "Bash(ghe:*)",
         "Bash(git push:*)",
         "Bash(git remote add:*)",
         "Bash(git remote set-url:*)"

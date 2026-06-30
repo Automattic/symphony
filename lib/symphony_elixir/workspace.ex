@@ -8,6 +8,9 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.GitHub.Repo, as: GitHubRepo
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @orphan_backup_identity "symphony"
+  @orphan_backup_email "symphony@localhost"
+  @orphan_backup_message "symphony: orphaned worktree state before PR reset"
   @safe_git_config_overrides [
     "core.sshCommand=ssh",
     "core.fsmonitor=",
@@ -211,7 +214,7 @@ defmodule SymphonyElixir.Workspace do
         "  exit 41",
         "fi",
         "git -C \"$repo\" rev-parse --git-dir >/dev/null",
-        settings.workspace.fetch_before_dispatch && "git -C \"$repo\" fetch origin",
+        remote_fetch_before_dispatch_command(settings),
         remote_workspace_parent_containment_preamble(),
         "if [ -d \"$workspace\" ]; then",
         "  if ! worktrees=$(git -C \"$repo\" worktree list --porcelain); then",
@@ -231,6 +234,7 @@ defmodule SymphonyElixir.Workspace do
         "        \"$branch\" \"$branch_owner\" \"$workspace\"",
         "      exit 45",
         "    fi",
+        remote_worktree_reset_backup_lines(),
         "    git -C \"$workspace\" reset --hard",
         "    git -C \"$workspace\" checkout -f -B \"$branch\" \"$reset_base_sha\"",
         "  fi",
@@ -248,6 +252,7 @@ defmodule SymphonyElixir.Workspace do
         remote_workspace_containment_check(),
         "printf '%s\\t%s\\t%s\\n' '#{@remote_workspace_marker}' \"$created\" \"$physical_workspace\""
       ]
+      |> List.flatten()
       |> Enum.reject(&(&1 in ["", nil, false]))
       |> Enum.join("\n")
 
@@ -289,6 +294,12 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp remote_fetch_before_dispatch_command(settings) do
+    if settings.workspace.fetch_before_dispatch do
+      "git -C \"$repo\" fetch origin"
+    end
+  end
+
   # `base_ref` drives the reuse path's `git reset --hard` (nil for issue runs so an
   # in-progress worktree is preserved; set by PR runs to the PR head). `create_base_ref`
   # drives fresh worktree creation, defaulting to the configured base branch so a new
@@ -327,10 +338,106 @@ defmodule SymphonyElixir.Workspace do
 
   defp reset_worktree_to_base_ref(repo, workspace, branch, base_ref) when is_binary(base_ref) do
     with :ok <- check_branch_not_checked_out_elsewhere(repo, workspace, branch),
-         {:ok, commit_sha} <- resolve_git_commit(workspace, base_ref),
-         :ok <- run_git(workspace, ["reset", "--hard"]) do
-      run_git(workspace, ["checkout", "-f", "-B", branch, commit_sha])
+         {:ok, commit_sha} <- resolve_git_commit(workspace, base_ref) do
+      _ = backup_local_work_before_reset(workspace)
+
+      with :ok <- run_git(workspace, ["reset", "--hard"]) do
+        run_git(workspace, ["checkout", "-f", "-B", branch, commit_sha])
+      end
     end
+  end
+
+  # Before the reuse reset rewrites the branch to the remote head, snapshot any
+  # local-only work so a crashed prior run's commits, uncommitted edits, or
+  # untracked files (which a colliding `checkout -f` would clobber) stay
+  # recoverable under refs/symphony/orphaned/<sha> instead of being silently
+  # dropped. Best-effort: backup failures never block the reset, which is what
+  # lets a rework adopt the authoritative remote head (e.g. UI-pushed commits).
+  defp backup_local_work_before_reset(workspace) do
+    case git_output(workspace, ["rev-parse", "HEAD"]) do
+      {:ok, head_output} ->
+        head_sha = head_output |> IO.iodata_to_binary() |> String.trim()
+
+        if worktree_has_local_only_work?(workspace) do
+          snapshot_orphaned_work(workspace, head_sha)
+        end
+
+      {:error, _reason, _output} ->
+        :ok
+    end
+
+    :ok
+  end
+
+  defp worktree_has_local_only_work?(workspace) do
+    worktree_dirty?(workspace) or worktree_has_unpushed_commits?(workspace)
+  end
+
+  defp worktree_dirty?(workspace) do
+    case git_output(workspace, ["status", "--porcelain=v1", "--untracked-files=all"]) do
+      {:ok, ""} -> false
+      {:ok, _status} -> true
+      {:error, _reason, _output} -> false
+    end
+  end
+
+  defp worktree_has_unpushed_commits?(workspace) do
+    case git_output(workspace, ["rev-list", "--max-count=1", "HEAD", "--not", "--remotes"]) do
+      {:ok, ""} -> false
+      {:ok, _commits} -> true
+      {:error, _reason, _output} -> false
+    end
+  end
+
+  # Snapshot the worktree's full visible state (tracked, uncommitted, and
+  # untracked-but-not-ignored files) as a commit parented on HEAD, so unpushed
+  # history and any working changes are recoverable from one ref. A throwaway
+  # index keeps the live index and worktree untouched.
+  defp snapshot_orphaned_work(workspace, head_sha) do
+    index_file = orphan_backup_index_path(workspace, head_sha)
+    index_env = [{"GIT_INDEX_FILE", index_file}]
+
+    # A throwaway index must not pre-exist; git rejects an empty/partial index
+    # file (e.g. one left by a crashed run) and would skip the backup otherwise.
+    _ = File.rm(index_file)
+
+    try do
+      with {_add, 0} <- safe_git(["-C", workspace, "add", "-A"], env: index_env),
+           {tree_out, 0} <- safe_git(["-C", workspace, "write-tree"], env: index_env),
+           tree = tree_out |> IO.iodata_to_binary() |> String.trim(),
+           {commit_out, 0} <- safe_git(orphan_commit_tree_args(workspace, tree, head_sha)) do
+        commit = commit_out |> IO.iodata_to_binary() |> String.trim()
+        ref = "refs/symphony/orphaned/#{head_sha}"
+        _ = run_git(workspace, ["update-ref", ref, commit])
+
+        Logger.warning("Workspace reset preserved local work workspace=#{workspace} head=#{head_sha} backup_ref=#{ref} backup_commit=#{commit}")
+      else
+        _ -> :ok
+      end
+    after
+      _ = File.rm(index_file)
+    end
+  end
+
+  defp orphan_commit_tree_args(workspace, tree, head_sha) do
+    [
+      "-C",
+      workspace,
+      "-c",
+      "user.name=#{@orphan_backup_identity}",
+      "-c",
+      "user.email=#{@orphan_backup_email}",
+      "commit-tree",
+      tree,
+      "-p",
+      head_sha,
+      "-m",
+      @orphan_backup_message
+    ]
+  end
+
+  defp orphan_backup_index_path(workspace, head_sha) do
+    Path.join(System.tmp_dir!(), "symphony-orphan-#{Path.basename(workspace)}-#{head_sha}.index")
   end
 
   # Adds the skip-comments file to the worktree's git exclude so the agent can write
@@ -459,6 +566,28 @@ defmodule SymphonyElixir.Workspace do
 
   defp remote_worktree_add_command do
     "branch_owner=$(git -C \"$repo\" worktree list --porcelain | awk -v b=\"$branch\" 'BEGIN { wt = \"\" } /^worktree / { wt = substr($0, 10); next } $0 == \"branch refs/heads/\" b { print wt; exit }'); if [ -n \"$branch_owner\" ] && [ \"$branch_owner\" != \"$workspace\" ]; then printf 'workspace_branch_already_checked_out_elsewhere\\t%s\\t%s\\t%s\\n' \"$branch\" \"$branch_owner\" \"$workspace\"; exit 45; fi; if [ \"$base_ref\" != \"HEAD\" ]; then git -C \"$repo\" worktree add -B \"$branch\" \"$workspace\" \"$base_ref\"; elif git -C \"$repo\" rev-parse --verify \"refs/heads/$branch\" >/dev/null 2>&1; then git -C \"$repo\" worktree add \"$workspace\" \"$branch\"; else git -C \"$repo\" worktree add -b \"$branch\" \"$workspace\" HEAD; fi"
+  end
+
+  # Mirror `snapshot_orphaned_work/2` for remote workers: snapshot a crashed run's
+  # unpushed commits plus uncommitted and untracked changes under
+  # refs/symphony/orphaned/<sha> before the reset rewrites the branch, so the
+  # rework still adopts the remote head without silently destroying local work.
+  # The whole block is a subshell guarded with `|| true` so a backup failure can
+  # never abort the `set -eu` script before the reset runs.
+  defp remote_worktree_reset_backup_lines do
+    [
+      "    ( reset_head_sha=$(git -C \"$workspace\" rev-parse HEAD 2>/dev/null) || exit 0",
+      "      [ -n \"$reset_head_sha\" ] || exit 0",
+      "      reset_dirty=$(git -C \"$workspace\" status --porcelain=v1 --untracked-files=all)",
+      "      reset_unpushed=$(git -C \"$workspace\" rev-list --max-count=1 HEAD --not --remotes)",
+      "      [ -n \"$reset_dirty\" ] || [ -n \"$reset_unpushed\" ] || exit 0",
+      "      reset_index=$(mktemp -u)",
+      "      GIT_INDEX_FILE=\"$reset_index\" git -C \"$workspace\" add -A",
+      "      reset_tree=$(GIT_INDEX_FILE=\"$reset_index\" git -C \"$workspace\" write-tree)",
+      "      rm -f \"$reset_index\"",
+      "      reset_backup=$(git -C \"$workspace\" -c user.name=#{@orphan_backup_identity} -c user.email=#{@orphan_backup_email} commit-tree \"$reset_tree\" -p \"$reset_head_sha\" -m '#{@orphan_backup_message}')",
+      "      git -C \"$workspace\" update-ref \"refs/symphony/orphaned/$reset_head_sha\" \"$reset_backup\" ) || true"
+    ]
   end
 
   defp remote_worktree_branch_owner_command do

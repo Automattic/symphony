@@ -3802,10 +3802,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       send(pid, :run_poll_cycle)
 
       running_record =
-        wait_for_run_record(fn
-          %{issue_id: "issue-interrupted-run", status: "running"} -> true
-          _record -> false
-        end)
+        wait_for_run_record(
+          fn
+            %{issue_id: "issue-interrupted-run", status: "running"} -> true
+            _record -> false
+          end,
+          2_000
+        )
 
       GenServer.stop(pid)
       terminate_task_supervisor_children()
@@ -3826,6 +3829,88 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       assert %DateTime{} = recovered_record.ended_at
 
       GenServer.stop(restarted_pid)
+    after
+      terminate_task_supervisor_children()
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "orchestrator startup marks interrupted runs for every configured repo" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-multi-repo-interrupted-run-recovery-#{System.unique_integer([:positive])}"
+      )
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: test_root,
+      poll_interval_ms: 60_000,
+      quality_gate: %{enabled: false},
+      repos: [
+        [key: "default", workflow: Workflow.workflow_file_path(), team: "Test"],
+        [key: "api", workflow: Workflow.workflow_file_path(), team: "API"]
+      ]
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    :ok = RunStore.clear()
+
+    now = DateTime.utc_now()
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: "default",
+               run_id: "run-default-interrupted",
+               issue_id: "issue-default-interrupted-run",
+               issue_identifier: "MT-502",
+               title: "Default interrupted run",
+               status: "running",
+               started_at: now,
+               updated_at: now
+             })
+
+    assert :ok =
+             RunStore.put_run(%{
+               repo_key: "api",
+               run_id: "run-api-interrupted",
+               issue_id: "issue-api-interrupted-run",
+               issue_identifier: "API-502",
+               title: "API interrupted run",
+               status: "running",
+               started_at: now,
+               updated_at: now
+             })
+
+    orchestrator_name = Module.concat(__MODULE__, :MultiRepoInterruptedRunRecoveryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    try do
+      default_recovered_record =
+        wait_for_run_record(fn
+          %{run_id: "run-default-interrupted", status: "failure", error: "orchestrator restarted before worker exit"} ->
+            true
+
+          _record ->
+            false
+        end)
+
+      assert default_recovered_record.issue_identifier == "MT-502"
+      assert %DateTime{} = default_recovered_record.ended_at
+
+      api_recovered_record =
+        wait_for_run_record("api", fn
+          %{run_id: "run-api-interrupted", status: "failure", error: "orchestrator restarted before worker exit"} ->
+            true
+
+          _record ->
+            false
+        end)
+
+      assert api_recovered_record.issue_identifier == "API-502"
+      assert %DateTime{} = api_recovered_record.ended_at
+
+      GenServer.stop(pid)
     after
       terminate_task_supervisor_children()
       File.rm_rf(test_root)
@@ -5752,9 +5837,21 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
   end
 
-  defp wait_for_run_record(predicate, timeout_ms \\ 500) when is_function(predicate, 1) do
+  defp wait_for_run_record(predicate) when is_function(predicate, 1) do
+    wait_for_run_record(predicate, 500)
+  end
+
+  defp wait_for_run_record(predicate, timeout_ms) when is_function(predicate, 1) and is_integer(timeout_ms) do
+    wait_for_run_record(Config.repo_key!(), predicate, timeout_ms)
+  end
+
+  defp wait_for_run_record(repo_key, predicate) when is_binary(repo_key) and is_function(predicate, 1) do
+    wait_for_run_record(repo_key, predicate, 500)
+  end
+
+  defp wait_for_run_record(repo_key, predicate, timeout_ms) when is_binary(repo_key) and is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_for_run_record(predicate, deadline_ms)
+    do_wait_for_run_record(repo_key, predicate, deadline_ms)
   end
 
   defp running_entry_for_token_test(%Issue{} = issue, %DateTime{} = started_at) do
@@ -5771,9 +5868,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
   end
 
-  defp do_wait_for_run_record(predicate, deadline_ms) do
+  defp do_wait_for_run_record(repo_key, predicate, deadline_ms) do
     record =
-      RunStore.list_runs(:all)
+      RunStore.list_runs(repo_key, :all)
       |> Enum.find(predicate)
 
     cond do
@@ -5781,11 +5878,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         record
 
       System.monotonic_time(:millisecond) >= deadline_ms ->
-        flunk("timed out waiting for run store record: #{inspect(RunStore.list_runs(:all))}")
+        flunk("timed out waiting for run store record: #{inspect(RunStore.list_runs(repo_key, :all))}")
 
       true ->
         Process.sleep(5)
-        do_wait_for_run_record(predicate, deadline_ms)
+        do_wait_for_run_record(repo_key, predicate, deadline_ms)
     end
   end
 

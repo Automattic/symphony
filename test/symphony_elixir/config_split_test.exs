@@ -352,6 +352,18 @@ defmodule SymphonyElixir.ConfigSplitTest do
 
     assert duplicate_message =~ "repositories keys must be unique"
 
+    assert {:error, {:invalid_symphony_config, normalized_duplicate_message}} =
+             SystemSchema.parse(
+               system_config(%{
+                 "repositories" => [
+                   repo_config("api/main"),
+                   repo_config("api_main")
+                 ]
+               })
+             )
+
+    assert normalized_duplicate_message =~ "repositories keys must not collide after workspace normalization"
+
     assert {:error, {:invalid_symphony_config, default_message}} =
              SystemSchema.parse(
                system_config(%{

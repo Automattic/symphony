@@ -155,7 +155,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     state = seed_watching_from_completed_run_metadata(state)
 
-    mark_interrupted_runs(repo_key)
+    mark_interrupted_runs_for_configured_repos(repo_key)
     tick_token = make_ref()
     send(self(), {:tick, tick_token})
     schedule_snapshot_publish(config.observability.snapshot_publish_ms)
@@ -4258,17 +4258,42 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp retry_attempt(_attempt), do: 1
 
+  defp mark_interrupted_runs_for_configured_repos(default_repo_key) do
+    default_repo_key
+    |> configured_repo_keys()
+    |> Enum.each(&mark_interrupted_runs/1)
+  end
+
+  defp configured_repo_keys(default_repo_key) do
+    case Config.repos() do
+      {:ok, repos} ->
+        repos
+        |> Enum.map(&Map.get(&1, :name))
+        |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+        |> Enum.uniq()
+        |> case do
+          [] -> [default_repo_key]
+          repo_keys -> repo_keys
+        end
+
+      {:error, reason} ->
+        Logger.warning("Failed to read configured repos for startup run interruption; using primary repo #{default_repo_key}: #{inspect(reason)}")
+
+        [default_repo_key]
+    end
+  end
+
   defp mark_interrupted_runs(repo_key) do
     case RunStore.interrupt_running_runs(repo_key, "orchestrator restarted before worker exit") do
       {:ok, 0} ->
         :ok
 
       {:ok, count} ->
-        Logger.warning("Marked #{count} previously running agent run(s) as failed after orchestrator startup")
+        Logger.warning("Marked #{count} previously running agent run(s) as failed after orchestrator startup repo_key=#{repo_key}")
         :ok
 
       {:error, reason} ->
-        Logger.warning("Failed to mark interrupted runs in run store: #{inspect(reason)}")
+        Logger.warning("Failed to mark interrupted runs in run store repo_key=#{repo_key}: #{inspect(reason)}")
         :ok
     end
   end

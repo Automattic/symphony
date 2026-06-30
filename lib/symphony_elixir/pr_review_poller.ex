@@ -1013,20 +1013,35 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp transition_issue_for_action(record, attrs, opts, now, action) do
-    issue_id = Map.get(record, :issue_id)
-
     if dispatch_paused?(opts) do
       defer_transition_action(record, attrs, opts, now, action)
     else
-      tracker = Keyword.get(opts, :tracker, Tracker)
+      persist_and_transition_action(record, attrs, opts, now, action)
+    end
+  end
 
-      case tracker.update_issue_state(issue_id, @active_state) do
-        :ok ->
-          complete_transition_action(record, attrs, opts, now, action)
+  defp persist_and_transition_action(record, attrs, opts, now, action) do
+    pending_attrs = pending_transition_action_attrs(attrs, action, now)
 
-        {:error, reason} ->
-          record_transition_error(record, attrs, opts, now, action, reason)
-      end
+    case update_review(opts, record, pending_attrs) do
+      :ok ->
+        transition_persisted_action(record, pending_attrs, opts, now, action)
+
+      {:error, reason} ->
+        {:state_transition_update_error, Map.get(record, :issue_id), action_atom(action), reason}
+    end
+  end
+
+  defp transition_persisted_action(record, pending_attrs, opts, now, action) do
+    tracker = Keyword.get(opts, :tracker, Tracker)
+    issue_id = Map.get(record, :issue_id)
+
+    case tracker.update_issue_state(issue_id, @active_state) do
+      :ok ->
+        complete_transition_action(record, pending_attrs, opts, now, action)
+
+      {:error, reason} ->
+        record_transition_error(record, pending_attrs, opts, now, action, reason)
     end
   end
 
@@ -1047,11 +1062,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   end
 
   defp complete_transition_action(record, attrs, opts, now, action) do
-    case update_review(
-           opts,
-           record,
-           transition_action_attrs(record, attrs, action, now)
-         ) do
+    case update_review(opts, record, transition_success_attrs(record, attrs, action, now)) do
       :ok ->
         maybe_emit_reviewer_commented(record, attrs, action, now)
         {:state_transitioned, Map.get(record, :issue_id), action_atom(action), @active_state}
@@ -1081,20 +1092,31 @@ defmodule SymphonyElixir.PrReviewPoller do
     end
   end
 
-  defp transition_action_attrs(record, attrs, action, now) do
-    attrs
-    |> Map.merge(%{
+  defp pending_transition_action_attrs(attrs, action, now) do
+    Map.merge(attrs, %{
+      status: "#{action}_transition_pending",
+      target_issue_state: @active_state,
+      last_action: nil,
+      last_action_at: nil,
+      error: nil,
+      updated_at: now
+    })
+  end
+
+  defp transition_success_attrs(record, attrs, action, now) do
+    %{
       status: "#{action}_requested",
       target_issue_state: @active_state,
+      error: nil,
       last_action: action,
       last_action_at: now,
       updated_at: now
-    })
-    |> maybe_mark_conflict_dispatched(record, action)
+    }
+    |> maybe_mark_conflict_dispatched(record, attrs, action)
   end
 
-  defp maybe_mark_conflict_dispatched(attrs, record, "conflict") do
-    conflict_key = Map.get(attrs, :last_conflict_key)
+  defp maybe_mark_conflict_dispatched(attrs, record, pending_attrs, "conflict") do
+    conflict_key = Map.get(pending_attrs, :last_conflict_key)
 
     attrs
     |> Map.put(:conflict_retry_count, conflict_retry_count(record) + 1)
@@ -1102,7 +1124,7 @@ defmodule SymphonyElixir.PrReviewPoller do
     |> Map.put(:error, nil)
   end
 
-  defp maybe_mark_conflict_dispatched(attrs, _record, _action), do: attrs
+  defp maybe_mark_conflict_dispatched(attrs, _record, _pending_attrs, _action), do: attrs
 
   defp cleanup_review(record, opts, now, reason) do
     workspace = Keyword.get(opts, :workspace, Workspace)

@@ -111,7 +111,8 @@ repositories:
       fetch_before_dispatch: true
 ```
 
-- `key`: unique repo key used in dashboards, run records, and prompt context.
+- `key`: unique repo key used in dashboards, run records, and prompt context. Keys must also remain
+  unique after workspace path sanitization.
 - `workflow`: path to that repo's `WORKFLOW.md`; defaults to `WORKFLOW.md`.
 - `default`: at most one repo can be the fallback route.
 - `base_branch`: optional branch used for review-agent diff context and as the base a
@@ -120,8 +121,9 @@ repositories:
 - `route`: Linear team, project, label, or assignee selectors.
 - `workspace`: per-repo override for workspace population.
 
-Routing validation rejects duplicate keys, identical routes, ambiguous team catch-alls, multiple
-defaults, and multi-repo global worktree settings that do not provide per-repo workspace overrides.
+Routing validation rejects duplicate keys, workspace-sanitized key collisions, identical routes,
+ambiguous team catch-alls, multiple defaults, and multi-repo global worktree settings that do not
+provide per-repo workspace overrides.
 
 ### `workspaces`
 

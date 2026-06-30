@@ -174,6 +174,7 @@ defmodule SymphonyElixir.PrReviewPoller do
   defp pending_pr_head_ref_for_repo(repo_key, issue_id, run_store) do
     with {:ok, reviews} <- list_pr_reviews(run_store, repo_key),
          %{} = record <- Enum.find(reviews, &(Map.get(&1, :issue_id) == issue_id)),
+         false <- unsupported_cross_repo?(record),
          true <- reviewer_comments_pending?(record) do
       string_field(record, :head_ref_name)
     else
@@ -753,15 +754,35 @@ defmodule SymphonyElixir.PrReviewPoller do
 
   defp reviewer_activity_action(activity, latest_activity_at, unaddressed_comments, changes_requested?, settings, now) do
     review_decision = normalize_decision(Map.get(activity, :review_decision))
+    cross_repo_unsupported = unsupported_cross_repo?(activity)
+    change_action = changes_requested_action(changes_requested?, cross_repo_unsupported)
+    comment_action = reviewer_comments_action(unaddressed_comments, cross_repo_unsupported)
 
     cond do
-      changes_requested? -> :changes_requested
-      review_decision == @approved -> :approved
-      unaddressed_comments != [] -> :review_comments
-      stale?(latest_activity_at, now, settings.pr_review.stale_days) -> :stale
-      true -> :watching
+      change_action ->
+        change_action
+
+      review_decision == @approved ->
+        :approved
+
+      comment_action ->
+        comment_action
+
+      stale?(latest_activity_at, now, settings.pr_review.stale_days) ->
+        :stale
+
+      true ->
+        :watching
     end
   end
+
+  defp changes_requested_action(false, _cross_repo_unsupported), do: nil
+  defp changes_requested_action(true, true), do: :watching
+  defp changes_requested_action(true, false), do: :changes_requested
+
+  defp reviewer_comments_action([], _cross_repo_unsupported), do: nil
+  defp reviewer_comments_action(_unaddressed_comments, true), do: :watching
+  defp reviewer_comments_action(_unaddressed_comments, false), do: :review_comments
 
   defp maybe_transition_conflict(record, attrs, opts, now) do
     issue_id = Map.get(record, :issue_id)

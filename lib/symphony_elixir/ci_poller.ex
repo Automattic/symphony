@@ -333,8 +333,7 @@ defmodule SymphonyElixir.CiPoller do
       flaky_retry?(settings) and not rerun_attempted_for_sha?(record, commit_sha) ->
         rerun_failed_ci(record, ci_status, failed_checks, settings, opts, now)
 
-      ci_retry_count(record) >= settings.ci.max_retries and Map.get(record, :status) != "escalated" and
-        not rework_in_progress?(record, opts) and not recently_dispatched?(record, commit_sha, now) ->
+      escalate_ci_failure?(record, settings, commit_sha, opts, now) ->
         escalate_ci_failure(record, ci_status, failed_checks, settings, opts, now)
 
       Map.get(record, :status) == "escalated" ->
@@ -996,6 +995,15 @@ defmodule SymphonyElixir.CiPoller do
 
   defp rerun_attempted_for_sha?(record, sha), do: sha in string_list(Map.get(record, :rerun_attempted_shas, []))
   defp dispatched_for_sha?(record, sha), do: sha in string_list(Map.get(record, :dispatched_shas, []))
+
+  # Escalate once retries are exhausted, but only when no rework is in flight and
+  # the latest dispatch has had time to start (see recently_dispatched?/3).
+  defp escalate_ci_failure?(record, settings, commit_sha, opts, now) do
+    ci_retry_count(record) >= settings.ci.max_retries and
+      Map.get(record, :status) != "escalated" and
+      not rework_in_progress?(record, opts) and
+      not recently_dispatched?(record, commit_sha, now)
+  end
 
   # A dispatch for this SHA landed within the start-grace window, so the rework
   # agent may not have reached "running" yet. Hold off escalation until either it

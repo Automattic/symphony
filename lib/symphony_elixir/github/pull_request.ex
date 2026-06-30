@@ -51,7 +51,10 @@ defmodule SymphonyElixir.GitHub.PullRequest do
           pr_url: String.t(),
           pr_title: String.t() | nil,
           state: String.t() | nil,
+          head_ref_name: String.t() | nil,
           commit_sha: String.t() | nil,
+          is_cross_repository: boolean() | nil,
+          head_repository: map() | nil,
           checks: [ci_check()]
         }
 
@@ -308,7 +311,7 @@ defmodule SymphonyElixir.GitHub.PullRequest do
       "view",
       pr_url,
       "--json",
-      "number,state,title,url,headRefOid,statusCheckRollup"
+      "number,state,title,url,headRefName,headRefOid,isCrossRepository,headRepository,statusCheckRollup"
     ]
 
     with {:ok, _host, _owner, _repo, _number} <- parse_github_pr_url(pr_url, opts),
@@ -319,7 +322,10 @@ defmodule SymphonyElixir.GitHub.PullRequest do
          pr_url: Map.get(pr, "url") || pr_url,
          pr_title: Map.get(pr, "title"),
          state: Map.get(pr, "state"),
+         head_ref_name: normalize_id(Map.get(pr, "headRefName")),
          commit_sha: normalize_id(Map.get(pr, "headRefOid")),
+         is_cross_repository: Map.get(pr, "isCrossRepository"),
+         head_repository: Map.get(pr, "headRepository"),
          checks: normalize_status_check_rollup(Map.get(pr, "statusCheckRollup"))
        }}
     else

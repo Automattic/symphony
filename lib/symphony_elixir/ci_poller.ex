@@ -655,6 +655,9 @@ defmodule SymphonyElixir.CiPoller do
         pr_url: Map.get(ci_status, :pr_url) || Map.get(record, :pr_url),
         pr_title: Map.get(ci_status, :pr_title),
         pr_state: Map.get(ci_status, :state),
+        head_ref_name: Map.get(ci_status, :head_ref_name),
+        is_cross_repository: Map.get(ci_status, :is_cross_repository),
+        head_repository: Map.get(ci_status, :head_repository),
         commit_sha: Map.get(ci_status, :commit_sha),
         last_observed_sha: Map.get(ci_status, :commit_sha),
         last_observed_conclusion: conclusion_for_status(ci_status),
@@ -907,20 +910,41 @@ defmodule SymphonyElixir.CiPoller do
   defp ci_failure_context(ci_status, failed_checks, log_excerpt) do
     %{
       commit_sha: Map.get(ci_status, :commit_sha),
+      head_ref_name: Map.get(ci_status, :head_ref_name),
+      is_cross_repository: Map.get(ci_status, :is_cross_repository),
+      head_repository: Map.get(ci_status, :head_repository),
       failed_checks: failed_checks,
       log_excerpt: log_excerpt
     }
   end
 
-  defp normalize_ci_failure(%{commit_sha: commit_sha, failed_checks: failed_checks, log_excerpt: log_excerpt}) do
-    %{
-      commit_sha: commit_sha,
-      failed_checks: failed_checks,
-      log_excerpt: log_excerpt
-    }
+  defp normalize_ci_failure(ci_failure) when is_map(ci_failure) do
+    commit_sha = ci_failure_value(ci_failure, :commit_sha)
+    failed_checks = ci_failure_value(ci_failure, :failed_checks)
+    log_excerpt = ci_failure_value(ci_failure, :log_excerpt)
+
+    if is_nil(commit_sha) and is_nil(failed_checks) and is_nil(log_excerpt) do
+      nil
+    else
+      %{
+        commit_sha: commit_sha,
+        head_ref_name: ci_failure_value(ci_failure, :head_ref_name),
+        is_cross_repository: ci_failure_value(ci_failure, :is_cross_repository),
+        head_repository: ci_failure_value(ci_failure, :head_repository),
+        failed_checks: failed_checks,
+        log_excerpt: log_excerpt
+      }
+    end
   end
 
   defp normalize_ci_failure(_ci_failure), do: nil
+
+  defp ci_failure_value(ci_failure, field) do
+    case Map.fetch(ci_failure, field) do
+      {:ok, value} -> value
+      :error -> Map.get(ci_failure, Atom.to_string(field))
+    end
+  end
 
   defp emit_ci_failed(record, ci_status, failed_checks, retry_count, target_state) do
     Notifications.emit_event(

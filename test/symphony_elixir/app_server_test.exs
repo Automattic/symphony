@@ -3563,6 +3563,7 @@ defmodule SymphonyElixir.AppServerTest do
                SymphonyElixir.AuditLog.list_events("issue-action-guard", ~D[2026-05-13], ~D[2026-05-13], dir: audit_dir)
 
       refused_events = Enum.filter(events, &(Map.get(&1, "event_type") == "refused_agent_action"))
+      pr_create_events = Enum.filter(refused_events, &(Map.get(&1, "action") == "gh_pr_create"))
 
       assert Enum.map(refused_events, &Map.get(&1, "action")) |> Enum.sort() == [
                "gh_pr_create",
@@ -3571,6 +3572,12 @@ defmodule SymphonyElixir.AppServerTest do
                "git_remote_add"
              ]
 
+      assert pr_create_events
+             |> Enum.map(&get_in(&1, ["details", "cli"]))
+             |> Enum.sort() == ["gh", "ghe"]
+
+      assert Enum.any?(pr_create_events, &(Map.get(&1, "message") =~ "Refused gh pr create"))
+      assert Enum.any?(pr_create_events, &(Map.get(&1, "message") =~ "Refused ghe pr create"))
       assert Enum.all?(refused_events, &(Map.get(&1, "repo_key") == "default"))
     after
       File.rm_rf(test_root)

@@ -2302,16 +2302,16 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp gh_pr_create_refusal(tokens, command, command_security) do
-    with pr_repo when is_binary(pr_repo) <- gh_pr_create_repo(tokens),
+    with %{cli: cli, repo: pr_repo} <- gh_pr_create_command(tokens),
          allowed_repo <- Map.get(command_security || %{}, :origin_repo),
          false <- same_repo?(pr_repo, allowed_repo) do
       {:refuse,
        refusal(
          "gh_pr_create",
          "pr_target_repo_not_allowed",
-         "Refused gh pr create because target repo #{inspect(pr_repo)} does not match configured origin #{inspect(allowed_repo)}.",
+         "Refused #{cli} pr create because target repo #{inspect(pr_repo)} does not match configured origin #{inspect(allowed_repo)}.",
          command,
-         %{target_repo: pr_repo, allowed_repo: allowed_repo}
+         %{cli: cli, target_repo: pr_repo, allowed_repo: allowed_repo}
        )}
     else
       _ -> nil
@@ -2451,17 +2451,27 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp gh_pr_create_repo(tokens) do
+  defp gh_pr_create_command(tokens) do
     tokens
     |> github_cli_command_windows()
-    |> Enum.find_value(fn gh_tokens ->
-      if gh_pr_create?(gh_tokens), do: option_argument(gh_tokens, ["--repo", "-R"]), else: nil
-    end)
-    |> normalize_repo_target()
+    |> Enum.find_value(&matched_gh_pr_create_command/1)
+  end
+
+  defp matched_gh_pr_create_command({cli, gh_tokens}) do
+    with true <- gh_pr_create?(gh_tokens),
+         repo when is_binary(repo) <- gh_tokens |> option_argument(["--repo", "-R"]) |> normalize_repo_target() do
+      %{cli: cli, repo: repo}
+    else
+      _ -> nil
+    end
   end
 
   defp github_cli_command_windows(tokens) do
-    command_windows(tokens, "gh") ++ command_windows(tokens, "ghe")
+    Enum.flat_map(["gh", "ghe"], fn cli ->
+      tokens
+      |> command_windows(cli)
+      |> Enum.map(&{cli, &1})
+    end)
   end
 
   defp gh_pr_create?(tokens) do

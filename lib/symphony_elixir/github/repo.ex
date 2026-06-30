@@ -4,7 +4,7 @@ defmodule SymphonyElixir.GitHub.Repo do
   alias SymphonyElixir.GitHub.Hosts
 
   @spec from_url(String.t() | nil) :: String.t() | nil
-  def from_url(url), do: from_url(url, github_enterprise_hosts: [])
+  def from_url(url), do: from_url(url, [])
 
   @spec from_url(String.t() | nil, keyword()) :: String.t() | nil
   def from_url(url, opts) when is_binary(url) and is_list(opts) do
@@ -17,7 +17,7 @@ defmodule SymphonyElixir.GitHub.Repo do
   def from_url(_url, _opts), do: nil
 
   @spec gh_repo_from_url(String.t() | nil) :: String.t() | nil
-  def gh_repo_from_url(url), do: gh_repo_from_url(url, github_enterprise_hosts: [])
+  def gh_repo_from_url(url), do: gh_repo_from_url(url, [])
 
   @spec gh_repo_from_url(String.t() | nil, keyword()) :: String.t() | nil
   def gh_repo_from_url(url, opts) when is_binary(url) and is_list(opts) do
@@ -47,7 +47,7 @@ defmodule SymphonyElixir.GitHub.Repo do
 
   defp repo_parts_from_url(url, opts) do
     with {:ok, host, path} <- split_url(String.trim(url)),
-         {:ok, canonical_host} <- Hosts.canonical_github_host(host, opts),
+         {:ok, canonical_host} <- canonical_github_host(host, opts),
          [owner, repo] <- String.split(path, "/", trim: true) do
       repo =
         repo
@@ -58,6 +58,12 @@ defmodule SymphonyElixir.GitHub.Repo do
     else
       _ -> nil
     end
+  end
+
+  defp canonical_github_host(host, opts) do
+    Hosts.canonical_github_host(host, opts)
+  rescue
+    ArgumentError -> :error
   end
 
   defp split_url("git@" <> rest) do

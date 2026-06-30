@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.GitHub.RepoTest do
-  use ExUnit.Case, async: true
+  use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.GitHub.Repo
 
@@ -22,6 +22,13 @@ defmodule SymphonyElixir.GitHub.RepoTest do
 
     assert Repo.gh_repo_from_url("git@github.com:acme/symphony.git") == "acme/symphony"
     assert Repo.gh_repo_from_url("git@github.a8c.com:Automattic/symphony.git", opts) == "github.a8c.com/Automattic/symphony"
+  end
+
+  test "one-arity helpers use configured enterprise hosts" do
+    write_workflow_file!(Workflow.workflow_file_path(), github: %{enterprise_hosts: ["github.a8c.com"]})
+
+    assert Repo.from_url("https://github.a8c.com/Automattic/symphony.git") == "Automattic/symphony"
+    assert Repo.gh_repo_from_url("https://github.a8c.com/Automattic/symphony.git") == "github.a8c.com/Automattic/symphony"
   end
 
   test "rejects missing malformed and non-GitHub URLs" do

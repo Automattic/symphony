@@ -863,24 +863,48 @@ defmodule SymphonyElixir.Workspace do
 
   @spec reclaim_stale_workspaces(String.t(), term(), DateTime.t()) :: {:ok, [lifecycle_action()]} | {:error, term()}
   def reclaim_stale_workspaces(repo_key, protected_identifiers, %DateTime{} = now) when is_binary(repo_key) do
+    with {:ok, stale_entries} <- scan_stale_workspaces(repo_key, now) do
+      {:ok, delete_stale_workspaces(stale_entries, protected_identifiers)}
+    end
+  end
+
+  @doc """
+  Identify age-eligible (stale) workspace entries without deleting anything.
+
+  The filesystem traversal lives here so callers can run the expensive scan off
+  the orchestrator process and apply the protected-identifier filter against
+  fresh state at delete time. Returns `{:ok, []}` when age GC is disabled.
+  """
+  @spec scan_stale_workspaces(String.t(), DateTime.t()) :: {:ok, [map()]} | {:error, term()}
+  def scan_stale_workspaces(repo_key, %DateTime{} = now) when is_binary(repo_key) do
     lifecycle = Config.settings!().workspace.lifecycle
 
     if lifecycle.age_gc_enabled == true do
-      protected = normalize_identifier_set(protected_identifiers)
       cutoff = DateTime.to_unix(now) - lifecycle.max_age_days * 86_400
 
       with {:ok, entries} <- local_workspace_entries(repo_key) do
-        actions =
-          entries
-          |> Enum.filter(&(&1.mtime <= cutoff))
-          |> Enum.reject(&MapSet.member?(protected, &1.identifier))
-          |> Enum.map(&delete_lifecycle_workspace(&1, :age_gc))
-
-        {:ok, actions}
+        {:ok, Enum.filter(entries, &(&1.mtime <= cutoff))}
       end
     else
       {:ok, []}
     end
+  end
+
+  @doc """
+  Delete the stale workspace entries returned by `scan_stale_workspaces/2`,
+  skipping any whose identifier is currently protected (active).
+
+  This step is cheap relative to the scan, so it is safe to run on the
+  orchestrator process with an up-to-date protected set, closing the race where
+  a workspace becomes active between the scan and the delete.
+  """
+  @spec delete_stale_workspaces([map()], term()) :: [lifecycle_action()]
+  def delete_stale_workspaces(stale_entries, protected_identifiers) when is_list(stale_entries) do
+    protected = normalize_identifier_set(protected_identifiers)
+
+    stale_entries
+    |> Enum.reject(&MapSet.member?(protected, &1.identifier))
+    |> Enum.map(&delete_lifecycle_workspace(&1, :age_gc))
   end
 
   @spec sweep_orphan_workspaces(Enumerable.t()) :: {:ok, [lifecycle_action()]} | {:error, term()}

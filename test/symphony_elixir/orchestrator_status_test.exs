@@ -2159,6 +2159,74 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     File.rm_rf(workspace_root)
   end
 
+  test "orchestrator startup age GC protects workspaces active before result applies" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-startup-age-gc-active-test-#{System.unique_integer([:positive])}"
+      )
+
+    active_workspace = Path.join([workspace_root, "default", "MT-ACTIVE-STARTUP"])
+    File.mkdir_p!(active_workspace)
+    # Stale relative to now so the test never depends on the wall clock being at
+    # or past a hard-coded date (max_age_days is 1 in this workflow).
+    File.touch!(active_workspace, System.os_time(:second) - 30 * 86_400)
+
+    issue = %Issue{
+      id: "issue-active-startup-gc",
+      identifier: "MT-ACTIVE-STARTUP",
+      title: "Active during startup GC",
+      state: "Backlog"
+    }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      workspace_lifecycle: %{
+        max_age_days: 1,
+        orphan_action: "delete"
+      }
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_fetch_candidate_sleep_ms, 300)
+
+    orchestrator_name = Module.concat(__MODULE__, :StartupAgeGcActiveOrchestrator)
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    try do
+      wait_for_orchestrator_state(pid, &is_reference(&1.startup_workspace_lifecycle_task_ref), 500)
+
+      :sys.replace_state(pid, fn state ->
+        running_entry = %{
+          pid: self(),
+          ref: nil,
+          repo_key: "default",
+          identifier: issue.identifier,
+          issue: issue,
+          workspace_path: active_workspace,
+          started_at: DateTime.utc_now()
+        }
+
+        %{
+          state
+          | running: Map.put(state.running, issue.id, running_entry),
+            claimed: MapSet.put(state.claimed, issue.id)
+        }
+      end)
+
+      wait_for_orchestrator_state(pid, &is_nil(&1.startup_workspace_lifecycle_task_ref), 1_000)
+
+      assert File.exists?(active_workspace)
+    after
+      if Process.alive?(pid), do: GenServer.stop(pid)
+
+      Application.delete_env(:symphony_elixir, :memory_tracker_fetch_candidate_sleep_ms)
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "orchestrator snapshots include default finite token budgets when omitted" do
     write_workflow_without_token_budget_keys!()
 

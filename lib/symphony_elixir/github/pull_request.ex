@@ -471,11 +471,13 @@ defmodule SymphonyElixir.GitHub.PullRequest do
 
   defp normalize_status_check(check) when is_map(check) do
     details_url = Map.get(check, "detailsUrl") || Map.get(check, "targetUrl")
+    status = Map.get(check, "status") || Map.get(check, "state")
+    conclusion = Map.get(check, "conclusion") || Map.get(check, "state")
 
     %{
       name: normalize_id(Map.get(check, "name") || Map.get(check, "context") || Map.get(check, "workflowName")),
-      status: normalize_id(Map.get(check, "status")),
-      conclusion: normalize_id(Map.get(check, "conclusion")),
+      status: normalize_id(status),
+      conclusion: normalize_id(conclusion),
       details_url: normalize_id(details_url),
       workflow_name: normalize_id(Map.get(check, "workflowName")),
       run_id: run_id_from_details_url(details_url)

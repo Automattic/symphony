@@ -822,7 +822,7 @@ defmodule SymphonyElixir.CiPoller do
     check
     |> Map.get(:conclusion)
     |> normalize_status()
-    |> then(&(&1 in ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"]))
+    |> then(&(&1 in ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]))
   end
 
   defp pending_checks?(%{checks: []}), do: true

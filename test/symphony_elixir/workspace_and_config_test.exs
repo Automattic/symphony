@@ -305,6 +305,71 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "redispatch switches reused PR worktree from stale branch to requested head branch" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-pr-reuse-branch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      origin_repo = Path.join(test_root, "origin.git")
+      peer_repo = Path.join(test_root, "peer")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo, origin_repo)
+
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+
+      git!(peer_repo, ["checkout", "-b", "feature/stale-reuse"])
+      File.write!(Path.join(peer_repo, "stale.txt"), "stale branch\n")
+      git!(peer_repo, ["add", "stale.txt"])
+      git!(peer_repo, ["commit", "-m", "stale branch"])
+      git!(peer_repo, ["push", "origin", "feature/stale-reuse"])
+
+      git!(peer_repo, ["checkout", "main"])
+      git!(peer_repo, ["checkout", "-b", "feature/pr-reuse-branch"])
+      File.write!(Path.join(peer_repo, "pr.txt"), "requested pr head\n")
+      git!(peer_repo, ["add", "pr.txt"])
+      git!(peer_repo, ["commit", "-m", "requested pr branch"])
+      git!(peer_repo, ["push", "origin", "feature/pr-reuse-branch"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo
+      )
+
+      stale_issue = %Issue{
+        identifier: "PR-REUSE-BRANCH",
+        workspace_branch: "feature/stale-reuse",
+        workspace_base_ref: "origin/feature/stale-reuse"
+      }
+
+      issue = %Issue{
+        identifier: "PR-REUSE-BRANCH",
+        workspace_branch: "feature/pr-reuse-branch",
+        workspace_base_ref: "origin/feature/pr-reuse-branch"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(stale_issue)
+      assert File.read!(Path.join(workspace, "stale.txt")) == "stale branch\n"
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "feature/stale-reuse"
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "pr.txt")) == "requested pr head\n"
+      refute File.exists?(Path.join(workspace, "stale.txt"))
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "feature/pr-reuse-branch"
+
+      assert String.trim(git!(workspace, ["rev-parse", "HEAD"])) ==
+               String.trim(git!(primary_repo, ["rev-parse", "origin/feature/pr-reuse-branch"]))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "redispatch refuses to reset a dirty reused PR worktree" do
     test_root =
       Path.join(
@@ -411,6 +476,76 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert local_commit in details[:commits]
       assert String.trim(git!(workspace, ["rev-parse", "HEAD"])) == local_commit
       assert File.read!(Path.join(workspace, "local.txt")) == "local commit\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "redispatch refuses to reset untracked files that collide with requested PR head" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-pr-untracked-collision-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      origin_repo = Path.join(test_root, "origin.git")
+      peer_repo = Path.join(test_root, "peer")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo, origin_repo)
+
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+
+      git!(peer_repo, ["checkout", "-b", "feature/stale-untracked"])
+      File.write!(Path.join(peer_repo, "stale.txt"), "stale branch\n")
+      git!(peer_repo, ["add", "stale.txt"])
+      git!(peer_repo, ["commit", "-m", "stale branch"])
+      git!(peer_repo, ["push", "origin", "feature/stale-untracked"])
+
+      git!(peer_repo, ["checkout", "main"])
+      git!(peer_repo, ["checkout", "-b", "feature/pr-untracked-collision"])
+      File.write!(Path.join(peer_repo, "collision.txt"), "requested pr head\n")
+      git!(peer_repo, ["add", "collision.txt"])
+      git!(peer_repo, ["commit", "-m", "requested pr branch"])
+      git!(peer_repo, ["push", "origin", "feature/pr-untracked-collision"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo
+      )
+
+      stale_issue = %Issue{
+        identifier: "PR-UNTRACKED-COLLISION",
+        workspace_branch: "feature/stale-untracked",
+        workspace_base_ref: "origin/feature/stale-untracked"
+      }
+
+      issue = %Issue{
+        identifier: "PR-UNTRACKED-COLLISION",
+        workspace_branch: "feature/pr-untracked-collision",
+        workspace_base_ref: "origin/feature/pr-untracked-collision"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(stale_issue)
+      stale_sha = String.trim(git!(workspace, ["rev-parse", "HEAD"]))
+      File.write!(Path.join(workspace, "collision.txt"), "stale untracked file\n")
+
+      assert git!(workspace, ["status", "--short", "collision.txt"]) == "?? collision.txt\n"
+
+      assert {:error, {:unsafe_worktree_reset, :dirty_worktree, details}} =
+               Workspace.create_for_issue(issue)
+
+      assert details[:workspace] == workspace
+      assert details[:base_ref] == "origin/feature/pr-untracked-collision"
+      assert Enum.any?(details[:status], &String.contains?(&1, "collision.txt"))
+      assert File.read!(Path.join(workspace, "collision.txt")) == "stale untracked file\n"
+      assert File.exists?(Path.join(workspace, "stale.txt"))
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "feature/stale-untracked"
+      assert String.trim(git!(workspace, ["rev-parse", "HEAD"])) == stale_sha
     after
       File.rm_rf(test_root)
     end
@@ -878,6 +1013,77 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       # populated with a worktree and the peer worktree is untouched.
       refute File.exists?(Path.join(expected_workspace, ".git"))
       assert File.exists?(peer_worktree)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "worktree reuse refuses when the requested branch is already checked out elsewhere" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-worktree-reuse-collision-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      primary_repo = Path.join(test_root, "primary")
+      origin_repo = Path.join(test_root, "origin.git")
+      peer_repo = Path.join(test_root, "peer")
+      peer_worktree = Path.join(test_root, "peer-worktree")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      create_primary_repo!(primary_repo, origin_repo)
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+
+      git!(peer_repo, ["checkout", "-b", "feature/stale-collision"])
+      File.write!(Path.join(peer_repo, "stale.txt"), "stale branch\n")
+      git!(peer_repo, ["add", "stale.txt"])
+      git!(peer_repo, ["commit", "-m", "stale branch"])
+      git!(peer_repo, ["push", "origin", "feature/stale-collision"])
+
+      git!(peer_repo, ["checkout", "main"])
+      git!(peer_repo, ["checkout", "-b", "feature/reuse-collide"])
+      File.write!(Path.join(peer_repo, "collision.txt"), "collision branch\n")
+      git!(peer_repo, ["add", "collision.txt"])
+      git!(peer_repo, ["commit", "-m", "collision branch"])
+      git!(peer_repo, ["push", "origin", "feature/reuse-collide"])
+
+      git!(primary_repo, ["fetch", "origin"])
+      git!(primary_repo, ["branch", "feature/reuse-collide", "origin/feature/reuse-collide"])
+      git!(primary_repo, ["worktree", "add", peer_worktree, "feature/reuse-collide"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo
+      )
+
+      stale_issue = %Issue{
+        identifier: "PR-REUSE-COLLISION",
+        workspace_branch: "feature/stale-collision",
+        workspace_base_ref: "origin/feature/stale-collision"
+      }
+
+      issue = %Issue{
+        identifier: "PR-REUSE-COLLISION",
+        workspace_branch: "feature/reuse-collide",
+        workspace_base_ref: "origin/feature/reuse-collide"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(stale_issue)
+
+      result = Workspace.create_for_issue(issue)
+
+      assert {:error, {:branch_already_checked_out_elsewhere, details}} = result
+      assert details[:branch] == "feature/reuse-collide"
+      assert details[:requested] == workspace
+      at = details[:at]
+
+      assert {:ok, canonical_peer} = SymphonyElixir.PathSafety.canonicalize(peer_worktree)
+      assert {:ok, canonical_at} = SymphonyElixir.PathSafety.canonicalize(at)
+      assert canonical_at == canonical_peer
+      assert String.trim(git!(workspace, ["branch", "--show-current"])) == "feature/stale-collision"
     after
       File.rm_rf(test_root)
     end
@@ -4381,6 +4587,65 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end)
   end
 
+  test "remote worktree reuse switches stale branch to requested PR head branch" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      primary_repo = Path.join(ctx.test_root, "primary")
+      origin_repo = Path.join(ctx.test_root, "origin.git")
+      peer_repo = Path.join(ctx.test_root, "peer")
+      workspace_path = Path.join([workspace_root, "default", "PR-REMOTE-BRANCH"])
+
+      create_primary_repo!(primary_repo, origin_repo)
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+
+      git!(peer_repo, ["checkout", "-b", "feature/remote-stale"])
+      File.write!(Path.join(peer_repo, "stale.txt"), "stale remote branch\n")
+      git!(peer_repo, ["add", "stale.txt"])
+      git!(peer_repo, ["commit", "-m", "stale remote branch"])
+      git!(peer_repo, ["push", "origin", "feature/remote-stale"])
+
+      git!(peer_repo, ["checkout", "main"])
+      git!(peer_repo, ["checkout", "-b", "feature/remote-requested"])
+      File.write!(Path.join(peer_repo, "pr.txt"), "requested remote head\n")
+      git!(peer_repo, ["add", "pr.txt"])
+      git!(peer_repo, ["commit", "-m", "requested remote branch"])
+      git!(peer_repo, ["push", "origin", "feature/remote-requested"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: true,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      stale_issue = %Issue{
+        identifier: "PR-REMOTE-BRANCH",
+        workspace_branch: "feature/remote-stale",
+        workspace_base_ref: "origin/feature/remote-stale"
+      }
+
+      issue = %Issue{
+        identifier: "PR-REMOTE-BRANCH",
+        workspace_branch: "feature/remote-requested",
+        workspace_base_ref: "origin/feature/remote-requested"
+      }
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(stale_issue, "worker-01")
+      assert File.read!(Path.join(workspace_path, "stale.txt")) == "stale remote branch\n"
+      assert String.trim(git!(workspace_path, ["branch", "--show-current"])) == "feature/remote-stale"
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(issue, "worker-01")
+      assert File.read!(Path.join(workspace_path, "pr.txt")) == "requested remote head\n"
+      refute File.exists?(Path.join(workspace_path, "stale.txt"))
+      assert String.trim(git!(workspace_path, ["branch", "--show-current"])) == "feature/remote-requested"
+
+      assert String.trim(git!(workspace_path, ["rev-parse", "HEAD"])) ==
+               String.trim(git!(primary_repo, ["rev-parse", "origin/feature/remote-requested"]))
+    end)
+  end
+
   test "remote worktree reuse refuses to reset a dirty explicit-base worktree" do
     with_real_exec_fake_ssh(fn ctx ->
       workspace_root = Path.join(ctx.test_root, "wsroot")
@@ -4477,6 +4742,135 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert local_commit in details[:output]
       assert String.trim(git!(workspace_path, ["rev-parse", "HEAD"])) == local_commit
       assert File.read!(Path.join(workspace_path, "local.txt")) == "remote local commit\n"
+    end)
+  end
+
+  test "remote worktree reuse refuses to reset untracked files that collide with requested PR head" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      primary_repo = Path.join(ctx.test_root, "primary")
+      origin_repo = Path.join(ctx.test_root, "origin.git")
+      peer_repo = Path.join(ctx.test_root, "peer")
+      workspace_path = Path.join([workspace_root, "default", "PR-REMOTE-UNTRACKED"])
+
+      create_primary_repo!(primary_repo, origin_repo)
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+
+      git!(peer_repo, ["checkout", "-b", "feature/remote-stale-untracked"])
+      File.write!(Path.join(peer_repo, "stale.txt"), "stale remote branch\n")
+      git!(peer_repo, ["add", "stale.txt"])
+      git!(peer_repo, ["commit", "-m", "stale remote branch"])
+      git!(peer_repo, ["push", "origin", "feature/remote-stale-untracked"])
+
+      git!(peer_repo, ["checkout", "main"])
+      git!(peer_repo, ["checkout", "-b", "feature/remote-untracked-collision"])
+      File.write!(Path.join(peer_repo, "collision.txt"), "requested remote head\n")
+      git!(peer_repo, ["add", "collision.txt"])
+      git!(peer_repo, ["commit", "-m", "requested remote branch"])
+      git!(peer_repo, ["push", "origin", "feature/remote-untracked-collision"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: true,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      stale_issue = %Issue{
+        identifier: "PR-REMOTE-UNTRACKED",
+        workspace_branch: "feature/remote-stale-untracked",
+        workspace_base_ref: "origin/feature/remote-stale-untracked"
+      }
+
+      issue = %Issue{
+        identifier: "PR-REMOTE-UNTRACKED",
+        workspace_branch: "feature/remote-untracked-collision",
+        workspace_base_ref: "origin/feature/remote-untracked-collision"
+      }
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(stale_issue, "worker-01")
+      stale_sha = String.trim(git!(workspace_path, ["rev-parse", "HEAD"]))
+      File.write!(Path.join(workspace_path, "collision.txt"), "stale untracked file\n")
+
+      assert git!(workspace_path, ["status", "--short", "collision.txt"]) == "?? collision.txt\n"
+
+      assert {:error, {:unsafe_worktree_reset, :dirty_worktree, details}} =
+               Workspace.create_for_issue(issue, "worker-01")
+
+      assert details[:workspace] == workspace_path
+      assert details[:base_ref] == "origin/feature/remote-untracked-collision"
+      assert Enum.any?(details[:output], &String.contains?(&1, "collision.txt"))
+      assert File.read!(Path.join(workspace_path, "collision.txt")) == "stale untracked file\n"
+      assert File.exists?(Path.join(workspace_path, "stale.txt"))
+
+      assert String.trim(git!(workspace_path, ["branch", "--show-current"])) ==
+               "feature/remote-stale-untracked"
+
+      assert String.trim(git!(workspace_path, ["rev-parse", "HEAD"])) == stale_sha
+    end)
+  end
+
+  test "remote worktree reuse refuses when requested branch is checked out elsewhere" do
+    with_real_exec_fake_ssh(fn ctx ->
+      workspace_root = Path.join(ctx.test_root, "wsroot")
+      primary_repo = Path.join(ctx.test_root, "primary")
+      origin_repo = Path.join(ctx.test_root, "origin.git")
+      peer_repo = Path.join(ctx.test_root, "peer")
+      peer_worktree = Path.join(ctx.test_root, "peer-worktree")
+      workspace_path = Path.join([workspace_root, "default", "PR-REMOTE-COLLISION"])
+
+      create_primary_repo!(primary_repo, origin_repo)
+      {_output, 0} = System.cmd("git", ["clone", origin_repo, peer_repo])
+      configure_git_user!(peer_repo)
+
+      git!(peer_repo, ["checkout", "-b", "feature/remote-stale-collision"])
+      File.write!(Path.join(peer_repo, "stale.txt"), "stale remote branch\n")
+      git!(peer_repo, ["add", "stale.txt"])
+      git!(peer_repo, ["commit", "-m", "stale remote branch"])
+      git!(peer_repo, ["push", "origin", "feature/remote-stale-collision"])
+
+      git!(peer_repo, ["checkout", "main"])
+      git!(peer_repo, ["checkout", "-b", "feature/remote-reuse-collide"])
+      File.write!(Path.join(peer_repo, "collision.txt"), "collision remote branch\n")
+      git!(peer_repo, ["add", "collision.txt"])
+      git!(peer_repo, ["commit", "-m", "collision remote branch"])
+      git!(peer_repo, ["push", "origin", "feature/remote-reuse-collide"])
+
+      git!(primary_repo, ["fetch", "origin"])
+      git!(primary_repo, ["branch", "feature/remote-reuse-collide", "origin/feature/remote-reuse-collide"])
+      git!(primary_repo, ["worktree", "add", peer_worktree, "feature/remote-reuse-collide"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        workspace_strategy: "worktree",
+        workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: true,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      stale_issue = %Issue{
+        identifier: "PR-REMOTE-COLLISION",
+        workspace_branch: "feature/remote-stale-collision",
+        workspace_base_ref: "origin/feature/remote-stale-collision"
+      }
+
+      issue = %Issue{
+        identifier: "PR-REMOTE-COLLISION",
+        workspace_branch: "feature/remote-reuse-collide",
+        workspace_base_ref: "origin/feature/remote-reuse-collide"
+      }
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue(stale_issue, "worker-01")
+
+      assert {:error, {:branch_already_checked_out_elsewhere, details}} =
+               Workspace.create_for_issue(issue, "worker-01")
+
+      assert details[:branch] == "feature/remote-reuse-collide"
+      assert details[:at] == peer_worktree
+      assert details[:requested] == workspace_path
+      assert String.trim(git!(workspace_path, ["branch", "--show-current"])) == "feature/remote-stale-collision"
     end)
   end
 

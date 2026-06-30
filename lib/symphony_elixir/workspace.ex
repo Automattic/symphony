@@ -224,7 +224,8 @@ defmodule SymphonyElixir.Workspace do
         "    exit 42",
         "  fi",
         "  if [ -n \"$reset_base_ref\" ]; then",
-        "    git -C \"$workspace\" reset --hard \"$reset_base_ref\"",
+        "    reset_base_sha=$(git -C \"$repo\" rev-parse --verify --end-of-options \"$reset_base_ref^{commit}\")",
+        "    git -C \"$workspace\" reset --hard \"$reset_base_sha\"",
         "  fi",
         "  created=0",
         "elif [ -e \"$workspace\" ]; then",
@@ -317,7 +318,9 @@ defmodule SymphonyElixir.Workspace do
   defp reset_worktree_to_base_ref(_workspace, ""), do: :ok
 
   defp reset_worktree_to_base_ref(workspace, base_ref) when is_binary(base_ref) do
-    run_git(workspace, ["reset", "--hard", base_ref])
+    with {:ok, commit_sha} <- resolve_git_commit(workspace, base_ref) do
+      run_git(workspace, ["reset", "--hard", commit_sha])
+    end
   end
 
   # Adds the skip-comments file to the worktree's git exclude so the agent can write
@@ -1238,9 +1241,16 @@ defmodule SymphonyElixir.Workspace do
   defp blank_to_nil(value), do: value
 
   defp git_ref_exists?(repo, ref) do
-    case git_output(repo, ["rev-parse", "--verify", "--quiet", "#{ref}^{commit}"]) do
+    case resolve_git_commit(repo, ref) do
       {:ok, _output} -> true
       _ -> false
+    end
+  end
+
+  defp resolve_git_commit(repo, ref) do
+    case git_output(repo, ["rev-parse", "--verify", "--end-of-options", "#{ref}^{commit}"]) do
+      {:ok, output} -> {:ok, String.trim(output)}
+      error -> error
     end
   end
 
@@ -1328,16 +1338,7 @@ defmodule SymphonyElixir.Workspace do
 
         case run_remote_command(worker_host, script, hooks.timeout_ms) do
           {:ok, {output, status}} ->
-            if remote_workspace_containment_failure?(status, output) do
-              {:error, {:workspace_remove_failed, worker_host, status, output}}
-            else
-              handle_hook_command_result(
-                {output, status},
-                workspace,
-                issue_context,
-                "before_remove"
-              )
-            end
+            handle_remote_before_remove_result({output, status}, workspace, issue_context, worker_host)
 
           {:error, {:workspace_hook_timeout, "before_remove", _timeout_ms} = reason} ->
             {:error, reason}
@@ -1346,6 +1347,16 @@ defmodule SymphonyElixir.Workspace do
             {:error, reason}
         end
         |> ignore_non_containment_hook_failure()
+    end
+  end
+
+  defp handle_remote_before_remove_result({output, status}, workspace, issue_context, worker_host) do
+    case remote_workspace_containment_failure?(status, output) do
+      true ->
+        {:error, {:workspace_remove_failed, worker_host, status, output}}
+
+      false ->
+        handle_hook_command_result({output, status}, workspace, issue_context, "before_remove")
     end
   end
 

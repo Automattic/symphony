@@ -4244,6 +4244,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         workspace_root: workspace_root,
         workspace_strategy: "worktree",
         workspace_repo: primary_repo,
+        workspace_fetch_before_dispatch: true,
         worker_ssh_hosts: ["worker-01"]
       )
 

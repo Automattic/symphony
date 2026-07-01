@@ -2159,6 +2159,157 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     File.rm_rf(workspace_root)
   end
 
+  test "orchestrator startup lifecycle cleans every configured repo" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-startup-multi-repo-lifecycle-test-#{System.unique_integer([:positive])}"
+      )
+
+    default_orphan_workspace = Path.join([workspace_root, "default", "MT-ORPHAN"])
+    api_orphan_workspace = Path.join([workspace_root, "api", "API-ORPHAN"])
+    api_stale_workspace = Path.join([workspace_root, "api", "API-STALE"])
+
+    File.mkdir_p!(default_orphan_workspace)
+    File.mkdir_p!(api_orphan_workspace)
+    File.mkdir_p!(api_stale_workspace)
+    File.touch!(api_stale_workspace, System.os_time(:second) - 30 * 86_400)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      workspace_lifecycle: %{
+        max_age_days: 1,
+        orphan_action: "delete"
+      },
+      repos: [
+        [key: "default", workflow: Workflow.workflow_file_path(), team: "Test"],
+        [key: "api", workflow: Workflow.workflow_file_path(), team: "API"]
+      ]
+    )
+
+    :ok = RunStore.clear()
+
+    :ok =
+      RunStore.put_run(%{
+        repo_key: "api",
+        run_id: "run-api-stale-workspace",
+        issue_id: "issue-api-stale-workspace",
+        issue_identifier: "API-STALE",
+        status: "failure",
+        started_at: DateTime.add(DateTime.utc_now(), -3 * 86_400, :second),
+        workspace_path: api_stale_workspace
+      })
+
+    orchestrator_name = Module.concat(__MODULE__, :StartupMultiRepoLifecycleOrchestrator)
+
+    log =
+      capture_log(fn ->
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+        try do
+          wait_for_snapshot(
+            pid,
+            fn _snapshot ->
+              not File.exists?(default_orphan_workspace) and
+                not File.exists?(api_orphan_workspace) and
+                not File.exists?(api_stale_workspace)
+            end,
+            1_000
+          )
+
+          wait_for_orchestrator_state(pid, &is_nil(&1.startup_workspace_lifecycle_task_ref), 500)
+        after
+          if Process.alive?(pid), do: GenServer.stop(pid)
+        end
+      end)
+
+    assert log =~ "repo_key=api identifier=API-ORPHAN"
+    assert log =~ "repo_key=api identifier=API-STALE"
+    assert log =~ "reason=age_gc"
+    refute File.exists?(default_orphan_workspace)
+    refute File.exists?(api_orphan_workspace)
+    refute File.exists?(api_stale_workspace)
+    File.rm_rf(workspace_root)
+  end
+
+  test "periodic workspace age GC continues after one repo scan fails" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-periodic-multi-repo-age-gc-test-#{System.unique_integer([:positive])}"
+      )
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      poll_interval_ms: 60_000,
+      quality_gate: %{enabled: false},
+      workspace_lifecycle: %{
+        max_age_days: 1,
+        orphan_action: "delete"
+      },
+      repos: [
+        [key: "bad", workflow: Workflow.workflow_file_path(), team: "Bad"],
+        [key: "api", workflow: Workflow.workflow_file_path(), team: "API"]
+      ]
+    )
+
+    issue = %Issue{
+      id: "issue-periodic-age-gc",
+      identifier: "API-GC",
+      title: "Periodic age GC",
+      state: "Todo",
+      labels: []
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :PeriodicMultiRepoAgeGcOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    try do
+      wait_for_orchestrator_state(pid, &is_nil(&1.startup_workspace_lifecycle_task_ref), 1_000)
+      assert {:ok, _pause} = Orchestrator.pause_dispatch(pid, "periodic age gc test")
+
+      File.mkdir_p!(workspace_root)
+      File.write!(Path.join(workspace_root, "bad"), "not a directory")
+
+      api_stale_workspace = Path.join([workspace_root, "api", "API-STALE-PERIODIC"])
+      File.mkdir_p!(api_stale_workspace)
+      File.touch!(api_stale_workspace, System.os_time(:second) - 30 * 86_400)
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | workspace_lifecycle_last_check_at_ms: nil,
+            repo_poll_due_at_ms: %{"bad" => 0}
+        }
+      end)
+
+      log =
+        capture_log(fn ->
+          send(pid, :run_poll_cycle)
+
+          wait_for_snapshot(
+            pid,
+            fn snapshot ->
+              snapshot.polling.checking? == false and not File.exists?(api_stale_workspace)
+            end,
+            1_000
+          )
+
+          wait_for_orchestrator_state(pid, &(&1.dispatch_readiness_tasks == %{}), 500)
+        end)
+
+      assert log =~ "Skipping workspace age GC for repo_key=bad"
+      refute File.exists?(api_stale_workspace)
+    after
+      if Process.alive?(pid), do: GenServer.stop(pid)
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "orchestrator startup age GC protects workspaces active before result applies" do
     workspace_root =
       Path.join(

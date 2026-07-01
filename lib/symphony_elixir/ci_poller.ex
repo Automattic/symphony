@@ -564,7 +564,16 @@ defmodule SymphonyElixir.CiPoller do
           record,
           ci_status,
           %{
-            status: Map.get(record, :status, "watching"),
+            # CI is green, so this check no longer "owns" the issue even though we
+            # defer finalizing until the pending rework lands. Relinquish the
+            # failure-derived ownership fields; otherwise ci_owned_issue?/2 keeps
+            # the PR-review poller from ever dispatching the rework that would
+            # clear this deferral, deadlocking the two pollers.
+            status: released_deferred_status(record),
+            ci_retry_count: 0,
+            failed_checks: [],
+            log_excerpt: nil,
+            ci_failure: nil,
             last_action: "green_deferred",
             last_action_at: now
           },
@@ -592,6 +601,17 @@ defmodule SymphonyElixir.CiPoller do
         )
 
       complete_ci_update(opts, record, attrs, {:green, issue_id})
+    end
+  end
+
+  # A green CI check must not leave the record in a failure-derived owned status
+  # (see ci_owned_record?/1); keep any benign status but drop owned ones back to
+  # "watching" so the PR-review poller can take over the deferred rework.
+  defp released_deferred_status(record) do
+    case Map.get(record, :status) do
+      status when status in ["dispatch_requested", "escalated", "state_transition_error"] -> "watching"
+      status when is_binary(status) -> status
+      _ -> "watching"
     end
   end
 

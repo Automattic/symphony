@@ -538,7 +538,7 @@ defmodule SymphonyElixir.CiPollerTest do
            ] = RunStore.list_ci_checks()
   end
 
-  test "green ci defers retry reset while rework run is active" do
+  test "green ci releases failure ownership but defers finalize while rework run is active" do
     now = ~U[2026-05-06 09:00:00Z]
     issue = in_review_issue()
     Application.put_env(:symphony_elixir, :ci_test_status, green_status("def456"))
@@ -564,16 +564,19 @@ defmodule SymphonyElixir.CiPollerTest do
 
     refute_receive {:issue_state_update, _, _}
 
+    # Green CI no longer "owns" the issue: the failure-derived owned status and
+    # retry count are cleared so ci_owned_issue?/2 stops blocking the rework,
+    # even though we still defer finalizing to green until the rework lands.
     assert [
              %{
-               status: "dispatch_requested",
-               ci_retry_count: 2,
-               dispatched_shas: ["abc123"],
-               rerun_attempted_shas: ["abc123"],
+               status: "watching",
+               ci_retry_count: 0,
                last_action: "green_deferred",
                last_observed_conclusion: "SUCCESS"
              }
            ] = RunStore.list_ci_checks()
+
+    refute CiPoller.ci_owned_issue?(issue.id, repo_key: @repo_key)
   end
 
   test "green ci poll prefetches runs and reviews once per cycle across checks" do
@@ -675,8 +678,13 @@ defmodule SymphonyElixir.CiPollerTest do
     assert {:ok, %{actions: [{:green_deferred, "issue-2401", :rework_in_progress}]}} =
              CiPoller.poll_once(tracker: FakeTracker, github: FakeGitHub, now: DateTime.add(now, 1, :minute))
 
-    assert [%{status: "dispatch_requested", ci_retry_count: 2, last_action: "green_deferred"}] =
+    # Deferring finalize must not leave the record CI-owned; otherwise the
+    # PR-review poller can never dispatch the rework that clears these pending
+    # comments, deadlocking both pollers.
+    assert [%{status: "watching", ci_retry_count: 0, last_action: "green_deferred"}] =
              RunStore.list_ci_checks()
+
+    refute CiPoller.ci_owned_issue?(issue.id, repo_key: @repo_key)
 
     assert :ok =
              RunStore.put_pr_review(%{

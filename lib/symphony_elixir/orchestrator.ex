@@ -167,7 +167,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def handle_continue({:startup_workspace_lifecycle, now_ms}, state) do
-    case start_startup_workspace_lifecycle_task(state.repo_key, now_ms) do
+    case start_startup_workspace_lifecycle_task(configured_repo_keys(state.repo_key), now_ms) do
       {:ok, task} ->
         {:noreply, %{state | startup_workspace_lifecycle_task_ref: task.ref}}
 
@@ -2244,8 +2244,8 @@ defmodule SymphonyElixir.Orchestrator do
     state = reset_daily_budget_if_needed(state)
 
     task_input = %{
-      repo_key: state.repo_key,
-      active_workspace_identifiers: active_workspace_identifiers(state),
+      repo_keys: configured_repo_keys(state.repo_key),
+      active_workspace_identifiers_by_repo: active_workspace_identifiers_by_repo(state),
       run_age_gc?: workspace_age_gc_due?(state, now_ms),
       now_ms: now_ms
     }
@@ -2264,8 +2264,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_dispatch_readiness_checks(%{
-         repo_key: repo_key,
-         active_workspace_identifiers: active_identifiers,
+         repo_keys: repo_keys,
+         active_workspace_identifiers_by_repo: active_identifiers_by_repo,
          run_age_gc?: run_age_gc?,
          now_ms: now_ms
        }) do
@@ -2273,7 +2273,7 @@ defmodule SymphonyElixir.Orchestrator do
       now_ms: now_ms,
       age_gc_result:
         if(run_age_gc?,
-          do: {:ran, workspace_age_gc_result(repo_key, active_identifiers)},
+          do: {:ran, workspace_age_gc_result(repo_keys, active_identifiers_by_repo)},
           else: :skipped
         ),
       quota: workspace_quota_status_from_config()
@@ -3075,34 +3075,60 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, state}
   end
 
-  defp run_terminal_workspace_cleanup(repo_key) do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{} = issue ->
-            issue
-            |> issue_workspace_context(repo_key)
-            |> cleanup_issue_workspace(nil)
-
-          _ ->
-            :ok
-        end)
-
-      {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
-    end
+  defp startup_candidate_issues_result do
+    Tracker.fetch_candidate_issues()
   end
 
-  defp start_startup_workspace_lifecycle_task(repo_key, now_ms) do
+  defp startup_terminal_issues_result do
+    Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states)
+  end
+
+  defp log_startup_terminal_workspace_cleanup_result({:ok, _issues}), do: :ok
+
+  defp log_startup_terminal_workspace_cleanup_result({:error, reason}) do
+    Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+  end
+
+  defp run_terminal_workspace_cleanup(repo_key, {:ok, issues}) do
+    issues
+    |> Enum.each(fn
+      %Issue{} = issue ->
+        issue
+        |> issue_workspace_context(repo_key)
+        |> cleanup_issue_workspace(nil)
+
+      _ ->
+        :ok
+    end)
+  end
+
+  defp run_terminal_workspace_cleanup(_repo_key, {:error, _reason}), do: :ok
+
+  defp start_startup_workspace_lifecycle_task(repo_keys, now_ms) when is_list(repo_keys) do
     start_async_task(fn ->
-      run_terminal_workspace_cleanup(repo_key)
+      candidate_issues_result = startup_candidate_issues_result()
+      terminal_issues_result = startup_terminal_issues_result()
+
+      tracked_issue_identifiers_result =
+        startup_tracked_issue_identifiers(candidate_issues_result, terminal_issues_result)
+
+      log_startup_terminal_workspace_cleanup_result(terminal_issues_result)
+
+      repo_results =
+        Enum.map(repo_keys, fn repo_key ->
+          run_terminal_workspace_cleanup(repo_key, terminal_issues_result)
+
+          {repo_key,
+           %{
+             orphan_sweep_result: startup_orphan_sweep_result(repo_key, tracked_issue_identifiers_result),
+             age_gc_scan: Workspace.scan_stale_workspaces(repo_key, DateTime.utc_now())
+           }}
+        end)
 
       {:startup_workspace_lifecycle_result,
        %{
          now_ms: now_ms,
-         orphan_sweep_result: startup_orphan_sweep_result(repo_key),
-         age_gc_scan: Workspace.scan_stale_workspaces(repo_key, DateTime.utc_now()),
+         repo_results: repo_results,
          quota: workspace_quota_status_from_config()
        }}
     end)
@@ -3110,13 +3136,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp apply_startup_workspace_lifecycle_result(%State{} = state, %{
          now_ms: now_ms,
-         orphan_sweep_result: orphan_sweep_result,
-         age_gc_scan: age_gc_scan,
+         repo_results: repo_results,
          quota: quota
        }) do
     state
-    |> apply_startup_orphan_sweep_result(orphan_sweep_result)
-    |> apply_startup_workspace_age_gc_scan(age_gc_scan, now_ms)
+    |> apply_startup_orphan_sweep_results(repo_results)
+    |> apply_startup_workspace_age_gc_scans(repo_results, now_ms)
     |> Map.put(:workspace_lifecycle_last_check_at_ms, now_ms)
     |> apply_workspace_quota_result(quota)
   end
@@ -3126,13 +3151,25 @@ defmodule SymphonyElixir.Orchestrator do
     state
   end
 
-  defp startup_orphan_sweep_result(repo_key) do
-    with {:ok, tracked_identifiers} <- startup_tracked_workspace_identifiers(repo_key) do
+  defp startup_orphan_sweep_result(repo_key, tracked_issue_identifiers_result) do
+    with {:ok, tracked_identifiers} <-
+           startup_tracked_workspace_identifiers(repo_key, tracked_issue_identifiers_result) do
       case Workspace.sweep_orphan_workspaces(repo_key, tracked_identifiers) do
         {:ok, actions} -> {:ok, actions}
         {:error, reason} -> {:workspace_error, reason}
       end
     end
+  end
+
+  defp apply_startup_orphan_sweep_results(%State{} = state, repo_results) when is_list(repo_results) do
+    Enum.reduce(repo_results, state, fn
+      {_repo_key, %{orphan_sweep_result: orphan_sweep_result}}, acc ->
+        apply_startup_orphan_sweep_result(acc, orphan_sweep_result)
+
+      result, acc ->
+        Logger.warning("Ignoring invalid startup repo lifecycle result: #{inspect(result)}")
+        acc
+    end)
   end
 
   defp apply_startup_orphan_sweep_result(%State{} = state, {:ok, actions}) do
@@ -3158,33 +3195,50 @@ defmodule SymphonyElixir.Orchestrator do
   # The scan ran in the async startup task; only the cheap protected-identifier
   # filter and the bounded deletes run here, against the current active set, so
   # workspaces that became active during startup are never reclaimed.
-  defp apply_startup_workspace_age_gc_scan(%State{} = state, {:ok, stale_entries}, now_ms) do
-    actions = Workspace.delete_stale_workspaces(stale_entries, active_workspace_identifiers(state))
+  defp apply_startup_workspace_age_gc_scans(%State{} = state, repo_results, now_ms) when is_list(repo_results) do
+    Enum.reduce(repo_results, state, fn
+      {repo_key, %{age_gc_scan: age_gc_scan}}, acc ->
+        apply_startup_workspace_age_gc_scan(acc, repo_key, age_gc_scan, now_ms)
+
+      result, acc ->
+        Logger.warning("Ignoring invalid startup repo age GC result: #{inspect(result)}")
+        acc
+    end)
+  end
+
+  defp apply_startup_workspace_age_gc_scan(%State{} = state, repo_key, {:ok, stale_entries}, now_ms) do
+    actions = Workspace.delete_stale_workspaces(stale_entries, active_workspace_identifiers_for_repo(state, repo_key))
     apply_workspace_age_gc_result(state, {:ran, {:ok, actions}}, now_ms)
   end
 
-  defp apply_startup_workspace_age_gc_scan(%State{} = state, {:error, reason}, now_ms) do
+  defp apply_startup_workspace_age_gc_scan(%State{} = state, _repo_key, {:error, reason}, now_ms) do
     apply_workspace_age_gc_result(state, {:ran, {:error, reason}}, now_ms)
   end
 
-  defp apply_startup_workspace_age_gc_scan(%State{} = state, other, now_ms) do
+  defp apply_startup_workspace_age_gc_scan(%State{} = state, _repo_key, other, now_ms) do
     apply_workspace_age_gc_result(state, {:ran, other}, now_ms)
   end
 
-  defp startup_tracked_workspace_identifiers(repo_key) do
-    with {:ok, candidate_issues} <- Tracker.fetch_candidate_issues(),
-         {:ok, terminal_issues} <- Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states),
-         runs when is_list(runs) <- RunStore.list_runs(repo_key, :all),
+  defp startup_tracked_issue_identifiers({:ok, candidate_issues}, {:ok, terminal_issues}) do
+    {:ok, issue_identifiers(candidate_issues ++ terminal_issues)}
+  end
+
+  defp startup_tracked_issue_identifiers({:error, reason}, _terminal_issues_result), do: {:error, reason}
+  defp startup_tracked_issue_identifiers(_candidate_issues_result, {:error, reason}), do: {:error, reason}
+
+  defp startup_tracked_workspace_identifiers(repo_key, {:ok, tracked_issue_identifiers}) do
+    with runs when is_list(runs) <- RunStore.list_runs(repo_key, :all),
          retries when is_list(retries) <- RunStore.list_retries(repo_key) do
       identifiers =
-        issue_identifiers(candidate_issues ++ terminal_issues) ++
-          run_identifiers(runs) ++ retry_identifiers(retries)
+        tracked_issue_identifiers ++ run_identifiers(runs) ++ retry_identifiers(retries)
 
       {:ok, identifiers}
     else
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp startup_tracked_workspace_identifiers(_repo_key, {:error, reason}), do: {:error, reason}
 
   defp workspace_age_gc_due?(%State{} = state, now_ms) do
     lifecycle = Config.settings!().workspace.lifecycle
@@ -3194,8 +3248,22 @@ defmodule SymphonyElixir.Orchestrator do
          now_ms - state.workspace_lifecycle_last_check_at_ms >= lifecycle.gc_interval_ms)
   end
 
-  defp workspace_age_gc_result(repo_key, active_identifiers) do
-    Workspace.reclaim_stale_workspaces(repo_key, active_identifiers)
+  defp workspace_age_gc_result(repo_keys, active_identifiers_by_repo) when is_list(repo_keys) do
+    action_chunks =
+      Enum.reduce(repo_keys, [], fn repo_key, action_chunks ->
+        active_identifiers = Map.get(active_identifiers_by_repo, repo_key, [])
+
+        case Workspace.reclaim_stale_workspaces(repo_key, active_identifiers) do
+          {:ok, repo_actions} ->
+            [repo_actions | action_chunks]
+
+          {:error, reason} ->
+            Logger.warning("Skipping workspace age GC for repo_key=#{repo_key}; failed to scan workspace root: #{inspect(reason)}")
+            action_chunks
+        end
+      end)
+
+    {:ok, action_chunks |> Enum.reverse() |> List.flatten()}
   end
 
   defp apply_workspace_age_gc_result(%State{} = state, :skipped, _now_ms), do: state
@@ -3226,16 +3294,28 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.warning("Workspace #{label} completed count=#{length(actions)} actions=#{inspect(counts)}")
   end
 
-  defp active_workspace_identifiers(%State{} = state) do
+  defp active_workspace_identifiers_for_repo(%State{} = state, repo_key) do
+    state
+    |> active_workspace_identifiers_by_repo()
+    |> Map.get(repo_key, [])
+  end
+
+  defp active_workspace_identifiers_by_repo(%State{} = state) do
     state.running
     |> Map.values()
-    |> Enum.flat_map(fn running_entry ->
-      [
-        Map.get(running_entry, :identifier),
-        running_entry |> Map.get(:issue) |> issue_identifier(),
-        running_entry |> Map.get(:workspace_path) |> workspace_identifier_from_path()
-      ]
+    |> Enum.reduce(%{}, fn running_entry, acc ->
+      repo_key = Map.get(running_entry, :repo_key) || state.repo_key
+      identifiers = running_workspace_identifiers(running_entry)
+      Map.update(acc, repo_key, identifiers, &(identifiers ++ &1))
     end)
+  end
+
+  defp running_workspace_identifiers(running_entry) do
+    [
+      Map.get(running_entry, :identifier),
+      running_entry |> Map.get(:issue) |> issue_identifier(),
+      running_entry |> Map.get(:workspace_path) |> workspace_identifier_from_path()
+    ]
     |> Enum.reject(&is_nil/1)
   end
 

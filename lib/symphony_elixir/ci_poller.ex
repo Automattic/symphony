@@ -362,6 +362,8 @@ defmodule SymphonyElixir.CiPoller do
       reset_attrs = %{
         dispatched_shas: [],
         rerun_attempted_shas: [],
+        rerun_run_id: nil,
+        rerun_run_ids: [],
         status: downgrade_status_for_new_sha(Map.get(record, :status)),
         updated_at: now
       }
@@ -386,16 +388,21 @@ defmodule SymphonyElixir.CiPoller do
   end
 
   defp downgrade_status_for_new_sha("escalated"), do: "watching"
+  defp downgrade_status_for_new_sha("escalate_transition_pending"), do: "watching"
   defp downgrade_status_for_new_sha(status), do: status
 
   defp rerun_failed_ci(record, ci_status, failed_checks, settings, opts, now) do
     github = Keyword.get(opts, :github, PullRequest)
     run_ids = failed_run_ids(failed_checks)
+    rerun_run_ids = rerun_run_ids_for_record(record, run_ids)
+    pending_run_ids = run_ids -- rerun_run_ids
 
-    case run_ids do
+    case pending_run_ids do
       [_ | _] ->
-        case rerun_failed_run_ids(github, run_ids, Map.get(record, :workspace_path)) do
-          :ok ->
+        case rerun_failed_run_ids(github, pending_run_ids, Map.get(record, :workspace_path)) do
+          {:ok, attempted_run_ids} ->
+            all_rerun_run_ids = unique_strings(rerun_run_ids ++ attempted_run_ids)
+
             attrs =
               ci_status_attrs(
                 record,
@@ -405,33 +412,87 @@ defmodule SymphonyElixir.CiPoller do
                   failed_checks: failed_checks,
                   rerun_attempted_shas: append_string(Map.get(record, :rerun_attempted_shas, []), Map.get(ci_status, :commit_sha)),
                   rerun_requested_at: now,
-                  rerun_run_id: List.first(run_ids),
-                  rerun_run_ids: run_ids
+                  rerun_run_id: List.first(all_rerun_run_ids),
+                  rerun_run_ids: all_rerun_run_ids
                 },
                 now
               )
 
-            complete_ci_update(opts, record, attrs, {:rerun_requested, Map.get(record, :issue_id), rerun_action_run_ids(run_ids)})
+            complete_ci_update(opts, record, attrs, {:rerun_requested, Map.get(record, :issue_id), rerun_action_run_ids(all_rerun_run_ids)})
 
-          {:error, {run_id, reason}} ->
-            record_poll_error(record, {:rerun_failed, run_id, reason}, opts, now)
+          {:error, {run_id, reason, attempted_run_ids}} ->
+            all_rerun_run_ids = unique_strings(rerun_run_ids ++ attempted_run_ids)
+            record_rerun_error(record, ci_status, failed_checks, all_rerun_run_ids, run_id, reason, opts, now)
         end
 
       [] ->
-        dispatch_ci_failure(record, ci_status, failed_checks, settings, Keyword.put(opts, :missing_run_id, true), now)
+        if run_ids == [] do
+          dispatch_ci_failure(record, ci_status, failed_checks, settings, Keyword.put(opts, :missing_run_id, true), now)
+        else
+          attrs =
+            ci_status_attrs(
+              record,
+              ci_status,
+              %{
+                status: "rerun_requested",
+                failed_checks: failed_checks,
+                rerun_attempted_shas: append_string(Map.get(record, :rerun_attempted_shas, []), Map.get(ci_status, :commit_sha)),
+                rerun_requested_at: now,
+                rerun_run_id: List.first(rerun_run_ids),
+                rerun_run_ids: rerun_run_ids
+              },
+              now
+            )
+
+          complete_ci_update(opts, record, attrs, {:rerun_requested, Map.get(record, :issue_id), rerun_action_run_ids(rerun_run_ids)})
+        end
     end
   end
 
   defp rerun_failed_run_ids(github, run_ids, workspace_path) when is_list(run_ids) do
-    Enum.reduce_while(run_ids, :ok, fn run_id, :ok ->
+    run_ids
+    |> Enum.reduce_while({:ok, []}, fn run_id, {:ok, attempted_run_ids} ->
       case github.rerun_failed(run_id, cwd: workspace_path) do
         :ok ->
-          {:cont, :ok}
+          {:cont, {:ok, [run_id | attempted_run_ids]}}
 
         {:error, reason} ->
-          {:halt, {:error, {run_id, reason}}}
+          {:halt, {:error, {run_id, reason, Enum.reverse(attempted_run_ids)}}}
       end
     end)
+    |> case do
+      {:ok, attempted_run_ids} -> {:ok, Enum.reverse(attempted_run_ids)}
+      {:error, {_run_id, _reason, _attempted_run_ids}} = error -> error
+    end
+  end
+
+  defp record_rerun_error(record, _ci_status, _failed_checks, [], run_id, reason, opts, now) do
+    record_poll_error(record, {:rerun_failed, run_id, reason}, opts, now)
+  end
+
+  defp record_rerun_error(record, ci_status, failed_checks, rerun_run_ids, run_id, reason, opts, now) do
+    attrs =
+      ci_status_attrs(
+        record,
+        ci_status,
+        %{
+          status: "rerun_requested",
+          failed_checks: failed_checks,
+          rerun_requested_at: now,
+          rerun_run_id: List.first(rerun_run_ids),
+          rerun_run_ids: rerun_run_ids
+        },
+        now
+      )
+      |> Map.merge(error_backoff_attrs(record, {:rerun_failed, run_id, reason}, opts, now))
+
+    case update_ci_check(Keyword.get(opts, :run_store, RunStore), record, attrs) do
+      :ok ->
+        {:poll_error, Map.get(record, :issue_id), {:rerun_failed, run_id, reason}}
+
+      {:error, update_reason} ->
+        {:poll_error_update_failed, Map.get(record, :issue_id), {:rerun_failed, run_id, reason}, update_reason}
+    end
   end
 
   defp rerun_action_run_ids([run_id]), do: run_id
@@ -514,44 +575,87 @@ defmodule SymphonyElixir.CiPoller do
   defp do_escalate_ci_failure(record, ci_status, failed_checks, context, log_excerpt) do
     %{
       escalation_state: escalation_state,
+      now: now,
+      opts: opts
+    } = context
+
+    ci_failure = ci_failure_context(ci_status, failed_checks, log_excerpt)
+
+    pending_attrs =
+      ci_status_attrs(
+        record,
+        ci_status,
+        %{
+          status: "escalate_transition_pending",
+          target_issue_state: escalation_state,
+          failed_checks: failed_checks,
+          log_excerpt: log_excerpt,
+          ci_failure: ci_failure,
+          last_action: nil,
+          last_action_at: nil
+        },
+        now
+      )
+
+    case complete_ci_update(opts, record, pending_attrs, :ok) do
+      :ok ->
+        transition_escalated_ci_failure(record, ci_status, failed_checks, context, log_excerpt, ci_failure)
+
+      {:update_error, _issue_id, _reason} = error ->
+        error
+    end
+  end
+
+  defp transition_escalated_ci_failure(record, ci_status, failed_checks, context, log_excerpt, ci_failure) do
+    %{
+      escalation_state: escalation_state,
       issue_id: issue_id,
       now: now,
       opts: opts,
-      settings: settings,
       tracker: tracker
     } = context
 
     case tracker.update_issue_state(issue_id, escalation_state) do
       :ok ->
-        ci_failure = ci_failure_context(ci_status, failed_checks, log_excerpt)
-
-        attrs =
-          ci_status_attrs(
-            record,
-            ci_status,
-            %{
-              status: "escalated",
-              target_issue_state: escalation_state,
-              failed_checks: failed_checks,
-              log_excerpt: log_excerpt,
-              ci_failure: ci_failure,
-              last_action: "escalate",
-              last_action_at: now
-            },
-            now
-          )
-
-        case complete_ci_update(opts, record, attrs, {:escalated, issue_id, escalation_state}) do
-          {:escalated, ^issue_id, ^escalation_state} = action ->
-            emit_ci_escalated(record, ci_status, failed_checks, settings, escalation_state)
-            action
-
-          {:update_error, _issue_id, _reason} = error ->
-            error
-        end
+        complete_escalated_ci_failure(record, ci_status, failed_checks, context, log_excerpt, ci_failure)
 
       {:error, reason} ->
         record_transition_error(record, ci_status, failed_checks, opts, now, "escalate", reason)
+    end
+  end
+
+  defp complete_escalated_ci_failure(record, ci_status, failed_checks, context, log_excerpt, ci_failure) do
+    %{
+      escalation_state: escalation_state,
+      issue_id: issue_id,
+      now: now,
+      opts: opts,
+      settings: settings
+    } = context
+
+    attrs =
+      ci_status_attrs(
+        record,
+        ci_status,
+        %{
+          status: "escalated",
+          target_issue_state: escalation_state,
+          failed_checks: failed_checks,
+          log_excerpt: log_excerpt,
+          ci_failure: ci_failure,
+          last_action: "escalate",
+          last_action_at: now
+        },
+        now
+      )
+
+    case complete_ci_update(opts, record, attrs, {:escalated, issue_id, escalation_state}) do
+      {:escalated, ^issue_id, ^escalation_state} = action ->
+        emit_ci_escalated(record, ci_status, failed_checks, settings, escalation_state)
+        action
+
+      {:update_error, _issue_id, _reason} = error ->
+        error
     end
   end
 
@@ -593,6 +697,8 @@ defmodule SymphonyElixir.CiPoller do
             log_excerpt: nil,
             ci_failure: nil,
             rerun_attempted_shas: [],
+            rerun_run_id: nil,
+            rerun_run_ids: [],
             dispatched_shas: [],
             last_action: "green",
             last_action_at: now
@@ -609,7 +715,7 @@ defmodule SymphonyElixir.CiPoller do
   # "watching" so the PR-review poller can take over the deferred rework.
   defp released_deferred_status(record) do
     case Map.get(record, :status) do
-      status when status in ["dispatch_requested", "escalated", "state_transition_error"] -> "watching"
+      status when status in ["dispatch_requested", "escalated", "escalate_transition_pending", "state_transition_error"] -> "watching"
       status when is_binary(status) -> status
       _ -> "watching"
     end
@@ -1042,7 +1148,8 @@ defmodule SymphonyElixir.CiPoller do
   defp within_dispatch_grace?(_last_action_at, _now), do: false
 
   defp ci_owned_record?(record) do
-    ci_retry_count(record) > 0 or Map.get(record, :status) in ["dispatch_requested", "escalated", "state_transition_error"]
+    ci_retry_count(record) > 0 or
+      Map.get(record, :status) in ["dispatch_requested", "escalated", "escalate_transition_pending", "state_transition_error"]
   end
 
   defp rework_in_progress?(record, opts) do
@@ -1217,6 +1324,20 @@ defmodule SymphonyElixir.CiPoller do
   end
 
   defp append_string(values, _value), do: string_list(values)
+
+  defp rerun_run_ids_for_record(record, current_run_ids) do
+    record
+    |> Map.get(:rerun_run_ids, [])
+    |> string_list()
+    |> Enum.filter(&(&1 in current_run_ids))
+    |> Enum.uniq()
+  end
+
+  defp unique_strings(values) when is_list(values) do
+    values
+    |> string_list()
+    |> Enum.uniq()
+  end
 
   defp string_list(values) when is_list(values) do
     values
